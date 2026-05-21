@@ -1,0 +1,97 @@
+# Portfolio (Next.js)
+
+A clean, responsive personal portfolio built with Next.js (App Router), React, and CSS.
+
+## Stack
+
+- Next.js App Router
+- React
+- `next/font` for local Google font hosting
+- Plain CSS in `app/globals.css`
+- Nodemailer (contact email delivery)
+
+## Project structure
+
+- `app/layout.js`: global layout + metadata + font setup
+- `app/page.js`: main portfolio page, sidebar interactions, and sidebar contact form
+- `app/api/contact/route.js`: form validation + email delivery endpoint
+- `app/globals.css`: theme, layout, responsive behavior, and animations
+
+## Run locally
+
+1. Install dependencies:
+
+```powershell
+npm install
+```
+
+2. Create a local environment file (`.env.local`) with SMTP settings:
+
+```env
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your_smtp_username
+SMTP_PASS=your_smtp_password
+CONTACT_TO=your_destination_email@example.com
+CONTACT_FROM=your_sender_email@example.com
+```
+
+3. Start dev server:
+
+```powershell
+npm run dev
+```
+
+4. Build for production:
+
+```powershell
+npm run build
+npm start
+```
+
+## Customize quickly
+
+1. Update your name, role, and copy in `app/page.js`.
+2. Update sidebar contact form copy/behavior in `app/page.js`.
+3. Edit arrays in `app/page.js`:
+   - `skills`
+   - `projects`
+   - `timeline`
+4. Adjust colors and spacing in `app/globals.css` under `:root`.
+
+## Notes
+
+- Contact is now integrated directly into the sidebar.
+- Useful links (GitHub, LinkedIn) are placed near the top of the sidebar.
+- Sidebar contact form posts to `/api/contact` and sends email through SMTP.
+
+
+## Suggested next upgrades
+- Add SEO/Open Graph image metadata in `app/layout.js`.
+
+
+- Add personal photo
+- make sections more interactive
+
+
+Welcome
+About
+Work
+Education
+Skills
+Projects
+
+Playground
+- calculator
+- on-screen keyboard
+- chatbot?
+- magnifier?
+- chalkboard
+- add a sticky notes/freedom wall
+- stats: total viewers, unique viewers ()
+- financial tracker app
+
+
+Question: 
+- what happens if you click send in Contact section?
