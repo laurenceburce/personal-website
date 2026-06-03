@@ -60,17 +60,6 @@ npm start
    - `timeline`
 4. Adjust colors and spacing in `app/globals.css` under `:root`.
 
-## Notes
-
-- Contact is now integrated directly into the sidebar.
-- Useful links (GitHub, LinkedIn) are placed near the top of the sidebar.
-- Sidebar contact form posts to `/api/contact` and sends email through SMTP.
-
-
-## Suggested next upgrades
-- Add SEO/Open Graph image metadata in `app/layout.js`.
-
-
 - Add personal photo
 - make sections more interactive
 
@@ -83,15 +72,22 @@ Skills
 Projects
 
 Playground
-- calculator
-- on-screen keyboard
-- chatbot?
-- magnifier?
-- chalkboard
-- add a sticky notes/freedom wall
+- chat/voice bot?
+- add a sticky notes/freedom wall/chalkboard
 - stats: total viewers, unique viewers ()
 - financial tracker app
 
 
 Question: 
 - what happens if you click send in Contact section?
+
+Skills
+copilot studio
+azure deployment tools
+
+
+List all technologies used
+Programming Language
+DB (if used)
+Frameworks
+APIs
