@@ -387,25 +387,18 @@ export default function Home() {
 
   useEffect(() => {
     const reveals = Array.from(document.querySelectorAll(".reveal"));
-    const scenes = Array.from(document.querySelectorAll(".scroll-scene"));
 
-    if (reveals.length === 0 && scenes.length === 0) {
+    if (reveals.length === 0) {
       return;
     }
 
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    reveals.forEach((el, index) => {
-      el.style.setProperty("--reveal-dir", index % 2 === 0 ? "1" : "-1");
-
+    reveals.forEach((el) => {
       if (prefersReducedMotion) {
         el.style.setProperty("--reveal-progress", "1");
         el.classList.add("visible");
       }
-    });
-
-    scenes.forEach((scene) => {
-      scene.style.setProperty("--scene-progress", prefersReducedMotion ? "1" : "0");
     });
 
     if (prefersReducedMotion) {
@@ -419,20 +412,21 @@ export default function Home() {
 
       reveals.forEach((el) => {
         const rect = el.getBoundingClientRect();
-        const start = viewportHeight * 0.9;
-        const end = viewportHeight * 0.1;
+        const start = viewportHeight * 0.88;
+        const end = viewportHeight * 0.28;
         const rawProgress = (start - rect.top) / (start - end);
         const progress = Math.max(0, Math.min(1, rawProgress));
-        const revealProgress = Math.pow(progress, 0.78);
+        const revealProgress = 1 - Math.pow(1 - progress, 2);
 
         el.style.setProperty("--reveal-progress", revealProgress.toFixed(3));
 
-        if (revealProgress >= 0.34) {
+        if (revealProgress >= 0.5) {
           el.classList.add("visible");
         } else {
           el.classList.remove("visible");
         }
       });
+
       const atPageBottom =
         window.innerHeight + window.scrollY >=
         document.documentElement.scrollHeight - 6;
@@ -443,16 +437,6 @@ export default function Home() {
           el.classList.add("visible");
         });
       }
-      scenes.forEach((scene) => {
-        const rect = scene.getBoundingClientRect();
-        const start = viewportHeight * 0.95;
-        const end = -Math.max(rect.height * 0.42, viewportHeight * 0.45);
-        const rawProgress = (start - rect.top) / (start - end);
-        const progress = Math.max(0, Math.min(1, rawProgress));
-        const cinematicProgress = progress * progress * (3 - 2 * progress);
-
-        scene.style.setProperty("--scene-progress", cinematicProgress.toFixed(3));
-      });
     };
 
     const requestScrollUpdate = () => {
@@ -870,12 +854,7 @@ export default function Home() {
               <a href="#home" className="scroll-brand">
                 Laurence Alec Burce
               </a>
-              <p className="scroll-role">Software Engineer | AI Automation</p>
-            </div>
-            <div className="sidebar-inline-links">
-              <a href="mailto:laurenceburce@gmail.com">Email</a>
-              <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer">GitHub</a>
-              <a href="https://www.linkedin.com/in/laurence-burce" target="_blank" rel="noreferrer">LinkedIn</a>
+              <p className="scroll-role">Software Engineer • AI & Automation Engineer</p>
             </div>
             <nav className="scroll-nav" aria-label="Section navigation">
               {navItems.map((item) => (
@@ -954,6 +933,11 @@ export default function Home() {
                   </p>
                 ) : null}
               </form>
+              <div className="sidebar-inline-links">
+                <a href="mailto:laurenceburce@gmail.com">Email</a>
+                <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer">GitHub</a>
+                <a href="https://www.linkedin.com/in/laurence-burce" target="_blank" rel="noreferrer">LinkedIn</a>
+              </div>
             </section>
             <label className="theme-switch sidebar-theme-toggle">
               <input
@@ -985,48 +969,36 @@ export default function Home() {
             </div>
           </aside>
           <div className="main-sections">
-        <section className="hero section reveal scroll-scene scroll-scene-hero">
-          <div className="scene-sticky">
-            <div
-              className="scene-layer scene-layer-back hero-scene-back"
-              style={{ "--scene-speed": "0.52", "--scene-x": "-96px" }}
-              aria-hidden="true"
-            />
-            <div
-              className="scene-layer scene-layer-content"
-              style={{ "--scene-speed": "1.04", "--scene-x": "34px" }}
+        <section className="hero section reveal">
+          <p className="welcome-line">Hello, I'm Laurence.</p>
+          <p className="eyebrow">Software Engineer | AI & Automation Engineer</p>
+          <h1>
+            I'm a software engineer building automation-first systems for modern
+            operations teams.
+          </h1>
+          <p className="lead">
+            2+ years of enterprise development experience at Oracle and hands-on
+            AI automation delivery for large-scale real estate and property
+            management organizations.
+          </p>
+          <div className="hero-actions">
+            <a className="btn btn-primary" href="#projects">
+              View Projects
+            </a>
+            <a
+              className="btn btn-secondary"
+              href="/Laurence-Alec-Burce-Software-Developer-Resume.pdf"
+              download
             >
-              <p className="welcome-line">Hello, I'm Laurence.</p>
-              <p className="eyebrow">Software Engineer | AI & Automation Engineer</p>
-              <h1>
-                I'm a software engineer building automation-first systems for modern
-                operations teams.
-              </h1>
-              <p className="lead">
-                2+ years of enterprise development experience at Oracle and hands-on
-                AI automation delivery for large-scale real estate and property
-                management organizations.
-              </p>
-              <div className="hero-actions">
-                <a className="btn btn-primary" href="#projects">
-                  View Projects
-                </a>
-                <a
-                  className="btn btn-secondary"
-                  href="/Laurence-Alec-Burce-Software-Developer-Resume.pdf"
-                  download
-                >
-                  Download Resume
-                </a>
-                <a
-                  className="btn btn-secondary"
-                  href="/Laurence-Alec-Burce-Cover-Letter.pdf"
-                  download
-                >
-                  Download Cover Letter
-                </a>
-              </div>
-            </div>
+              Download Resume
+            </a>
+            <a
+              className="btn btn-secondary"
+              href="/Laurence-Alec-Burce-Cover-Letter.pdf"
+              download
+            >
+              Download Cover Letter
+            </a>
           </div>
         </section>
 
@@ -1050,7 +1022,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section id="work" className="section section-compact reveal">
+        <section id="work" className="section reveal">
           <div className="section-head">
             <h2>Work Experience</h2>
           </div>
@@ -1100,7 +1072,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section id="education" className="section section-compact reveal">
+        <section id="education" className="section reveal">
           <div className="section-head">
             <h2>Education</h2>
           </div>
@@ -1140,7 +1112,7 @@ export default function Home() {
                       <br></br>
                       GWA: 2.01 / 1.00
                       <br></br>
-                      GPA equivalent ≈ 3.2–3.4
+                      GPA equivalent ≈ 3.3
                     </p>
                   </article>
                 </div>
@@ -1149,34 +1121,22 @@ export default function Home() {
           </article>
         </section>
 
-        <section id="skills" className="section reveal scroll-scene scroll-scene-skills">
-          <div className="scene-sticky">
-            <div
-              className="scene-layer scene-layer-back skills-scene-back"
-              style={{ "--scene-speed": "0.46", "--scene-x": "82px" }}
-              aria-hidden="true"
-            />
-            <div
-              className="scene-layer scene-layer-content"
-              style={{ "--scene-speed": "0.9", "--scene-x": "-24px" }}
-            >
-              <div className="section-head">
-                <h2>Skills</h2>
-                <p>Core technologies grouped by area of focus.</p>
-              </div>
-              <div className="skills-groups">
-                {skillGroups.map((group) => (
-                  <article className="skill-group" key={group.title}>
-                    <h3>{group.title}</h3>
-                    <ul className="skill-list">
-                      {group.items.map((skill) => (
-                        <li key={`${group.title}-${skill}`}>{skill}</li>
-                      ))}
-                    </ul>
-                  </article>
-                ))}
-              </div>
-            </div>
+        <section id="skills" className="section reveal">
+          <div className="section-head">
+            <h2>Skills</h2>
+            <p>Core technologies grouped by area of focus.</p>
+          </div>
+          <div className="skills-groups">
+            {skillGroups.map((group) => (
+              <article className="skill-group" key={group.title}>
+                <h3>{group.title}</h3>
+                <ul className="skill-list">
+                  {group.items.map((skill) => (
+                    <li key={`${group.title}-${skill}`}>{skill}</li>
+                  ))}
+                </ul>
+              </article>
+            ))}
           </div>
         </section>
 
