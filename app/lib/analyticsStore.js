@@ -1,55 +1,13 @@
-const ANALYTICS_PREFIX = "portfolio:analytics";
-const TOTAL_VISITS_KEY = `${ANALYTICS_PREFIX}:total_visits`;
-const UNIQUE_VISITORS_KEY = `${ANALYTICS_PREFIX}:unique_visitors`;
-const VISITOR_SESSIONS_KEY = `${ANALYTICS_PREFIX}:visitor_sessions`;
-const IDENTIFIED_VISITORS_KEY = `${ANALYTICS_PREFIX}:identified_visitors`;
-const IDENTIFIED_EMAILS_KEY = `${ANALYTICS_PREFIX}:identified_emails`;
+import mysql from "mysql2/promise";
+
+const TOTAL_VISITS_KEY = "total_visits";
 const MAX_IDENTIFIED_RESULTS = 50;
 
-const isConfigured = () => (
-  Boolean(process.env.UPSTASH_REDIS_REST_URL) &&
-  Boolean(process.env.UPSTASH_REDIS_REST_TOKEN)
-);
+let poolPromise = null;
+let schemaReadyPromise = null;
 
-const normalizeUrl = () => process.env.UPSTASH_REDIS_REST_URL.replace(/\/$/, "");
-
-const upstashRequest = async (path, commands) => {
-  if (!isConfigured()) {
-    return null;
-  }
-
-  const response = await fetch(`${normalizeUrl()}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(commands),
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    throw new Error("Analytics storage request failed.");
-  }
-
-  const payload = await response.json();
-  const error = Array.isArray(payload)
-    ? payload.find((item) => item?.error)
-    : payload?.error;
-
-  if (error) {
-    throw new Error(typeof error === "string" ? error : "Analytics storage command failed.");
-  }
-
-  return payload;
-};
-
-const resultAt = (payload, index, fallback = 0) => {
-  const value = payload?.[index]?.result;
-  const numberValue = Number(value);
-
-  return Number.isFinite(numberValue) ? numberValue : fallback;
-};
+const getDatabaseUrl = () => process.env.DATABASE_URL || process.env.MYSQL_URL || "";
+const isConfigured = () => Boolean(getDatabaseUrl());
 
 const cleanVisitorId = (visitorId) => (
   typeof visitorId === "string" && /^[a-zA-Z0-9_-]{16,80}$/.test(visitorId)
@@ -66,113 +24,177 @@ const cleanEmail = (email) => {
   return emailPattern.test(value) ? value : null;
 };
 
-export async function recordVisit(visitorId) {
-  const safeVisitorId = cleanVisitorId(visitorId);
+const getPool = async () => {
+  if (!isConfigured()) return null;
 
-  if (!safeVisitorId || !isConfigured()) {
-    return getAnalyticsStats();
+  if (!poolPromise) {
+    poolPromise = Promise.resolve(mysql.createPool({
+      uri: getDatabaseUrl(),
+      connectionLimit: 4,
+      waitForConnections: true,
+      enableKeepAlive: true
+    }));
   }
 
-  const now = new Date().toISOString();
-  const payload = await upstashRequest("/pipeline", [
-    ["INCR", TOTAL_VISITS_KEY],
-    ["SADD", UNIQUE_VISITORS_KEY, safeVisitorId],
-    ["HSET", VISITOR_SESSIONS_KEY, safeVisitorId, now],
-    ["GET", TOTAL_VISITS_KEY],
-    ["SCARD", UNIQUE_VISITORS_KEY],
-    ["SCARD", IDENTIFIED_EMAILS_KEY]
+  return poolPromise;
+};
+
+const ensureSchema = async () => {
+  const pool = await getPool();
+  if (!pool) return null;
+
+  if (!schemaReadyPromise) {
+    schemaReadyPromise = (async () => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS portfolio_analytics_counters (
+          counter_key VARCHAR(64) PRIMARY KEY,
+          counter_value BIGINT UNSIGNED NOT NULL DEFAULT 0
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS portfolio_analytics_visitors (
+          visitor_id VARCHAR(80) PRIMARY KEY,
+          first_seen_at DATETIME(3) NOT NULL,
+          last_seen_at DATETIME(3) NOT NULL
+        )
+      `);
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS portfolio_analytics_identified_visitors (
+          visitor_id VARCHAR(80) PRIMARY KEY,
+          email VARCHAR(200) NOT NULL,
+          name VARCHAR(120) NOT NULL DEFAULT '',
+          last_seen_at DATETIME(3) NOT NULL,
+          INDEX portfolio_analytics_identified_email_idx (email)
+        )
+      `);
+    })();
+  }
+
+  await schemaReadyPromise;
+  return pool;
+};
+
+const emptyStats = () => ({
+  configured: false,
+  totalVisits: 0,
+  uniqueVisitors: 0,
+  identifiedVisitors: 0
+});
+
+export async function getAnalyticsStats() {
+  const pool = await ensureSchema();
+  if (!pool) return emptyStats();
+
+  const [[counterRows], [uniqueRows], [identifiedRows]] = await Promise.all([
+    pool.query(
+      "SELECT counter_value AS totalVisits FROM portfolio_analytics_counters WHERE counter_key = ?",
+      [TOTAL_VISITS_KEY]
+    ),
+    pool.query("SELECT COUNT(*) AS uniqueVisitors FROM portfolio_analytics_visitors"),
+    pool.query("SELECT COUNT(DISTINCT email) AS identifiedVisitors FROM portfolio_analytics_identified_visitors")
   ]);
 
   return {
     configured: true,
-    totalVisits: resultAt(payload, 3),
-    uniqueVisitors: resultAt(payload, 4),
-    identifiedVisitors: resultAt(payload, 5)
+    totalVisits: Number(counterRows[0]?.totalVisits) || 0,
+    uniqueVisitors: Number(uniqueRows[0]?.uniqueVisitors) || 0,
+    identifiedVisitors: Number(identifiedRows[0]?.identifiedVisitors) || 0
   };
 }
 
-export async function getAnalyticsStats() {
-  if (!isConfigured()) {
-    return {
-      configured: false,
-      totalVisits: 0,
-      uniqueVisitors: 0,
-      identifiedVisitors: 0
-    };
+export async function recordVisit(visitorId) {
+  const safeVisitorId = cleanVisitorId(visitorId);
+  const pool = await ensureSchema();
+
+  if (!safeVisitorId || !pool) return getAnalyticsStats();
+
+  const now = new Date();
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+    await connection.query(
+      `
+        INSERT INTO portfolio_analytics_counters (counter_key, counter_value)
+        VALUES (?, 1)
+        ON DUPLICATE KEY UPDATE counter_value = counter_value + 1
+      `,
+      [TOTAL_VISITS_KEY]
+    );
+    await connection.query(
+      `
+        INSERT INTO portfolio_analytics_visitors (visitor_id, first_seen_at, last_seen_at)
+        VALUES (?, ?, ?)
+        ON DUPLICATE KEY UPDATE last_seen_at = VALUES(last_seen_at)
+      `,
+      [safeVisitorId, now, now]
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
   }
 
-  const payload = await upstashRequest("/pipeline", [
-    ["GET", TOTAL_VISITS_KEY],
-    ["SCARD", UNIQUE_VISITORS_KEY],
-    ["SCARD", IDENTIFIED_EMAILS_KEY]
-  ]);
-
-  return {
-    configured: true,
-    totalVisits: resultAt(payload, 0),
-    uniqueVisitors: resultAt(payload, 1),
-    identifiedVisitors: resultAt(payload, 2)
-  };
+  return getAnalyticsStats();
 }
 
 export async function identifyVisitor({ visitorId, email, name }) {
   const safeVisitorId = cleanVisitorId(visitorId);
   const safeEmail = cleanEmail(email);
+  const pool = await ensureSchema();
 
-  if (!safeVisitorId || !safeEmail || !isConfigured()) {
-    return getAnalyticsStats();
-  }
+  if (!safeVisitorId || !safeEmail || !pool) return getAnalyticsStats();
 
-  const now = new Date().toISOString();
+  const now = new Date();
   const safeName = cleanText(name, 120);
-  const record = JSON.stringify({
-    visitorId: safeVisitorId,
-    email: safeEmail,
-    name: safeName,
-    lastSeenAt: now
-  });
 
-  const payload = await upstashRequest("/pipeline", [
-    ["HSET", IDENTIFIED_VISITORS_KEY, safeVisitorId, record],
-    ["SADD", IDENTIFIED_EMAILS_KEY, safeEmail],
-    ["GET", TOTAL_VISITS_KEY],
-    ["SCARD", UNIQUE_VISITORS_KEY],
-    ["SCARD", IDENTIFIED_EMAILS_KEY]
-  ]);
+  await pool.query(
+    `
+      INSERT INTO portfolio_analytics_identified_visitors (visitor_id, email, name, last_seen_at)
+      VALUES (?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        email = VALUES(email),
+        name = VALUES(name),
+        last_seen_at = VALUES(last_seen_at)
+    `,
+    [safeVisitorId, safeEmail, safeName, now]
+  );
 
-  return {
-    configured: true,
-    totalVisits: resultAt(payload, 2),
-    uniqueVisitors: resultAt(payload, 3),
-    identifiedVisitors: resultAt(payload, 4)
-  };
+  return getAnalyticsStats();
 }
 
 export async function getIdentifiedVisitors() {
-  if (!isConfigured()) {
+  const pool = await ensureSchema();
+  if (!pool) {
     return {
       configured: false,
       visitors: []
     };
   }
 
-  const payload = await upstashRequest("/pipeline", [
-    ["HVALS", IDENTIFIED_VISITORS_KEY]
-  ]);
-  const visitors = (payload?.[0]?.result || [])
-    .map((item) => {
-      try {
-        return JSON.parse(item);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean)
-    .sort((a, b) => String(b.lastSeenAt).localeCompare(String(a.lastSeenAt)))
-    .slice(0, MAX_IDENTIFIED_RESULTS);
+  const [rows] = await pool.query(
+    `
+      SELECT visitor_id, email, name, last_seen_at
+      FROM portfolio_analytics_identified_visitors
+      ORDER BY last_seen_at DESC
+      LIMIT ?
+    `,
+    [MAX_IDENTIFIED_RESULTS]
+  );
 
   return {
     configured: true,
-    visitors
+    visitors: rows.map((row) => ({
+      visitorId: row.visitor_id,
+      email: row.email,
+      name: row.name || "",
+      lastSeenAt: row.last_seen_at instanceof Date
+        ? row.last_seen_at.toISOString()
+        : String(row.last_seen_at)
+    }))
   };
 }
