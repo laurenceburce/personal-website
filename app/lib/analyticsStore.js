@@ -101,6 +101,7 @@ const ensureSchema = async () => {
           id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
           visitor_id  VARCHAR(80)  NOT NULL,
           visited_at  DATETIME(3)  NOT NULL,
+          ip_address  VARCHAR(45)  NULL,
           country     VARCHAR(64)  NULL,
           city        VARCHAR(100) NULL,
           referrer    VARCHAR(500) NULL,
@@ -110,6 +111,8 @@ const ensureSchema = async () => {
           INDEX portfolio_analytics_visits_visitor_idx (visitor_id)
         )
       `);
+
+      await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN ip_address VARCHAR(45) NULL AFTER visitor_id");
 
       // Migrate existing visitors table to add new columns
       const migrations = [
@@ -226,6 +229,7 @@ export async function recordVisit(visitorId, meta = {}) {
 
   const now = new Date();
   const {
+    ipAddress = null,
     ipHash = null,
     country = null,
     city = null,
@@ -260,9 +264,9 @@ export async function recordVisit(visitorId, meta = {}) {
     );
     await connection.query(
       `INSERT INTO portfolio_analytics_visits
-         (visitor_id, visited_at, country, city, referrer, device_type, browser)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [safeVisitorId, now, country, city, referrer, deviceType, browser]
+         (visitor_id, visited_at, ip_address, country, city, referrer, device_type, browser)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [safeVisitorId, now, ipAddress, country, city, referrer, deviceType, browser]
     );
     await connection.commit();
   } catch (error) {
@@ -331,16 +335,28 @@ export async function getVisitsList(page = 1) {
          v.id,
          v.visitor_id,
          v.visited_at,
+         v.ip_address,
          v.country,
          v.city,
          v.referrer,
          v.device_type,
          v.browser,
          iv.email,
-         iv.name
+         iv.name,
+         te.event_value AS time_on_page
        FROM portfolio_analytics_visits v
        LEFT JOIN portfolio_analytics_identified_visitors iv
          ON iv.visitor_id = v.visitor_id
+       LEFT JOIN portfolio_analytics_events te
+         ON te.id = (
+           SELECT id FROM portfolio_analytics_events
+           WHERE visitor_id = v.visitor_id
+             AND event_type = 'time_on_page'
+             AND created_at >= v.visited_at
+             AND created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
+           ORDER BY created_at ASC
+           LIMIT 1
+         )
        ORDER BY v.visited_at DESC
        LIMIT ? OFFSET ?`,
       [PAGE_SIZE, offset]
@@ -352,13 +368,15 @@ export async function getVisitsList(page = 1) {
       id: Number(r.id),
       visitorId: r.visitor_id,
       visitedAt: r.visited_at instanceof Date ? r.visited_at.toISOString() : String(r.visited_at),
+      ipAddress: r.ip_address || null,
       country: r.country || null,
       city: r.city || null,
       referrer: r.referrer || null,
       deviceType: r.device_type || null,
       browser: r.browser || null,
       email: r.email || null,
-      name: r.name || null
+      name: r.name || null,
+      timeOnPage: r.time_on_page ? Number(r.time_on_page) : null
     })),
     total: Number(total),
     page,

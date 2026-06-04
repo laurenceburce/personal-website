@@ -11,6 +11,31 @@ const VISIT_LIMIT_MAX = 20;
 const hashIp = (ip) =>
   createHash("sha256").update(ip).digest("hex").slice(0, 16);
 
+const isPrivateIp = (ip) => {
+  if (!ip || ip === "unknown") return true;
+  if (ip === "127.0.0.1" || ip === "localhost" || ip === "::1") return true;
+  if (ip.startsWith("::")) return true;
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("192.168.")) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)) return true;
+  return false;
+};
+
+const extractIp = (request) => {
+  // Cloudflare (used when Railway serves a custom domain)
+  const cf = request.headers.get("cf-connecting-ip");
+  if (cf) return cf.trim();
+
+  // Standard reverse-proxy header — take the first (client) IP
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0].trim();
+
+  const real = request.headers.get("x-real-ip");
+  if (real) return real.trim();
+
+  return "unknown";
+};
+
 const parseDeviceType = (ua) => {
   if (!ua) return null;
   if (/iPad|Tablet/i.test(ua)) return "tablet";
@@ -32,9 +57,7 @@ const parseBrowser = (ua) => {
 const cleanReferrer = (raw) => {
   if (!raw) return null;
   try {
-    const url = new URL(raw);
-    const host = url.hostname.replace(/^www\./, "");
-    // Return just the hostname so we don't store full paths with query strings
+    const host = new URL(raw).hostname.replace(/^www\./, "");
     return host.slice(0, 100) || null;
   } catch {
     return null;
@@ -42,13 +65,11 @@ const cleanReferrer = (raw) => {
 };
 
 const getGeoLocation = async (ip) => {
-  if (!ip || ip === "unknown" || ip === "127.0.0.1" || ip.startsWith("::")) {
-    return { country: null, city: null };
-  }
+  if (isPrivateIp(ip)) return { country: null, city: null };
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    const timeout = setTimeout(() => controller.abort(), 4000);
     const res = await fetch(`https://ipwho.is/${ip}`, { signal: controller.signal });
     clearTimeout(timeout);
 
@@ -72,7 +93,7 @@ export async function POST(request) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+    const ip = extractIp(request);
     const now = Date.now();
     const entry = visitRateLimit.get(ip) ?? { count: 0, windowStart: now };
     if (now - entry.windowStart > VISIT_LIMIT_MS) {
@@ -87,11 +108,11 @@ export async function POST(request) {
 
     const body = await request.json();
     const ua = request.headers.get("user-agent") || "";
-
-    const [geo] = await Promise.all([getGeoLocation(ip)]);
+    const geo = await getGeoLocation(ip);
 
     const meta = {
-      ipHash: ip !== "unknown" ? hashIp(ip) : null,
+      ipAddress: isPrivateIp(ip) ? null : ip,
+      ipHash: !isPrivateIp(ip) ? hashIp(ip) : null,
       country: geo.country,
       city: geo.city,
       referrer: cleanReferrer(body?.referrer),

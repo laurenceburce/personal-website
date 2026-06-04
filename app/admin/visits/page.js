@@ -11,6 +11,14 @@ const fmtDate = (iso) => {
   });
 };
 
+const fmtTime = (seconds) => {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+};
+
 const deviceColors = { desktop: "#38bdf8", mobile: "#a78bfa", tablet: "#34d399" };
 
 const badge = (text, color) => (
@@ -75,7 +83,7 @@ export default async function VisitsPage({ searchParams }) {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                    {["Date / Time", "Location", "Referrer", "Device", "Browser", "Visitor"].map((h) => (
+                    {["Date / Time", "IP", "Location", "Referrer", "Device", "Browser", "Time", "Visitor"].map((h) => (
                       <th key={h} style={{
                         textAlign: "left",
                         padding: "12px 16px",
@@ -103,12 +111,15 @@ export default async function VisitsPage({ searchParams }) {
                       <td style={{ padding: "11px 16px", color: "#94a3b8", whiteSpace: "nowrap" }}>
                         {fmtDate(v.visitedAt)}
                       </td>
-                      <td style={{ padding: "11px 16px", color: "#cbd5e1" }}>
+                      <td style={{ padding: "11px 16px", fontFamily: "monospace", fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
+                        {v.ipAddress || <span style={{ color: "#334155" }}>—</span>}
+                      </td>
+                      <td style={{ padding: "11px 16px", color: "#cbd5e1", whiteSpace: "nowrap" }}>
                         {v.city && v.country
                           ? `${v.city}, ${v.country}`
                           : v.country || <span style={{ color: "#475569" }}>Unknown</span>}
                       </td>
-                      <td style={{ padding: "11px 16px", color: "#38bdf8", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "11px 16px", color: "#38bdf8", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {v.referrer || <span style={{ color: "#475569" }}>Direct</span>}
                       </td>
                       <td style={{ padding: "11px 16px" }}>
@@ -118,6 +129,9 @@ export default async function VisitsPage({ searchParams }) {
                       </td>
                       <td style={{ padding: "11px 16px", color: "#cbd5e1" }}>
                         {v.browser || <span style={{ color: "#475569" }}>—</span>}
+                      </td>
+                      <td style={{ padding: "11px 16px", color: "#94a3b8", whiteSpace: "nowrap" }}>
+                        {fmtTime(v.timeOnPage) || <span style={{ color: "#334155" }}>—</span>}
                       </td>
                       <td style={{ padding: "11px 16px" }}>
                         {v.email ? (
