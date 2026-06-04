@@ -29,8 +29,8 @@ export default function RootLayout({ children }) {
     <html lang="en">
       <body className={`${manrope.variable} ${dmSerifDisplay.variable}`}>
         <div style={{
-          background: "#f59e0b",
-          color: "#1c1917",
+          background: "#78716c",
+          color: "#f5f5f4",
           textAlign: "center",
           padding: "8px 16px",
           fontSize: "13px",
