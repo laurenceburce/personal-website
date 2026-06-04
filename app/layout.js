@@ -1,5 +1,6 @@
 import { DM_Serif_Display, Manrope } from "next/font/google";
 import "./globals.css";
+import ChatWidget from "./components/chat/ChatWidget";
 
 const manrope = Manrope({
   subsets: ["latin"],
@@ -48,6 +49,7 @@ export default function RootLayout({ children }) {
           This website is a work in progress — some things may be incomplete or change.
         </div>
         {children}
+        <ChatWidget />
       </body>
     </html>
   );

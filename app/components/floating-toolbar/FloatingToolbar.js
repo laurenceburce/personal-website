@@ -158,6 +158,8 @@ export default function FloatingToolbar() {
   }, []);
 
   const openTool = useCallback((id) => {
+    setMenuOpen(false);
+
     if (openToolsRef.current[id]) {
       if (id === "calculator") {
         setCalculatorHistoryOpen(false);
