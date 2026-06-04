@@ -96,6 +96,21 @@ const ensureSchema = async () => {
         )
       `);
 
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS portfolio_analytics_visits (
+          id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          visitor_id  VARCHAR(80)  NOT NULL,
+          visited_at  DATETIME(3)  NOT NULL,
+          country     VARCHAR(64)  NULL,
+          city        VARCHAR(100) NULL,
+          referrer    VARCHAR(500) NULL,
+          device_type VARCHAR(20)  NULL,
+          browser     VARCHAR(50)  NULL,
+          INDEX portfolio_analytics_visits_at_idx (visited_at DESC),
+          INDEX portfolio_analytics_visits_visitor_idx (visitor_id)
+        )
+      `);
+
       // Migrate existing visitors table to add new columns
       const migrations = [
         "ALTER TABLE portfolio_analytics_visitors ADD COLUMN ip_hash VARCHAR(16) NULL",
@@ -243,6 +258,12 @@ export async function recordVisit(visitorId, meta = {}) {
          browser       = COALESCE(VALUES(browser), browser)`,
       [safeVisitorId, now, now, ipHash, country, city, referrer, deviceType, browser]
     );
+    await connection.query(
+      `INSERT INTO portfolio_analytics_visits
+         (visitor_id, visited_at, country, city, referrer, device_type, browser)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [safeVisitorId, now, country, city, referrer, deviceType, browser]
+    );
     await connection.commit();
   } catch (error) {
     await connection.rollback();
@@ -293,6 +314,56 @@ export async function identifyVisitor({ visitorId, email, name }) {
   );
 
   return getAnalyticsStats();
+}
+
+const PAGE_SIZE = 50;
+
+export async function getVisitsList(page = 1) {
+  const pool = await ensureSchema();
+  if (!pool) return { visits: [], total: 0, page, pageSize: PAGE_SIZE };
+
+  const offset = (Math.max(1, page) - 1) * PAGE_SIZE;
+
+  const [[{ total }], [rows]] = await Promise.all([
+    pool.query("SELECT COUNT(*) AS total FROM portfolio_analytics_visits"),
+    pool.query(
+      `SELECT
+         v.id,
+         v.visitor_id,
+         v.visited_at,
+         v.country,
+         v.city,
+         v.referrer,
+         v.device_type,
+         v.browser,
+         iv.email,
+         iv.name
+       FROM portfolio_analytics_visits v
+       LEFT JOIN portfolio_analytics_identified_visitors iv
+         ON iv.visitor_id = v.visitor_id
+       ORDER BY v.visited_at DESC
+       LIMIT ? OFFSET ?`,
+      [PAGE_SIZE, offset]
+    )
+  ]);
+
+  return {
+    visits: rows.map((r) => ({
+      id: Number(r.id),
+      visitorId: r.visitor_id,
+      visitedAt: r.visited_at instanceof Date ? r.visited_at.toISOString() : String(r.visited_at),
+      country: r.country || null,
+      city: r.city || null,
+      referrer: r.referrer || null,
+      deviceType: r.device_type || null,
+      browser: r.browser || null,
+      email: r.email || null,
+      name: r.name || null
+    })),
+    total: Number(total),
+    page,
+    pageSize: PAGE_SIZE
+  };
 }
 
 export async function getIdentifiedVisitors() {

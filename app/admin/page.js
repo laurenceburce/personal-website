@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getAnalyticsStats, getIdentifiedVisitors } from "../lib/analyticsStore";
 import AdminLogout from "./AdminLogout";
 
@@ -66,7 +67,21 @@ export default async function AdminPage() {
             <h1 style={{ fontSize: "22px", fontWeight: "800", margin: "0 0 4px" }}>Analytics Dashboard</h1>
             <p style={{ color: "#475569", fontSize: "14px", margin: 0 }}>laurenceburce.com</p>
           </div>
-          <AdminLogout />
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <Link href="/admin/visits" style={{
+              padding: "8px 16px",
+              background: "rgba(56,189,248,0.1)",
+              border: "1px solid rgba(56,189,248,0.2)",
+              borderRadius: "8px",
+              color: "#38bdf8",
+              fontSize: "13px",
+              fontWeight: "500",
+              textDecoration: "none"
+            }}>
+              Visit Log
+            </Link>
+            <AdminLogout />
+          </div>
         </div>
 
         {/* Summary stats */}
