@@ -120,48 +120,81 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // Read fresh full-page dimensions before any state changes
+    const freshWidth = Math.ceil(Math.max(
+      document.documentElement.scrollWidth,
+      document.body?.scrollWidth ?? 0,
+      window.innerWidth
+    ));
+    const freshHeight = Math.ceil(Math.max(
+      document.documentElement.scrollHeight,
+      document.body?.scrollHeight ?? 0,
+      window.innerHeight
+    ));
+
     resizeCanvas();
 
     const { default: html2canvas } = await import("html2canvas");
-    const { width, height } = dimensionsRef.current;
     const scale = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+
+    // Force all reveal-animated sections fully visible before capturing.
+    // Without this, sections below the viewport have opacity:0 / translateY from
+    // the scroll-driven reveal animation, making the bottom appear cut off.
+    const revealEls = Array.from(document.querySelectorAll(".reveal"));
+    const revealSnapshot = revealEls.map((el) => ({
+      el,
+      progress: el.style.getPropertyValue("--reveal-progress"),
+      visible: el.classList.contains("visible")
+    }));
+    revealEls.forEach((el) => {
+      el.style.setProperty("--reveal-progress", "1");
+      el.classList.add("visible");
+    });
 
     const savedScrollX = window.scrollX;
     const savedScrollY = window.scrollY;
     window.scrollTo(0, 0);
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    // Two frames: one for scroll, one for layout reflow after reveal override
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
     const portfolioCanvas = await html2canvas(document.body, {
       backgroundColor: null,
-      height,
+      height: freshHeight,
       ignoreElements: (element) => Boolean(element.closest?.(FLOATING_UI_SELECTOR)),
       logging: false,
       scale,
       scrollX: 0,
       scrollY: 0,
       useCORS: true,
-      width,
-      windowHeight: height,
-      windowWidth: width
+      width: freshWidth,
+      windowHeight: freshHeight,
+      windowWidth: freshWidth
     });
 
+    // Restore reveal animation states
+    revealSnapshot.forEach(({ el, progress, visible }) => {
+      if (progress !== "") {
+        el.style.setProperty("--reveal-progress", progress);
+      } else {
+        el.style.removeProperty("--reveal-progress");
+      }
+      if (!visible) el.classList.remove("visible");
+    });
     window.scrollTo(savedScrollX, savedScrollY);
+
+    // Size output to fresh dimensions — html2canvas can return a shorter canvas
+    // if it clips at viewport height, so we size explicitly and draw html2canvas
+    // output into it rather than inheriting its (potentially clipped) dimensions.
     const outputCanvas = document.createElement("canvas");
-    outputCanvas.width = portfolioCanvas.width;
-    outputCanvas.height = portfolioCanvas.height;
+    outputCanvas.width = freshWidth * scale;
+    outputCanvas.height = freshHeight * scale;
 
     const outputContext = outputCanvas.getContext("2d");
     outputContext.drawImage(portfolioCanvas, 0, 0);
     outputContext.drawImage(
       canvas,
-      0,
-      0,
-      canvas.width,
-      canvas.height,
-      0,
-      0,
-      outputCanvas.width,
-      outputCanvas.height
+      0, 0, canvas.width, canvas.height,
+      0, 0, outputCanvas.width, outputCanvas.height
     );
 
     const link = document.createElement("a");

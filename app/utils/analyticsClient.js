@@ -60,15 +60,31 @@ export const identifyAnalyticsVisitor = async ({ email, name }) => {
 
   const response = await fetch("/api/analytics/identify", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      visitorId,
-      email,
-      name
-    })
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ visitorId, email, name })
   });
 
   return response.ok ? response.json() : null;
+};
+
+export const trackAnalyticsEvent = (eventType, eventValue) => {
+  if (analyticsTrackingDisabled()) return;
+
+  const visitorId = getOrCreateVisitorId();
+  if (!visitorId) return;
+
+  const payload = JSON.stringify({ visitorId, eventType, eventValue });
+
+  // Use sendBeacon when available (works on page unload), fall back to fetch
+  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+    const blob = new Blob([payload], { type: "application/json" });
+    navigator.sendBeacon("/api/analytics/event", blob);
+  } else {
+    fetch("/api/analytics/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      keepalive: true
+    }).catch(() => {});
+  }
 };

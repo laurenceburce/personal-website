@@ -4,6 +4,13 @@ import { forwardRef } from "react";
 import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
 import SidebarAnalytics from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
+import { analyticsTrackingDisabled, getOrCreateVisitorId, trackAnalyticsEvent } from "../../utils/analyticsClient";
+
+const trackDownload = (label) => {
+  if (analyticsTrackingDisabled()) return;
+  const visitorId = getOrCreateVisitorId();
+  if (visitorId) trackAnalyticsEvent("download", label);
+};
 
 const downloadLinks = [
   {
@@ -63,6 +70,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
               download
               className={`scroll-download-link scroll-download-${link.tone}`}
               aria-label={link.ariaLabel}
+              onClick={() => trackDownload(link.label)}
             >
               <IconDownload />
               <span>{link.label}</span>
