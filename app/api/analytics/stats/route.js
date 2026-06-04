@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    const stats = await getAnalyticsStats();
+    const { configured: _configured, ...stats } = await getAnalyticsStats();
 
     return NextResponse.json(stats);
   } catch {

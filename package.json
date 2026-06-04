@@ -11,10 +11,10 @@
   "dependencies": {
     "html2canvas": "^1.4.1",
     "mysql2": "^3.22.4",
-    "next": "latest",
+    "next": "16.2.7",
     "nodemailer": "^8.0.3",
-    "react": "latest",
-    "react-dom": "latest"
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
   },
   "overrides": {
     "postcss": "8.5.10"

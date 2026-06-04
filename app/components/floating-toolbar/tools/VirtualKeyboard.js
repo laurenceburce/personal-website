@@ -21,41 +21,35 @@ function insertChar(char) {
   const element = document.activeElement;
   const isInput = element && (element.tagName === "INPUT" || element.tagName === "TEXTAREA");
 
-  if (isInput) {
-    const start = element.selectionStart ?? element.value.length;
-    const end = element.selectionEnd ?? element.value.length;
-    const nextValue = element.value.slice(0, start) + char + element.value.slice(end);
-    const proto = element.tagName === "INPUT" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+  if (!isInput) return;
 
-    Object.getOwnPropertyDescriptor(proto, "value").set.call(element, nextValue);
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.selectionStart = element.selectionEnd = start + char.length;
-    return;
-  }
+  const start = element.selectionStart ?? element.value.length;
+  const end = element.selectionEnd ?? element.value.length;
+  const nextValue = element.value.slice(0, start) + char + element.value.slice(end);
+  const proto = element.tagName === "INPUT" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
 
-  document.execCommand("insertText", false, char);
+  Object.getOwnPropertyDescriptor(proto, "value").set.call(element, nextValue);
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.selectionStart = element.selectionEnd = start + char.length;
 }
 
 function deleteChar() {
   const element = document.activeElement;
   const isInput = element && (element.tagName === "INPUT" || element.tagName === "TEXTAREA");
 
-  if (isInput) {
-    const start = element.selectionStart ?? element.value.length;
-    const end = element.selectionEnd ?? element.value.length;
-    const nextValue = start === end
-      ? element.value.slice(0, Math.max(0, start - 1)) + element.value.slice(end)
-      : element.value.slice(0, start) + element.value.slice(end);
-    const nextStart = start === end ? Math.max(0, start - 1) : start;
-    const proto = element.tagName === "INPUT" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+  if (!isInput) return;
 
-    Object.getOwnPropertyDescriptor(proto, "value").set.call(element, nextValue);
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-    element.selectionStart = element.selectionEnd = nextStart;
-    return;
-  }
+  const start = element.selectionStart ?? element.value.length;
+  const end = element.selectionEnd ?? element.value.length;
+  const nextValue = start === end
+    ? element.value.slice(0, Math.max(0, start - 1)) + element.value.slice(end)
+    : element.value.slice(0, start) + element.value.slice(end);
+  const nextStart = start === end ? Math.max(0, start - 1) : start;
+  const proto = element.tagName === "INPUT" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
 
-  document.execCommand("delete");
+  Object.getOwnPropertyDescriptor(proto, "value").set.call(element, nextValue);
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.selectionStart = element.selectionEnd = nextStart;
 }
 
 export default function VirtualKeyboard({ mode = "abc" }) {

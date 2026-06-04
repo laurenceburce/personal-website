@@ -23,6 +23,8 @@ export default function usePortfolioAnalytics() {
     let cancelled = false;
 
     const run = async () => {
+      if (window.self !== window.top) return;
+
       if (analyticsTrackingDisabled()) {
         setStatus("disabled");
         return;
@@ -51,7 +53,7 @@ export default function usePortfolioAnalytics() {
 
         if (!cancelled) {
           setStats(payload);
-          setStatus(payload.configured ? "ready" : "unconfigured");
+          setStatus(payload.configured !== false ? "ready" : "unconfigured");
         }
 
         if (!sessionTracked && payload.configured) {

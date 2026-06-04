@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 
+const contactRateLimit = new Map();
+const CONTACT_LIMIT_MS = 60 * 60 * 1000;
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export const runtime = "nodejs";
 
 function validatePayload(body) {
@@ -43,6 +55,18 @@ function validatePayload(body) {
 
 export async function POST(request) {
   try {
+    const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || "";
+    const origin = request.headers.get("origin") || "";
+    if (allowedOrigin && origin && origin !== allowedOrigin) {
+      return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+    }
+
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
+    const lastSent = contactRateLimit.get(ip) ?? 0;
+    if (Date.now() - lastSent < CONTACT_LIMIT_MS) {
+      return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429 });
+    }
+
     const body = await request.json();
     const { errors, values } = validatePayload(body);
 
@@ -64,7 +88,7 @@ export async function POST(request) {
 
     if (!host || !user || !pass || !to || !from) {
       return NextResponse.json(
-        { error: "Email service is not configured yet. Please set SMTP environment variables." },
+        { error: "Contact form is currently unavailable." },
         { status: 500 }
       );
     }
@@ -83,19 +107,21 @@ export async function POST(request) {
       from,
       to,
       replyTo: values.email,
-      subject: `[Portfolio Contact] ${values.subject}`,
+      subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
       text: `Name: ${values.name}\nEmail: ${values.email}\nSubject: ${values.subject}\n\n${values.message}`,
       html: `
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0b1f45;">
           <h2 style="margin-bottom: 8px;">New Portfolio Contact Message</h2>
-          <p><strong>Name:</strong> ${values.name}</p>
-          <p><strong>Email:</strong> ${values.email}</p>
-          <p><strong>Subject:</strong> ${values.subject}</p>
+          <p><strong>Name:</strong> ${escapeHtml(values.name)}</p>
+          <p><strong>Email:</strong> ${escapeHtml(values.email)}</p>
+          <p><strong>Subject:</strong> ${escapeHtml(values.subject)}</p>
           <hr style="border:0;border-top:1px solid #d6e6ff;margin:16px 0;" />
-          <p style="white-space: pre-wrap;">${values.message}</p>
+          <p style="white-space: pre-wrap;">${escapeHtml(values.message)}</p>
         </div>
       `
     });
+
+    contactRateLimit.set(ip, Date.now());
 
     return NextResponse.json({ ok: true });
   } catch {
