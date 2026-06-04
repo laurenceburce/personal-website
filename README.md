@@ -73,10 +73,6 @@ npm start
    - `timeline`
 4. Adjust colors and spacing in `app/globals.css` under `:root`.
 
-- Add personal photo
-- make sections more interactive
-
-
 Welcome
 About
 Work
@@ -90,14 +86,12 @@ Playground
 - stats: total viewers, unique viewers ()
 - financial tracker app
 
-
-Question: 
-- what happens if you click send in Contact section?
+Sketch
+- stickers + text modifier (highlights, etc)
 
 Skills
 copilot studio
 azure deployment tools
-
 
 List all technologies used
 Programming Language

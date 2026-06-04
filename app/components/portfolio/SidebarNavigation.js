@@ -2,30 +2,9 @@
 
 import { forwardRef } from "react";
 import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
+import { downloadLinks, trackDownload } from "./navigationLinks";
 import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
-import { analyticsTrackingDisabled, getOrCreateVisitorId, trackAnalyticsEvent } from "../../utils/analyticsClient";
-
-const trackDownload = (label) => {
-  if (analyticsTrackingDisabled()) return;
-  const visitorId = getOrCreateVisitorId();
-  if (visitorId) trackAnalyticsEvent("download", label);
-};
-
-const downloadLinks = [
-  {
-    label: "Resume",
-    ariaLabel: "Download Resume",
-    href: "/Laurence-Alec-Burce-Software-Developer-Resume.pdf",
-    tone: "resume"
-  },
-  {
-    label: "Cover Letter",
-    ariaLabel: "Download Cover Letter",
-    href: "/Laurence-Alec-Burce-Cover-Letter.pdf",
-    tone: "letter"
-  }
-];
 
 const SidebarNavigation = forwardRef(function SidebarNavigation({
   navItems,

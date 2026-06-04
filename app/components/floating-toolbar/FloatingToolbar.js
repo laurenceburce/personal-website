@@ -21,9 +21,24 @@ const TOOLS = [
 const MENU_WIDTH_OFFSET = 172;
 const APPROX_MENU_WIDTH = 168;
 const TOOL_GAP = 16;
-const CLICK_BUBBLE_WIDTH = 116;
-const CLICK_BUBBLE_HEIGHT = 36;
-const CLICK_BUBBLE_GAP = 12;
+const VIEWPORT_MARGIN = 8;
+const CIRCLE_SIZE = 52;
+
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const clampCircleToViewport = (pos) => ({
+  x: clamp(pos.x, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, window.innerWidth - CIRCLE_SIZE - VIEWPORT_MARGIN)),
+  y: clamp(pos.y, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, window.innerHeight - CIRCLE_SIZE - VIEWPORT_MARGIN))
+});
+
+const getToolWidth = (id) => TOOLS.find((item) => item.id === id)?.width ?? 290;
+const clampToolToViewport = (id, pos) => {
+  const width = Math.min(getToolWidth(id), Math.max(220, window.innerWidth - VIEWPORT_MARGIN * 2));
+
+  return {
+    x: clamp(pos.x, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, window.innerWidth - width - VIEWPORT_MARGIN)),
+    y: clamp(pos.y, VIEWPORT_MARGIN, Math.max(VIEWPORT_MARGIN, window.innerHeight - 56 - VIEWPORT_MARGIN))
+  };
+};
 
 export default function FloatingToolbar() {
   const [mounted, setMounted] = useState(false);
@@ -43,10 +58,43 @@ export default function FloatingToolbar() {
     if (window.self !== window.top) return;
 
     const x = window.innerWidth - 76;
-    const y = Math.round(window.innerHeight * 0.62);
+    const y = window.innerWidth <= 740
+      ? window.innerHeight - 128
+      : Math.round(window.innerHeight * 0.62);
     setCirclePos({ x, y });
     setMounted(true);
   }, []);
+
+  useEffect(() => {
+    if (!mounted) return;
+
+    const fitToViewport = () => {
+      setCirclePos((pos) => {
+        const nextPos = clampCircleToViewport(pos);
+        circlePosRef.current = nextPos;
+        return nextPos;
+      });
+      setOpenTools((tools) => {
+        const nextTools = {};
+
+        Object.entries(tools).forEach(([id, pos]) => {
+          nextTools[id] = clampToolToViewport(id, pos);
+        });
+
+        openToolsRef.current = nextTools;
+        return nextTools;
+      });
+    };
+
+    window.addEventListener("resize", fitToViewport);
+    window.addEventListener("orientationchange", fitToViewport);
+    fitToViewport();
+
+    return () => {
+      window.removeEventListener("resize", fitToViewport);
+      window.removeEventListener("orientationchange", fitToViewport);
+    };
+  }, [mounted]);
 
   useEffect(() => {
     const rememberPointer = (event) => {
@@ -159,27 +207,11 @@ export default function FloatingToolbar() {
     ? circlePos.x - MENU_WIDTH_OFFSET
     : circlePos.x + 64;
   const menuTop = Math.max(8, Math.min(window.innerHeight - 240, circlePos.y - 8));
-  const bubbleOnLeft = circlePos.x > window.innerWidth / 2;
-  const bubbleLeft = bubbleOnLeft
-    ? Math.max(8, circlePos.x - CLICK_BUBBLE_WIDTH - CLICK_BUBBLE_GAP)
-    : Math.min(window.innerWidth - CLICK_BUBBLE_WIDTH - 8, circlePos.x + 52 + CLICK_BUBBLE_GAP);
-  const bubbleTop = Math.max(8, Math.min(window.innerHeight - CLICK_BUBBLE_HEIGHT - 8, circlePos.y + 8));
 
   return (
     <>
       {menuOpen ? (
         <div className="ft-backdrop" onClick={() => setMenuOpen(false)} />
-      ) : null}
-
-      {!menuOpen ? (
-        <div
-          className={`ft-click-bubble ${bubbleOnLeft ? "ft-click-bubble-left" : "ft-click-bubble-right"}`}
-          style={{ left: bubbleLeft, top: bubbleTop }}
-          aria-hidden="true"
-        >
-          <span className="ft-click-bubble-pulse" />
-          <span className="ft-click-bubble-text">Click Me!</span>
-        </div>
       ) : null}
 
       <div

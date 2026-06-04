@@ -1,13 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import FloatingToolbar from "./components/FloatingToolbar";
 import AboutSection from "./components/portfolio/AboutSection";
 import BackgroundEffects from "./components/portfolio/BackgroundEffects";
 import EducationSection from "./components/portfolio/EducationSection";
 import HeroSection from "./components/portfolio/HeroSection";
 import ProjectsSection from "./components/portfolio/ProjectsSection";
-import { SidebarAnalyticsPanel } from "./components/portfolio/SidebarAnalytics";
 import SidebarNavigation from "./components/portfolio/SidebarNavigation";
 import SiteHeader from "./components/portfolio/SiteHeader";
 import SkillsSection from "./components/portfolio/SkillsSection";
@@ -32,6 +31,18 @@ export default function Home() {
 
   useRevealAnimations();
 
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const closeOnScroll = () => setMenuOpen(false);
+
+    window.addEventListener("scroll", closeOnScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("scroll", closeOnScroll);
+    };
+  }, [menuOpen]);
+
   const handleThemeSwitchChange = (event) => {
     setTheme(event.target.checked ? "dark" : "light");
   };
@@ -46,11 +57,11 @@ export default function Home() {
         menuOpen={menuOpen}
         theme={theme}
         activeSectionId={activeSectionId}
+        analytics={analytics}
         onThemeChange={handleThemeSwitchChange}
         onMenuToggle={() => setMenuOpen((open) => !open)}
         onMenuClose={() => setMenuOpen(false)}
       />
-      <SidebarAnalyticsPanel analytics={analytics} className="mobile-analytics" />
 
       <main id="home" className="main-shell">
         <div className="content-layout" ref={contentLayoutRef}>

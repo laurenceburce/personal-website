@@ -10,7 +10,6 @@ const FLOATING_UI_SELECTOR = [
   ".ft-circle",
   ".ft-menu",
   ".ft-backdrop",
-  ".ft-click-bubble",
   ".ft-page-sketch-layer",
   ".ft-mag-lens"
 ].join(",");

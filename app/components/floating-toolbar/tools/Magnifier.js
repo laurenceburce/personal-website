@@ -9,7 +9,7 @@ const TOUCH_FINGER_GAP = 34;
 const MAX_OUTPUT_DPR = 1.5;
 const ZOOM_PRESETS = [0.25, 0.5, 1.5, 2, 3];
 const SKETCH_CHANGED_EVENT = "floating-toolbar:sketch-changed";
-const FLOATING_UI_SELECTOR = ".ft-window,.ft-menu,.ft-circle,.ft-click-bubble";
+const FLOATING_UI_SELECTOR = ".ft-window,.ft-menu,.ft-circle";
 const UI_SYNC_INTERVAL_MS = 100;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
