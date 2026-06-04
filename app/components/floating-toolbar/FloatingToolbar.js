@@ -52,7 +52,8 @@ export default function FloatingToolbar() {
     const rememberPointer = (event) => {
       lastPointerRef.current = {
         clientX: event.clientX,
-        clientY: event.clientY
+        clientY: event.clientY,
+        pointerType: event.pointerType || "mouse"
       };
     };
 

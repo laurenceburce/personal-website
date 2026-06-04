@@ -7,6 +7,7 @@ import BackgroundEffects from "./components/portfolio/BackgroundEffects";
 import EducationSection from "./components/portfolio/EducationSection";
 import HeroSection from "./components/portfolio/HeroSection";
 import ProjectsSection from "./components/portfolio/ProjectsSection";
+import { SidebarAnalyticsPanel } from "./components/portfolio/SidebarAnalytics";
 import SidebarNavigation from "./components/portfolio/SidebarNavigation";
 import SiteHeader from "./components/portfolio/SiteHeader";
 import SkillsSection from "./components/portfolio/SkillsSection";
@@ -14,6 +15,7 @@ import WorkSection from "./components/portfolio/WorkSection";
 import { navItems, projects, skillGroups, timeline } from "./data/portfolio";
 import useActiveSection from "./hooks/useActiveSection";
 import useBoundedSidebarOffset from "./hooks/useBoundedSidebarOffset";
+import usePortfolioAnalytics from "./hooks/usePortfolioAnalytics";
 import useRevealAnimations from "./hooks/useRevealAnimations";
 import useScrollProgress from "./hooks/useScrollProgress";
 import useThemePreference from "./hooks/useThemePreference";
@@ -26,6 +28,7 @@ export default function Home() {
   const activeSectionId = useActiveSection(navItems);
   const scrollProgress = useScrollProgress();
   const sidebarOffset = useBoundedSidebarOffset(contentLayoutRef, sidebarRef);
+  const analytics = usePortfolioAnalytics();
 
   useRevealAnimations();
 
@@ -47,6 +50,7 @@ export default function Home() {
         onMenuToggle={() => setMenuOpen((open) => !open)}
         onMenuClose={() => setMenuOpen(false)}
       />
+      <SidebarAnalyticsPanel analytics={analytics} className="mobile-analytics" />
 
       <main id="home" className="main-shell">
         <div className="content-layout" ref={contentLayoutRef}>
@@ -58,6 +62,7 @@ export default function Home() {
             sidebarOffset={sidebarOffset}
             theme={theme}
             onThemeChange={handleThemeSwitchChange}
+            analytics={analytics}
           />
 
           <div className="main-sections">

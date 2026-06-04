@@ -13,13 +13,14 @@ const formatCount = (value) => {
   }).format(numberValue);
 };
 
-export default function SidebarAnalytics() {
-  const { stats, status } = usePortfolioAnalytics();
+export function SidebarAnalyticsPanel({ analytics, className = "" }) {
+  const { stats, status } = analytics;
   const unavailable = status === "unconfigured" || status === "error";
   const disabled = status === "disabled";
+  const sectionClassName = ["sidebar-analytics", className].filter(Boolean).join(" ");
 
   return (
-    <section className="sidebar-analytics" aria-label="Visitor analytics">
+    <section className={sectionClassName} aria-label="Visitor analytics">
       <div className="sidebar-analytics-head">
         <span className="sidebar-analytics-dot" aria-hidden="true" />
         <span>Site Traffic</span>
@@ -43,4 +44,10 @@ export default function SidebarAnalytics() {
       )}
     </section>
   );
+}
+
+export default function SidebarAnalytics({ className = "" }) {
+  const analytics = usePortfolioAnalytics();
+
+  return <SidebarAnalyticsPanel analytics={analytics} className={className} />;
 }

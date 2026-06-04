@@ -673,6 +673,10 @@ body {
   margin: 0.42rem 0 0;
 }
 
+.mobile-analytics {
+  display: none;
+}
+
 .contact-honeypot {
   position: absolute;
   left: -9999px;
@@ -1593,6 +1597,21 @@ p {
 
 @media (max-width: 1024px) {
   .global-scroll-indicator { display: none; }
+
+  .mobile-analytics {
+    display: block;
+    width: min(var(--max-width), 94vw);
+    margin: 0.7rem auto 0;
+    padding: 0.62rem 0.76rem;
+    border-radius: 14px;
+    position: relative;
+    z-index: 2;
+  }
+
+  .mobile-analytics .sidebar-analytics-grid {
+    max-width: 22rem;
+    margin-inline: auto;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2771,6 +2790,21 @@ html[data-theme="light"] .site-nav {
   cursor: crosshair;
   touch-action: none;
   background: transparent !important;
+}
+
+.ft-mag-touch-surface {
+  position: fixed;
+  inset: 0;
+  z-index: 9989;
+  pointer-events: none;
+  touch-action: none;
+  background: transparent;
+}
+
+@media (pointer: coarse) {
+  .ft-mag-touch-surface {
+    pointer-events: auto;
+  }
 }
 
 .ft-mag-lens {

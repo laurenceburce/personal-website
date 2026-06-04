@@ -2,7 +2,7 @@
 
 import { forwardRef } from "react";
 import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
-import SidebarAnalytics from "./SidebarAnalytics";
+import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
 import { analyticsTrackingDisabled, getOrCreateVisitorId, trackAnalyticsEvent } from "../../utils/analyticsClient";
 
@@ -33,7 +33,8 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
   scrollProgress,
   sidebarOffset,
   theme,
-  onThemeChange
+  onThemeChange,
+  analytics
 }, ref) {
   return (
     <aside
@@ -96,7 +97,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
           </a>
         ))}
       </nav>
-      <SidebarAnalytics />
+      <SidebarAnalyticsPanel analytics={analytics} />
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="indicator-rail" aria-hidden="true">
         <div className="indicator-node">

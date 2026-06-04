@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const LENS_SIZE = 192;
+const LENS_MARGIN = 8;
+const TOUCH_FINGER_GAP = 34;
 const MAX_OUTPUT_DPR = 1.5;
 const ZOOM_PRESETS = [0.25, 0.5, 1.5, 2, 3];
 const SKETCH_CHANGED_EVENT = "floating-toolbar:sketch-changed";
@@ -12,6 +14,32 @@ const UI_SYNC_INTERVAL_MS = 100;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const formatZoom = (value) => Number.isInteger(value) ? value : value.toFixed(2).replace(/0$/, "");
+const isFloatingUiTarget = (target) => Boolean(target?.closest?.(FLOATING_UI_SELECTOR));
+
+const clampLensCoordinate = (value, viewportSize) => {
+  const max = Math.max(LENS_MARGIN, viewportSize - LENS_SIZE - LENS_MARGIN);
+
+  return clamp(value, LENS_MARGIN, max);
+};
+
+const getLensPosition = (pointer) => {
+  const centeredX = pointer.clientX - LENS_SIZE / 2;
+  const centeredY = pointer.clientY - LENS_SIZE / 2;
+
+  if (pointer.pointerType !== "touch") {
+    return { x: centeredX, y: centeredY };
+  }
+
+  const roomAbove = pointer.clientY >= LENS_SIZE + TOUCH_FINGER_GAP + LENS_MARGIN;
+  const touchY = roomAbove
+    ? pointer.clientY - LENS_SIZE - TOUCH_FINGER_GAP
+    : pointer.clientY + TOUCH_FINGER_GAP;
+
+  return {
+    x: clampLensCoordinate(centeredX, window.innerWidth),
+    y: clampLensCoordinate(touchY, window.innerHeight)
+  };
+};
 
 export default function Magnifier({ initialPointer = null }) {
   const [zoom, setZoom] = useState(2);
@@ -24,7 +52,9 @@ export default function Magnifier({ initialPointer = null }) {
   const renderFrameRef = useRef(null);
   const initialPointerAppliedRef = useRef(false);
   const lastUiSyncRef = useRef(0);
-  const pointerRef = useRef({ clientX: 0, clientY: 0, visible: false });
+  const activeTouchIdRef = useRef(null);
+  const ignoredTouchIdRef = useRef(null);
+  const pointerRef = useRef({ clientX: 0, clientY: 0, pointerType: "mouse", visible: false });
   const zoomRef = useRef(zoom);
 
   const syncIframeScroll = useCallback(() => {
@@ -143,21 +173,22 @@ export default function Magnifier({ initialPointer = null }) {
 
     if (!lens || !frame || !uiLayer || !pointer.visible) return;
 
-    const lensX = pointer.clientX - LENS_SIZE / 2;
-    const lensY = pointer.clientY - LENS_SIZE / 2;
+    const { x: lensX, y: lensY } = getLensPosition(pointer);
     const zoomValue = zoomRef.current;
+    const frameLeft = LENS_SIZE / 2 - pointer.clientX;
+    const frameTop = LENS_SIZE / 2 - pointer.clientY;
 
     lens.style.transform = `translate3d(${lensX}px, ${lensY}px, 0)`;
     lens.style.opacity = "1";
 
-    frame.style.left = `${-lensX}px`;
-    frame.style.top = `${-lensY}px`;
+    frame.style.left = `${frameLeft}px`;
+    frame.style.top = `${frameTop}px`;
     frame.style.transformOrigin = `${pointer.clientX}px ${pointer.clientY}px`;
     frame.style.transform = `scale(${zoomValue})`;
 
     syncFloatingUiLayer();
-    uiLayer.style.left = `${-lensX}px`;
-    uiLayer.style.top = `${-lensY}px`;
+    uiLayer.style.left = `${frameLeft}px`;
+    uiLayer.style.top = `${frameTop}px`;
     uiLayer.style.transformOrigin = `${pointer.clientX}px ${pointer.clientY}px`;
     uiLayer.style.transform = `scale(${zoomValue})`;
 
@@ -173,8 +204,8 @@ export default function Magnifier({ initialPointer = null }) {
     });
   }, [renderLens]);
 
-  const showLensAt = useCallback((clientX, clientY) => {
-    pointerRef.current = { clientX, clientY, visible: true };
+  const showLensAt = useCallback((clientX, clientY, pointerType = "mouse") => {
+    pointerRef.current = { clientX, clientY, pointerType, visible: true };
     requestRender();
   }, [requestRender]);
 
@@ -204,24 +235,55 @@ export default function Magnifier({ initialPointer = null }) {
     if (!portalReady || initialPointerAppliedRef.current) return;
 
     initialPointerAppliedRef.current = true;
-    const clientX = Number.isFinite(initialPointer?.clientX)
+    const initialPointerType = initialPointer?.pointerType || "mouse";
+    const useInitialPoint = initialPointerType !== "touch";
+    const clientX = useInitialPoint && Number.isFinite(initialPointer?.clientX)
       ? initialPointer.clientX
       : window.innerWidth / 2;
-    const clientY = Number.isFinite(initialPointer?.clientY)
+    const clientY = useInitialPoint && Number.isFinite(initialPointer?.clientY)
       ? initialPointer.clientY
       : window.innerHeight / 2;
 
     syncIframeScroll();
     showLensAt(
       clamp(clientX, 0, window.innerWidth),
-      clamp(clientY, 0, window.innerHeight)
+      clamp(clientY, 0, window.innerHeight),
+      initialPointerType
     );
   }, [initialPointer, portalReady, showLensAt, syncIframeScroll]);
 
   useEffect(() => {
     if (!portalReady) return;
 
-    const onPointerMove = (event) => showLensAt(event.clientX, event.clientY);
+    const onPointerMove = (event) => {
+      const pointerType = event.pointerType || "mouse";
+
+      if (pointerType === "touch") {
+        const fromFloatingUi = isFloatingUiTarget(event.target);
+
+        if (event.type === "pointerdown") {
+          if (fromFloatingUi) {
+            ignoredTouchIdRef.current = event.pointerId;
+            return;
+          }
+
+          activeTouchIdRef.current = event.pointerId;
+        } else if (ignoredTouchIdRef.current === event.pointerId) {
+          return;
+        } else if (
+          activeTouchIdRef.current !== event.pointerId &&
+          (activeTouchIdRef.current !== null || fromFloatingUi)
+        ) {
+          return;
+        }
+
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+      }
+
+      showLensAt(event.clientX, event.clientY, pointerType);
+    };
     const hideLens = () => {
       pointerRef.current.visible = false;
 
@@ -229,8 +291,18 @@ export default function Magnifier({ initialPointer = null }) {
         lensRef.current.style.opacity = "0";
       }
     };
-    const onTouchEnd = (event) => {
-      if (event.pointerType === "touch") hideLens();
+    const onPointerEnd = (event) => {
+      if (event.pointerType === "touch" && ignoredTouchIdRef.current === event.pointerId) {
+        ignoredTouchIdRef.current = null;
+        onUiChange();
+        return;
+      }
+
+      if (event.pointerType === "touch" && activeTouchIdRef.current === event.pointerId) {
+        activeTouchIdRef.current = null;
+      }
+
+      onUiChange();
     };
     const onViewportChange = () => {
       syncIframeScroll();
@@ -244,9 +316,8 @@ export default function Magnifier({ initialPointer = null }) {
 
     window.addEventListener("pointerdown", onPointerMove, true);
     window.addEventListener("pointermove", onPointerMove, true);
-    window.addEventListener("pointerup", onUiChange, true);
-    window.addEventListener("pointerup", onTouchEnd, true);
-    window.addEventListener("pointercancel", onTouchEnd, true);
+    window.addEventListener("pointerup", onPointerEnd, true);
+    window.addEventListener("pointercancel", onPointerEnd, true);
     window.addEventListener("click", onUiChange, true);
     window.addEventListener("keyup", onUiChange);
     window.addEventListener("pointerleave", hideLens);
@@ -287,9 +358,8 @@ export default function Magnifier({ initialPointer = null }) {
     return () => {
       window.removeEventListener("pointerdown", onPointerMove, true);
       window.removeEventListener("pointermove", onPointerMove, true);
-      window.removeEventListener("pointerup", onUiChange, true);
-      window.removeEventListener("pointerup", onTouchEnd, true);
-      window.removeEventListener("pointercancel", onTouchEnd, true);
+      window.removeEventListener("pointerup", onPointerEnd, true);
+      window.removeEventListener("pointercancel", onPointerEnd, true);
       window.removeEventListener("click", onUiChange, true);
       window.removeEventListener("keyup", onUiChange);
       window.removeEventListener("pointerleave", hideLens);
@@ -311,23 +381,26 @@ export default function Magnifier({ initialPointer = null }) {
 
   const lens = portalReady
     ? createPortal(
-      <div ref={lensRef} className="ft-mag-lens" aria-hidden="true">
-        <div ref={frameRef} className="ft-mag-frame">
-          <iframe
-            ref={iframeRef}
-            src="/"
-            className="ft-mag-iframe"
-            onLoad={() => {
-              syncIframeScroll();
-              requestRender();
-            }}
-            tabIndex={-1}
-            title="Magnifier view"
-          />
+      <>
+        <div className="ft-mag-touch-surface" aria-hidden="true" />
+        <div ref={lensRef} className="ft-mag-lens" aria-hidden="true">
+          <div ref={frameRef} className="ft-mag-frame">
+            <iframe
+              ref={iframeRef}
+              src="/"
+              className="ft-mag-iframe"
+              onLoad={() => {
+                syncIframeScroll();
+                requestRender();
+              }}
+              tabIndex={-1}
+              title="Magnifier view"
+            />
+          </div>
+          <canvas ref={sketchCanvasRef} className="ft-mag-canvas" />
+          <div ref={uiLayerRef} className="ft-mag-ui-layer" />
         </div>
-        <canvas ref={sketchCanvasRef} className="ft-mag-canvas" />
-        <div ref={uiLayerRef} className="ft-mag-ui-layer" />
-      </div>,
+      </>,
       document.body
     )
     : null;
@@ -370,7 +443,7 @@ export default function Magnifier({ initialPointer = null }) {
             </button>
           ))}
         </div>
-        <p className="ft-mag-hint">Move cursor or tap the page to magnify</p>
+        <p className="ft-mag-hint">Move cursor or drag/tap the page to magnify</p>
       </div>
     </>
   );
