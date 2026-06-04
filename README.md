@@ -37,6 +37,19 @@ CONTACT_TO=your_destination_email@example.com
 CONTACT_FROM=your_sender_email@example.com
 ```
 
+For production visitor analytics, connect an Upstash Redis database and add:
+
+```env
+UPSTASH_REDIS_REST_URL=https://your-database.upstash.io
+UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
+ANALYTICS_ADMIN_TOKEN=choose_a_private_admin_token
+```
+
+The sidebar displays total and unique visit counts. Visitor emails are stored
+only after a successful contact form submission and can be read from the
+protected `/api/analytics/identified` endpoint using `Authorization: Bearer
+ANALYTICS_ADMIN_TOKEN`.
+
 3. Start dev server:
 
 ```powershell

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { identifyAnalyticsVisitor } from "../utils/analyticsClient";
 import { sidebarContactInitial, validateSidebarContact } from "../utils/sidebarContact";
 
 export default function useSidebarContactForm() {
@@ -60,6 +61,11 @@ export default function useSidebarContactForm() {
       if (!response.ok) {
         throw new Error(payload.error || "Unable to send message right now.");
       }
+
+      identifyAnalyticsVisitor({
+        email: form.email,
+        name: form.name
+      }).catch(() => {});
 
       setStatus({ type: "success", message: "Message sent." });
       setForm(sidebarContactInitial);

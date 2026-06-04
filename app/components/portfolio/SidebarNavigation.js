@@ -2,6 +2,7 @@
 
 import { forwardRef } from "react";
 import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
+import SidebarAnalytics from "./SidebarAnalytics";
 import SidebarContactForm from "./SidebarContactForm";
 import ThemeSwitch from "./ThemeSwitch";
 
@@ -97,6 +98,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
         onChange={contact.handleChange}
         onSubmit={contact.handleSubmit}
       />
+      <SidebarAnalytics />
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="indicator-rail" aria-hidden="true">
         <div className="indicator-node">

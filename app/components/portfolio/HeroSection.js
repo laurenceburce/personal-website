@@ -7,9 +7,10 @@ export default function HeroSection() {
       </div>
       <p className="welcome-line">Hello, I'm Laurence.</p>
       <p className="eyebrow">Software Engineer · AI & Automation Engineer</p>
-      <h1>
-        I'm a software engineer building automation-first systems for modern
-        operations teams.
+      <h1 className="hero-title">
+        <span>Software engineer bridging</span>
+        <span>enterprise systems,</span>
+        <span>automation, and AI-powered tools.</span>
       </h1>
       <p className="lead">
         3 years of experience across Oracle SaaS ERP platform systems,
