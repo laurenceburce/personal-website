@@ -1,5 +1,3 @@
-import { IconArrowRight, IconDownload } from "./icons";
-
 export default function HeroSection() {
   return (
     <section className="hero section reveal">
@@ -18,28 +16,6 @@ export default function HeroSection() {
         AI automation delivery for large-scale real estate and property
         management organizations.
       </p>
-      <div className="hero-actions">
-        <a className="btn btn-primary" href="#projects">
-          <IconArrowRight />
-          View Projects
-        </a>
-        <a
-          className="btn btn-secondary"
-          href="/Laurence-Alec-Burce-Software-Developer-Resume.pdf"
-          download
-        >
-          <IconDownload />
-          Download Resume
-        </a>
-        <a
-          className="btn btn-secondary"
-          href="/Laurence-Alec-Burce-Cover-Letter.pdf"
-          download
-        >
-          <IconDownload />
-          Download Cover Letter
-        </a>
-      </div>
     </section>
   );
 }

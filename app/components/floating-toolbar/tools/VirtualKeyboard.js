@@ -14,7 +14,7 @@ const KB_SYM = [
   ["!", "@", "#", "$", "%", "^", "&", "*", "(", ")"],
   ["-", "+", "=", "_", "/", "\\", "[", "]", "{", "}"],
   [";", ":", "'", "\"", ",", ".", "<", ">", "|", "~"],
-  ["⌫", "Space", "ABC", "↵"]
+  ["⌫", "Space", "↵"]
 ];
 
 function insertChar(char) {
@@ -58,22 +58,11 @@ function deleteChar() {
   document.execCommand("delete");
 }
 
-export default function VirtualKeyboard() {
-  const [mode, setMode] = useState("abc");
+export default function VirtualKeyboard({ mode = "abc" }) {
   const [shift, setShift] = useState(false);
   const [caps, setCaps] = useState(false);
 
   const pressKey = useCallback((key) => {
-    if (key === "ABC") {
-      setMode("abc");
-      return;
-    }
-
-    if (key === "!@#") {
-      setMode("sym");
-      return;
-    }
-
     if (key === "⇧") {
       if (shift) {
         setShift(false);
@@ -105,28 +94,6 @@ export default function VirtualKeyboard() {
 
   return (
     <div className="ft-keyboard">
-      <div className="ft-kb-tabs">
-        <button
-          className={`ft-kb-tab${mode === "abc" ? " active" : ""}`}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            setMode("abc");
-          }}
-          type="button"
-        >
-          ABC
-        </button>
-        <button
-          className={`ft-kb-tab${mode === "sym" ? " active" : ""}`}
-          onPointerDown={(event) => {
-            event.preventDefault();
-            setMode("sym");
-          }}
-          type="button"
-        >
-          !@#
-        </button>
-      </div>
       {rows.map((row, rowIndex) => (
         <div key={`${mode}-${rowIndex}`} className="ft-kb-row">
           {row.map((key) => {
@@ -137,8 +104,7 @@ export default function VirtualKeyboard() {
               key === "↵" ? "ft-kb-enter" : "",
               key === "⌫" ? "ft-kb-back" : "",
               key === "⇧" ? "ft-kb-shift" : "",
-              key === "⇧" && (shift || caps) ? "ft-kb-active" : "",
-              key === "ABC" ? "ft-kb-mode" : ""
+              key === "⇧" && (shift || caps) ? "ft-kb-active" : ""
             ].filter(Boolean).join(" ");
 
             return (

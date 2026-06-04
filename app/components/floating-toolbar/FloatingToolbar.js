@@ -11,13 +11,16 @@ import VirtualKeyboard from "./tools/VirtualKeyboard";
 const TOOLS = [
   { id: "calculator", label: "Calculator", Icon: IcoCalc, winIcon: <IcoCalc />, width: 272 },
   { id: "sketch", label: "Sketch", Icon: IcoPen, winIcon: <IcoPen />, width: 298 },
-  { id: "keyboard", label: "Keyboard", Icon: IcoKeyboard, winIcon: <IcoKeyboard />, width: 356 },
+  { id: "keyboard", label: "Keyboard", Icon: IcoKeyboard, winIcon: <IcoKeyboard />, width: 432 },
   { id: "magnifier", label: "Magnifier", Icon: IcoMag, winIcon: <IcoMag />, width: 256 }
 ];
 
 const MENU_WIDTH_OFFSET = 172;
 const APPROX_MENU_WIDTH = 168;
 const TOOL_GAP = 16;
+const CLICK_BUBBLE_WIDTH = 116;
+const CLICK_BUBBLE_HEIGHT = 36;
+const CLICK_BUBBLE_GAP = 12;
 
 export default function FloatingToolbar() {
   const [mounted, setMounted] = useState(false);
@@ -25,8 +28,10 @@ export default function FloatingToolbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [openTools, setOpenTools] = useState({});
   const [calculatorHistoryOpen, setCalculatorHistoryOpen] = useState(false);
+  const [keyboardMode, setKeyboardMode] = useState("abc");
   const circlePosRef = useRef({ x: 0, y: 0 });
   const openToolsRef = useRef({});
+  const lastPointerRef = useRef(null);
   circlePosRef.current = circlePos;
   openToolsRef.current = openTools;
 
@@ -37,6 +42,25 @@ export default function FloatingToolbar() {
     const y = Math.round(window.innerHeight * 0.62);
     setCirclePos({ x, y });
     setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const rememberPointer = (event) => {
+      lastPointerRef.current = {
+        clientX: event.clientX,
+        clientY: event.clientY
+      };
+    };
+
+    window.addEventListener("pointerdown", rememberPointer, true);
+    window.addEventListener("pointermove", rememberPointer, true);
+    window.addEventListener("mousemove", rememberPointer, true);
+
+    return () => {
+      window.removeEventListener("pointerdown", rememberPointer, true);
+      window.removeEventListener("pointermove", rememberPointer, true);
+      window.removeEventListener("mousemove", rememberPointer, true);
+    };
   }, []);
 
   const startCircleDrag = useCallback((event) => {
@@ -82,7 +106,15 @@ export default function FloatingToolbar() {
 
   const openTool = useCallback((id) => {
     if (openToolsRef.current[id]) {
-      setMenuOpen(false);
+      if (id === "calculator") {
+        setCalculatorHistoryOpen(false);
+      }
+
+      setOpenTools((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       return;
     }
 
@@ -102,7 +134,6 @@ export default function FloatingToolbar() {
         y: Math.max(8, Math.min(window.innerHeight - 420, y - 60 + offset * 24))
       }
     }));
-    setMenuOpen(false);
   }, []);
 
   const closeTool = useCallback((id) => {
@@ -123,11 +154,27 @@ export default function FloatingToolbar() {
     ? circlePos.x - MENU_WIDTH_OFFSET
     : circlePos.x + 64;
   const menuTop = Math.max(8, Math.min(window.innerHeight - 240, circlePos.y - 8));
+  const bubbleOnLeft = circlePos.x > window.innerWidth / 2;
+  const bubbleLeft = bubbleOnLeft
+    ? Math.max(8, circlePos.x - CLICK_BUBBLE_WIDTH - CLICK_BUBBLE_GAP)
+    : Math.min(window.innerWidth - CLICK_BUBBLE_WIDTH - 8, circlePos.x + 52 + CLICK_BUBBLE_GAP);
+  const bubbleTop = Math.max(8, Math.min(window.innerHeight - CLICK_BUBBLE_HEIGHT - 8, circlePos.y + 8));
 
   return (
     <>
       {menuOpen ? (
         <div className="ft-backdrop" onClick={() => setMenuOpen(false)} />
+      ) : null}
+
+      {!menuOpen ? (
+        <div
+          className={`ft-click-bubble ${bubbleOnLeft ? "ft-click-bubble-left" : "ft-click-bubble-right"}`}
+          style={{ left: bubbleLeft, top: bubbleTop }}
+          aria-hidden="true"
+        >
+          <span className="ft-click-bubble-pulse" />
+          <span className="ft-click-bubble-text">Click Me!</span>
+        </div>
       ) : null}
 
       <div
@@ -168,6 +215,7 @@ export default function FloatingToolbar() {
         if (!meta) return null;
 
         const isCalculator = id === "calculator";
+        const isKeyboard = id === "keyboard";
 
         return (
           <ToolWindow
@@ -190,6 +238,25 @@ export default function FloatingToolbar() {
                 >
                   <IcoHistory />
                 </button>
+              ) : isKeyboard ? (
+                <span className="ft-kb-header-mode" role="group" aria-label="Keyboard layout">
+                  <button
+                    className={keyboardMode === "abc" ? "active" : ""}
+                    onClick={() => setKeyboardMode("abc")}
+                    type="button"
+                    aria-pressed={keyboardMode === "abc"}
+                  >
+                    ABC
+                  </button>
+                  <button
+                    className={keyboardMode === "sym" ? "active" : ""}
+                    onClick={() => setKeyboardMode("sym")}
+                    type="button"
+                    aria-pressed={keyboardMode === "sym"}
+                  >
+                    #+=
+                  </button>
+                </span>
               ) : null
             }
           >
@@ -204,8 +271,8 @@ export default function FloatingToolbar() {
                   />
                 ) : null}
                 {id === "sketch" ? <SketchPad /> : null}
-                {id === "keyboard" ? <VirtualKeyboard /> : null}
-                {id === "magnifier" ? <Magnifier /> : null}
+                {id === "keyboard" ? <VirtualKeyboard mode={keyboardMode} /> : null}
+                {id === "magnifier" ? <Magnifier initialPointer={lastPointerRef.current} /> : null}
               </>
             )}
           </ToolWindow>

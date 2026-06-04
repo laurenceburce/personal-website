@@ -1,9 +1,24 @@
 "use client";
 
 import { forwardRef } from "react";
-import { IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
+import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
 import SidebarContactForm from "./SidebarContactForm";
 import ThemeSwitch from "./ThemeSwitch";
+
+const downloadLinks = [
+  {
+    label: "Resume",
+    ariaLabel: "Download Resume",
+    href: "/Laurence-Alec-Burce-Software-Developer-Resume.pdf",
+    tone: "resume"
+  },
+  {
+    label: "Cover Letter",
+    ariaLabel: "Download Cover Letter",
+    href: "/Laurence-Alec-Burce-Cover-Letter.pdf",
+    tone: "letter"
+  }
+];
 
 const SidebarNavigation = forwardRef(function SidebarNavigation({
   navItems,
@@ -40,6 +55,20 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
             <IconLinkedIn />
             LinkedIn
           </a>
+        </div>
+        <div className="scroll-downloads" aria-label="Downloads">
+          {downloadLinks.map((link) => (
+            <a
+              key={link.href}
+              href={link.href}
+              download
+              className={`scroll-download-link scroll-download-${link.tone}`}
+              aria-label={link.ariaLabel}
+            >
+              <IconDownload />
+              <span>{link.label}</span>
+            </a>
+          ))}
         </div>
       </div>
       <nav className="scroll-nav" aria-label="Section navigation">
