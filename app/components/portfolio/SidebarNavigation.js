@@ -3,7 +3,6 @@
 import { forwardRef } from "react";
 import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
 import SidebarAnalytics from "./SidebarAnalytics";
-import SidebarContactForm from "./SidebarContactForm";
 import ThemeSwitch from "./ThemeSwitch";
 
 const downloadLinks = [
@@ -27,8 +26,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
   scrollProgress,
   sidebarOffset,
   theme,
-  onThemeChange,
-  contact
+  onThemeChange
 }, ref) {
   return (
     <aside
@@ -90,14 +88,6 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
           </a>
         ))}
       </nav>
-      <SidebarContactForm
-        form={contact.form}
-        errors={contact.errors}
-        status={contact.status}
-        isSubmitting={contact.isSubmitting}
-        onChange={contact.handleChange}
-        onSubmit={contact.handleSubmit}
-      />
       <SidebarAnalytics />
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="indicator-rail" aria-hidden="true">

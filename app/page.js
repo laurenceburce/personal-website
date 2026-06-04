@@ -16,7 +16,6 @@ import useActiveSection from "./hooks/useActiveSection";
 import useBoundedSidebarOffset from "./hooks/useBoundedSidebarOffset";
 import useRevealAnimations from "./hooks/useRevealAnimations";
 import useScrollProgress from "./hooks/useScrollProgress";
-import useSidebarContactForm from "./hooks/useSidebarContactForm";
 import useThemePreference from "./hooks/useThemePreference";
 
 export default function Home() {
@@ -27,7 +26,6 @@ export default function Home() {
   const activeSectionId = useActiveSection(navItems);
   const scrollProgress = useScrollProgress();
   const sidebarOffset = useBoundedSidebarOffset(contentLayoutRef, sidebarRef);
-  const contact = useSidebarContactForm();
 
   useRevealAnimations();
 
@@ -60,7 +58,6 @@ export default function Home() {
             sidebarOffset={sidebarOffset}
             theme={theme}
             onThemeChange={handleThemeSwitchChange}
-            contact={contact}
           />
 
           <div className="main-sections">

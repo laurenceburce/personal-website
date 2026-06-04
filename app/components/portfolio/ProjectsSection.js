@@ -12,6 +12,13 @@ export default function ProjectsSection({ projects }) {
         {projects.map((project) => (
           <article className="project-card" key={project.title}>
             <h3>{project.title}</h3>
+            {(project.period || project.association) && (
+              <p className="project-meta-info">
+                {project.period && <span>{project.period}</span>}
+                {project.period && project.association && <span> · </span>}
+                {project.association && <span>{project.association}</span>}
+              </p>
+            )}
             <p>{project.description}</p>
             {project.link ? (
               <p>

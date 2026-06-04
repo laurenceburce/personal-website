@@ -2763,6 +2763,7 @@ html[data-theme="light"] .site-nav {
 
 .ft-page-sketch-layer.drawing {
   pointer-events: auto;
+  touch-action: none;
 }
 
 .ft-page-sketch-canvas {

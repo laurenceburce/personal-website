@@ -1,18 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { IcoCalc, IcoGrid, IcoHistory, IcoKeyboard, IcoMag, IcoPen } from "./icons";
+import { IcoCalc, IcoGrid, IcoHistory, IcoKeyboard, IcoMag, IcoMail, IcoPen } from "./icons";
 import ToolWindow from "./ToolWindow";
 import Calculator from "./tools/Calculator";
 import Magnifier from "./tools/Magnifier";
 import SketchPad from "./tools/SketchPad";
 import VirtualKeyboard from "./tools/VirtualKeyboard";
+import SidebarContactForm from "../portfolio/SidebarContactForm";
+import useSidebarContactForm from "../../hooks/useSidebarContactForm";
 
 const TOOLS = [
   { id: "calculator", label: "Calculator", Icon: IcoCalc, winIcon: <IcoCalc />, width: 272 },
   { id: "sketch", label: "Sketch", Icon: IcoPen, winIcon: <IcoPen />, width: 298 },
   { id: "keyboard", label: "Keyboard", Icon: IcoKeyboard, winIcon: <IcoKeyboard />, width: 432 },
-  { id: "magnifier", label: "Magnifier", Icon: IcoMag, winIcon: <IcoMag />, width: 256 }
+  { id: "magnifier", label: "Magnifier", Icon: IcoMag, winIcon: <IcoMag />, width: 256 },
+  { id: "contact", label: "Contact", Icon: IcoMail, winIcon: <IcoMail />, width: 320 }
 ];
 
 const MENU_WIDTH_OFFSET = 172;
@@ -29,6 +32,7 @@ export default function FloatingToolbar() {
   const [openTools, setOpenTools] = useState({});
   const [calculatorHistoryOpen, setCalculatorHistoryOpen] = useState(false);
   const [keyboardMode, setKeyboardMode] = useState("abc");
+  const contact = useSidebarContactForm();
   const circlePosRef = useRef({ x: 0, y: 0 });
   const openToolsRef = useRef({});
   const lastPointerRef = useRef(null);
@@ -273,6 +277,16 @@ export default function FloatingToolbar() {
                 {id === "sketch" ? <SketchPad /> : null}
                 {id === "keyboard" ? <VirtualKeyboard mode={keyboardMode} /> : null}
                 {id === "magnifier" ? <Magnifier initialPointer={lastPointerRef.current} /> : null}
+                {id === "contact" ? (
+                  <SidebarContactForm
+                    form={contact.form}
+                    errors={contact.errors}
+                    status={contact.status}
+                    isSubmitting={contact.isSubmitting}
+                    onChange={contact.handleChange}
+                    onSubmit={contact.handleSubmit}
+                  />
+                ) : null}
               </>
             )}
           </ToolWindow>

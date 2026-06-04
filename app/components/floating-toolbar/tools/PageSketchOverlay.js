@@ -234,6 +234,7 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
   };
 
   const onPointerDown = (event) => {
+    if (!event.isPrimary) return;
     if (event.pointerType !== "touch" && event.button !== 0) return;
 
     event.preventDefault();
@@ -247,7 +248,7 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
   };
 
   const onPointerMove = (event) => {
-    if (!drawingRef.current || !lastPointRef.current) return;
+    if (!event.isPrimary || !drawingRef.current || !lastPointRef.current) return;
 
     event.preventDefault();
     const point = getPoint(event);

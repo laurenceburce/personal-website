@@ -222,12 +222,15 @@ export default function Magnifier({ initialPointer = null }) {
     if (!portalReady) return;
 
     const onPointerMove = (event) => showLensAt(event.clientX, event.clientY);
-    const onPointerLeave = () => {
+    const hideLens = () => {
       pointerRef.current.visible = false;
 
       if (lensRef.current) {
         lensRef.current.style.opacity = "0";
       }
+    };
+    const onTouchEnd = (event) => {
+      if (event.pointerType === "touch") hideLens();
     };
     const onViewportChange = () => {
       syncIframeScroll();
@@ -242,9 +245,11 @@ export default function Magnifier({ initialPointer = null }) {
     window.addEventListener("pointerdown", onPointerMove, true);
     window.addEventListener("pointermove", onPointerMove, true);
     window.addEventListener("pointerup", onUiChange, true);
+    window.addEventListener("pointerup", onTouchEnd, true);
+    window.addEventListener("pointercancel", onTouchEnd, true);
     window.addEventListener("click", onUiChange, true);
     window.addEventListener("keyup", onUiChange);
-    window.addEventListener("mouseleave", onPointerLeave);
+    window.addEventListener("pointerleave", hideLens);
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("scroll", onViewportChange, { passive: true });
     window.addEventListener(SKETCH_CHANGED_EVENT, requestRender);
@@ -283,9 +288,11 @@ export default function Magnifier({ initialPointer = null }) {
       window.removeEventListener("pointerdown", onPointerMove, true);
       window.removeEventListener("pointermove", onPointerMove, true);
       window.removeEventListener("pointerup", onUiChange, true);
+      window.removeEventListener("pointerup", onTouchEnd, true);
+      window.removeEventListener("pointercancel", onTouchEnd, true);
       window.removeEventListener("click", onUiChange, true);
       window.removeEventListener("keyup", onUiChange);
-      window.removeEventListener("mouseleave", onPointerLeave);
+      window.removeEventListener("pointerleave", hideLens);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange);
       window.removeEventListener(SKETCH_CHANGED_EVENT, requestRender);
@@ -363,7 +370,7 @@ export default function Magnifier({ initialPointer = null }) {
             </button>
           ))}
         </div>
-        <p className="ft-mag-hint">Move cursor over the page to magnify</p>
+        <p className="ft-mag-hint">Move cursor or tap the page to magnify</p>
       </div>
     </>
   );

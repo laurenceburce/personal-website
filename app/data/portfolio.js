@@ -39,6 +39,22 @@ export const projects = [
       "Developed a micro-blogging backend with authentication, registration flows, session management, and scalable data access patterns.",
     tech: ["Spring Boot", "JDBC", "JPA", "REST API"],
     link: "https://github.com/laurenceburce/laurenceburce-pep-spring-project"
+  },
+  {
+    title: "Financial Reports",
+    period: "Sep 2022 – Mar 2024",
+    association: "Oracle",
+    description:
+      "Developed tools that present the financial health of the company and communicate key information. Created workbooks and graphical charts to organize data, utilizing advanced accounting features including multicurrency support and report-to-report drill down. Utilized SQL queries and API testing tools to validate data accuracy and synchronization. Collaborated with front-end developers and database administrators to identify and resolve data discrepancies.",
+    tech: ["Java", "SQL", "JavaScript", "Windows", "Linux"]
+  },
+  {
+    title: "Soil Quality Monitoring System using Low-Powered Wireless Sensor Network",
+    period: "May 2021 – Jan 2022",
+    association: "Mapúa University",
+    description:
+      "Created a low-powered IoT wireless sensor network for monitoring soil quality. Implemented a power management technique utilizing the sleep mode feature of the Wi-Fi module. The system measures soil properties, verifies if values are in the appropriate range, and notifies the user when values are out of range.",
+    tech: ["C++", "C#", "C", "SQL", "Windows", "Linux"]
   }
 ];
 
