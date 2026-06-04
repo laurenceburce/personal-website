@@ -9,7 +9,7 @@ export const skillGroups = [
   },
   {
     title: "Backend & Frameworks",
-    items: ["Spring Boot", "FastAPI", "Oracle ADF", "REST APIs", "JDBC"]
+    items: ["Spring Boot", "FastAPI", "Oracle ADF", "Oracle SaaS ERP", "REST APIs", "JDBC"]
   },
   {
     title: "Data & Databases",
@@ -17,7 +17,7 @@ export const skillGroups = [
   },
   {
     title: "AI & Automation",
-    items: ["Copilot Studio", "Power Platform"]
+    items: ["Copilot Studio", "Power Platform", "AI Chatbots", "Process Automation"]
   },
   {
     title: "Tools & Systems",
@@ -27,22 +27,11 @@ export const skillGroups = [
 
 export const projects = [
   {
-    title: "Brand Compliance Validation Platform",
+    title: "Personal Portfolio Website",
     description:
-      "Built a FastAPI + PostgreSQL platform that automatically reviews social media content for fair housing violations, branding standards, and accessibility issues.",
-    tech: ["FastAPI", "PostgreSQL", "Python", "Accessibility"]
-  },
-  {
-    title: "Enterprise AI Assistants",
-    description:
-      "Designed and maintained enterprise-grade AI chatbots and agents for HR, Marketing, and Operations with API-integrated workflows.",
-    tech: ["Copilot Studio", "Power Platform", "JavaScript", "Python"]
-  },
-  {
-    title: "AI Chatbot Evaluation Suite",
-    description:
-      "Designed a chatbot test suite that reduced runtime by more than 90% through concurrent processing and better test orchestration.",
-    tech: ["Python", "Automation", "Concurrency", "QA"]
+      "Designed and built this responsive portfolio with reusable Next.js sections, theme support, a sidebar contact flow, downloadable documents, and an interactive floating toolkit with page annotations, magnifier, calculator, and virtual keyboard tools.",
+    tech: ["Next.js", "React", "CSS", "Responsive UI", "Interactive Tools"],
+    link: "https://github.com/laurenceburce/personal-website"
   },
   {
     title: "Spring Social Media Blog API",

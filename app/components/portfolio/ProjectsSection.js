@@ -4,8 +4,8 @@ export default function ProjectsSection({ projects }) {
       <div className="section-head">
         <h2>Projects</h2>
         <p>
-          Production-focused systems spanning automation, enterprise APIs,
-          and internal business tooling.
+          Selected projects spanning portfolio UI, interactive web tools, and
+          backend API development.
         </p>
       </div>
       <div className="project-grid">

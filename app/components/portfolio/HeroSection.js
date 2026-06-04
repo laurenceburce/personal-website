@@ -12,9 +12,9 @@ export default function HeroSection() {
         operations teams.
       </h1>
       <p className="lead">
-        2+ years of enterprise development experience at Oracle and hands-on
-        AI automation delivery for large-scale real estate and property
-        management organizations.
+        3 years of experience across Oracle SaaS ERP platform systems,
+        client-facing web apps, process automation, AI tools, and Copilot
+        Studio chatbots.
       </p>
     </section>
   );

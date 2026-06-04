@@ -42,7 +42,7 @@ export default function EducationSection() {
                   <br />
                   GWA: 2.01 / 1.00
                   <br />
-                  GPA equivalent ≈ 3.3
+                  GPA equivalent ≈ 3.4
                 </p>
               </article>
             </div>

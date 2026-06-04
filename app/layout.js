@@ -15,11 +15,11 @@ const dmSerifDisplay = DM_Serif_Display({
 export const metadata = {
   title: "Laurence Alec Burce | Software Engineer",
   description:
-    "Portfolio of Laurence Alec Burce - software engineer focused on enterprise systems and AI automation.",
+    "Portfolio of Laurence Alec Burce - software engineer with 3 years of experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
   openGraph: {
     title: "Laurence Alec Burce | Software Engineer",
     description:
-      "Enterprise software engineering and AI automation projects by Laurence Alec Burce.",
+      "Enterprise software engineering, Oracle SaaS ERP, client web apps, AI automation, and Copilot Studio chatbot projects by Laurence Alec Burce.",
     type: "website"
   }
 };
