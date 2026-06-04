@@ -125,6 +125,12 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     const { default: html2canvas } = await import("html2canvas");
     const { width, height } = dimensionsRef.current;
     const scale = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+
+    const savedScrollX = window.scrollX;
+    const savedScrollY = window.scrollY;
+    window.scrollTo(0, 0);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
     const portfolioCanvas = await html2canvas(document.body, {
       backgroundColor: null,
       height,
@@ -138,6 +144,8 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
       windowHeight: height,
       windowWidth: width
     });
+
+    window.scrollTo(savedScrollX, savedScrollY);
     const outputCanvas = document.createElement("canvas");
     outputCanvas.width = portfolioCanvas.width;
     outputCanvas.height = portfolioCanvas.height;
