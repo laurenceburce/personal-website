@@ -20,7 +20,15 @@ export const metadata = {
     title: "Laurence Alec Burce | Software Engineer",
     description:
       "Enterprise software engineering, Oracle SaaS ERP, client web apps, AI automation, and Copilot Studio chatbot projects by Laurence Alec Burce.",
-    type: "website"
+    type: "website",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630 }]
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Laurence Alec Burce | Software Engineer",
+    description:
+      "Enterprise software engineering, Oracle SaaS ERP, client web apps, AI automation, and Copilot Studio chatbot projects by Laurence Alec Burce.",
+    images: ["/opengraph-image"]
   }
 };
 
