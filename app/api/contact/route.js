@@ -6,7 +6,6 @@ const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 10 * 60 * 1000;
 const CONTACT_LIMIT_MAX = 5;
 const SMTP_TIMEOUT_MS = 5000;
-const HTTPS_EMAIL_TIMEOUT_MS = 10000;
 const CONTACT_EMAIL = "laurenceburce@gmail.com";
 const smtpAddressCache = new Map();
 
@@ -58,41 +57,6 @@ async function createMailTransport({ host, port, secure, user, pass }) {
       pass
     }
   });
-}
-
-async function sendWithFormSubmit({ values, to }) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HTTPS_EMAIL_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(`https://formsubmit.co/ajax/${encodeURIComponent(to)}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        name: values.name,
-        email: values.email,
-        _replyto: values.email,
-        _subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
-        _template: "table",
-        _captcha: "false",
-        message: values.message
-      })
-    });
-
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok || payload.success === false) {
-      throw new Error(payload.message || "HTTPS email delivery failed.");
-    }
-
-    return payload;
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function escapeHtml(str) {
@@ -259,15 +223,6 @@ export async function POST(request) {
         command: error?.command,
         message: error?.message
       });
-
-      try {
-        await sendWithFormSubmit({ values, to });
-        return NextResponse.json({ ok: true, delivered: true, provider: "formsubmit" });
-      } catch (fallbackError) {
-        console.error("Contact form HTTPS email fallback failed", {
-          message: fallbackError?.message
-        });
-      }
 
       throw error;
     }
