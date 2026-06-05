@@ -5,7 +5,7 @@ import PageSketchOverlay from "./PageSketchOverlay";
 import { getOrCreateVisitorId } from "../../../utils/analyticsClient";
 
 const SKETCH_COLORS = ["#1e293b", "#ef4444", "#f97316", "#eab308", "#22c55e", "#38bdf8", "#818cf8", "#f9fafb"];
-const STICKERS = ["★", "✓", "!", "?", "❤", "→", "📌", "💡"];
+const STICKERS = ["★", "✓", "!", "?", "❤", "→", "◆", "●"];
 
 export default function SketchPad({ onColorChange = null }) {
   const pageOverlayRef = useRef(null);
@@ -140,12 +140,9 @@ export default function SketchPad({ onColorChange = null }) {
           {SKETCH_COLORS.map((swatch) => (
             <button
               key={swatch}
-              className={`ft-color-dot${color === swatch && tool !== "eraser" && tool !== "sticker" ? " active" : ""}`}
+              className={`ft-color-dot${color === swatch && tool !== "eraser" ? " active" : ""}`}
               style={{ background: swatch, outline: swatch === "#f9fafb" ? "1px solid #cbd5e1" : "none" }}
-              onClick={() => {
-                setColor(swatch);
-                setTool("pen");
-              }}
+              onClick={() => setColor(swatch)}
               aria-label={swatch}
               type="button"
             />
@@ -168,6 +165,7 @@ export default function SketchPad({ onColorChange = null }) {
           <button
             key={item}
             className={`ft-sticker-btn${sticker === item && tool === "sticker" ? " active" : ""}`}
+            style={{ color }}
             draggable
             onClick={() => {
               setSticker(item);

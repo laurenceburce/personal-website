@@ -4,6 +4,8 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { createPortal } from "react-dom";
 
 const MAX_DPR = 2;
+const MAX_LIVE_CANVAS_PIXELS = 12_000_000;
+const MAX_SHARE_CANVAS_PIXELS = 2_200_000;
 const SKETCH_CHANGED_EVENT = "floating-toolbar:sketch-changed";
 const STICKER_BASE_SIZE = 28;
 const FLOATING_UI_SELECTOR = [
@@ -75,7 +77,9 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
       document.body?.scrollHeight ?? 0,
       window.innerHeight
     ));
-    const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    const idealDpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+    const maxDprForPage = Math.sqrt(MAX_LIVE_CANVAS_PIXELS / Math.max(1, nextWidth * nextHeight));
+    const dpr = Math.max(0.5, Math.min(idealDpr, maxDprForPage));
     const previous = dimensionsRef.current;
 
     if (
@@ -152,6 +156,7 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
       ? markup.stickers.map((item) => ({
           id: item.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
           value: String(item.value || "").slice(0, 2),
+          color: typeof item.color === "string" ? item.color : "#f8fafc",
           x: Number(item.x || 0) * scaleX,
           y: Number(item.y || 0) * scaleY,
           size: Math.max(STICKER_BASE_SIZE, Number(item.size || STICKER_BASE_SIZE) * Math.min(scaleX, scaleY))
@@ -184,17 +189,26 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     if (!canvas) return null;
 
     const { width, height } = dimensionsRef.current;
+    const pixelRatio = canvas.width * canvas.height > MAX_SHARE_CANVAS_PIXELS
+      ? Math.sqrt(MAX_SHARE_CANVAS_PIXELS / (canvas.width * canvas.height))
+      : 1;
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = Math.max(1, Math.floor(canvas.width * pixelRatio));
+    outputCanvas.height = Math.max(1, Math.floor(canvas.height * pixelRatio));
+    const outputContext = outputCanvas.getContext("2d");
+    outputContext.drawImage(canvas, 0, 0, outputCanvas.width, outputCanvas.height);
 
     return {
       version: 1,
-      canvasDataUrl: canvas.toDataURL("image/png"),
-      canvasWidth: canvas.width,
-      canvasHeight: canvas.height,
+      canvasDataUrl: outputCanvas.toDataURL("image/png"),
+      canvasWidth: outputCanvas.width,
+      canvasHeight: outputCanvas.height,
       cssWidth: width,
       cssHeight: height,
       stickers: stickersRef.current.map((item) => ({
         id: item.id,
         value: item.value,
+        color: item.color,
         x: item.x,
         y: item.y,
         size: item.size
@@ -287,6 +301,7 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
       outputContext.font = `${Math.round(item.size * scale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
       outputContext.textAlign = "center";
       outputContext.textBaseline = "middle";
+      outputContext.fillStyle = item.color || "#f8fafc";
       outputContext.fillText(item.value, item.x * scale, item.y * scale);
       outputContext.restore();
     });
@@ -346,9 +361,11 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
 
   const addSticker = (point, value = toolRef.current.sticker) => {
     const cleanValue = value?.trim?.() || toolRef.current.sticker;
+    const { color: stickerColor } = toolRef.current;
     const nextSticker = {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       value: cleanValue.slice(0, 2),
+      color: stickerColor,
       x: point.x,
       y: point.y,
       size: Math.max(STICKER_BASE_SIZE, toolRef.current.size * 1.6)
@@ -515,7 +532,8 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
             style={{
               left: item.x,
               top: item.y,
-              fontSize: item.size
+              fontSize: item.size,
+              color: item.color || "#f8fafc"
             }}
             onPointerDown={(event) => onStickerPointerDown(event, item)}
             onPointerMove={onStickerPointerMove}
