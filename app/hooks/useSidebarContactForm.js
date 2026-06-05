@@ -31,6 +31,7 @@ export default function useSidebarContactForm() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    let timeoutId;
 
     const nextErrors = validateSidebarContact(form);
 
@@ -45,7 +46,7 @@ export default function useSidebarContactForm() {
       setStatus({ type: "idle", message: "" });
 
       const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => {
+      timeoutId = window.setTimeout(() => {
         controller.abort();
       }, CONTACT_REQUEST_TIMEOUT_MS);
 
@@ -63,7 +64,6 @@ export default function useSidebarContactForm() {
           company: form.company
         })
       });
-      window.clearTimeout(timeoutId);
 
       const payload = await response.json();
 
@@ -87,6 +87,9 @@ export default function useSidebarContactForm() {
           : error.message || "Unable to send message right now."
       });
     } finally {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
       setIsSubmitting(false);
     }
   };

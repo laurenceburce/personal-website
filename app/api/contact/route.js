@@ -4,6 +4,7 @@ import nodemailer from "nodemailer";
 const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 60 * 60 * 1000;
 const SMTP_TIMEOUT_MS = 10000;
+const CONTACT_EMAIL = "laurenceburce@gmail.com";
 
 function escapeHtml(str) {
   return String(str)
@@ -12,6 +13,25 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function getContactErrorMessage(error) {
+  const code = error?.code || "";
+  const command = error?.command || "";
+
+  if (code === "EAUTH") {
+    return "Email authentication failed. Please check the SMTP username and app password.";
+  }
+
+  if (code === "EENVELOPE" || command === "MAIL FROM" || command === "RCPT TO") {
+    return "Email sender or recipient was rejected. Please check CONTACT_FROM and CONTACT_TO.";
+  }
+
+  if (code === "ETIMEDOUT" || code === "ESOCKET" || code === "ECONNECTION") {
+    return "Email server connection failed. Please check SMTP_HOST, SMTP_PORT, and SMTP_SECURE.";
+  }
+
+  return `Email delivery failed. Please email ${CONTACT_EMAIL} directly.`;
 }
 
 export const runtime = "nodejs";
@@ -83,8 +103,8 @@ export async function POST(request) {
     const port = Number(process.env.SMTP_PORT || 587);
     const user = process.env.SMTP_USER;
     const pass = process.env.SMTP_PASS;
-    const to = process.env.CONTACT_TO || user;
-    const from = process.env.CONTACT_FROM || user;
+    const to = process.env.CONTACT_TO || CONTACT_EMAIL;
+    const from = process.env.CONTACT_FROM || `"Portfolio Contact" <${user}>`;
     const secure = process.env.SMTP_SECURE === "true" || port === 465;
 
     if (!host || !user || !pass || !to || !from) {
@@ -110,6 +130,10 @@ export async function POST(request) {
     await transporter.sendMail({
       from,
       to,
+      envelope: {
+        from: user,
+        to
+      },
       replyTo: values.email,
       subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
       text: `Name: ${values.name}\nEmail: ${values.email}\nSubject: ${values.subject}\n\n${values.message}`,
@@ -128,9 +152,15 @@ export async function POST(request) {
     contactRateLimit.set(ip, Date.now());
 
     return NextResponse.json({ ok: true });
-  } catch {
+  } catch (error) {
+    console.error("Contact form email failed", {
+      code: error?.code,
+      command: error?.command,
+      message: error?.message
+    });
+
     return NextResponse.json(
-      { error: "Something went wrong while sending your message." },
+      { error: getContactErrorMessage(error) },
       { status: 500 }
     );
   }
