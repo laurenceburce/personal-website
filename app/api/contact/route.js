@@ -6,6 +6,33 @@ const CONTACT_LIMIT_MS = 60 * 60 * 1000;
 const SMTP_TIMEOUT_MS = 10000;
 const CONTACT_EMAIL = "laurenceburce@gmail.com";
 
+function parseBoolean(value) {
+  return String(value || "").trim().toLowerCase() === "true";
+}
+
+function createMailTransport({ host, port, secure, user, pass }) {
+  const normalizedHost = host.trim().toLowerCase();
+  const isGmail = normalizedHost === "smtp.gmail.com";
+
+  return nodemailer.createTransport({
+    ...(isGmail ? { service: "gmail" } : {}),
+    host: normalizedHost,
+    port,
+    secure,
+    requireTLS: !secure,
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
+    tls: {
+      servername: normalizedHost
+    },
+    auth: {
+      user,
+      pass
+    }
+  });
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;")
@@ -99,13 +126,13 @@ export async function POST(request) {
       return NextResponse.json({ ok: true });
     }
 
-    const host = process.env.SMTP_HOST;
+    const host = String(process.env.SMTP_HOST || "").trim();
     const port = Number(process.env.SMTP_PORT || 587);
-    const user = process.env.SMTP_USER;
-    const pass = process.env.SMTP_PASS;
+    const user = String(process.env.SMTP_USER || "").trim();
+    const pass = String(process.env.SMTP_PASS || "").trim();
     const to = process.env.CONTACT_TO || CONTACT_EMAIL;
     const from = process.env.CONTACT_FROM || `"Portfolio Contact" <${user}>`;
-    const secure = process.env.SMTP_SECURE === "true" || port === 465;
+    const secure = parseBoolean(process.env.SMTP_SECURE) || port === 465;
 
     if (!host || !user || !pass || !to || !from) {
       return NextResponse.json(
@@ -114,17 +141,12 @@ export async function POST(request) {
       );
     }
 
-    const transporter = nodemailer.createTransport({
+    const transporter = createMailTransport({
       host,
       port,
       secure,
-      connectionTimeout: SMTP_TIMEOUT_MS,
-      greetingTimeout: SMTP_TIMEOUT_MS,
-      socketTimeout: SMTP_TIMEOUT_MS,
-      auth: {
-        user,
-        pass
-      }
+      user,
+      pass
     });
 
     await transporter.sendMail({
