@@ -19,6 +19,7 @@ function createMailTransport({ host, port, secure, user, pass }) {
     host: normalizedHost,
     port,
     secure,
+    family: 4,
     requireTLS: !secure,
     connectionTimeout: SMTP_TIMEOUT_MS,
     greetingTimeout: SMTP_TIMEOUT_MS,
