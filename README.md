@@ -8,7 +8,7 @@ A clean, responsive personal portfolio built with Next.js (App Router), React, a
 - React
 - `next/font` for local Google font hosting
 - Plain CSS in `app/globals.css`
-- Nodemailer (contact email delivery)
+- Resend (contact email delivery)
 
 ## Project structure
 
@@ -25,33 +25,16 @@ A clean, responsive personal portfolio built with Next.js (App Router), React, a
 npm install
 ```
 
-2. Create a local environment file (`.env.local`) with SMTP settings:
+2. Create a local environment file (`.env.local`) with contact email settings:
 
 ```env
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USER=your_smtp_username
-SMTP_PASS=your_smtp_password
+RESEND_API_KEY=re_your_api_key
+RESEND_FROM=Portfolio Contact <onboarding@resend.dev>
 CONTACT_TO=your_destination_email@example.com
-CONTACT_FROM=your_sender_email@example.com
 ```
 
-For Gmail, use an app password and one of these pairs:
-
-```env
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
-SMTP_SECURE=true
-```
-
-or:
-
-```env
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_SECURE=false
-```
+Use a verified sender/domain for `RESEND_FROM` in production. Resend's
+`onboarding@resend.dev` sender is useful for initial testing.
 
 For production visitor analytics, connect a MySQL database and add:
 

@@ -1,63 +1,10 @@
 import { NextResponse } from "next/server";
-import dns from "dns";
-import nodemailer from "nodemailer";
 
 const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 10 * 60 * 1000;
 const CONTACT_LIMIT_MAX = 5;
-const SMTP_TIMEOUT_MS = 5000;
 const CONTACT_EMAIL = "laurenceburce@gmail.com";
-const smtpAddressCache = new Map();
-
-function parseBoolean(value) {
-  return String(value || "").trim().toLowerCase() === "true";
-}
-
-async function resolveSmtpHost(host) {
-  const normalizedHost = host.trim().toLowerCase();
-  const cached = smtpAddressCache.get(normalizedHost);
-
-  if (cached) return cached;
-
-  try {
-    const addresses = await dns.promises.resolve4(normalizedHost);
-    const resolved = {
-      connectHost: addresses[0] || normalizedHost,
-      servername: normalizedHost
-    };
-    smtpAddressCache.set(normalizedHost, resolved);
-    return resolved;
-  } catch {
-    const resolved = {
-      connectHost: normalizedHost,
-      servername: normalizedHost
-    };
-    smtpAddressCache.set(normalizedHost, resolved);
-    return resolved;
-  }
-}
-
-async function createMailTransport({ host, port, secure, user, pass }) {
-  const normalizedHost = host.trim().toLowerCase();
-  const { connectHost, servername } = await resolveSmtpHost(normalizedHost);
-
-  return nodemailer.createTransport({
-    host: connectHost,
-    port,
-    secure,
-    requireTLS: !secure,
-    connectionTimeout: SMTP_TIMEOUT_MS,
-    greetingTimeout: SMTP_TIMEOUT_MS,
-    socketTimeout: SMTP_TIMEOUT_MS,
-    tls: {
-      servername
-    },
-    auth: {
-      user,
-      pass
-    }
-  });
-}
+const RESEND_TIMEOUT_MS = 10000;
 
 function escapeHtml(str) {
   return String(str)
@@ -69,22 +16,61 @@ function escapeHtml(str) {
 }
 
 function getContactErrorMessage(error) {
-  const code = error?.code || "";
-  const command = error?.command || "";
-
-  if (code === "EAUTH") {
-    return "Email authentication failed. Please check the SMTP username and app password.";
-  }
-
-  if (code === "EENVELOPE" || command === "MAIL FROM" || command === "RCPT TO") {
-    return "Email sender or recipient was rejected. Please check CONTACT_FROM and CONTACT_TO.";
-  }
-
-  if (code === "ETIMEDOUT" || code === "ESOCKET" || code === "ECONNECTION") {
-    return "Email server connection failed. Check SMTP_HOST, SMTP_PORT, and SMTP_SECURE. For Gmail use smtp.gmail.com with port 465 and SMTP_SECURE=true, or port 587 and SMTP_SECURE=false.";
+  if (error?.name === "AbortError") {
+    return "Email request timed out. Please try again.";
   }
 
   return `Email delivery failed. Please email ${CONTACT_EMAIL} directly.`;
+}
+
+async function sendWithResend({ values, to }) {
+  const apiKey = String(process.env.RESEND_API_KEY || "").trim();
+  const from = String(process.env.RESEND_FROM || "Portfolio Contact <onboarding@resend.dev>").trim();
+
+  if (!apiKey) {
+    throw new Error("Missing RESEND_API_KEY.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RESEND_TIMEOUT_MS);
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        from,
+        to: [to],
+        reply_to: values.email,
+        subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
+        text: `Name: ${values.name}\nEmail: ${values.email}\nSubject: ${values.subject}\n\n${values.message}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0b1f45;">
+            <h2 style="margin-bottom: 8px;">New Portfolio Contact Message</h2>
+            <p><strong>Name:</strong> ${escapeHtml(values.name)}</p>
+            <p><strong>Email:</strong> ${escapeHtml(values.email)}</p>
+            <p><strong>Subject:</strong> ${escapeHtml(values.subject)}</p>
+            <hr style="border:0;border-top:1px solid #d6e6ff;margin:16px 0;" />
+            <p style="white-space: pre-wrap;">${escapeHtml(values.message)}</p>
+          </div>
+        `
+      })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload?.message || payload?.error || "Resend email delivery failed.");
+    }
+
+    return payload;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export const runtime = "nodejs";
@@ -172,68 +158,20 @@ export async function POST(request) {
       return NextResponse.json({ ok: true });
     }
 
-    const host = String(process.env.SMTP_HOST || "").trim();
-    const port = Number(process.env.SMTP_PORT || 587);
-    const user = String(process.env.SMTP_USER || "").trim();
-    const pass = String(process.env.SMTP_PASS || "").trim();
     const to = process.env.CONTACT_TO || CONTACT_EMAIL;
-    const from = process.env.CONTACT_FROM || `"Portfolio Contact" <${user}>`;
-    const secure = parseBoolean(process.env.SMTP_SECURE) || port === 465;
 
-    if (!host || !user || !pass || !to || !from) {
+    if (!to) {
       return NextResponse.json(
         { error: "Contact form is currently unavailable." },
         { status: 500 }
       );
     }
 
-    const transporter = await createMailTransport({
-      host,
-      port,
-      secure,
-      user,
-      pass
-    });
-
-    try {
-      await transporter.sendMail({
-        from,
-        to,
-        envelope: {
-          from: user,
-          to
-        },
-        replyTo: values.email,
-        subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
-        text: `Name: ${values.name}\nEmail: ${values.email}\nSubject: ${values.subject}\n\n${values.message}`,
-        html: `
-          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0b1f45;">
-            <h2 style="margin-bottom: 8px;">New Portfolio Contact Message</h2>
-            <p><strong>Name:</strong> ${escapeHtml(values.name)}</p>
-            <p><strong>Email:</strong> ${escapeHtml(values.email)}</p>
-            <p><strong>Subject:</strong> ${escapeHtml(values.subject)}</p>
-            <hr style="border:0;border-top:1px solid #d6e6ff;margin:16px 0;" />
-            <p style="white-space: pre-wrap;">${escapeHtml(values.message)}</p>
-          </div>
-        `
-      });
-    } catch (error) {
-      console.error("Contact form email failed", {
-        code: error?.code,
-        command: error?.command,
-        message: error?.message
-      });
-
-      throw error;
-    }
+    await sendWithResend({ values, to });
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("Contact form email failed", {
-      code: error?.code,
-      command: error?.command,
-      message: error?.message
-    });
+    console.error("Contact form email failed", { message: error?.message });
 
     return NextResponse.json(
       { error: getContactErrorMessage(error) },
