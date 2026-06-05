@@ -3,7 +3,8 @@ import dns from "dns";
 import nodemailer from "nodemailer";
 
 const contactRateLimit = new Map();
-const CONTACT_LIMIT_MS = 60 * 60 * 1000;
+const CONTACT_LIMIT_MS = 10 * 60 * 1000;
+const CONTACT_LIMIT_MAX = 5;
 const SMTP_TIMEOUT_MS = 5000;
 const HTTPS_EMAIL_TIMEOUT_MS = 10000;
 const CONTACT_EMAIL = "laurenceburce@gmail.com";
@@ -124,6 +125,19 @@ function getContactErrorMessage(error) {
 
 export const runtime = "nodejs";
 
+const extractIp = (request) => {
+  const cf = request.headers.get("cf-connecting-ip");
+  if (cf) return cf.trim();
+
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded) return forwarded.split(",")[0].trim();
+
+  const real = request.headers.get("x-real-ip");
+  if (real) return real.trim();
+
+  return "unknown";
+};
+
 function validatePayload(body) {
   const errors = [];
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -170,9 +184,16 @@ export async function POST(request) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
-    const ip = request.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "unknown";
-    const lastSent = contactRateLimit.get(ip) ?? 0;
-    if (Date.now() - lastSent < CONTACT_LIMIT_MS) {
+    const ip = extractIp(request);
+    const now = Date.now();
+    const entry = contactRateLimit.get(ip) ?? { count: 0, windowStart: now };
+    if (now - entry.windowStart > CONTACT_LIMIT_MS) {
+      entry.count = 0;
+      entry.windowStart = now;
+    }
+    entry.count++;
+    contactRateLimit.set(ip, entry);
+    if (entry.count > CONTACT_LIMIT_MAX) {
       return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429 });
     }
 
@@ -241,7 +262,6 @@ export async function POST(request) {
 
       try {
         await sendWithFormSubmit({ values, to });
-        contactRateLimit.set(ip, Date.now());
         return NextResponse.json({ ok: true, delivered: true, provider: "formsubmit" });
       } catch (fallbackError) {
         console.error("Contact form HTTPS email fallback failed", {
@@ -251,8 +271,6 @@ export async function POST(request) {
 
       throw error;
     }
-
-    contactRateLimit.set(ip, Date.now());
 
     return NextResponse.json({ ok: true });
   } catch (error) {
