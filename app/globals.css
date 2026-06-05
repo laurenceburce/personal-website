@@ -127,11 +127,24 @@ body {
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.46rem;
   font-family: var(--font-dm-serif-display), "Georgia", serif;
   font-size: 1.15rem;
   color: var(--ink);
   text-decoration: none;
   letter-spacing: -0.01em;
+}
+
+.brand img,
+.scroll-brand img,
+.mobile-nav-brand img {
+  width: 1.65rem;
+  height: 1.65rem;
+  border-radius: 8px;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(0, 4, 18, 0.22);
 }
 
 .site-nav {
@@ -217,12 +230,20 @@ body {
 }
 
 .scroll-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.46rem;
   font-family: var(--font-dm-serif-display), "Georgia", serif;
   font-size: 0.98rem;
   line-height: 1.25;
   font-weight: 400;
   color: var(--ink);
   text-decoration: none;
+}
+
+.scroll-brand img {
+  width: 2.1rem;
+  height: 2.1rem;
 }
 
 .scroll-role {
@@ -1695,6 +1716,9 @@ html[data-theme="dark"] .brand-mark-yousource {
   }
 
   .mobile-nav-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.48rem;
     color: var(--ink);
     font-family: var(--font-dm-serif-display), "Georgia", serif;
     font-size: 1rem;

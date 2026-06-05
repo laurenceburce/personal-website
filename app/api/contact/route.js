@@ -28,7 +28,7 @@ function getContactErrorMessage(error) {
   }
 
   if (code === "ETIMEDOUT" || code === "ESOCKET" || code === "ECONNECTION") {
-    return "Email server connection failed. Please check SMTP_HOST, SMTP_PORT, and SMTP_SECURE.";
+    return "Email server connection failed. Check SMTP_HOST, SMTP_PORT, and SMTP_SECURE. For Gmail use smtp.gmail.com with port 465 and SMTP_SECURE=true, or port 587 and SMTP_SECURE=false.";
   }
 
   return `Email delivery failed. Please email ${CONTACT_EMAIL} directly.`;

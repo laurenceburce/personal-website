@@ -18,7 +18,8 @@ export default function SiteHeader({
   return (
     <header className="site-header">
       <a href="#home" className="brand">
-        Laurence Alec Burce
+        <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
+        <span>Laurence Alec Burce</span>
       </a>
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="mobile-theme-toggle" />
       <button
@@ -36,7 +37,8 @@ export default function SiteHeader({
         <div className="mobile-nav-profile" aria-hidden={!menuOpen}>
           <p className="mobile-nav-kicker">Quick Navigation</p>
           <a href="#home" className="mobile-nav-brand" onClick={onMenuClose}>
-            Laurence Alec Burce
+            <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
+            <span>Laurence Alec Burce</span>
           </a>
           <p className="mobile-nav-role">Software Engineer • AI & Automation Engineer</p>
           <a href="mailto:laurenceburce@gmail.com" className="mobile-nav-email">

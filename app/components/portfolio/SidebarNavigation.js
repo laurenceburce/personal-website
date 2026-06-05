@@ -25,7 +25,8 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
       <div className="scroll-profile">
         <p className="scroll-kicker">Quick Navigation</p>
         <a href="#home" className="scroll-brand">
-          Laurence Alec Burce
+          <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
+          <span>Laurence Alec Burce</span>
         </a>
         <p className="scroll-role">Software Engineer • AI & Automation Engineer</p>
         <a href="mailto:laurenceburce@gmail.com" className="scroll-email">

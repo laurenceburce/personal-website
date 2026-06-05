@@ -37,6 +37,22 @@ CONTACT_TO=your_destination_email@example.com
 CONTACT_FROM=your_sender_email@example.com
 ```
 
+For Gmail, use an app password and one of these pairs:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+```
+
+or:
+
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+```
+
 For production visitor analytics, connect a MySQL database and add:
 
 ```env
