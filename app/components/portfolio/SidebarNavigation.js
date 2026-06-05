@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef } from "react";
-import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
+import { IconDownload, IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
 import { downloadLinks, trackDownload } from "./navigationLinks";
 import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
@@ -31,6 +31,10 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
         <a href="mailto:laurenceburce@gmail.com" className="scroll-email">
           <IconMail />
           laurenceburce@gmail.com
+        </a>
+        <a href="tel:+16196350470" className="scroll-email">
+          <IconPhone />
+          +1 619 635 0470
         </a>
         <div className="scroll-social">
           <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer" className="scroll-social-link">

@@ -37,7 +37,7 @@ function validatePayload(body) {
     errors.push("Invalid subject.");
   }
 
-  if (!message || message.length < 20 || message.length > 5000) {
+  if (!message || message.length < 5 || message.length > 5000) {
     errors.push("Invalid message body.");
   }
 

@@ -28,11 +28,17 @@ export default function TimelineEntry({ entry }) {
                   <time>{role.period}</time>
                 </div>
                 {Array.isArray(role.summary) ? (
-                  <ul className="timeline-bullets">
-                    {role.summary.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
+                  <details className="timeline-details">
+                    <summary>
+                      <span>Details</span>
+                      <span className="timeline-details-count">{role.summary.length} highlights</span>
+                    </summary>
+                    <ul className="timeline-bullets">
+                      {role.summary.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </details>
                 ) : (
                   <p>{role.summary}</p>
                 )}

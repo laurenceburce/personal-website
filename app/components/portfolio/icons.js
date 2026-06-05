@@ -57,6 +57,14 @@ export function IconMail() {
   );
 }
 
+export function IconPhone() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M4.15 1.8 5.4 4.55l-1.1 1.1c.72 1.48 1.88 2.64 3.36 3.36l1.1-1.1 2.75 1.25c.36.16.56.55.47.93l-.34 1.48c-.08.36-.41.62-.78.62A9.05 9.05 0 0 1 1.8 3.14c0-.37.26-.7.62-.78l1.48-.34c.38-.09.77.11.93.47Z" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function IconGitHub() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style={{ flexShrink: 0 }}>

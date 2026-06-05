@@ -17,8 +17,8 @@ export function validateSidebarContact(values) {
     errors.email = "Enter a valid email.";
   }
 
-  if (!values.message.trim() || values.message.trim().length < 20) {
-    errors.message = "Add at least 20 characters.";
+  if (!values.message.trim() || values.message.trim().length < 5) {
+    errors.message = "Add a message.";
   }
 
   return errors;
