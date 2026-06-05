@@ -97,3 +97,10 @@ Programming Language
 DB (if used)
 Frameworks
 APIs
+
+
+Update contents of the about section and hero banner
+Move LAB logo to the top of the hero banner
+Implement the same layout of the Work Experience (container carousel) to the Projects section
+Change light mode design: make the overall background light grey and the purple font to a more blue hue
+Fix the chatbot

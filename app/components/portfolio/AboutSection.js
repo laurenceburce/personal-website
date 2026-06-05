@@ -6,18 +6,15 @@ export default function AboutSection() {
       </div>
       <div className="about-grid">
         <p>
-          I am a Software Engineer with 3 years of experience across
-          enterprise backend services, data pipelines, Oracle SaaS ERP
-          platform systems, and AI-powered internal tools. I enjoy
-          translating business problems into scalable, reliable systems that
-          improve team productivity.
+          My background spans Oracle SaaS ERP development in Java and Spring Boot —
+          building RESTful APIs and maintaining SaaS products — through to AI-powered
+          tooling built with FastAPI and Python. I focus on software that teams can
+          actually depend on.
         </p>
         <p>
-          At Maxx Potential, I handled client work for HHHunt and Altria,
-          creating web apps, automating operational processes, building AI
-          tools, and creating Copilot Studio chatbots for business teams. I
-          am based in Santee, California and open to San Diego or remote
-          roles.
+          At Maxx Potential, I built a brand compliance validation platform using
+          FastAPI and PostgreSQL, delivered AI agents for HHHunt's HR, Marketing,
+          and Operations teams. Based in Santee, California; open to San Diego or remote roles.
         </p>
       </div>
     </section>
