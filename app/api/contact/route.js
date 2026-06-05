@@ -6,28 +6,50 @@ const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 60 * 60 * 1000;
 const SMTP_TIMEOUT_MS = 10000;
 const CONTACT_EMAIL = "laurenceburce@gmail.com";
+const smtpAddressCache = new Map();
 
 function parseBoolean(value) {
   return String(value || "").trim().toLowerCase() === "true";
 }
 
-function createMailTransport({ host, port, secure, user, pass }) {
+async function resolveSmtpHost(host) {
   const normalizedHost = host.trim().toLowerCase();
+  const cached = smtpAddressCache.get(normalizedHost);
+
+  if (cached) return cached;
+
+  try {
+    const addresses = await dns.promises.resolve4(normalizedHost);
+    const resolved = {
+      connectHost: addresses[0] || normalizedHost,
+      servername: normalizedHost
+    };
+    smtpAddressCache.set(normalizedHost, resolved);
+    return resolved;
+  } catch {
+    const resolved = {
+      connectHost: normalizedHost,
+      servername: normalizedHost
+    };
+    smtpAddressCache.set(normalizedHost, resolved);
+    return resolved;
+  }
+}
+
+async function createMailTransport({ host, port, secure, user, pass }) {
+  const normalizedHost = host.trim().toLowerCase();
+  const { connectHost, servername } = await resolveSmtpHost(normalizedHost);
 
   return nodemailer.createTransport({
-    host: normalizedHost,
+    host: connectHost,
     port,
     secure,
-    family: 4,
-    lookup: (hostname, options, callback) => {
-      dns.lookup(hostname, { ...options, family: 4 }, callback);
-    },
     requireTLS: !secure,
     connectionTimeout: SMTP_TIMEOUT_MS,
     greetingTimeout: SMTP_TIMEOUT_MS,
     socketTimeout: SMTP_TIMEOUT_MS,
     tls: {
-      servername: normalizedHost
+      servername
     },
     auth: {
       user,
@@ -144,7 +166,7 @@ export async function POST(request) {
       );
     }
 
-    const transporter = createMailTransport({
+    const transporter = await createMailTransport({
       host,
       port,
       secure,
