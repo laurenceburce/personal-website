@@ -7,7 +7,7 @@ const eventRateLimit = new Map();
 const EVENT_LIMIT_MS = 60 * 1000;
 const EVENT_LIMIT_MAX = 30;
 
-const ALLOWED_TYPES = new Set(["download", "time_on_page"]);
+const ALLOWED_TYPES = new Set(["download", "time_on_page", "sketch_share_created"]);
 
 export async function POST(request) {
   try {

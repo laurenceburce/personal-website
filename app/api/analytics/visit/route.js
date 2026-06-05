@@ -202,7 +202,8 @@ export async function POST(request) {
       city: geo.city,
       referrer: cleanReferrer(body?.referrer),
       deviceType: parseDeviceType(ua),
-      browser: parseBrowser(ua)
+      browser: parseBrowser(ua),
+      referredShareId: body?.sketchShareId
     };
 
     const stats = await recordVisit(body?.visitorId, meta);

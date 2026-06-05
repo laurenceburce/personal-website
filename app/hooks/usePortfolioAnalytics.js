@@ -40,15 +40,28 @@ export default function usePortfolioAnalytics() {
 
       const visitorId = getOrCreateVisitorId();
       const sessionTracked = hasTrackedSession();
-      const endpoint = sessionTracked ? "/api/analytics/stats" : "/api/analytics/visit";
-      const options = sessionTracked
+      const sketchShareId = new URLSearchParams(window.location.search).get("sketchShare") || "";
+      const shareSessionKey = sketchShareId ? `portfolio-share-tracked-${sketchShareId}` : "";
+      const shareTracked = shareSessionKey
+        ? (() => {
+            try {
+              return window.sessionStorage.getItem(shareSessionKey) === "true";
+            } catch {
+              return false;
+            }
+          })()
+        : true;
+      const shouldTrackVisit = !sessionTracked || (sketchShareId && !shareTracked);
+      const endpoint = shouldTrackVisit ? "/api/analytics/visit" : "/api/analytics/stats";
+      const options = !shouldTrackVisit
         ? { method: "GET" }
         : {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               visitorId,
-              referrer: document.referrer || ""
+              referrer: document.referrer || "",
+              sketchShareId
             })
           };
 
@@ -65,8 +78,13 @@ export default function usePortfolioAnalytics() {
           setStatus(payload.configured !== false ? "ready" : "unconfigured");
         }
 
-        if (!sessionTracked && payload.configured) {
+        if (shouldTrackVisit && payload.configured) {
           markSessionTracked();
+          if (shareSessionKey) {
+            try {
+              window.sessionStorage.setItem(shareSessionKey, "true");
+            } catch {}
+          }
         }
       } catch {
         if (!cancelled) {

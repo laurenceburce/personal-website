@@ -47,6 +47,7 @@ export default function FloatingToolbar() {
   const [openTools, setOpenTools] = useState({});
   const [calculatorHistoryOpen, setCalculatorHistoryOpen] = useState(false);
   const [keyboardMode, setKeyboardMode] = useState("abc");
+  const [sketchColor, setSketchColor] = useState("#38bdf8");
   const contact = useSidebarContactForm();
   const circlePosRef = useRef({ x: 0, y: 0 });
   const openToolsRef = useRef({});
@@ -62,6 +63,17 @@ export default function FloatingToolbar() {
       ? window.innerHeight - 128
       : Math.round(window.innerHeight * 0.62);
     setCirclePos({ x, y });
+
+    if (new URLSearchParams(window.location.search).has("sketchShare")) {
+      const width = getToolWidth("sketch");
+      setOpenTools({
+        sketch: clampToolToViewport("sketch", {
+          x: Math.max(8, window.innerWidth - width - 84),
+          y: 84
+        })
+      });
+    }
+
     setMounted(true);
   }, []);
 
@@ -260,7 +272,7 @@ export default function FloatingToolbar() {
           <ToolWindow
             key={id}
             title={meta.label}
-            icon={meta.winIcon}
+            icon={id === "sketch" ? <span style={{ color: sketchColor }}><IcoPen /></span> : meta.winIcon}
             onClose={() => closeTool(id)}
             initX={pos.x}
             initY={pos.y}
@@ -309,7 +321,7 @@ export default function FloatingToolbar() {
                     onCloseHistory={() => setCalculatorHistoryOpen(false)}
                   />
                 ) : null}
-                {id === "sketch" ? <SketchPad /> : null}
+                {id === "sketch" ? <SketchPad onColorChange={setSketchColor} /> : null}
                 {id === "keyboard" ? <VirtualKeyboard mode={keyboardMode} /> : null}
                 {id === "magnifier" ? <Magnifier initialPointer={lastPointerRef.current} /> : null}
                 {id === "contact" ? (

@@ -83,7 +83,7 @@ export default async function VisitsPage({ searchParams }) {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                    {["Date / Time", "IP", "Location", "Referrer", "Device", "Browser", "Time", "Visitor"].map((h) => (
+                    {["Date / Time", "IP", "Location", "Referrer", "Share Referral", "Device", "Browser", "Time", "Visitor"].map((h) => (
                       <th key={h} style={{
                         textAlign: "left",
                         padding: "12px 16px",
@@ -121,6 +121,20 @@ export default async function VisitsPage({ searchParams }) {
                       </td>
                       <td style={{ padding: "11px 16px", color: "#38bdf8", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {v.referrer || <span style={{ color: "#475569" }}>Direct</span>}
+                      </td>
+                      <td style={{ padding: "11px 16px", color: "#cbd5e1", whiteSpace: "nowrap" }}>
+                        {v.referredByShareId ? (
+                          <div>
+                            <div style={{ color: "#a78bfa", fontFamily: "monospace", fontSize: "12px" }}>
+                              {v.referredByShareId}
+                            </div>
+                            <div style={{ color: "#64748b", fontSize: "11px" }}>
+                              from {v.referredByIpAddress || "private/unknown IP"}
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ color: "#334155" }}>—</span>
+                        )}
                       </td>
                       <td style={{ padding: "11px 16px" }}>
                         {v.deviceType

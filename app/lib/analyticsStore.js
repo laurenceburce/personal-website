@@ -2,6 +2,7 @@ import mysql from "mysql2/promise";
 
 const TOTAL_VISITS_KEY = "total_visits";
 const MAX_IDENTIFIED_RESULTS = 50;
+const SHARE_ID_PATTERN = /^[a-zA-Z0-9_-]{8,40}$/;
 
 let poolPromise = null;
 let schemaReadyPromise = null;
@@ -16,6 +17,12 @@ const cleanVisitorId = (visitorId) => (
 );
 
 const cleanText = (value, maxLength) => String(value || "").trim().slice(0, maxLength);
+
+const cleanShareId = (shareId) => (
+  typeof shareId === "string" && SHARE_ID_PATTERN.test(shareId)
+    ? shareId
+    : null
+);
 
 const cleanEmail = (email) => {
   const value = cleanText(email, 200).toLowerCase();
@@ -107,12 +114,28 @@ const ensureSchema = async () => {
           referrer    VARCHAR(500) NULL,
           device_type VARCHAR(20)  NULL,
           browser     VARCHAR(50)  NULL,
+          referred_by_share_id VARCHAR(40) NULL,
+          referred_by_ip_address VARCHAR(45) NULL,
           INDEX portfolio_analytics_visits_at_idx (visited_at DESC),
           INDEX portfolio_analytics_visits_visitor_idx (visitor_id)
         )
       `);
 
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS portfolio_sketch_shares (
+          share_id VARCHAR(40) PRIMARY KEY,
+          creator_visitor_id VARCHAR(80) NULL,
+          creator_ip_address VARCHAR(45) NULL,
+          creator_ip_hash VARCHAR(16) NULL,
+          payload_json LONGTEXT NOT NULL,
+          created_at DATETIME(3) NOT NULL,
+          INDEX portfolio_sketch_shares_created_idx (created_at DESC)
+        )
+      `);
+
       await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN ip_address VARCHAR(45) NULL AFTER visitor_id");
+      await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN referred_by_share_id VARCHAR(40) NULL");
+      await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN referred_by_ip_address VARCHAR(45) NULL");
 
       // Migrate existing visitors table to add new columns
       const migrations = [
@@ -237,6 +260,16 @@ export async function recordVisit(visitorId, meta = {}) {
     deviceType = null,
     browser = null
   } = meta;
+  const referredShareId = cleanShareId(meta.referredShareId);
+  let referredByIpAddress = null;
+
+  if (referredShareId) {
+    const [shareRows] = await pool.query(
+      "SELECT creator_ip_address FROM portfolio_sketch_shares WHERE share_id = ? LIMIT 1",
+      [referredShareId]
+    );
+    referredByIpAddress = shareRows[0]?.creator_ip_address || null;
+  }
 
   const connection = await pool.getConnection();
 
@@ -264,9 +297,9 @@ export async function recordVisit(visitorId, meta = {}) {
     );
     await connection.query(
       `INSERT INTO portfolio_analytics_visits
-         (visitor_id, visited_at, ip_address, country, city, referrer, device_type, browser)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [safeVisitorId, now, ipAddress, country, city, referrer, deviceType, browser]
+         (visitor_id, visited_at, ip_address, country, city, referrer, device_type, browser, referred_by_share_id, referred_by_ip_address)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [safeVisitorId, now, ipAddress, country, city, referrer, deviceType, browser, referredShareId, referredByIpAddress]
     );
     await connection.commit();
   } catch (error) {
@@ -320,6 +353,51 @@ export async function identifyVisitor({ visitorId, email, name }) {
   return getAnalyticsStats();
 }
 
+export async function createSketchShare({ shareId, visitorId, ipAddress, ipHash, payload }) {
+  const safeShareId = cleanShareId(shareId);
+  const safeVisitorId = cleanVisitorId(visitorId);
+  const pool = await ensureSchema();
+
+  if (!safeShareId || !pool || !payload) return null;
+
+  await pool.query(
+    `INSERT INTO portfolio_sketch_shares
+       (share_id, creator_visitor_id, creator_ip_address, creator_ip_hash, payload_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [safeShareId, safeVisitorId, ipAddress || null, ipHash || null, JSON.stringify(payload), new Date()]
+  );
+
+  if (safeVisitorId) {
+    await recordEvent(safeVisitorId, "sketch_share_created", safeShareId);
+  }
+
+  return { shareId: safeShareId };
+}
+
+export async function getSketchShare(shareId) {
+  const safeShareId = cleanShareId(shareId);
+  const pool = await ensureSchema();
+
+  if (!safeShareId || !pool) return null;
+
+  const [rows] = await pool.query(
+    "SELECT share_id, payload_json FROM portfolio_sketch_shares WHERE share_id = ? LIMIT 1",
+    [safeShareId]
+  );
+
+  const row = rows[0];
+  if (!row) return null;
+
+  try {
+    return {
+      shareId: row.share_id,
+      payload: JSON.parse(row.payload_json)
+    };
+  } catch {
+    return null;
+  }
+}
+
 const PAGE_SIZE = 50;
 
 export async function getVisitsList(page = 1) {
@@ -341,6 +419,8 @@ export async function getVisitsList(page = 1) {
          v.referrer,
          v.device_type,
          v.browser,
+         v.referred_by_share_id,
+         v.referred_by_ip_address,
          iv.email,
          iv.name,
          te.event_value AS time_on_page
@@ -374,6 +454,8 @@ export async function getVisitsList(page = 1) {
       referrer: r.referrer || null,
       deviceType: r.device_type || null,
       browser: r.browser || null,
+      referredByShareId: r.referred_by_share_id || null,
+      referredByIpAddress: r.referred_by_ip_address || null,
       email: r.email || null,
       name: r.name || null,
       timeOnPage: r.time_on_page ? Number(r.time_on_page) : null

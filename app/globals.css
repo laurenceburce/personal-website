@@ -2961,8 +2961,20 @@ html[data-theme="light"] .mobile-nav-social a {
 
 .ft-sketch-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 5px;
+}
+
+.ft-sketch-share-status {
+  min-width: 0;
+  margin-right: auto;
+  color: var(--subtle);
+  font-size: 0.66rem;
+  font-weight: 750;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ft-page-sketch-layer {

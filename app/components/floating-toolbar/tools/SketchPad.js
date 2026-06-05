@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PageSketchOverlay from "./PageSketchOverlay";
+import { getOrCreateVisitorId } from "../../../utils/analyticsClient";
 
 const SKETCH_COLORS = ["#1e293b", "#ef4444", "#f97316", "#eab308", "#22c55e", "#38bdf8", "#818cf8", "#f9fafb"];
 const STICKERS = ["★", "✓", "!", "?", "❤", "→", "📌", "💡"];
 
-export default function SketchPad() {
+export default function SketchPad({ onColorChange = null }) {
   const pageOverlayRef = useRef(null);
   const [drawingEnabled, setDrawingEnabled] = useState(true);
   const [color, setColor] = useState("#38bdf8");
@@ -14,6 +15,45 @@ export default function SketchPad() {
   const [tool, setTool] = useState("pen");
   const [sticker, setSticker] = useState(STICKERS[0]);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareStatus, setShareStatus] = useState("");
+
+  useEffect(() => {
+    onColorChange?.(color);
+  }, [color, onColorChange]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSharedMarkup = async () => {
+      const shareId = new URLSearchParams(window.location.search).get("sketchShare");
+      if (!shareId) return;
+
+      try {
+        const response = await fetch(`/api/sketch-share/${encodeURIComponent(shareId)}`);
+        const payload = await response.json();
+
+        if (!response.ok) {
+          throw new Error(payload.error || "Unable to load shared markup.");
+        }
+
+        if (!cancelled) {
+          pageOverlayRef.current?.loadMarkup(payload.payload);
+          setShareStatus("Shared markup loaded");
+        }
+      } catch {
+        if (!cancelled) {
+          setShareStatus("Share link unavailable");
+        }
+      }
+    };
+
+    loadSharedMarkup();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const clear = () => {
     pageOverlayRef.current?.clear();
@@ -25,6 +65,49 @@ export default function SketchPad() {
       await pageOverlayRef.current?.download();
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const share = async () => {
+    try {
+      setIsSharing(true);
+      setShareStatus("");
+
+      const markup = pageOverlayRef.current?.getMarkup();
+      if (!markup) {
+        setShareStatus("Nothing to share");
+        return;
+      }
+
+      const response = await fetch("/api/sketch-share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          visitorId: getOrCreateVisitorId(),
+          markup
+        })
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Unable to create share link.");
+      }
+
+      const url = new URL(window.location.href);
+      url.searchParams.set("sketchShare", payload.shareId);
+      const shareUrl = url.toString();
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        setShareStatus("Link copied");
+      } else {
+        window.prompt("Copy this share link", shareUrl);
+        setShareStatus("Link ready");
+      }
+    } catch (error) {
+      setShareStatus(error?.message || "Share failed");
+    } finally {
+      setIsSharing(false);
     }
   };
 
@@ -116,7 +199,11 @@ export default function SketchPad() {
         <span className="ft-sketch-sizenum">{size}px</span>
       </div>
       <div className="ft-sketch-actions">
+        {shareStatus ? <span className="ft-sketch-share-status">{shareStatus}</span> : null}
         <button className="ft-sk-btn" onClick={clear} type="button">Clear</button>
+        <button className="ft-sk-btn" onClick={share} type="button" disabled={isSharing}>
+          {isSharing ? "Sharing..." : "Share"}
+        </button>
         <button className="ft-sk-btn" onClick={download} type="button" disabled={isSaving}>
           {isSaving ? "Saving..." : "Save"}
         </button>

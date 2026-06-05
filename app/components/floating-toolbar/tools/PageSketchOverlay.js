@@ -41,6 +41,7 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
   const drawingRef = useRef(false);
   const hasDrawingRef = useRef(false);
   const lastPointRef = useRef(null);
+  const pendingMarkupRef = useRef(null);
   const stickerDragRef = useRef(null);
   const stickersRef = useRef([]);
   const toolRef = useRef({ color, size, tool, sticker });
@@ -123,6 +124,82 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     canvas.dataset.hasDrawing = "false";
     setStickers([]);
     notifySketchChanged(null, false);
+  };
+
+  const loadMarkup = (markup) => {
+    if (!markup) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      pendingMarkupRef.current = markup;
+      return;
+    }
+
+    resizeCanvas();
+
+    const { dpr, width, height } = dimensionsRef.current;
+    const sourceCssWidth = Number(markup.cssWidth) || width || 1;
+    const sourceCssHeight = Number(markup.cssHeight) || height || 1;
+    const scaleX = width / sourceCssWidth;
+    const scaleY = height / sourceCssHeight;
+    const ctx = canvas.getContext("2d");
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const nextStickers = Array.isArray(markup.stickers)
+      ? markup.stickers.map((item) => ({
+          id: item.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          value: String(item.value || "").slice(0, 2),
+          x: Number(item.x || 0) * scaleX,
+          y: Number(item.y || 0) * scaleY,
+          size: Math.max(STICKER_BASE_SIZE, Number(item.size || STICKER_BASE_SIZE) * Math.min(scaleX, scaleY))
+        }))
+      : [];
+
+    setStickers(nextStickers);
+
+    if (typeof markup.canvasDataUrl !== "string") {
+      hasDrawingRef.current = nextStickers.length > 0;
+      canvas.dataset.hasDrawing = hasDrawingRef.current ? "true" : "false";
+      notifySketchChanged(null, hasDrawingRef.current);
+      return;
+    }
+
+    const image = new Image();
+    image.onload = () => {
+      ctx.drawImage(image, 0, 0, sourceCssWidth * scaleX, sourceCssHeight * scaleY);
+      hasDrawingRef.current = true;
+      canvas.dataset.hasDrawing = "true";
+      notifySketchChanged(null, true);
+    };
+    image.src = markup.canvasDataUrl;
+  };
+
+  const getMarkup = () => {
+    resizeCanvas();
+
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+
+    const { width, height } = dimensionsRef.current;
+
+    return {
+      version: 1,
+      canvasDataUrl: canvas.toDataURL("image/png"),
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      cssWidth: width,
+      cssHeight: height,
+      stickers: stickersRef.current.map((item) => ({
+        id: item.id,
+        value: item.value,
+        x: item.x,
+        y: item.y,
+        size: item.size
+      }))
+    };
   };
 
   const downloadCanvas = async () => {
@@ -222,13 +299,20 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
 
   useImperativeHandle(ref, () => ({
     clear: clearCanvas,
-    download: downloadCanvas
+    download: downloadCanvas,
+    getMarkup,
+    loadMarkup
   }));
 
   useEffect(() => {
     if (!mounted) return;
 
     resizeCanvas();
+    if (pendingMarkupRef.current) {
+      const markup = pendingMarkupRef.current;
+      pendingMarkupRef.current = null;
+      loadMarkup(markup);
+    }
     window.addEventListener("resize", resizeCanvas);
 
     let resizeObserver = null;
