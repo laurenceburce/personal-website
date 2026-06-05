@@ -5,8 +5,11 @@ import { recordVisit } from "../../../lib/analyticsStore";
 export const runtime = "nodejs";
 
 const visitRateLimit = new Map();
+const geoCache = new Map();
 const VISIT_LIMIT_MS = 60 * 1000;
 const VISIT_LIMIT_MAX = 20;
+const GEO_CACHE_MS = 12 * 60 * 60 * 1000;
+const GEO_TIMEOUT_MS = 2500;
 
 const hashIp = (ip) =>
   createHash("sha256").update(ip).digest("hex").slice(0, 16);
@@ -64,25 +67,100 @@ const cleanReferrer = (raw) => {
   }
 };
 
-const getGeoLocation = async (ip) => {
-  if (isPrivateIp(ip)) return { country: null, city: null };
+const cleanHeaderValue = (value) => {
+  if (!value) return null;
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 4000);
-    const res = await fetch(`https://ipwho.is/${ip}`, { signal: controller.signal });
-    clearTimeout(timeout);
-
-    if (!res.ok) return { country: null, city: null };
-
-    const data = await res.json();
-    return {
-      country: data.success ? (data.country || null) : null,
-      city: data.success ? (data.city || null) : null
-    };
+    return decodeURIComponent(value).trim() || null;
   } catch {
-    return { country: null, city: null };
+    return value.trim() || null;
   }
+};
+
+const getHeaderGeoLocation = (request) => {
+  const country = cleanHeaderValue(request.headers.get("x-vercel-ip-country"))
+    || cleanHeaderValue(request.headers.get("cf-ipcountry"))
+    || cleanHeaderValue(request.headers.get("x-country-code"));
+  const city = cleanHeaderValue(request.headers.get("x-vercel-ip-city"))
+    || cleanHeaderValue(request.headers.get("cf-ipcity"))
+    || cleanHeaderValue(request.headers.get("x-city"));
+
+  return {
+    country: country && country !== "XX" ? country : null,
+    city
+  };
+};
+
+const fetchJsonWithTimeout = async (url) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GEO_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "accept": "application/json",
+        "user-agent": "laurenceburce.com analytics"
+      }
+    });
+
+    if (!res.ok) return null;
+    return await res.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const lookupGeoLocation = async (ip) => {
+  if (isPrivateIp(ip)) return { country: null, city: null };
+
+  const cached = geoCache.get(ip);
+  if (cached && Date.now() - cached.cachedAt < GEO_CACHE_MS) {
+    return cached.geo;
+  }
+
+  const providers = [
+    {
+      url: `https://ipwho.is/${ip}`,
+      parse: (data) => data?.success
+        ? { country: data.country || null, city: data.city || null }
+        : null
+    },
+    {
+      url: `https://ipapi.co/${ip}/json/`,
+      parse: (data) => data && !data.error
+        ? { country: data.country_name || data.country || null, city: data.city || null }
+        : null
+    },
+    {
+      url: `http://ip-api.com/json/${ip}?fields=status,country,city`,
+      parse: (data) => data?.status === "success"
+        ? { country: data.country || null, city: data.city || null }
+        : null
+    }
+  ];
+
+  for (const provider of providers) {
+    try {
+      const data = await fetchJsonWithTimeout(provider.url);
+      const geo = provider.parse(data);
+
+      if (geo?.country || geo?.city) {
+        geoCache.set(ip, { geo, cachedAt: Date.now() });
+        return geo;
+      }
+    } catch (error) {
+      console.error("Analytics geolocation lookup failed", {
+        host: new URL(provider.url).hostname,
+        code: error?.code,
+        message: error?.message
+      });
+    }
+  }
+
+  const emptyGeo = { country: null, city: null };
+  geoCache.set(ip, { geo: emptyGeo, cachedAt: Date.now() });
+  return emptyGeo;
 };
 
 export async function POST(request) {
@@ -108,7 +186,14 @@ export async function POST(request) {
 
     const body = await request.json();
     const ua = request.headers.get("user-agent") || "";
-    const geo = await getGeoLocation(ip);
+    const headerGeo = getHeaderGeoLocation(request);
+    const lookupGeo = headerGeo.country || headerGeo.city
+      ? { country: null, city: null }
+      : await lookupGeoLocation(ip);
+    const geo = {
+      country: headerGeo.country || lookupGeo.country,
+      city: headerGeo.city || lookupGeo.city
+    };
 
     const meta = {
       ipAddress: isPrivateIp(ip) ? null : ip,
