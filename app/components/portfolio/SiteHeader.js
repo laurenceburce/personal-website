@@ -16,11 +16,14 @@ export default function SiteHeader({
   const navClassName = ["site-nav", menuOpen ? "open" : ""].filter(Boolean).join(" ");
 
   return (
-    <header className="site-header">
-      <a href="#home" className="brand">
+    <>
+      <a href="#home" className="mobile-page-logo" aria-label="Laurence Alec Burce home">
         <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
-        <span>Laurence Alec Burce</span>
       </a>
+      <header className="site-header">
+        <a href="#home" className="brand">
+          Laurence Alec Burce
+        </a>
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="mobile-theme-toggle" />
       <button
         className="menu-toggle"
@@ -37,8 +40,7 @@ export default function SiteHeader({
         <div className="mobile-nav-profile" aria-hidden={!menuOpen}>
           <p className="mobile-nav-kicker">Quick Navigation</p>
           <a href="#home" className="mobile-nav-brand" onClick={onMenuClose}>
-            <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
-            <span>Laurence Alec Burce</span>
+            Laurence Alec Burce
           </a>
           <p className="mobile-nav-role">Software Engineer • AI & Automation Engineer</p>
           <a href="mailto:laurenceburce@gmail.com" className="mobile-nav-email">
@@ -95,6 +97,7 @@ export default function SiteHeader({
         ))}
         <SidebarAnalyticsPanel analytics={analytics} className="mobile-nav-analytics" />
       </nav>
-    </header>
+      </header>
+    </>
   );
 }

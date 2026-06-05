@@ -25,8 +25,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
       <div className="scroll-profile">
         <p className="scroll-kicker">Quick Navigation</p>
         <a href="#home" className="scroll-brand">
-          <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
-          <span>Laurence Alec Burce</span>
+          Laurence Alec Burce
         </a>
         <p className="scroll-role">Software Engineer • AI & Automation Engineer</p>
         <a href="mailto:laurenceburce@gmail.com" className="scroll-email">
@@ -82,6 +81,9 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
         ))}
       </nav>
       <SidebarAnalyticsPanel analytics={analytics} />
+      <a href="#home" className="sidebar-logo-mark" aria-label="Laurence Alec Burce home">
+        <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
+      </a>
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="indicator-rail" aria-hidden="true">
         <div className="indicator-node">
