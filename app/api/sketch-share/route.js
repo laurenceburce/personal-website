@@ -37,6 +37,56 @@ const extractIp = (request) => {
 
 const createShareId = () => randomBytes(9).toString("base64url");
 
+const normalizeOrigin = (value) => {
+  if (!value) return "";
+
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`.toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
+const addOriginVariants = (origins, origin) => {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return;
+
+  origins.add(normalized);
+
+  const url = new URL(normalized);
+  if (url.hostname.startsWith("www.")) {
+    url.hostname = url.hostname.slice(4);
+    origins.add(`${url.protocol}//${url.host}`.toLowerCase());
+  } else {
+    url.hostname = `www.${url.hostname}`;
+    origins.add(`${url.protocol}//${url.host}`.toLowerCase());
+  }
+};
+
+const isAllowedOrigin = (request) => {
+  const origin = normalizeOrigin(request.headers.get("origin") || "");
+  if (!origin) return true;
+
+  const allowedOrigins = new Set();
+  addOriginVariants(allowedOrigins, process.env.NEXT_PUBLIC_SITE_URL || "");
+  addOriginVariants(allowedOrigins, request.url);
+
+  const forwardedHost = request.headers.get("x-forwarded-host") || "";
+  const forwardedProto = request.headers.get("x-forwarded-proto") || "https";
+  if (forwardedHost) {
+    addOriginVariants(allowedOrigins, `${forwardedProto}://${forwardedHost}`);
+  }
+
+  const host = request.headers.get("host") || "";
+  if (host) {
+    addOriginVariants(allowedOrigins, `https://${host}`);
+    addOriginVariants(allowedOrigins, `http://${host}`);
+  }
+
+  return allowedOrigins.has(origin);
+};
+
 const isValidMarkup = (markup) => (
   markup &&
   markup.version === 1 &&
@@ -51,9 +101,7 @@ const isValidMarkup = (markup) => (
 
 export async function POST(request) {
   try {
-    const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || "";
-    const origin = request.headers.get("origin") || "";
-    if (allowedOrigin && origin && origin !== allowedOrigin) {
+    if (!isAllowedOrigin(request)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
