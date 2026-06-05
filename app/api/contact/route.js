@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import dns from "dns";
 import nodemailer from "nodemailer";
 
 const contactRateLimit = new Map();
@@ -12,14 +13,15 @@ function parseBoolean(value) {
 
 function createMailTransport({ host, port, secure, user, pass }) {
   const normalizedHost = host.trim().toLowerCase();
-  const isGmail = normalizedHost === "smtp.gmail.com";
 
   return nodemailer.createTransport({
-    ...(isGmail ? { service: "gmail" } : {}),
     host: normalizedHost,
     port,
     secure,
     family: 4,
+    lookup: (hostname, options, callback) => {
+      dns.lookup(hostname, { ...options, family: 4 }, callback);
+    },
     requireTLS: !secure,
     connectionTimeout: SMTP_TIMEOUT_MS,
     greetingTimeout: SMTP_TIMEOUT_MS,
