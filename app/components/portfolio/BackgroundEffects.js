@@ -44,8 +44,8 @@ export default function BackgroundEffects() {
         list.push({
           x: Math.random() * width,
           y: Math.random() * height,
-          vx: -0.36 + Math.random() * 0.72,
-          vy: -0.36 + Math.random() * 0.72,
+          vx: -0.035 + Math.random() * 0.07,
+          vy: -0.035 + Math.random() * 0.07,
           r: 0.75 + Math.random() * 2,
           hue: 188 + Math.random() * 32
         });
