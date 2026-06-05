@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 
 const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 60 * 60 * 1000;
+const SMTP_TIMEOUT_MS = 10000;
 
 function escapeHtml(str) {
   return String(str)
@@ -97,6 +98,9 @@ export async function POST(request) {
       host,
       port,
       secure,
+      connectionTimeout: SMTP_TIMEOUT_MS,
+      greetingTimeout: SMTP_TIMEOUT_MS,
+      socketTimeout: SMTP_TIMEOUT_MS,
       auth: {
         user,
         pass

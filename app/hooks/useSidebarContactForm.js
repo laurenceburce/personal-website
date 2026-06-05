@@ -4,6 +4,8 @@ import { useState } from "react";
 import { identifyAnalyticsVisitor } from "../utils/analyticsClient";
 import { sidebarContactInitial, validateSidebarContact } from "../utils/sidebarContact";
 
+const CONTACT_REQUEST_TIMEOUT_MS = 15000;
+
 export default function useSidebarContactForm() {
   const [form, setForm] = useState(sidebarContactInitial);
   const [errors, setErrors] = useState({});
@@ -42,11 +44,17 @@ export default function useSidebarContactForm() {
       setIsSubmitting(true);
       setStatus({ type: "idle", message: "" });
 
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => {
+        controller.abort();
+      }, CONTACT_REQUEST_TIMEOUT_MS);
+
       const response = await fetch("/api/contact", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
+        signal: controller.signal,
         body: JSON.stringify({
           name: form.name,
           email: form.email,
@@ -55,6 +63,7 @@ export default function useSidebarContactForm() {
           company: form.company
         })
       });
+      window.clearTimeout(timeoutId);
 
       const payload = await response.json();
 
@@ -73,7 +82,9 @@ export default function useSidebarContactForm() {
     } catch (error) {
       setStatus({
         type: "error",
-        message: error.message || "Unable to send message right now."
+        message: error.name === "AbortError"
+          ? "Sending timed out. Please try again."
+          : error.message || "Unable to send message right now."
       });
     } finally {
       setIsSubmitting(false);
