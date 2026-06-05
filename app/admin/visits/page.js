@@ -120,16 +120,24 @@ export default async function VisitsPage({ searchParams }) {
                           : v.country || <span style={{ color: "#475569" }}>Unknown</span>}
                       </td>
                       <td style={{ padding: "11px 16px", color: "#38bdf8", maxWidth: "160px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {v.referrer || <span style={{ color: "#475569" }}>Direct</span>}
+                        {v.referredByIpAddress
+                          ? `from: ${v.referredByIpAddress}`
+                          : v.referrer || <span style={{ color: "#475569" }}>Direct</span>}
                       </td>
                       <td style={{ padding: "11px 16px", color: "#cbd5e1", whiteSpace: "nowrap" }}>
                         {v.referredByShareId ? (
                           <div>
                             <div style={{ color: "#a78bfa", fontFamily: "monospace", fontSize: "12px" }}>
-                              {v.referredByShareId}
+                              opened {v.referredByShareId}
+                            </div>
+                          </div>
+                        ) : v.createdShareId ? (
+                          <div>
+                            <div style={{ color: "#34d399", fontFamily: "monospace", fontSize: "12px" }}>
+                              created {v.createdShareId}
                             </div>
                             <div style={{ color: "#64748b", fontSize: "11px" }}>
-                              from {v.referredByIpAddress || "private/unknown IP"}
+                              shared by this visit
                             </div>
                           </div>
                         ) : (

@@ -423,7 +423,8 @@ export async function getVisitsList(page = 1) {
          v.referred_by_ip_address,
          iv.email,
          iv.name,
-         te.event_value AS time_on_page
+         te.event_value AS time_on_page,
+         se.event_value AS created_share_id
        FROM portfolio_analytics_visits v
        LEFT JOIN portfolio_analytics_identified_visitors iv
          ON iv.visitor_id = v.visitor_id
@@ -432,6 +433,16 @@ export async function getVisitsList(page = 1) {
            SELECT id FROM portfolio_analytics_events
            WHERE visitor_id = v.visitor_id
              AND event_type = 'time_on_page'
+             AND created_at >= v.visited_at
+             AND created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
+           ORDER BY created_at ASC
+           LIMIT 1
+         )
+       LEFT JOIN portfolio_analytics_events se
+         ON se.id = (
+           SELECT id FROM portfolio_analytics_events
+           WHERE visitor_id = v.visitor_id
+             AND event_type = 'sketch_share_created'
              AND created_at >= v.visited_at
              AND created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
            ORDER BY created_at ASC
@@ -456,6 +467,7 @@ export async function getVisitsList(page = 1) {
       browser: r.browser || null,
       referredByShareId: r.referred_by_share_id || null,
       referredByIpAddress: r.referred_by_ip_address || null,
+      createdShareId: r.created_share_id || null,
       email: r.email || null,
       name: r.name || null,
       timeOnPage: r.time_on_page ? Number(r.time_on_page) : null
