@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 
 const MAX_DPR = 2;
 const SKETCH_CHANGED_EVENT = "floating-toolbar:sketch-changed";
+const STICKER_BASE_SIZE = 28;
 const FLOATING_UI_SELECTOR = [
   ".ft-window",
   ".ft-circle",
@@ -31,14 +32,18 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
   drawingEnabled,
   color,
   size,
-  eraser
+  tool,
+  sticker
 }, ref) {
   const [mounted, setMounted] = useState(false);
+  const [stickers, setStickers] = useState([]);
   const canvasRef = useRef(null);
   const drawingRef = useRef(false);
   const hasDrawingRef = useRef(false);
   const lastPointRef = useRef(null);
-  const toolRef = useRef({ color, size, eraser });
+  const stickerDragRef = useRef(null);
+  const stickersRef = useRef([]);
+  const toolRef = useRef({ color, size, tool, sticker });
   const dimensionsRef = useRef({ width: 0, height: 0, dpr: 1 });
 
   useEffect(() => {
@@ -46,8 +51,12 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
   }, []);
 
   useEffect(() => {
-    toolRef.current = { color, size, eraser };
-  }, [color, size, eraser]);
+    toolRef.current = { color, size, tool, sticker };
+  }, [color, size, tool, sticker]);
+
+  useEffect(() => {
+    stickersRef.current = stickers;
+  }, [stickers]);
 
   const resizeCanvas = () => {
     const canvas = canvasRef.current;
@@ -112,6 +121,7 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     hasDrawingRef.current = false;
     canvas.dataset.hasDrawing = "false";
+    setStickers([]);
     notifySketchChanged(null, false);
   };
 
@@ -195,6 +205,14 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
       0, 0, canvas.width, canvas.height,
       0, 0, outputCanvas.width, outputCanvas.height
     );
+    stickersRef.current.forEach((item) => {
+      outputContext.save();
+      outputContext.font = `${Math.round(item.size * scale)}px "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif`;
+      outputContext.textAlign = "center";
+      outputContext.textBaseline = "middle";
+      outputContext.fillText(item.value, item.x * scale, item.y * scale);
+      outputContext.restore();
+    });
 
     const link = document.createElement("a");
     link.href = outputCanvas.toDataURL("image/png");
@@ -233,36 +251,67 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     y: event.pageY
   });
 
+  const markChanged = (point) => {
+    hasDrawingRef.current = true;
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.dataset.hasDrawing = "true";
+    }
+    notifySketchChanged(point, true);
+  };
+
+  const addSticker = (point, value = toolRef.current.sticker) => {
+    const cleanValue = value?.trim?.() || toolRef.current.sticker;
+    const nextSticker = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      value: cleanValue.slice(0, 2),
+      x: point.x,
+      y: point.y,
+      size: Math.max(STICKER_BASE_SIZE, toolRef.current.size * 1.6)
+    };
+
+    setStickers((items) => [...items, nextSticker]);
+    markChanged(point);
+  };
+
+  const removeSticker = (id, point) => {
+    setStickers((items) => items.filter((item) => item.id !== id));
+    markChanged(point);
+  };
+
   const drawDot = (point) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const { color: strokeColor, size: strokeSize, eraser: isErasing } = toolRef.current;
+    const { color: strokeColor, size: strokeSize, tool: activeTool } = toolRef.current;
+    const isErasing = activeTool === "eraser";
+    const isHighlighting = activeTool === "highlight";
     const ctx = canvas.getContext("2d");
-    hasDrawingRef.current = true;
-    canvas.dataset.hasDrawing = "true";
+    markChanged(point);
     ctx.save();
     ctx.globalCompositeOperation = isErasing ? "destination-out" : "source-over";
+    ctx.globalAlpha = isHighlighting ? 0.35 : 1;
     ctx.fillStyle = isErasing ? "#000" : strokeColor;
     ctx.beginPath();
-    ctx.arc(point.x, point.y, strokeSize / 2, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, (isHighlighting ? Math.max(strokeSize, 16) : strokeSize) / 2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
-    notifySketchChanged(point, true);
   };
 
   const drawLine = (from, to) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const { color: strokeColor, size: strokeSize, eraser: isErasing } = toolRef.current;
+    const { color: strokeColor, size: strokeSize, tool: activeTool } = toolRef.current;
+    const isErasing = activeTool === "eraser";
+    const isHighlighting = activeTool === "highlight";
     const ctx = canvas.getContext("2d");
-    hasDrawingRef.current = true;
-    canvas.dataset.hasDrawing = "true";
+    markChanged(to);
     ctx.save();
     ctx.globalCompositeOperation = isErasing ? "destination-out" : "source-over";
+    ctx.globalAlpha = isHighlighting ? 0.35 : 1;
     ctx.strokeStyle = isErasing ? "#000" : strokeColor;
-    ctx.lineWidth = strokeSize;
+    ctx.lineWidth = isHighlighting ? Math.max(strokeSize, 16) : strokeSize;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.beginPath();
@@ -270,7 +319,6 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     ctx.lineTo(to.x, to.y);
     ctx.stroke();
     ctx.restore();
-    notifySketchChanged(to, true);
   };
 
   const onPointerDown = (event) => {
@@ -281,6 +329,11 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     resizeCanvas();
 
     const point = getPoint(event);
+    if (toolRef.current.tool === "sticker") {
+      addSticker(point);
+      return;
+    }
+
     drawingRef.current = true;
     lastPointRef.current = point;
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -302,12 +355,64 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   };
 
+  const onStickerPointerDown = (event, item) => {
+    if (!event.isPrimary) return;
+    if (event.pointerType !== "touch" && event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const point = getPoint(event);
+    if (toolRef.current.tool === "eraser") {
+      removeSticker(item.id, point);
+      return;
+    }
+
+    stickerDragRef.current = {
+      id: item.id,
+      offsetX: point.x - item.x,
+      offsetY: point.y - item.y
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const onStickerPointerMove = (event) => {
+    if (!event.isPrimary || !stickerDragRef.current) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const point = getPoint(event);
+    const { id, offsetX, offsetY } = stickerDragRef.current;
+    const nextPoint = {
+      x: point.x - offsetX,
+      y: point.y - offsetY
+    };
+
+    setStickers((items) => items.map((item) => (
+      item.id === id ? { ...item, ...nextPoint } : item
+    )));
+    markChanged(nextPoint);
+  };
+
+  const stopStickerDrag = (event) => {
+    stickerDragRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+  };
+
+  const onDrop = (event) => {
+    event.preventDefault();
+    const droppedSticker = event.dataTransfer.getData("text/plain");
+    addSticker({ x: event.pageX, y: event.pageY }, droppedSticker);
+  };
+
   if (!mounted) return null;
 
   return createPortal(
     <div
       className={`ft-page-sketch-layer${drawingEnabled ? " drawing" : ""}`}
-      aria-hidden="true"
+      aria-label="Page sketch overlay"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={onDrop}
     >
       <canvas
         ref={canvasRef}
@@ -318,6 +423,27 @@ const PageSketchOverlay = forwardRef(function PageSketchOverlay({
         onPointerCancel={stopDrawing}
         onContextMenu={(event) => event.preventDefault()}
       />
+      <div className="ft-page-sticker-layer">
+        {stickers.map((item) => (
+          <button
+            key={item.id}
+            className="ft-page-sticker"
+            style={{
+              left: item.x,
+              top: item.y,
+              fontSize: item.size
+            }}
+            onPointerDown={(event) => onStickerPointerDown(event, item)}
+            onPointerMove={onStickerPointerMove}
+            onPointerUp={stopStickerDrag}
+            onPointerCancel={stopStickerDrag}
+            type="button"
+            aria-label={`Move sticker ${item.value}`}
+          >
+            {item.value}
+          </button>
+        ))}
+      </div>
     </div>,
     document.body
   );
