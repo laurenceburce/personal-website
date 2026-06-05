@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { identifyAnalyticsVisitor } from "../utils/analyticsClient";
+import { getOrCreateVisitorId, identifyAnalyticsVisitor } from "../utils/analyticsClient";
 import { sidebarContactInitial, validateSidebarContact } from "../utils/sidebarContact";
 
 const CONTACT_REQUEST_TIMEOUT_MS = 15000;
@@ -61,7 +61,8 @@ export default function useSidebarContactForm() {
           email: form.email,
           subject: "Portfolio Sidebar Contact",
           message: form.message,
-          company: form.company
+          company: form.company,
+          visitorId: getOrCreateVisitorId()
         })
       });
 
@@ -76,7 +77,10 @@ export default function useSidebarContactForm() {
         name: form.name
       }).catch(() => {});
 
-      setStatus({ type: "success", message: "Message sent." });
+      setStatus({
+        type: "success",
+        message: payload.delivered === false ? "Message received." : "Message sent."
+      });
       setForm(sidebarContactInitial);
       setErrors({});
     } catch (error) {

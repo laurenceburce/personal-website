@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import dns from "dns";
 import nodemailer from "nodemailer";
+import { recordContactMessage } from "../../lib/analyticsStore";
 
 const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 60 * 60 * 1000;
-const SMTP_TIMEOUT_MS = 10000;
+const SMTP_TIMEOUT_MS = 5000;
 const CONTACT_EMAIL = "laurenceburce@gmail.com";
 const smtpAddressCache = new Map();
 
@@ -174,27 +175,52 @@ export async function POST(request) {
       pass
     });
 
-    await transporter.sendMail({
-      from,
-      to,
-      envelope: {
-        from: user,
-        to
-      },
-      replyTo: values.email,
-      subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
-      text: `Name: ${values.name}\nEmail: ${values.email}\nSubject: ${values.subject}\n\n${values.message}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0b1f45;">
-          <h2 style="margin-bottom: 8px;">New Portfolio Contact Message</h2>
-          <p><strong>Name:</strong> ${escapeHtml(values.name)}</p>
-          <p><strong>Email:</strong> ${escapeHtml(values.email)}</p>
-          <p><strong>Subject:</strong> ${escapeHtml(values.subject)}</p>
-          <hr style="border:0;border-top:1px solid #d6e6ff;margin:16px 0;" />
-          <p style="white-space: pre-wrap;">${escapeHtml(values.message)}</p>
-        </div>
-      `
-    });
+    try {
+      await transporter.sendMail({
+        from,
+        to,
+        envelope: {
+          from: user,
+          to
+        },
+        replyTo: values.email,
+        subject: `[Portfolio Contact] ${values.subject.replace(/[\r\n]/g, "")}`,
+        text: `Name: ${values.name}\nEmail: ${values.email}\nSubject: ${values.subject}\n\n${values.message}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0b1f45;">
+            <h2 style="margin-bottom: 8px;">New Portfolio Contact Message</h2>
+            <p><strong>Name:</strong> ${escapeHtml(values.name)}</p>
+            <p><strong>Email:</strong> ${escapeHtml(values.email)}</p>
+            <p><strong>Subject:</strong> ${escapeHtml(values.subject)}</p>
+            <hr style="border:0;border-top:1px solid #d6e6ff;margin:16px 0;" />
+            <p style="white-space: pre-wrap;">${escapeHtml(values.message)}</p>
+          </div>
+        `
+      });
+    } catch (error) {
+      console.error("Contact form email failed", {
+        code: error?.code,
+        command: error?.command,
+        message: error?.message
+      });
+
+      const stored = await recordContactMessage({
+        visitorId: body?.visitorId,
+        name: values.name,
+        email: values.email,
+        subject: values.subject,
+        message: values.message,
+        deliveryStatus: "smtp_failed",
+        deliveryError: getContactErrorMessage(error)
+      });
+
+      if (stored) {
+        contactRateLimit.set(ip, Date.now());
+        return NextResponse.json({ ok: true, delivered: false, stored: true });
+      }
+
+      throw error;
+    }
 
     contactRateLimit.set(ip, Date.now());
 
