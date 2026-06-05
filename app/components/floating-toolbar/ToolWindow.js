@@ -11,7 +11,8 @@ export default function ToolWindow({
   initX,
   initY,
   width = 290,
-  headerActions = null
+  headerActions = null,
+  minimized = false
 }) {
   const [pos, , startDrag] = useDraggable(initX, initY);
   const renderedChildren =
@@ -20,7 +21,7 @@ export default function ToolWindow({
       : children;
 
   return (
-    <div className="ft-window" style={{ left: pos.x, top: pos.y, width }}>
+    <div className={`ft-window${minimized ? " minimized" : ""}`} style={{ left: pos.x, top: pos.y, width }}>
       <div
         className="ft-window-header"
         onPointerDown={(event) => {
@@ -39,7 +40,7 @@ export default function ToolWindow({
           </button>
         </span>
       </div>
-      <div className="ft-window-body">{renderedChildren}</div>
+      <div className="ft-window-body" hidden={minimized}>{renderedChildren}</div>
     </div>
   );
 }

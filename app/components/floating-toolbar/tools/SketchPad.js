@@ -7,9 +7,9 @@ import { getOrCreateVisitorId } from "../../../utils/analyticsClient";
 const SKETCH_COLORS = ["#1e293b", "#ef4444", "#f97316", "#eab308", "#22c55e", "#38bdf8", "#818cf8", "#f9fafb"];
 const STICKERS = ["★", "✓", "!", "?", "❤", "→", "◆", "●"];
 
-export default function SketchPad({ onColorChange = null }) {
+export default function SketchPad({ initialDrawingEnabled = true, onColorChange = null }) {
   const pageOverlayRef = useRef(null);
-  const [drawingEnabled, setDrawingEnabled] = useState(true);
+  const [drawingEnabled, setDrawingEnabled] = useState(initialDrawingEnabled);
   const [color, setColor] = useState("#38bdf8");
   const [size, setSize] = useState(4);
   const [tool, setTool] = useState("pen");
