@@ -11,6 +11,7 @@ export default function useDraggable(initX, initY) {
     if (event.button !== 0) return;
 
     event.preventDefault();
+    event.currentTarget?.setPointerCapture?.(event.pointerId);
 
     const startX = event.clientX;
     const startY = event.clientY;
@@ -32,9 +33,11 @@ export default function useDraggable(initX, initY) {
       });
     };
 
-    const onUp = () => {
+    const onUp = (upEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      event.currentTarget?.releasePointerCapture?.(upEvent.pointerId);
 
       if (!moved && onClick) {
         onClick();
@@ -43,6 +46,7 @@ export default function useDraggable(initX, initY) {
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   }, []);
 
   return [pos, setPos, startDrag];

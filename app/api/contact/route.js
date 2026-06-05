@@ -25,7 +25,7 @@ function validatePayload(body) {
   const message = String(body?.message || "").trim();
   const company = String(body?.company || "").trim();
 
-  if (!name || name.length < 2 || name.length > 120) {
+  if (!name || name.length > 120) {
     errors.push("Invalid name.");
   }
 
@@ -37,7 +37,7 @@ function validatePayload(body) {
     errors.push("Invalid subject.");
   }
 
-  if (!message || message.length < 5 || message.length > 5000) {
+  if (!message || message.length > 5000) {
     errors.push("Invalid message body.");
   }
 

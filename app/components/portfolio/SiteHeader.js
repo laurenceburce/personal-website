@@ -1,4 +1,4 @@
-import { IconDownload, IconGitHub, IconLinkedIn, IconMail, SidebarIcon } from "./icons";
+import { IconDownload, IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
 import { downloadLinks, trackDownload } from "./navigationLinks";
 import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
@@ -42,6 +42,10 @@ export default function SiteHeader({
           <a href="mailto:laurenceburce@gmail.com" className="mobile-nav-email">
             <IconMail />
             laurenceburce@gmail.com
+          </a>
+          <a href="tel:+16196350470" className="mobile-nav-email">
+            <IconPhone />
+            +1 619 635 0470
           </a>
           <div className="mobile-nav-social">
             <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer">

@@ -2469,7 +2469,9 @@ html[data-theme="light"] .mobile-nav-social a {
   align-items: center;
   justify-content: space-between;
   padding: 9px 10px 9px 12px;
+  min-height: 40px;
   cursor: grab;
+  touch-action: none;
   border-bottom: 1px solid var(--line);
   user-select: none;
   gap: 8px;
@@ -3091,6 +3093,25 @@ html[data-theme="light"] .mobile-nav-social a {
 
   .ft-window {
     max-width: calc(100vw - 16px);
+  }
+
+  .ft-window-header {
+    min-height: 52px;
+    padding: 13px 12px 13px 14px;
+  }
+
+  .ft-window-title {
+    font-size: 0.82rem;
+  }
+
+  .ft-window-tool-btn {
+    width: 30px;
+    height: 30px;
+  }
+
+  .ft-window-close {
+    width: 28px;
+    height: 28px;
   }
 
   .ft-window-body {

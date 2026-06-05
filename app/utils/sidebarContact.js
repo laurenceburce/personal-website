@@ -7,17 +7,20 @@ export const sidebarContactInitial = {
 
 export function validateSidebarContact(values) {
   const errors = {};
+  const name = String(values.name || "").trim();
+  const email = String(values.email || "").trim();
+  const message = String(values.message || "").trim();
   const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-  if (!values.name.trim() || values.name.trim().length < 2) {
+  if (!name) {
     errors.name = "Enter your name.";
   }
 
-  if (!values.email.trim() || !emailPattern.test(values.email.trim())) {
+  if (!email || !emailPattern.test(email)) {
     errors.email = "Enter a valid email.";
   }
 
-  if (!values.message.trim() || values.message.trim().length < 5) {
+  if (!message) {
     errors.message = "Add a message.";
   }
 
