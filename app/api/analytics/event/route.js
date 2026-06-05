@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { recordEvent } from "../../../lib/analyticsStore";
+import { isAllowedOrigin, isLocalRequest } from "../../utils/origin";
 
 export const runtime = "nodejs";
 
@@ -11,9 +12,7 @@ const ALLOWED_TYPES = new Set(["download", "link_click", "time_on_page", "sketch
 
 export async function POST(request) {
   try {
-    const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || "";
-    const origin = request.headers.get("origin") || "";
-    if (allowedOrigin && origin && origin !== allowedOrigin) {
+    if (!isAllowedOrigin(request)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
@@ -41,6 +40,10 @@ export async function POST(request) {
 
     return NextResponse.json({ ok: true });
   } catch {
+    if (isLocalRequest(request)) {
+      return NextResponse.json({ ok: false, skipped: true, reason: "local_analytics_unavailable" });
+    }
+
     return NextResponse.json(
       { error: "Unable to record event." },
       { status: 500 }

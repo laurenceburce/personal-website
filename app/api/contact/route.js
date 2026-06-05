@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isAllowedOrigin } from "../utils/origin";
 
 const contactRateLimit = new Map();
 const CONTACT_LIMIT_MS = 10 * 60 * 1000;
@@ -128,9 +129,7 @@ function validatePayload(body) {
 
 export async function POST(request) {
   try {
-    const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || "";
-    const origin = request.headers.get("origin") || "";
-    if (allowedOrigin && origin && origin !== allowedOrigin) {
+    if (!isAllowedOrigin(request)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 

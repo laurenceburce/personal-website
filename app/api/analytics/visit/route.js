@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { NextResponse } from "next/server";
 import { recordVisit } from "../../../lib/analyticsStore";
+import { isAllowedOrigin, isLocalRequest } from "../../utils/origin";
 
 export const runtime = "nodejs";
 
@@ -165,9 +166,7 @@ const lookupGeoLocation = async (ip) => {
 
 export async function POST(request) {
   try {
-    const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || "";
-    const origin = request.headers.get("origin") || "";
-    if (allowedOrigin && origin && origin !== allowedOrigin) {
+    if (!isAllowedOrigin(request)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
@@ -210,6 +209,22 @@ export async function POST(request) {
 
     return NextResponse.json(stats);
   } catch {
+    if (isLocalRequest(request)) {
+      return NextResponse.json({
+        configured: false,
+        totalVisits: 0,
+        uniqueVisitors: 0,
+        identifiedVisitors: 0,
+        topCountries: [],
+        topReferrers: [],
+        deviceBreakdown: [],
+        browserBreakdown: [],
+        topDownloads: [],
+        topLinkClicks: [],
+        avgTimeOnPageSeconds: null
+      });
+    }
+
     return NextResponse.json(
       { error: "Unable to record analytics visit." },
       { status: 500 }

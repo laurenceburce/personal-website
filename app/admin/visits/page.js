@@ -87,7 +87,7 @@ const shareLabel = (visit) => {
 
 function Header({ total }) {
   return (
-    <div style={{
+    <div className="admin-header" style={{
       display: "flex",
       justifyContent: "space-between",
       alignItems: "flex-start",
@@ -119,7 +119,7 @@ function SessionSummary({ visits }) {
       {visits.length === 0 ? (
         <p style={{ ...muted, fontSize: "14px", margin: 0 }}>No visits recorded yet.</p>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px" }}>
+        <div className="admin-session-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px" }}>
           {visits.slice(0, 6).map((visit) => (
             <div key={visit.id} style={{
               border: "1px solid rgba(255,255,255,0.07)",
@@ -217,14 +217,14 @@ export default async function VisitsPage({ searchParams }) {
   const totalPages = Math.ceil(total / pageSize);
 
   return (
-    <div style={pageStyle}>
-      <div style={shell}>
+    <div className="admin-page" style={pageStyle}>
+      <div className="admin-shell" style={shell}>
         <Header total={total} />
         <SessionSummary visits={visits} />
         <VisitTable visits={visits} />
 
         {totalPages > 1 && (
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          <div className="admin-pagination" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
             {page > 1 ? (
               <Link href={`/admin/visits?page=${page - 1}`} style={paginationLink}>Previous</Link>
             ) : null}

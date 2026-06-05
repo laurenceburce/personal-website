@@ -85,13 +85,13 @@ const sumCounts = (items) => items.reduce((sum, item) => sum + Number(item.count
 
 function Header() {
   return (
-    <div style={{
+    <div className="admin-header" style={{
       display: "flex",
       justifyContent: "space-between",
       alignItems: "flex-start",
       gap: "18px",
       marginBottom: "28px"
-    }}>
+      }}>
       <div>
         <p style={{ ...sectionTitle, color: "#38bdf8", marginBottom: "8px" }}>Portfolio Admin</p>
         <h1 style={{ fontSize: "28px", lineHeight: 1.1, fontWeight: "850", margin: "0 0 8px" }}>
@@ -101,7 +101,7 @@ function Header() {
           Traffic, engagement, downloads, and known visitors for laurenceburce.com.
         </p>
       </div>
-      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+      <div className="admin-header-actions" style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
         <Link href="/admin/visits" style={primaryLink}>Visit Log</Link>
         <AdminLogout />
       </div>
@@ -134,7 +134,7 @@ function RankedList({ title, items, getLabel, emptyText = "No data yet" }) {
         <p style={{ ...muted, fontSize: "14px", margin: 0 }}>{emptyText}</p>
       ) : (
         items.map((item) => (
-          <div key={getLabel(item)} style={row}>
+          <div key={getLabel(item)} className="admin-list-row" style={row}>
             <div style={{ minWidth: 0 }}>
               <div style={{ color: "#dbeafe", fontSize: "13px", fontWeight: "650", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {getLabel(item)}
@@ -167,7 +167,7 @@ function ActivityList({ title, items, type }) {
         <p style={{ ...muted, fontSize: "14px", margin: 0 }}>No {type} events yet</p>
       ) : (
         items.slice(0, 8).map((event) => (
-          <div key={`${event.createdAt}-${event.visitorId}-${event.file || event.link}`} style={{ ...row, alignItems: "start" }}>
+          <div key={`${event.createdAt}-${event.visitorId}-${event.file || event.link}`} className="admin-list-row admin-activity-row" style={{ ...row, alignItems: "start" }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {fmtEventValue(event.file || event.link)}
@@ -232,11 +232,11 @@ export default async function AdminPage() {
     : "0%";
 
   return (
-    <div style={pageStyle}>
-      <div style={shell}>
+    <div className="admin-page" style={pageStyle}>
+      <div className="admin-shell" style={shell}>
         <Header />
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "14px", marginBottom: "18px" }}>
+        <div className="admin-metric-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "14px", marginBottom: "18px" }}>
           <MetricCard label="Total Visits" value={fmt(stats.totalVisits)} note="All recorded sessions" />
           <MetricCard label="Unique Visitors" value={fmt(stats.uniqueVisitors)} note="Known browser identities" />
           <MetricCard label="Identified Rate" value={identifiedRate} note={`${fmt(stats.identifiedVisitors)} identified visitors`} />
@@ -244,21 +244,21 @@ export default async function AdminPage() {
           <MetricCard label="Engagement" value={fmt(totalEngagement)} note="Downloads and link clicks" />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(280px, 0.9fr)", gap: "18px", marginBottom: "18px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "14px" }}>
+        <div className="admin-dashboard-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(280px, 0.9fr)", gap: "18px", marginBottom: "18px" }}>
+          <div className="admin-ranked-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "14px" }}>
             <RankedList title="Countries" items={stats.topCountries} getLabel={(item) => item.country} />
             <RankedList title="Referrers" items={stats.topReferrers} getLabel={(item) => item.referrer} />
             <RankedList title="Devices" items={stats.deviceBreakdown} getLabel={(item) => item.device} />
             <RankedList title="Browsers" items={stats.browserBreakdown} getLabel={(item) => item.browser} />
           </div>
 
-          <div style={{ display: "grid", gap: "14px" }}>
+          <div className="admin-side-grid" style={{ display: "grid", gap: "14px" }}>
             <RankedList title="Top Downloads" items={stats.topDownloads} getLabel={(item) => item.file} emptyText="No downloads yet" />
             <RankedList title="Top Links" items={stats.topLinkClicks.slice(0, 8)} getLabel={(item) => item.link} emptyText="No link clicks yet" />
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "14px", marginBottom: "18px" }}>
+        <div className="admin-activity-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "14px", marginBottom: "18px" }}>
           <ActivityList title="Recent Downloads" items={stats.downloadEvents} type="download" />
           <ActivityList title="Recent Link Clicks" items={stats.linkClickEvents} type="link click" />
         </div>

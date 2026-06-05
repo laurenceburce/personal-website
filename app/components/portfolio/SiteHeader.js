@@ -1,5 +1,6 @@
-import { IconDownload, IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
-import { downloadLinks, trackDownload } from "./navigationLinks";
+import DownloadGate from "./DownloadGate";
+import { IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
+import { downloadLinks } from "./navigationLinks";
 import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
 
@@ -59,19 +60,7 @@ export default function SiteHeader({
             </a>
           </div>
           <div className="mobile-nav-downloads" aria-label="Downloads">
-            {downloadLinks.map((link) => (
-              <a
-                key={link.href}
-                href={link.href}
-                download
-                className={`scroll-download-link scroll-download-${link.tone}`}
-                aria-label={link.ariaLabel}
-                onClick={() => trackDownload(link.label)}
-              >
-                <IconDownload />
-                <span>{link.label}</span>
-              </a>
-            ))}
+            <DownloadGate links={downloadLinks} />
           </div>
         </div>
 

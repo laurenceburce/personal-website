@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { identifyVisitor } from "../../../lib/analyticsStore";
+import { isAllowedOrigin, isLocalRequest } from "../../utils/origin";
 
 export const runtime = "nodejs";
 
@@ -9,9 +10,7 @@ const IDENTIFY_LIMIT_MAX = 20;
 
 export async function POST(request) {
   try {
-    const allowedOrigin = process.env.NEXT_PUBLIC_SITE_URL || "";
-    const origin = request.headers.get("origin") || "";
-    if (allowedOrigin && origin && origin !== allowedOrigin) {
+    if (!isAllowedOrigin(request)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
     }
 
@@ -37,6 +36,10 @@ export async function POST(request) {
 
     return NextResponse.json(stats);
   } catch {
+    if (isLocalRequest(request)) {
+      return NextResponse.json({ ok: false, skipped: true, reason: "local_analytics_unavailable" });
+    }
+
     return NextResponse.json(
       { error: "Unable to identify analytics visitor." },
       { status: 500 }
