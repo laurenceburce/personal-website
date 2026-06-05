@@ -4,6 +4,47 @@ import AdminLogout from "./AdminLogout";
 
 export const dynamic = "force-dynamic";
 
+const pageStyle = {
+  minHeight: "100vh",
+  background: "linear-gradient(135deg, #080c1c 0%, #040810 100%)",
+  fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+  color: "#f8fafc",
+  padding: "32px 24px"
+};
+
+const shell = { maxWidth: "1180px", margin: "0 auto" };
+const card = {
+  background: "rgba(255,255,255,0.04)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: "14px",
+  padding: "18px",
+  boxShadow: "0 18px 50px rgba(0,0,0,0.18)"
+};
+const panelHeader = {
+  display: "flex",
+  alignItems: "baseline",
+  justifyContent: "space-between",
+  gap: "12px",
+  marginBottom: "14px"
+};
+const sectionTitle = {
+  color: "#cbd5e1",
+  fontSize: "12px",
+  fontWeight: "800",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  margin: 0
+};
+const muted = { color: "#64748b" };
+const row = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: "12px",
+  alignItems: "center",
+  padding: "9px 0",
+  borderBottom: "1px solid rgba(255,255,255,0.05)"
+};
+
 const fmt = (n) =>
   new Intl.NumberFormat("en-US", {
     notation: n >= 10000 ? "compact" : "standard",
@@ -11,7 +52,7 @@ const fmt = (n) =>
   }).format(n ?? 0);
 
 const fmtTime = (seconds) => {
-  if (seconds == null) return "—";
+  if (seconds == null) return "-";
   if (seconds < 60) return `${seconds}s`;
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -19,10 +60,13 @@ const fmtTime = (seconds) => {
 };
 
 const fmtDate = (iso) => {
-  if (!iso) return "—";
+  if (!iso) return "-";
   return new Date(iso).toLocaleDateString("en-US", {
-    month: "short", day: "numeric", year: "numeric",
-    hour: "2-digit", minute: "2-digit"
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
   });
 };
 
@@ -33,234 +77,222 @@ const fmtVisitor = (event) => {
 };
 
 const fmtEventValue = (value) => {
-  if (!value) return "—";
-  return value.length > 92 ? `${value.slice(0, 89)}...` : value;
+  if (!value) return "-";
+  return value.length > 76 ? `${value.slice(0, 73)}...` : value;
 };
 
-const card = {
-  background: "rgba(255,255,255,0.04)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: "12px",
-  padding: "20px"
-};
+const sumCounts = (items) => items.reduce((sum, item) => sum + Number(item.count || 0), 0);
 
-const label = { color: "#64748b", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "6px" };
-const value = { color: "#f8fafc", fontSize: "28px", fontWeight: "800" };
-const sectionTitle = { color: "#94a3b8", fontSize: "12px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "14px" };
-const row = { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" };
-const rowLabel = { color: "#cbd5e1", fontSize: "14px" };
-const rowCount = { color: "#38bdf8", fontSize: "14px", fontWeight: "600" };
-const badge = (color) => ({
-  display: "inline-block", padding: "2px 8px", borderRadius: "999px",
-  fontSize: "12px", fontWeight: "600",
-  background: color + "22", color
-});
+function Header() {
+  return (
+    <div style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      gap: "18px",
+      marginBottom: "28px"
+    }}>
+      <div>
+        <p style={{ ...sectionTitle, color: "#38bdf8", marginBottom: "8px" }}>Portfolio Admin</p>
+        <h1 style={{ fontSize: "28px", lineHeight: 1.1, fontWeight: "850", margin: "0 0 8px" }}>
+          Analytics Overview
+        </h1>
+        <p style={{ ...muted, fontSize: "14px", margin: 0 }}>
+          Traffic, engagement, downloads, and known visitors for laurenceburce.com.
+        </p>
+      </div>
+      <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+        <Link href="/admin/visits" style={primaryLink}>Visit Log</Link>
+        <AdminLogout />
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, note }) {
+  return (
+    <div style={card}>
+      <p style={{ ...sectionTitle, color: "#64748b", marginBottom: "10px" }}>{label}</p>
+      <p style={{ color: "#f8fafc", fontSize: "30px", fontWeight: "850", lineHeight: 1, margin: "0 0 8px" }}>
+        {value}
+      </p>
+      <p style={{ ...muted, fontSize: "12px", margin: 0 }}>{note}</p>
+    </div>
+  );
+}
+
+function RankedList({ title, items, getLabel, emptyText = "No data yet" }) {
+  const max = Math.max(...items.map((item) => item.count), 1);
+
+  return (
+    <div style={card}>
+      <div style={panelHeader}>
+        <p style={sectionTitle}>{title}</p>
+        <span style={{ ...muted, fontSize: "12px" }}>{items.length} rows</span>
+      </div>
+      {items.length === 0 ? (
+        <p style={{ ...muted, fontSize: "14px", margin: 0 }}>{emptyText}</p>
+      ) : (
+        items.map((item) => (
+          <div key={getLabel(item)} style={row}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: "#dbeafe", fontSize: "13px", fontWeight: "650", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {getLabel(item)}
+              </div>
+              <div style={{ height: "5px", borderRadius: "999px", background: "rgba(255,255,255,0.06)", marginTop: "7px", overflow: "hidden" }}>
+                <div style={{
+                  width: `${Math.max(8, (item.count / max) * 100)}%`,
+                  height: "100%",
+                  borderRadius: "inherit",
+                  background: "linear-gradient(90deg, #475569, #94a3b8)"
+                }} />
+              </div>
+            </div>
+            <span style={{ color: "#f8fafc", fontSize: "13px", fontWeight: "800" }}>{fmt(item.count)}</span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function ActivityList({ title, items, type }) {
+  return (
+    <div style={card}>
+      <div style={panelHeader}>
+        <p style={sectionTitle}>{title}</p>
+        <span style={{ ...muted, fontSize: "12px" }}>latest {items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <p style={{ ...muted, fontSize: "14px", margin: 0 }}>No {type} events yet</p>
+      ) : (
+        items.slice(0, 8).map((event) => (
+          <div key={`${event.createdAt}-${event.visitorId}-${event.file || event.link}`} style={{ ...row, alignItems: "start" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {fmtEventValue(event.file || event.link)}
+              </div>
+              <div style={{ ...muted, fontSize: "12px", marginTop: "3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {fmtVisitor(event)}
+              </div>
+            </div>
+            <span style={{ color: "#94a3b8", fontSize: "12px", whiteSpace: "nowrap" }}>{fmtDate(event.createdAt)}</span>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function IdentifiedVisitors({ visitors }) {
+  return (
+    <div style={card}>
+      <div style={panelHeader}>
+        <p style={sectionTitle}>Identified Visitors</p>
+        <span style={{ ...muted, fontSize: "12px" }}>{visitors.length} people</span>
+      </div>
+      {visitors.length === 0 ? (
+        <p style={{ ...muted, fontSize: "14px", margin: 0 }}>
+          No identified visitors yet. They appear here after someone submits the contact form.
+        </p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+            <thead>
+              <tr>
+                {["Name", "Email", "Last Seen"].map((h) => (
+                  <th key={h} style={th}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visitors.map((v) => (
+                <tr key={v.visitorId} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+                  <td style={td}>{v.name || "-"}</td>
+                  <td style={{ ...td, color: "#bae6fd" }}>{v.email}</td>
+                  <td style={{ ...td, color: "#94a3b8", whiteSpace: "nowrap" }}>{fmtDate(v.lastSeenAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default async function AdminPage() {
   const [stats, identified] = await Promise.all([
     getAnalyticsStats(),
     getIdentifiedVisitors()
   ]);
+  const totalEngagement = sumCounts(stats.topDownloads) + sumCounts(stats.topLinkClicks);
+  const identifiedRate = stats.uniqueVisitors > 0
+    ? `${Math.round((stats.identifiedVisitors / stats.uniqueVisitors) * 100)}%`
+    : "0%";
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "linear-gradient(135deg, #080c1c 0%, #040810 100%)",
-      fontFamily: "system-ui, -apple-system, sans-serif",
-      color: "#f8fafc",
-      padding: "32px 24px"
-    }}>
-      <div style={{ maxWidth: "1100px", margin: "0 auto" }}>
+    <div style={pageStyle}>
+      <div style={shell}>
+        <Header />
 
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "32px" }}>
-          <div>
-            <h1 style={{ fontSize: "22px", fontWeight: "800", margin: "0 0 4px" }}>Analytics Dashboard</h1>
-            <p style={{ color: "#475569", fontSize: "14px", margin: 0 }}>laurenceburce.com</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "14px", marginBottom: "18px" }}>
+          <MetricCard label="Total Visits" value={fmt(stats.totalVisits)} note="All recorded sessions" />
+          <MetricCard label="Unique Visitors" value={fmt(stats.uniqueVisitors)} note="Known browser identities" />
+          <MetricCard label="Identified Rate" value={identifiedRate} note={`${fmt(stats.identifiedVisitors)} identified visitors`} />
+          <MetricCard label="Avg Time" value={fmtTime(stats.avgTimeOnPageSeconds)} note="Average tracked page duration" />
+          <MetricCard label="Engagement" value={fmt(totalEngagement)} note="Downloads and link clicks" />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(280px, 0.9fr)", gap: "18px", marginBottom: "18px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: "14px" }}>
+            <RankedList title="Countries" items={stats.topCountries} getLabel={(item) => item.country} />
+            <RankedList title="Referrers" items={stats.topReferrers} getLabel={(item) => item.referrer} />
+            <RankedList title="Devices" items={stats.deviceBreakdown} getLabel={(item) => item.device} />
+            <RankedList title="Browsers" items={stats.browserBreakdown} getLabel={(item) => item.browser} />
           </div>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <Link href="/admin/visits" style={{
-              padding: "8px 16px",
-              background: "rgba(56,189,248,0.1)",
-              border: "1px solid rgba(56,189,248,0.2)",
-              borderRadius: "8px",
-              color: "#38bdf8",
-              fontSize: "13px",
-              fontWeight: "500",
-              textDecoration: "none"
-            }}>
-              Visit Log
-            </Link>
-            <AdminLogout />
+
+          <div style={{ display: "grid", gap: "14px" }}>
+            <RankedList title="Top Downloads" items={stats.topDownloads} getLabel={(item) => item.file} emptyText="No downloads yet" />
+            <RankedList title="Top Links" items={stats.topLinkClicks.slice(0, 8)} getLabel={(item) => item.link} emptyText="No link clicks yet" />
           </div>
         </div>
 
-        {/* Summary stats */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "16px", marginBottom: "24px" }}>
-          {[
-            { label: "Total Visits", val: fmt(stats.totalVisits) },
-            { label: "Unique Visitors", val: fmt(stats.uniqueVisitors) },
-            { label: "Identified", val: fmt(stats.identifiedVisitors) },
-            { label: "Avg Time on Page", val: fmtTime(stats.avgTimeOnPageSeconds) }
-          ].map(({ label: l, val: v }) => (
-            <div key={l} style={card}>
-              <p style={label}>{l}</p>
-              <p style={{ ...value, margin: 0 }}>{v}</p>
-            </div>
-          ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "14px", marginBottom: "18px" }}>
+          <ActivityList title="Recent Downloads" items={stats.downloadEvents} type="download" />
+          <ActivityList title="Recent Link Clicks" items={stats.linkClickEvents} type="link click" />
         </div>
 
-        {/* Middle grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "16px", marginBottom: "24px" }}>
-
-          {/* Countries */}
-          <div style={card}>
-            <p style={sectionTitle}>Top Countries</p>
-            {stats.topCountries.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No data yet</p>
-              : stats.topCountries.map(({ country, count }) => (
-                <div key={country} style={row}>
-                  <span style={rowLabel}>{country}</span>
-                  <span style={rowCount}>{fmt(count)}</span>
-                </div>
-              ))}
-          </div>
-
-          {/* Referrers */}
-          <div style={card}>
-            <p style={sectionTitle}>Top Referrers</p>
-            {stats.topReferrers.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No data yet</p>
-              : stats.topReferrers.map(({ referrer, count }) => (
-                <div key={referrer} style={row}>
-                  <span style={rowLabel}>{referrer}</span>
-                  <span style={rowCount}>{fmt(count)}</span>
-                </div>
-              ))}
-          </div>
-
-          {/* Devices */}
-          <div style={card}>
-            <p style={sectionTitle}>Devices</p>
-            {stats.deviceBreakdown.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No data yet</p>
-              : stats.deviceBreakdown.map(({ device, count }) => {
-                const colors = { desktop: "#38bdf8", mobile: "#a78bfa", tablet: "#34d399" };
-                return (
-                  <div key={device} style={row}>
-                    <span style={badge(colors[device] ?? "#94a3b8")}>{device}</span>
-                    <span style={rowCount}>{fmt(count)}</span>
-                  </div>
-                );
-              })}
-          </div>
-
-          {/* Browsers */}
-          <div style={card}>
-            <p style={sectionTitle}>Browsers</p>
-            {stats.browserBreakdown.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No data yet</p>
-              : stats.browserBreakdown.map(({ browser, count }) => (
-                <div key={browser} style={row}>
-                  <span style={rowLabel}>{browser}</span>
-                  <span style={rowCount}>{fmt(count)}</span>
-                </div>
-              ))}
-          </div>
-
-          {/* Downloads */}
-          <div style={card}>
-            <p style={sectionTitle}>Downloads</p>
-            {stats.topDownloads.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No downloads yet</p>
-              : stats.topDownloads.map(({ file, count }) => (
-                <div key={file} style={row}>
-                  <span style={rowLabel}>{file}</span>
-                  <span style={rowCount}>{fmt(count)}</span>
-                </div>
-              ))}
-          </div>
-
-          {/* Link clicks */}
-          <div style={card}>
-            <p style={sectionTitle}>Clicked Links</p>
-            {stats.topLinkClicks.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No link clicks yet</p>
-              : stats.topLinkClicks.map(({ link, count }) => (
-                <div key={link} style={row}>
-                  <span style={{ ...rowLabel, maxWidth: "78%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link}</span>
-                  <span style={rowCount}>{fmt(count)}</span>
-                </div>
-              ))}
-          </div>
-
-        </div>
-
-        {/* Engagement event logs */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px", marginBottom: "24px" }}>
-          <div style={card}>
-            <p style={sectionTitle}>Downloads by User</p>
-            {stats.downloadEvents.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No downloads yet</p>
-              : stats.downloadEvents.map((event) => (
-                <div key={`${event.createdAt}-${event.visitorId}-${event.file}`} style={{ ...row, alignItems: "flex-start", gap: "12px" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={rowLabel}>{event.file}</div>
-                    <div style={{ color: "#64748b", fontSize: "12px", marginTop: "2px" }}>{fmtVisitor(event)}</div>
-                  </div>
-                  <span style={{ ...rowCount, whiteSpace: "nowrap" }}>{fmtDate(event.createdAt)}</span>
-                </div>
-              ))}
-          </div>
-
-          <div style={card}>
-            <p style={sectionTitle}>Link Clicks by User</p>
-            {stats.linkClickEvents.length === 0
-              ? <p style={{ color: "#475569", fontSize: "14px" }}>No link clicks yet</p>
-              : stats.linkClickEvents.map((event) => (
-                <div key={`${event.createdAt}-${event.visitorId}-${event.link}`} style={{ ...row, alignItems: "flex-start", gap: "12px" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={rowLabel}>{fmtEventValue(event.link)}</div>
-                    <div style={{ color: "#64748b", fontSize: "12px", marginTop: "2px" }}>{fmtVisitor(event)}</div>
-                  </div>
-                  <span style={{ ...rowCount, whiteSpace: "nowrap" }}>{fmtDate(event.createdAt)}</span>
-                </div>
-              ))}
-          </div>
-        </div>
-
-        {/* Identified visitors */}
-        <div style={card}>
-          <p style={sectionTitle}>Identified Visitors ({identified.visitors.length})</p>
-          {identified.visitors.length === 0
-            ? <p style={{ color: "#475569", fontSize: "14px" }}>No identified visitors yet. They appear here after someone submits the contact form.</p>
-            : (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px" }}>
-                  <thead>
-                    <tr>
-                      {["Name", "Email", "Last Seen"].map((h) => (
-                        <th key={h} style={{ textAlign: "left", padding: "8px 12px", color: "#64748b", fontWeight: "600", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {identified.visitors.map((v) => (
-                      <tr key={v.visitorId} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                        <td style={{ padding: "10px 12px", color: "#cbd5e1" }}>{v.name || "—"}</td>
-                        <td style={{ padding: "10px 12px", color: "#38bdf8" }}>{v.email}</td>
-                        <td style={{ padding: "10px 12px", color: "#475569" }}>{fmtDate(v.lastSeenAt)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-        </div>
-
+        <IdentifiedVisitors visitors={identified.visitors} />
       </div>
     </div>
   );
 }
+
+const primaryLink = {
+  padding: "9px 15px",
+  background: "rgba(56,189,248,0.1)",
+  border: "1px solid rgba(56,189,248,0.22)",
+  borderRadius: "9px",
+  color: "#7dd3fc",
+  fontSize: "13px",
+  fontWeight: "700",
+  textDecoration: "none"
+};
+
+const th = {
+  textAlign: "left",
+  padding: "9px 12px",
+  color: "#64748b",
+  fontWeight: "800",
+  fontSize: "11px",
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  borderBottom: "1px solid rgba(255,255,255,0.08)"
+};
+
+const td = {
+  padding: "11px 12px",
+  color: "#cbd5e1",
+  verticalAlign: "top"
+};
