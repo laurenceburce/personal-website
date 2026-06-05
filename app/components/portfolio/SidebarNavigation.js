@@ -22,6 +22,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
       style={{ transform: `translate3d(0, ${sidebarOffset}px, 0)` }}
       aria-label="Section navigation"
     >
+      <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="scroll-profile">
         <p className="scroll-kicker">Quick Navigation</p>
         <a href="#home" className="scroll-brand">
@@ -84,7 +85,6 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
       <a href="#home" className="sidebar-logo-mark" aria-label="Laurence Alec Burce home">
         <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
       </a>
-      <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="indicator-rail" aria-hidden="true">
         <div className="indicator-node">
           <span />
