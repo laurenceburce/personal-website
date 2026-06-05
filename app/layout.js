@@ -14,22 +14,38 @@ const dmSerifDisplay = DM_Serif_Display({
 });
 
 export const metadata = {
+  metadataBase: new URL("https://laurenceburce.com"),
   title: "Laurence Alec Burce | Software Engineer",
   description:
     "Portfolio of Laurence Alec Burce - software engineer with 3 years of experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
+  icons: {
+    icon: [
+      { url: "/logos/lab-favicon.svg", type: "image/svg+xml", sizes: "512x512" }
+    ],
+    shortcut: "/logos/lab-favicon.svg"
+  },
   openGraph: {
     title: "Laurence Alec Burce | Software Engineer",
     description:
       "Enterprise software engineering, Oracle SaaS ERP, client web apps, AI automation, and Copilot Studio chatbot projects by Laurence Alec Burce.",
+    url: "/",
+    siteName: "Laurence Alec Burce",
     type: "website",
-    images: [{ url: "/opengraph-image", width: 1200, height: 630 }]
+    images: [
+      {
+        url: "/logos/og-banner.svg",
+        width: 1200,
+        height: 630,
+        alt: "Laurence Alec Burce - Software Engineer and AI Automation"
+      }
+    ]
   },
   twitter: {
     card: "summary_large_image",
     title: "Laurence Alec Burce | Software Engineer",
     description:
       "Enterprise software engineering, Oracle SaaS ERP, client web apps, AI automation, and Copilot Studio chatbot projects by Laurence Alec Burce.",
-    images: ["/opengraph-image"]
+    images: ["/logos/og-banner.svg"]
   }
 };
 

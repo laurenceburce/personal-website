@@ -1,0 +1,6 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="88" fill="#0f1117"/>
+  <rect width="512" height="512" rx="88" fill="none" stroke="#2a2d3a" stroke-width="4"/>
+  <text x="256" y="330" text-anchor="middle" font-family="Georgia, serif" font-size="210" font-weight="700" fill="#e8e8e8" letter-spacing="-8">LAB</text>
+  <line x1="88" y1="410" x2="424" y2="410" stroke="#4f6ef7" stroke-width="10" stroke-linecap="round"/>
+</svg>

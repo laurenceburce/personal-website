@@ -1,0 +1,20 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#0b0d13"/>
+  <rect width="1200" height="630" fill="none" stroke="#1e2130" stroke-width="1"/>
+  <line x1="80" y1="0" x2="80" y2="630" stroke="#1a1d2a" stroke-width="0.5"/>
+  <line x1="1120" y1="0" x2="1120" y2="630" stroke="#1a1d2a" stroke-width="0.5"/>
+  <line x1="0" y1="80" x2="1200" y2="80" stroke="#1a1d2a" stroke-width="0.5"/>
+  <line x1="0" y1="550" x2="1200" y2="550" stroke="#1a1d2a" stroke-width="0.5"/>
+  <circle cx="1050" cy="315" r="280" fill="none" stroke="#1e2232" stroke-width="0.5"/>
+  <circle cx="1050" cy="315" r="200" fill="none" stroke="#1e2232" stroke-width="0.5"/>
+  <circle cx="1050" cy="315" r="120" fill="none" stroke="#2a2d3e" stroke-width="0.5"/>
+  <rect x="950" y="175" width="120" height="120" rx="20" fill="#0f1117"/>
+  <rect x="950" y="175" width="120" height="120" rx="20" fill="none" stroke="#2a2d3a" stroke-width="1"/>
+  <text x="1010" y="248" text-anchor="middle" font-family="Georgia, serif" font-size="46" font-weight="700" fill="#e8e8e8" letter-spacing="-2">LAB</text>
+  <line x1="974" y1="269" x2="1046" y2="269" stroke="#4f6ef7" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="120" y="290" font-family="Georgia, serif" font-size="88" font-weight="700" fill="#f0f0f0" letter-spacing="-4">Laurence</text>
+  <text x="120" y="385" font-family="Georgia, serif" font-size="88" font-weight="700" fill="#f0f0f0" letter-spacing="-4">Alec Burce</text>
+  <line x1="120" y1="415" x2="480" y2="415" stroke="#4f6ef7" stroke-width="3" stroke-linecap="round"/>
+  <text x="120" y="460" font-family="Courier New, monospace" font-size="22" fill="#9aa0b8" letter-spacing="2">SOFTWARE ENGINEER  ·  AI &amp; AUTOMATION</text>
+  <text x="120" y="515" font-family="Courier New, monospace" font-size="16" fill="#555a72" letter-spacing="1">laurenceburce.com</text>
+</svg>
