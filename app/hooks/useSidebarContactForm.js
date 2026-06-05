@@ -79,7 +79,7 @@ export default function useSidebarContactForm() {
 
       setStatus({
         type: "success",
-        message: payload.delivered === false ? "Message received." : "Message sent."
+        message: "Message sent."
       });
       setForm(sidebarContactInitial);
       setErrors({});

@@ -97,22 +97,6 @@ const ensureSchema = async () => {
       `);
 
       await pool.query(`
-        CREATE TABLE IF NOT EXISTS portfolio_contact_messages (
-          id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-          visitor_id      VARCHAR(80)   NULL,
-          name            VARCHAR(120)  NOT NULL DEFAULT '',
-          email           VARCHAR(200)  NOT NULL,
-          subject         VARCHAR(160)  NOT NULL DEFAULT '',
-          message         TEXT          NOT NULL,
-          delivery_status VARCHAR(30)   NOT NULL DEFAULT 'stored',
-          delivery_error  VARCHAR(500)  NOT NULL DEFAULT '',
-          created_at      DATETIME(3)   NOT NULL,
-          INDEX portfolio_contact_messages_created_idx (created_at DESC),
-          INDEX portfolio_contact_messages_email_idx (email)
-        )
-      `);
-
-      await pool.query(`
         CREATE TABLE IF NOT EXISTS portfolio_analytics_visits (
           id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
           visitor_id  VARCHAR(80)  NOT NULL,
@@ -334,39 +318,6 @@ export async function identifyVisitor({ visitorId, email, name }) {
   );
 
   return getAnalyticsStats();
-}
-
-export async function recordContactMessage({
-  visitorId,
-  name,
-  email,
-  subject,
-  message,
-  deliveryStatus = "stored",
-  deliveryError = ""
-}) {
-  const pool = await ensureSchema();
-  const safeEmail = cleanEmail(email);
-
-  if (!pool || !safeEmail) return false;
-
-  await pool.query(
-    `INSERT INTO portfolio_contact_messages
-       (visitor_id, name, email, subject, message, delivery_status, delivery_error, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      cleanVisitorId(visitorId),
-      cleanText(name, 120),
-      safeEmail,
-      cleanText(subject, 160),
-      cleanText(message, 5000),
-      cleanText(deliveryStatus, 30) || "stored",
-      cleanText(deliveryError, 500),
-      new Date()
-    ]
-  );
-
-  return true;
 }
 
 const PAGE_SIZE = 50;
