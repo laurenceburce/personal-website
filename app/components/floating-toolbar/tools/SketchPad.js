@@ -57,7 +57,7 @@ export default function SketchPad() {
           {SKETCH_COLORS.map((swatch) => (
             <button
               key={swatch}
-              className={`ft-color-dot${color === swatch && !eraser ? " active" : ""}`}
+              className={`ft-color-dot${color === swatch && tool !== "eraser" && tool !== "sticker" ? " active" : ""}`}
               style={{ background: swatch, outline: swatch === "#f9fafb" ? "1px solid #cbd5e1" : "none" }}
               onClick={() => {
                 setColor(swatch);
