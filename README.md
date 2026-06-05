@@ -99,8 +99,6 @@ Frameworks
 APIs
 
 
-Update contents of the about section and hero banner
-Move LAB logo to the top of the hero banner
-Implement the same layout of the Work Experience (container carousel) to the Projects section
-Change light mode design: make the overall background light grey and the purple font to a more blue hue
+add thesis to github repo and add the repo link in site
+particle moves away from cursor
 Fix the chatbot

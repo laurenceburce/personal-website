@@ -82,9 +82,6 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
         ))}
       </nav>
       <SidebarAnalyticsPanel analytics={analytics} />
-      <a href="#home" className="sidebar-logo-mark" aria-label="Laurence Alec Burce home">
-        <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
-      </a>
       <div className="indicator-rail" aria-hidden="true">
         <div className="indicator-node">
           <span />

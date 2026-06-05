@@ -2,6 +2,9 @@ export default function HeroSection() {
   return (
     <section className="hero section reveal">
       <div className="hero-card">
+        <a href="#home" className="hero-logo-mark" aria-label="Laurence Alec Burce home">
+          <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
+        </a>
         <div className="hero-copy">
           <p className="welcome-line">Hello, I'm Laurence.</p>
           <div className="hero-badge">
@@ -9,8 +12,14 @@ export default function HeroSection() {
             Available for new opportunities
           </div>
           <p className="lead">
-            Software engineer with 3+ years at Oracle and Maxx Potential, building
-            production APIs, ERP integrations, and AI-powered tools for enterprise teams.
+            Software engineer with 3+ years of experience building reliable{" "}
+            enterprise applications, backend services, and{" "}
+            AI-enabled tools for teams that need practical, maintainable
+            solutions.
+          </p>
+          <p className="lead">
+            Based in <strong>Santee, California</strong>; open to <strong>San Diego</strong> or{" "}
+            <strong>remote roles</strong>.
           </p>
         </div>
       </div>

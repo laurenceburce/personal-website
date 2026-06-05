@@ -18,6 +18,7 @@ import usePortfolioAnalytics from "./hooks/usePortfolioAnalytics";
 import useRevealAnimations from "./hooks/useRevealAnimations";
 import useScrollProgress from "./hooks/useScrollProgress";
 import useThemePreference from "./hooks/useThemePreference";
+import { trackAnalyticsEvent } from "./utils/analyticsClient";
 
 export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -42,6 +43,22 @@ export default function Home() {
       window.removeEventListener("scroll", closeOnScroll);
     };
   }, [menuOpen]);
+
+  useEffect(() => {
+    const handleLinkClick = (event) => {
+      const link = event.target?.closest?.("a[href]");
+      if (!link) return;
+
+      const href = link.getAttribute("href") || "";
+      const label = link.getAttribute("aria-label") || link.textContent?.trim() || href;
+      const destination = href.startsWith("http") ? href : link.href || href;
+
+      trackAnalyticsEvent("link_click", `${label.slice(0, 80)} | ${destination.slice(0, 110)}`);
+    };
+
+    document.addEventListener("click", handleLinkClick, true);
+    return () => document.removeEventListener("click", handleLinkClick, true);
+  }, []);
 
   const handleThemeSwitchChange = (event) => {
     setTheme(event.target.checked ? "dark" : "light");

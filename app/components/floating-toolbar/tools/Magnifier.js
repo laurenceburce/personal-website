@@ -11,6 +11,12 @@ const ZOOM_PRESETS = [0.25, 0.5, 1.5, 2, 3];
 const SKETCH_CHANGED_EVENT = "floating-toolbar:sketch-changed";
 const FLOATING_UI_SELECTOR = ".ft-window,.ft-menu,.ft-circle";
 const UI_SYNC_INTERVAL_MS = 100;
+const MAGNIFIER_PROJECT_SELECTION_KEY = "portfolio:magnifier:selected-project";
+const MAGNIFIER_WORK_SELECTION_KEY = "portfolio:magnifier:selected-work";
+const PROJECT_SELECTION_MESSAGE = "portfolio:project-selection";
+const WORK_SELECTION_MESSAGE = "portfolio:work-selection";
+const PROJECT_SELECTION_CHANGED_EVENT = "portfolio:project-selection-changed";
+const WORK_SELECTION_CHANGED_EVENT = "portfolio:work-selection-changed";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const formatZoom = (value) => Number.isInteger(value) ? value : value.toFixed(2).replace(/0$/, "");
@@ -60,6 +66,38 @@ export default function Magnifier({ initialPointer = null }) {
   const syncIframeScroll = useCallback(() => {
     try {
       iframeRef.current?.contentWindow?.scrollTo(window.scrollX, window.scrollY);
+    } catch {}
+  }, []);
+
+  const syncIframeCarouselSelections = useCallback(() => {
+    try {
+      const selectedProject = window.localStorage.getItem(MAGNIFIER_PROJECT_SELECTION_KEY);
+      const selectedWork = window.localStorage.getItem(MAGNIFIER_WORK_SELECTION_KEY);
+
+      iframeRef.current?.contentWindow?.postMessage({
+        type: PROJECT_SELECTION_MESSAGE,
+        selected: selectedProject
+      }, window.location.origin);
+      iframeRef.current?.contentWindow?.postMessage({
+        type: WORK_SELECTION_MESSAGE,
+        selected: selectedWork
+      }, window.location.origin);
+    } catch {}
+  }, []);
+
+  const syncIframeCarouselScroll = useCallback(() => {
+    try {
+      const iframeDoc = iframeRef.current?.contentDocument;
+      if (!iframeDoc) return;
+
+      const sourceRows = [...document.querySelectorAll(".work-cards-row")];
+      const frameRows = [...iframeDoc.querySelectorAll(".work-cards-row")];
+
+      sourceRows.forEach((row, index) => {
+        if (frameRows[index]) {
+          frameRows[index].scrollLeft = row.scrollLeft;
+        }
+      });
     } catch {}
   }, []);
 
@@ -204,6 +242,24 @@ export default function Magnifier({ initialPointer = null }) {
     });
   }, [renderLens]);
 
+  const syncAfterIframeLayout = useCallback(() => {
+    syncIframeScroll();
+    syncIframeCarouselScroll();
+    requestRender();
+
+    window.setTimeout(() => {
+      syncIframeScroll();
+      syncIframeCarouselScroll();
+      requestRender();
+    }, 80);
+
+    window.setTimeout(() => {
+      syncIframeScroll();
+      syncIframeCarouselScroll();
+      requestRender();
+    }, 180);
+  }, [requestRender, syncIframeCarouselScroll, syncIframeScroll]);
+
   const showLensAt = useCallback((clientX, clientY, pointerType = "mouse") => {
     pointerRef.current = { clientX, clientY, pointerType, visible: true };
     requestRender();
@@ -306,12 +362,14 @@ export default function Magnifier({ initialPointer = null }) {
     };
     const onViewportChange = () => {
       syncIframeScroll();
+      syncIframeCarouselScroll();
       syncFloatingUiLayer(true);
       requestRender();
     };
     const onUiChange = () => {
+      syncIframeCarouselSelections();
+      syncAfterIframeLayout();
       syncFloatingUiLayer(true);
-      requestRender();
     };
 
     window.addEventListener("pointerdown", onPointerMove, true);
@@ -320,6 +378,8 @@ export default function Magnifier({ initialPointer = null }) {
     window.addEventListener("pointercancel", onPointerEnd, true);
     window.addEventListener("click", onUiChange, true);
     window.addEventListener("keyup", onUiChange);
+    window.addEventListener(PROJECT_SELECTION_CHANGED_EVENT, onUiChange);
+    window.addEventListener(WORK_SELECTION_CHANGED_EVENT, onUiChange);
     window.addEventListener("pointerleave", hideLens);
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("scroll", onViewportChange, { passive: true });
@@ -362,6 +422,8 @@ export default function Magnifier({ initialPointer = null }) {
       window.removeEventListener("pointercancel", onPointerEnd, true);
       window.removeEventListener("click", onUiChange, true);
       window.removeEventListener("keyup", onUiChange);
+      window.removeEventListener(PROJECT_SELECTION_CHANGED_EVENT, onUiChange);
+      window.removeEventListener(WORK_SELECTION_CHANGED_EVENT, onUiChange);
       window.removeEventListener("pointerleave", hideLens);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange);
@@ -372,7 +434,7 @@ export default function Magnifier({ initialPointer = null }) {
         window.cancelAnimationFrame(renderFrameRef.current);
       }
     };
-  }, [portalReady, requestRender, showLensAt, syncFloatingUiLayer, syncIframeScroll]);
+  }, [portalReady, requestRender, showLensAt, syncAfterIframeLayout, syncFloatingUiLayer, syncIframeCarouselScroll, syncIframeCarouselSelections, syncIframeScroll]);
 
   useEffect(() => {
     zoomRef.current = zoom;
@@ -387,10 +449,11 @@ export default function Magnifier({ initialPointer = null }) {
           <div ref={frameRef} className="ft-mag-frame">
             <iframe
               ref={iframeRef}
-              src="/"
+              src="/?magnifier=1"
               className="ft-mag-iframe"
               onLoad={() => {
-                syncIframeScroll();
+                syncIframeCarouselSelections();
+                syncAfterIframeLayout();
                 requestRender();
               }}
               tabIndex={-1}

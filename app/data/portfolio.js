@@ -28,6 +28,7 @@ export const skillGroups = [
 export const projects = [
   {
     title: "Personal Portfolio Website",
+    period: "Apr 2022 – Present",
     description:
       "Designed and built this responsive portfolio with reusable Next.js sections, theme support, a sidebar contact flow, downloadable documents, and an interactive floating toolkit with page annotations, magnifier, calculator, and virtual keyboard tools.",
     tech: ["Next.js", "React", "CSS", "Responsive UI", "Interactive Tools"],
@@ -35,6 +36,7 @@ export const projects = [
   },
   {
     title: "Spring Social Media Blog API",
+    period: "Oct 2024 – Dec 2024",
     description:
       "Developed a micro-blogging backend with authentication, registration flows, session management, and scalable data access patterns.",
     tech: ["Spring Boot", "JDBC", "JPA", "REST API"],

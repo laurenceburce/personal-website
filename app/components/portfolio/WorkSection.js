@@ -2,8 +2,39 @@
 import { useEffect, useRef, useState } from "react";
 import formatDurationFromPeriod from "../../utils/formatDurationFromPeriod";
 
+const MAGNIFIER_WORK_SELECTION_KEY = "portfolio:magnifier:selected-work";
+const WORK_SELECTION_MESSAGE = "portfolio:work-selection";
+const WORK_SELECTION_CHANGED_EVENT = "portfolio:work-selection-changed";
+
+const isMagnifierFrame = () => {
+  if (typeof window === "undefined") return false;
+
+  try {
+    return window.self !== window.top && new URLSearchParams(window.location.search).get("magnifier") === "1";
+  } catch {
+    return false;
+  }
+};
+
+const parseSelectedWork = (value, entryCount) => {
+  if (value === null || value === undefined || value === "") return null;
+
+  const next = Number(value);
+  return Number.isInteger(next) && next >= 0 && next < entryCount ? next : null;
+};
+
+const getInitialSelectedWork = (entryCount) => {
+  if (!isMagnifierFrame()) return null;
+
+  try {
+    return parseSelectedWork(window.localStorage.getItem(MAGNIFIER_WORK_SELECTION_KEY), entryCount);
+  } catch {
+    return null;
+  }
+};
+
 export default function WorkSection({ timeline }) {
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(() => getInitialSelectedWork(timeline.length));
   const [showLeftFade, setShowLeftFade] = useState(false);
   const [showRightFade, setShowRightFade] = useState(false);
 
@@ -25,6 +56,50 @@ export default function WorkSection({ timeline }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (isMagnifierFrame()) return;
+
+    try {
+      if (selected === null) {
+        window.localStorage.removeItem(MAGNIFIER_WORK_SELECTION_KEY);
+      } else {
+        window.localStorage.setItem(MAGNIFIER_WORK_SELECTION_KEY, String(selected));
+      }
+
+      window.dispatchEvent(new CustomEvent(WORK_SELECTION_CHANGED_EVENT, {
+        detail: { selected }
+      }));
+    } catch {}
+  }, [selected]);
+
+  useEffect(() => {
+    if (!isMagnifierFrame()) return undefined;
+
+    const applySelection = (value) => {
+      setSelected(parseSelectedWork(value, timeline.length));
+    };
+
+    const onStorage = (event) => {
+      if (event.key === MAGNIFIER_WORK_SELECTION_KEY) {
+        applySelection(event.newValue);
+      }
+    };
+
+    const onMessage = (event) => {
+      if (event.data?.type === WORK_SELECTION_MESSAGE) {
+        applySelection(event.data.selected);
+      }
+    };
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("message", onMessage);
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("message", onMessage);
+    };
+  }, [timeline.length]);
 
   const handleSelect = (i) => setSelected(selected === i ? null : i);
 

@@ -44,8 +44,8 @@ export default function BackgroundEffects() {
         list.push({
           x: Math.random() * width,
           y: Math.random() * height,
-          vx: -0.035 + Math.random() * 0.07,
-          vy: -0.035 + Math.random() * 0.07,
+          vx: -0.2 + Math.random() * 0.4,
+          vy: -0.2 + Math.random() * 0.4,
           r: 0.75 + Math.random() * 2,
           hue: 188 + Math.random() * 32
         });
@@ -94,12 +94,15 @@ export default function BackgroundEffects() {
 
         const pointerDistance = Math.hypot(particle.x - pointer.x, particle.y - pointer.y);
         const glow = Math.max(0.5, 1.28 - pointerDistance / (width * 0.78));
-        const particleAlpha = 0.34 + Math.min(0.48, glow * 0.36) + (isLightTheme ? 0.12 : 0);
-        const particleLightness = isLightTheme ? 56 : 62;
+        const particleAlpha = 0.34 + Math.min(0.48, glow * 0.36) + (isLightTheme ? 0.1 : 0);
+        const particleLightness = isLightTheme ? 42 : 62;
+        const particleColor = isLightTheme
+          ? `rgba(54, 54, 54, ${Math.min(0.74, particleAlpha).toFixed(3)})`
+          : `hsla(${particle.hue}, 92%, ${particleLightness}%, ${Math.min(0.97, particleAlpha)})`;
 
         context.beginPath();
         context.arc(particle.x, particle.y, particle.r, 0, Math.PI * 2);
-        context.fillStyle = `hsla(${particle.hue}, 92%, ${particleLightness}%, ${Math.min(0.97, particleAlpha)})`;
+        context.fillStyle = particleColor;
         context.fill();
       }
 
@@ -117,8 +120,8 @@ export default function BackgroundEffects() {
           const db = Math.hypot(b.x - pointer.x, b.y - pointer.y);
           const proximity = 1 - Math.min(1, Math.min(da, db) / (pointer.radius * 1.35));
           const lineFade = 1 - distance / lineDistance;
-          const lineAlpha = lineFade * (0.2 + proximity * 0.65) + (isLightTheme ? 0.12 : 0);
-          const lineColor = isLightTheme ? "56, 136, 242" : "78, 153, 255";
+          const lineAlpha = lineFade * (0.2 + proximity * 0.65) + (isLightTheme ? 0.08 : 0);
+          const lineColor = isLightTheme ? "54, 54, 54" : "78, 153, 255";
 
           context.beginPath();
           context.moveTo(a.x, a.y);

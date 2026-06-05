@@ -5,9 +5,9 @@ export const runtime = "nodejs";
 
 const eventRateLimit = new Map();
 const EVENT_LIMIT_MS = 60 * 1000;
-const EVENT_LIMIT_MAX = 30;
+const EVENT_LIMIT_MAX = 90;
 
-const ALLOWED_TYPES = new Set(["download", "time_on_page", "sketch_share_created"]);
+const ALLOWED_TYPES = new Set(["download", "link_click", "time_on_page", "sketch_share_created"]);
 
 export async function POST(request) {
   try {

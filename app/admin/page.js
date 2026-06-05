@@ -26,6 +26,17 @@ const fmtDate = (iso) => {
   });
 };
 
+const fmtVisitor = (event) => {
+  if (event.name && event.email) return `${event.name} <${event.email}>`;
+  if (event.email) return event.email;
+  return `Anonymous ${event.visitorId?.slice(0, 8) || "visitor"}`;
+};
+
+const fmtEventValue = (value) => {
+  if (!value) return "—";
+  return value.length > 92 ? `${value.slice(0, 89)}...` : value;
+};
+
 const card = {
   background: "rgba(255,255,255,0.04)",
   border: "1px solid rgba(255,255,255,0.08)",
@@ -170,6 +181,52 @@ export default async function AdminPage() {
               ))}
           </div>
 
+          {/* Link clicks */}
+          <div style={card}>
+            <p style={sectionTitle}>Clicked Links</p>
+            {stats.topLinkClicks.length === 0
+              ? <p style={{ color: "#475569", fontSize: "14px" }}>No link clicks yet</p>
+              : stats.topLinkClicks.map(({ link, count }) => (
+                <div key={link} style={row}>
+                  <span style={{ ...rowLabel, maxWidth: "78%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link}</span>
+                  <span style={rowCount}>{fmt(count)}</span>
+                </div>
+              ))}
+          </div>
+
+        </div>
+
+        {/* Engagement event logs */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px", marginBottom: "24px" }}>
+          <div style={card}>
+            <p style={sectionTitle}>Downloads by User</p>
+            {stats.downloadEvents.length === 0
+              ? <p style={{ color: "#475569", fontSize: "14px" }}>No downloads yet</p>
+              : stats.downloadEvents.map((event) => (
+                <div key={`${event.createdAt}-${event.visitorId}-${event.file}`} style={{ ...row, alignItems: "flex-start", gap: "12px" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={rowLabel}>{event.file}</div>
+                    <div style={{ color: "#64748b", fontSize: "12px", marginTop: "2px" }}>{fmtVisitor(event)}</div>
+                  </div>
+                  <span style={{ ...rowCount, whiteSpace: "nowrap" }}>{fmtDate(event.createdAt)}</span>
+                </div>
+              ))}
+          </div>
+
+          <div style={card}>
+            <p style={sectionTitle}>Link Clicks by User</p>
+            {stats.linkClickEvents.length === 0
+              ? <p style={{ color: "#475569", fontSize: "14px" }}>No link clicks yet</p>
+              : stats.linkClickEvents.map((event) => (
+                <div key={`${event.createdAt}-${event.visitorId}-${event.link}`} style={{ ...row, alignItems: "flex-start", gap: "12px" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={rowLabel}>{fmtEventValue(event.link)}</div>
+                    <div style={{ color: "#64748b", fontSize: "12px", marginTop: "2px" }}>{fmtVisitor(event)}</div>
+                  </div>
+                  <span style={{ ...rowCount, whiteSpace: "nowrap" }}>{fmtDate(event.createdAt)}</span>
+                </div>
+              ))}
+          </div>
         </div>
 
         {/* Identified visitors */}

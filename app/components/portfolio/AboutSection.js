@@ -6,15 +6,18 @@ export default function AboutSection() {
       </div>
       <div className="about-grid">
         <p>
-          My background spans Oracle SaaS ERP development in Java and Spring Boot —
-          building RESTful APIs and maintaining SaaS products — through to AI-powered
-          tooling built with FastAPI and Python. I focus on software that teams can
-          actually depend on.
+          I am a software engineer with a foundation in{" "}
+          enterprise application development and a growing focus on{" "}
+          AI automation. My experience includes contributing to{" "}
+          <strong>Oracle SaaS ERP</strong> products, building backend services,
+          improving test coverage, and supporting{" "}
+          production systems used by business and technical teams.
         </p>
         <p>
-          At Maxx Potential, I built a brand compliance validation platform using
-          FastAPI and PostgreSQL, delivered AI agents for HHHunt's HR, Marketing,
-          and Operations teams. Based in Santee, California; open to San Diego or remote roles.
+          Today, I build tools that help people work faster and make better decisions,
+          from internal AI assistants to validation platforms{" "}
+          and workflow automations. I bring a practical, team-oriented approach
+          to engineering, with an emphasis on software that solves real problems.
         </p>
       </div>
     </section>

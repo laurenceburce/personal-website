@@ -95,9 +95,6 @@ export default function SiteHeader({
         <SidebarAnalyticsPanel analytics={analytics} className="mobile-nav-analytics" />
       </nav>
       </header>
-      <a href="#home" className="mobile-page-logo" aria-label="Laurence Alec Burce home">
-        <img src="/logos/lab-favicon.svg" alt="" aria-hidden="true" />
-      </a>
     </>
   );
 }

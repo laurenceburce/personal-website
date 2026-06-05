@@ -167,6 +167,9 @@ const emptyStats = () => ({
   deviceBreakdown: [],
   browserBreakdown: [],
   topDownloads: [],
+  topLinkClicks: [],
+  downloadEvents: [],
+  linkClickEvents: [],
   avgTimeOnPageSeconds: null
 });
 
@@ -183,6 +186,9 @@ export async function getAnalyticsStats() {
     [deviceRows],
     [browserRows],
     [downloadRows],
+    [linkClickRows],
+    [downloadEventRows],
+    [linkClickEventRows],
     [timeRows]
   ] = await Promise.all([
     pool.query(
@@ -222,6 +228,40 @@ export async function getAnalyticsStats() {
       GROUP BY event_value ORDER BY count DESC LIMIT 10
     `),
     pool.query(`
+      SELECT event_value AS link, COUNT(*) AS count
+      FROM portfolio_analytics_events
+      WHERE event_type = 'link_click'
+      GROUP BY event_value ORDER BY count DESC LIMIT 20
+    `),
+    pool.query(`
+      SELECT
+        e.event_value AS file,
+        e.created_at,
+        e.visitor_id,
+        iv.email,
+        iv.name
+      FROM portfolio_analytics_events e
+      LEFT JOIN portfolio_analytics_identified_visitors iv
+        ON iv.visitor_id = e.visitor_id
+      WHERE e.event_type = 'download'
+      ORDER BY e.created_at DESC
+      LIMIT 25
+    `),
+    pool.query(`
+      SELECT
+        e.event_value AS link,
+        e.created_at,
+        e.visitor_id,
+        iv.email,
+        iv.name
+      FROM portfolio_analytics_events e
+      LEFT JOIN portfolio_analytics_identified_visitors iv
+        ON iv.visitor_id = e.visitor_id
+      WHERE e.event_type = 'link_click'
+      ORDER BY e.created_at DESC
+      LIMIT 25
+    `),
+    pool.query(`
       SELECT AVG(CAST(event_value AS UNSIGNED)) AS avgSeconds
       FROM portfolio_analytics_events
       WHERE event_type = 'time_on_page'
@@ -240,6 +280,21 @@ export async function getAnalyticsStats() {
     deviceBreakdown: deviceRows.map((r) => ({ device: r.device_type, count: Number(r.count) })),
     browserBreakdown: browserRows.map((r) => ({ browser: r.browser, count: Number(r.count) })),
     topDownloads: downloadRows.map((r) => ({ file: r.file, count: Number(r.count) })),
+    topLinkClicks: linkClickRows.map((r) => ({ link: r.link, count: Number(r.count) })),
+    downloadEvents: downloadEventRows.map((r) => ({
+      file: r.file,
+      visitorId: r.visitor_id,
+      email: r.email || null,
+      name: r.name || "",
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
+    })),
+    linkClickEvents: linkClickEventRows.map((r) => ({
+      link: r.link,
+      visitorId: r.visitor_id,
+      email: r.email || null,
+      name: r.name || "",
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
+    })),
     avgTimeOnPageSeconds: timeRows[0]?.avgSeconds != null ? Math.round(Number(timeRows[0].avgSeconds)) : null
   };
 }
