@@ -168,6 +168,50 @@ const ensureSchema = async () => {
       for (const sql of migrations) {
         await runMigration(pool, sql);
       }
+
+      // One-time data migration: rename old 'link_click' events to 'Section: Label' format.
+      // Tracked by a counter key so it only ever runs once, even across server restarts.
+      const LINK_MIGRATION_KEY = "link_events_migrated_v1";
+      const [[migrationFlag]] = await pool.query(
+        "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
+        [LINK_MIGRATION_KEY]
+      );
+
+      if (!migrationFlag?.counter_value) {
+        // Split old "Label | URL" value into new event_type + event_value.
+        // Known sidebar/header labels get exact section names; everything else
+        // falls back to "Link: <first 22 chars of label>".
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET
+            event_type = CASE
+              WHEN event_value LIKE 'GitHub Profile | %'       THEN 'Sidebar: GitHub'
+              WHEN event_value LIKE 'LinkedIn Profile | %'     THEN 'Sidebar: LinkedIn'
+              WHEN event_value LIKE 'Email Laurence | %'       THEN 'Sidebar: Email'
+              WHEN event_value LIKE 'Call Laurence | %'        THEN 'Sidebar: Phone'
+              WHEN event_value LIKE 'Home | %'                 THEN 'Sidebar: Home'
+              WHEN event_value LIKE 'Laurence Alec Burce | %'  THEN 'Sidebar: Home'
+              WHEN event_value LIKE 'About | %'                THEN 'Sidebar: About'
+              WHEN event_value LIKE 'Work Experience | %'      THEN 'Sidebar: Work Experience'
+              WHEN event_value LIKE 'Education | %'            THEN 'Sidebar: Education'
+              WHEN event_value LIKE 'Skills | %'               THEN 'Sidebar: Skills'
+              WHEN event_value LIKE 'Projects | %'             THEN 'Sidebar: Projects'
+              ELSE CONCAT('Link: ', LEFT(SUBSTRING_INDEX(event_value, ' | ', 1), 22))
+            END,
+            event_value = CASE
+              WHEN INSTR(event_value, ' | ') > 0
+                THEN SUBSTR(event_value, INSTR(event_value, ' | ') + 3)
+              ELSE event_value
+            END
+          WHERE event_type = 'link_click'
+        `);
+
+        await pool.query(
+          `INSERT INTO portfolio_analytics_counters (counter_key, counter_value) VALUES (?, 1)
+           ON DUPLICATE KEY UPDATE counter_value = 1`,
+          [LINK_MIGRATION_KEY]
+        );
+      }
     })();
   }
 
