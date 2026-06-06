@@ -90,13 +90,21 @@ export default function Magnifier({ initialPointer = null }) {
       const iframeDoc = iframeRef.current?.contentDocument;
       if (!iframeDoc) return;
 
-      const sourceRows = [...document.querySelectorAll(".work-cards-row")];
-      const frameRows = [...iframeDoc.querySelectorAll(".work-cards-row")];
+      // Carousels now use Embla which positions slides via CSS transform, not scrollLeft.
+      // Read the translateX value from the Embla container (.work-cards-row inside
+      // .embla-viewport) and apply it directly to the iframe's container.
+      const sourceViewports = [...document.querySelectorAll(".embla-viewport")];
+      const frameViewports  = [...iframeDoc.querySelectorAll(".embla-viewport")];
 
-      sourceRows.forEach((row, index) => {
-        if (frameRows[index]) {
-          frameRows[index].scrollLeft = row.scrollLeft;
-        }
+      sourceViewports.forEach((viewport, i) => {
+        const sourceContainer = viewport.querySelector(".work-cards-row");
+        const frameContainer  = frameViewports[i]?.querySelector(".work-cards-row");
+        if (!sourceContainer || !frameContainer) return;
+
+        const transform = window.getComputedStyle(sourceContainer).transform;
+        frameContainer.style.transform = transform;
+        // Lock the iframe's Embla pointer-events so it doesn't fight the override.
+        frameContainer.style.willChange = "transform";
       });
     } catch {}
   }, []);

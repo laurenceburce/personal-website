@@ -2,15 +2,19 @@
 
 import { useEffect, useState } from "react";
 import { getSession } from "next-auth/react";
+import { motion, useReducedMotion } from "framer-motion";
 import { identifyAnalyticsVisitor } from "../../utils/analyticsClient";
 import { IconDownload } from "./icons";
 import { trackDownload } from "./navigationLinks";
 import { openAuthModal } from "../../utils/authModal";
 
+const BTN_SPRING = { type: "spring", stiffness: 420, damping: 24 };
+
 const PENDING_DOWNLOAD_KEY = "portfolio-oauth-pending-download-v1";
 
 export default function DownloadGate({ links }) {
   const [isChecking, setIsChecking] = useState(false);
+  const shouldReduceMotion = useReducedMotion();
 
   useEffect(() => {
     let cancelled = false;
@@ -76,17 +80,28 @@ export default function DownloadGate({ links }) {
   return (
     <>
       {links.map((link) => (
-        <button
+        <motion.button
           key={link.href}
           type="button"
           className={`scroll-download-link scroll-download-${link.tone}`}
           aria-label={link.ariaLabel}
           onClick={() => handleDownloadClick(link)}
           disabled={isChecking}
+          whileHover={
+            !shouldReduceMotion && !isChecking
+              ? { y: -2, transition: BTN_SPRING }
+              : {}
+          }
+          whileTap={
+            !shouldReduceMotion && !isChecking
+              ? { scale: 0.96, y: 0, transition: BTN_SPRING }
+              : {}
+          }
+          transition={BTN_SPRING}
         >
           <IconDownload />
           <span>{link.label}</span>
-        </button>
+        </motion.button>
       ))}
     </>
   );

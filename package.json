@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@google/genai": "^2.8.0",
+    "embla-carousel-react": "^8.6.0",
+    "framer-motion": "^12.40.0",
     "html2canvas": "^1.4.1",
     "mysql2": "^3.22.4",
     "next": "16.2.7",
