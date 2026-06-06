@@ -70,25 +70,34 @@ export default async function ChatsPage({ searchParams }) {
   const { logs, total, pageSize } = await getChatLogs({ page });
   const totalPages = Math.ceil(total / pageSize);
 
+  function Pagination() {
+    if (totalPages <= 1) return null;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+        {page > 1 ? (
+          <Link href={`/admin/chats?page=${page - 1}`} style={paginationLink}>← Previous</Link>
+        ) : null}
+        <span style={{ color: "#64748b", fontSize: "13px" }}>
+          Page {page} of {totalPages}
+        </span>
+        {page < totalPages ? (
+          <Link href={`/admin/chats?page=${page + 1}`} style={paginationLink}>Next →</Link>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="admin-page" style={pageStyle}>
       <div className="admin-shell" style={shell}>
         <Header total={total} />
+        <div style={{ marginBottom: "14px" }}>
+          <Pagination />
+        </div>
         <ChatTable logs={logs} />
-
-        {totalPages > 1 && (
-          <div className="admin-pagination" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            {page > 1 ? (
-              <Link href={`/admin/chats?page=${page - 1}`} style={paginationLink}>Previous</Link>
-            ) : null}
-            <span style={{ color: "#64748b", fontSize: "13px" }}>
-              Page {page} of {totalPages}
-            </span>
-            {page < totalPages ? (
-              <Link href={`/admin/chats?page=${page + 1}`} style={paginationLink}>Next</Link>
-            ) : null}
-          </div>
-        )}
+        <div style={{ marginTop: "14px" }}>
+          <Pagination />
+        </div>
       </div>
     </div>
   );

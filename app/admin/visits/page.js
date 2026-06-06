@@ -188,6 +188,23 @@ function VisitTable({ visits }) {
   );
 }
 
+function Pagination({ page, totalPages, base }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+      {page > 1 ? (
+        <Link href={`${base}?page=${page - 1}`} style={paginationLink}>← Previous</Link>
+      ) : null}
+      <span style={{ color: "#64748b", fontSize: "13px" }}>
+        Page {page} of {totalPages}
+      </span>
+      {page < totalPages ? (
+        <Link href={`${base}?page=${page + 1}`} style={paginationLink}>Next →</Link>
+      ) : null}
+    </div>
+  );
+}
+
 export default async function VisitsPage({ searchParams }) {
   const page = Math.max(1, Number((await searchParams)?.page) || 1);
   const { visits, total, pageSize } = await getVisitsList(page);
@@ -197,21 +214,13 @@ export default async function VisitsPage({ searchParams }) {
     <div className="admin-page" style={pageStyle}>
       <div className="admin-shell" style={shell}>
         <Header total={total} />
+        <div style={{ marginBottom: "14px" }}>
+          <Pagination page={page} totalPages={totalPages} base="/admin/visits" />
+        </div>
         <VisitTable visits={visits} />
-
-        {totalPages > 1 && (
-          <div className="admin-pagination" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            {page > 1 ? (
-              <Link href={`/admin/visits?page=${page - 1}`} style={paginationLink}>Previous</Link>
-            ) : null}
-            <span style={{ color: "#64748b", fontSize: "13px" }}>
-              Page {page} of {totalPages}
-            </span>
-            {page < totalPages ? (
-              <Link href={`/admin/visits?page=${page + 1}`} style={paginationLink}>Next</Link>
-            ) : null}
-          </div>
-        )}
+        <div style={{ marginTop: "14px" }}>
+          <Pagination page={page} totalPages={totalPages} base="/admin/visits" />
+        </div>
       </div>
     </div>
   );
