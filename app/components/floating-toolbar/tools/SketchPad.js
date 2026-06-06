@@ -5,7 +5,9 @@ import PageSketchOverlay from "./PageSketchOverlay";
 import { getOrCreateVisitorId } from "../../../utils/analyticsClient";
 
 const SKETCH_COLORS = ["#1e293b", "#ef4444", "#f97316", "#eab308", "#22c55e", "#38bdf8", "#818cf8", "#f9fafb"];
-const STICKERS = ["★", "✓", "!", "?", "❤", "→", "◆", "●"];
+// ︎ after ❤ is the Unicode Text Presentation Selector — forces the heart
+// to render as a text glyph rather than the red emoji on Apple devices.
+const STICKERS = ["★", "✓", "!", "?", "❤︎", "→", "◆", "●"];
 
 export default function SketchPad({ initialDrawingEnabled = true, onColorChange = null }) {
   const pageOverlayRef = useRef(null);
