@@ -26,7 +26,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
       <ThemeSwitch theme={theme} onChange={onThemeChange} className="sidebar-theme-toggle" />
       <div className="scroll-profile">
         <p className="scroll-kicker">Quick Navigation</p>
-        <a href="#home" className="scroll-brand">
+        <a href="#home" className="scroll-brand" aria-label="Home">
           Laurence Alec Burce
         </a>
         <p className="scroll-role">
@@ -34,20 +34,20 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
           <svg width="3" height="3" viewBox="0 0 3 3" aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", margin: "0 5px", flexShrink: 0 }}><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/></svg>
           AI &amp; Automation Engineer
         </p>
-        <a href="mailto:laurenceburce@gmail.com" className="scroll-email">
+        <a href="mailto:laurenceburce@gmail.com" className="scroll-email" aria-label="Email Laurence">
           <IconMail />
           laurenceburce@gmail.com
         </a>
-        <a href="tel:+16196350470" className="scroll-email">
+        <a href="tel:+16196350470" className="scroll-email" aria-label="Call Laurence">
           <IconPhone />
           +1 619 635 0470
         </a>
         <div className="scroll-social">
-          <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer" className="scroll-social-link">
+          <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer" className="scroll-social-link" aria-label="GitHub Profile">
             <IconGitHub />
             GitHub
           </a>
-          <a href="https://www.linkedin.com/in/laurence-burce" target="_blank" rel="noreferrer" className="scroll-social-link">
+          <a href="https://www.linkedin.com/in/laurence-burce" target="_blank" rel="noreferrer" className="scroll-social-link" aria-label="LinkedIn Profile">
             <IconLinkedIn />
             LinkedIn
           </a>
@@ -61,6 +61,7 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
           <a
             key={item.id}
             href={item.href}
+            aria-label={item.label}
             className={activeSectionId === item.id ? "active" : undefined}
             aria-current={activeSectionId === item.id ? "location" : undefined}
           >

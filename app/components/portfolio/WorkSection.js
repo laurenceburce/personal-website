@@ -151,6 +151,7 @@ export default function WorkSection({ timeline }) {
                   target="_blank"
                   rel="noreferrer"
                   className="work-card-site"
+                  aria-label={`${entry.company} Website`}
                   onClick={(e) => e.stopPropagation()}
                 >
                   Website ↗

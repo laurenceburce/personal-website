@@ -162,6 +162,7 @@ export default function ProjectsSection({ projects }) {
                       target="_blank"
                       rel="noreferrer"
                       className="work-card-site"
+                      aria-label={`${project.title} Repository`}
                       onClick={(e) => e.stopPropagation()}
                     >
                       Repository
@@ -202,7 +203,7 @@ export default function ProjectsSection({ projects }) {
                 ))}
               </div>
               {selectedProject.link ? (
-                <a href={selectedProject.link} target="_blank" rel="noreferrer" className="project-detail-link">
+                <a href={selectedProject.link} target="_blank" rel="noreferrer" className="project-detail-link" aria-label={`${selectedProject.title} Repository`}>
                   View Repository
                 </a>
               ) : null}

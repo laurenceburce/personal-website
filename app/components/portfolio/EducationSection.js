@@ -19,7 +19,7 @@ export default function EducationSection() {
             </span>
             <div className="timeline-logo-meta">
               <span>Manila, Philippines</span>
-              <a href="https://www.mapua.edu.ph" target="_blank" rel="noreferrer">
+              <a href="https://www.mapua.edu.ph" target="_blank" rel="noreferrer" aria-label="Mapua University Website">
                 Website
               </a>
             </div>

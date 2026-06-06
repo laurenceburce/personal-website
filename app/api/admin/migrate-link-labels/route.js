@@ -3,6 +3,22 @@ import mysql from "mysql2/promise";
 
 export const runtime = "nodejs";
 
+// Old label → readable label
+const RENAME_MAP = {
+  "About01":            "About",
+  "Work Experience02":  "Work Experience",
+  "Education03":        "Education",
+  "Skills04":           "Skills",
+  "Projects05":         "Projects",
+  "Website ↗":     "Company Website",   // Website ↗ (work section, all companies)
+  "Website":            "Mapua University Website",
+  "Repository":         "Project Repository",
+  "View Repository":    "Project Repository",
+  "Laurence Alec Burce":"Home",
+  "GitHub":             "GitHub Profile",
+  "LinkedIn":           "LinkedIn Profile",
+};
+
 export async function POST(request) {
   const token = request.headers.get("x-admin-token");
   if (!token || token !== process.env.ANALYTICS_ADMIN_TOKEN) {
@@ -18,26 +34,33 @@ export async function POST(request) {
   try {
     pool = mysql.createPool({ uri: dbUrl, connectionLimit: 1 });
 
-    const [preview] = await pool.query(
-      `SELECT COUNT(*) AS total
-       FROM portfolio_analytics_events
-       WHERE event_type = 'link_click'
-         AND event_value LIKE '% | %'`
-    );
-    const total = preview[0]?.total ?? 0;
-
-    if (total === 0) {
-      return NextResponse.json({ ok: true, updated: 0, message: "Nothing to migrate." });
-    }
-
-    const [result] = await pool.query(
+    // Step 1: strip raw URL suffix from any remaining old-format entries
+    await pool.query(
       `UPDATE portfolio_analytics_events
        SET event_value = SUBSTRING_INDEX(event_value, ' | ', 1)
        WHERE event_type = 'link_click'
          AND event_value LIKE '% | %'`
     );
 
-    return NextResponse.json({ ok: true, updated: result.affectedRows });
+    // Step 2: rename known labels to readable names
+    const entries = Object.entries(RENAME_MAP);
+    const placeholders = entries.map(() => "WHEN event_value = ? THEN ?").join("\n        ");
+    const values = entries.flatMap(([old, next]) => [old, next]);
+    const inList = entries.map(() => "?").join(", ");
+    const inValues = entries.map(([old]) => old);
+
+    const [result] = await pool.query(
+      `UPDATE portfolio_analytics_events
+       SET event_value = CASE
+         ${placeholders}
+         ELSE event_value
+       END
+       WHERE event_type = 'link_click'
+         AND event_value IN (${inList})`,
+      [...values, ...inValues]
+    );
+
+    return NextResponse.json({ ok: true, renamed: result.affectedRows });
   } catch (error) {
     console.error("migrate-link-labels failed", error?.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
