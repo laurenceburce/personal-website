@@ -1,11 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getSession } from "next-auth/react";
 import AuthProviderButtons from "./AuthProviderButtons";
 import { consumeAuthModalCallback } from "../../utils/authModal";
-
-const WELCOME_DISMISSED_KEY = "portfolio-auth-welcome-dismissed-v1";
 
 const DEFAULT_TITLE = "Welcome";
 const DEFAULT_MESSAGE =
@@ -16,25 +13,6 @@ export default function AuthWelcome() {
   const [config, setConfig] = useState({});
   const [status, setStatus] = useState("");
   const callbackIdRef = useRef(null);
-
-  // Auto-show on first visit if not signed in
-  useEffect(() => {
-    let cancelled = false;
-    const checkWelcome = async () => {
-      try {
-        if (window.localStorage.getItem(WELCOME_DISMISSED_KEY) === "true") return;
-        const session = await getSession();
-        if (!cancelled && !session?.user?.email) {
-          setConfig({});
-          setVisible(true);
-        }
-      } catch {
-        if (!cancelled) setVisible(true);
-      }
-    };
-    checkWelcome();
-    return () => { cancelled = true; };
-  }, []);
 
   // Respond to programmatic openAuthModal() calls
   useEffect(() => {
@@ -50,13 +28,11 @@ export default function AuthWelcome() {
   }, []);
 
   const dismiss = () => {
-    try { window.localStorage.setItem(WELCOME_DISMISSED_KEY, "true"); } catch {}
     setVisible(false);
     setStatus("");
   };
 
   const handleBeforeSignIn = () => {
-    try { window.localStorage.setItem(WELCOME_DISMISSED_KEY, "true"); } catch {}
     const cb = consumeAuthModalCallback(callbackIdRef.current);
     cb?.();
   };
