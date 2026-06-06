@@ -4,13 +4,13 @@ export const downloadLinks = [
   {
     label: "Resume",
     ariaLabel: "Download Resume",
-    href: "/Laurence-Alec-Burce-Software-Developer-Resume.pdf",
+    href: "/api/download/resume",
     tone: "resume"
   },
   {
     label: "Cover Letter",
     ariaLabel: "Download Cover Letter",
-    href: "/Laurence-Alec-Burce-Cover-Letter.pdf",
+    href: "/api/download/cover-letter",
     tone: "letter"
   }
 ];

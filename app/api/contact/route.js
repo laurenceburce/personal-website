@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "../../../auth";
 import { isAllowedOrigin } from "../utils/origin";
 
 const contactRateLimit = new Map();
@@ -131,6 +132,11 @@ export async function POST(request) {
   try {
     if (!isAllowedOrigin(request)) {
       return NextResponse.json({ error: "Forbidden." }, { status: 403 });
+    }
+
+    const session = await auth();
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     }
 
     const ip = extractIp(request);

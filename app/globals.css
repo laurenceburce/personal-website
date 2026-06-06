@@ -478,6 +478,40 @@ button.scroll-download-link {
   font-weight: 750;
 }
 
+.download-gate-providers {
+  display: grid;
+  gap: 0.58rem;
+}
+
+.download-gate-providers button {
+  min-height: 2.52rem;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  border-radius: 10px;
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent),
+    rgba(14, 22, 52, 0.82);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 850;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s;
+}
+
+.download-gate-providers button:hover:not(:disabled),
+.download-gate-providers button:focus-visible:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
+    rgba(56, 189, 248, 0.1);
+  transform: translateY(-1px);
+}
+
+.download-gate-providers button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
 .download-gate-submit {
   min-height: 2.42rem;
   border: 1px solid rgba(56, 189, 248, 0.34);
@@ -493,6 +527,139 @@ button.scroll-download-link {
 .download-gate-submit:disabled {
   opacity: 0.58;
   cursor: wait;
+}
+
+.auth-provider-list {
+  display: grid;
+  gap: 0.58rem;
+}
+
+.auth-provider-list button {
+  min-height: 2.52rem;
+  border: 1px solid rgba(56, 189, 248, 0.24);
+  border-radius: 10px;
+  color: var(--ink);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent),
+    rgba(14, 22, 52, 0.82);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 850;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s, transform 0.18s;
+}
+
+.auth-provider-list button:hover:not(:disabled),
+.auth-provider-list button:focus-visible:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
+    rgba(56, 189, 248, 0.1);
+  transform: translateY(-1px);
+}
+
+.auth-provider-list button:disabled {
+  opacity: 0.58;
+  cursor: wait;
+}
+
+.auth-welcome {
+  position: fixed;
+  inset: 0;
+  z-index: 10040;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.auth-welcome-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(0, 4, 18, 0.62);
+  backdrop-filter: blur(7px);
+  cursor: pointer;
+}
+
+.auth-welcome-panel {
+  position: relative;
+  z-index: 1;
+  width: min(25rem, calc(100vw - 2rem));
+  display: grid;
+  gap: 0.86rem;
+  padding: 1.05rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-soft);
+}
+
+.auth-welcome-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.auth-welcome-head p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 850;
+}
+
+.auth-welcome-head button,
+.auth-welcome-skip {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  font: inherit;
+}
+
+.auth-welcome-head button {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+.auth-welcome-copy,
+.auth-feature-copy,
+.auth-gate-status {
+  margin: 0;
+  color: var(--subtle);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.auth-welcome-skip {
+  min-height: 2.2rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.auth-feature-gate {
+  display: grid;
+  gap: 0.66rem;
+  padding: 0.82rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(14, 22, 52, 0.42);
+}
+
+.auth-feature-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.auth-feature-gate-chat {
+  margin: 0.85rem;
+}
+
+.auth-feature-gate-sidebar {
+  margin-top: 0.5rem;
 }
 
 .scroll-nav {

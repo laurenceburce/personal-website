@@ -1,72 +1,82 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getSession } from "next-auth/react";
+import AuthProviderButtons from "../auth/AuthProviderButtons";
 import { identifyAnalyticsVisitor } from "../../utils/analyticsClient";
 import { IconDownload } from "./icons";
 import { trackDownload } from "./navigationLinks";
 
-const VERIFIED_EMAIL_KEY = "portfolio-download-verified-email-v1";
+const PENDING_DOWNLOAD_KEY = "portfolio-oauth-pending-download-v1";
 
 export default function DownloadGate({ links }) {
   const [activeLink, setActiveLink] = useState(null);
-  const [email, setEmail] = useState("");
   const [status, setStatus] = useState("");
   const [isChecking, setIsChecking] = useState(false);
 
-  const handleDownloadClick = (link) => {
-    const verifiedEmail = getVerifiedEmail();
-    if (verifiedEmail) {
-      startDownload(link, verifiedEmail);
-      return;
-    }
+  useEffect(() => {
+    let cancelled = false;
 
-    setActiveLink(link);
-    setEmail("");
+    const completePendingDownload = async () => {
+      const pendingLink = getPendingDownload();
+      if (!pendingLink) return;
+
+      const session = await getSession();
+      if (cancelled || !session?.user?.email) return;
+
+      clearPendingDownload();
+      await identifyAnalyticsVisitor({
+        email: session.user.email,
+        name: session.user.name || ""
+      });
+      startDownload(pendingLink, session.user.email);
+    };
+
+    completePendingDownload();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleDownloadClick = async (link) => {
+    if (isChecking) return;
+
+    setIsChecking(true);
     setStatus("");
+
+    try {
+      const session = await getSession();
+      if (session?.user?.email) {
+        await identifyAnalyticsVisitor({
+          email: session.user.email,
+          name: session.user.name || ""
+        });
+        startDownload(link, session.user.email);
+        return;
+      }
+
+      setActiveLink(link);
+    } catch {
+      setActiveLink(link);
+      setStatus("Unable to check sign-in status.");
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  const handleSignInStart = () => {
+    if (!activeLink || isChecking) return;
+
+    setIsChecking(true);
+    setStatus("Opening sign-in...");
+    rememberPendingDownload(activeLink);
   };
 
   const handleClose = () => {
     if (isChecking) return;
     setActiveLink(null);
     setStatus("");
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    if (!activeLink || isChecking) return;
-
-    const normalizedEmail = email.trim().toLowerCase();
-    if (!normalizedEmail) {
-      setStatus("Enter your email address first.");
-      return;
-    }
-
-    setIsChecking(true);
-    setStatus("Checking deliverability...");
-
-    try {
-      const response = await fetch("/api/validate-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: normalizedEmail })
-      });
-      const result = await response.json();
-
-      if (!response.ok || !result.valid) {
-        setStatus(result.message || "That email could not be verified.");
-        return;
-      }
-
-      rememberVerifiedEmail(normalizedEmail);
-      await identifyAnalyticsVisitor({ email: normalizedEmail });
-      startDownload(activeLink, normalizedEmail);
-      setActiveLink(null);
-      setStatus("");
-    } catch {
-      setStatus("Email validation is temporarily unavailable.");
-    } finally {
-      setIsChecking(false);
-    }
   };
 
   return (
@@ -78,6 +88,7 @@ export default function DownloadGate({ links }) {
           className={`scroll-download-link scroll-download-${link.tone}`}
           aria-label={link.ariaLabel}
           onClick={() => handleDownloadClick(link)}
+          disabled={isChecking}
         >
           <IconDownload />
           <span>{link.label}</span>
@@ -92,35 +103,28 @@ export default function DownloadGate({ links }) {
             aria-label="Close download dialog"
             onClick={handleClose}
           />
-          <form className="download-gate-panel" onSubmit={handleSubmit}>
+          <div className="download-gate-panel">
             <div className="download-gate-head">
-              <p id="download-gate-title">Verify Email</p>
+              <p id="download-gate-title">Sign In to Download</p>
               <button type="button" onClick={handleClose} aria-label="Close download dialog">
                 x
               </button>
             </div>
-            <label>
-              <span>Email address</span>
-              <input
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="name@example.com"
-                disabled={isChecking}
-                autoFocus
-                required
-              />
-            </label>
             <p className="download-gate-note">
               Required before downloading {activeLink.label.toLowerCase()}.
             </p>
+            <AuthProviderButtons
+              className="download-gate-providers"
+              callbackUrl={typeof window !== "undefined" ? window.location.href : "/"}
+              onBeforeSignIn={handleSignInStart}
+              onSignInError={() => {
+                clearPendingDownload();
+                setIsChecking(false);
+              }}
+              onStatusChange={setStatus}
+            />
             {status ? <p className="download-gate-status">{status}</p> : null}
-            <button className="download-gate-submit" type="submit" disabled={isChecking}>
-              {isChecking ? "Checking..." : "Verify and Download"}
-            </button>
-          </form>
+          </div>
         </div>
       ) : null}
     </>
@@ -139,16 +143,27 @@ function startDownload(link, email) {
   anchor.remove();
 }
 
-function getVerifiedEmail() {
+function getPendingDownload() {
   try {
-    return window.localStorage.getItem(VERIFIED_EMAIL_KEY) || "";
+    const raw = window.sessionStorage.getItem(PENDING_DOWNLOAD_KEY);
+    return raw ? JSON.parse(raw) : null;
   } catch {
-    return "";
+    return null;
   }
 }
 
-function rememberVerifiedEmail(email) {
+function rememberPendingDownload(link) {
   try {
-    window.localStorage.setItem(VERIFIED_EMAIL_KEY, email);
+    window.sessionStorage.setItem(PENDING_DOWNLOAD_KEY, JSON.stringify({
+      href: link.href,
+      label: link.label,
+      tone: link.tone
+    }));
+  } catch {}
+}
+
+function clearPendingDownload() {
+  try {
+    window.sessionStorage.removeItem(PENDING_DOWNLOAD_KEY);
   } catch {}
 }

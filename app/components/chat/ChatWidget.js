@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import AuthFeatureGate from "../auth/AuthFeatureGate";
 
 const GREETING = {
   role: "assistant",
@@ -140,47 +141,53 @@ export default function ChatWidget() {
             </div>
           </div>
 
-          <div className="chat-messages">
-            {messages.map((msg, i) => (
-              <div key={i} className={`chat-bubble chat-bubble--${msg.role}`}>
-                {msg.content === "" && loading && i === messages.length - 1 ? (
-                  <span className="chat-typing" aria-label="AI is typing">
-                    <span /><span /><span />
-                  </span>
-                ) : (
-                  <span className="chat-bubble-text">{msg.content}</span>
-                )}
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
+          <AuthFeatureGate
+            title="Sign In to Chat"
+            message="Sign in before using the AI assistant."
+            className="auth-feature-gate auth-feature-gate-chat"
+          >
+            <div className="chat-messages">
+              {messages.map((msg, i) => (
+                <div key={i} className={`chat-bubble chat-bubble--${msg.role}`}>
+                  {msg.content === "" && loading && i === messages.length - 1 ? (
+                    <span className="chat-typing" aria-label="AI is typing">
+                      <span /><span /><span />
+                    </span>
+                  ) : (
+                    <span className="chat-bubble-text">{msg.content}</span>
+                  )}
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
 
-          <form className="chat-form" onSubmit={handleSend}>
-            <textarea
-              ref={inputRef}
-              className="chat-textarea"
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask anything…"
-              rows={1}
-              disabled={loading}
-              maxLength={1000}
-              aria-label="Chat message"
-            />
-            <button
-              type="submit"
-              className="chat-send"
-              disabled={loading || !input.trim()}
-              aria-label="Send message"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"/>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-              </svg>
-            </button>
-          </form>
-          <p className="chat-powered-by">Powered by Gemini 1.5 Flash &middot; Enter to send</p>
+            <form className="chat-form" onSubmit={handleSend}>
+              <textarea
+                ref={inputRef}
+                className="chat-textarea"
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask anything..."
+                rows={1}
+                disabled={loading}
+                maxLength={1000}
+                aria-label="Chat message"
+              />
+              <button
+                type="submit"
+                className="chat-send"
+                disabled={loading || !input.trim()}
+                aria-label="Send message"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"/>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              </button>
+            </form>
+            <p className="chat-powered-by">Powered by Gemini 1.5 Flash &middot; Enter to send</p>
+          </AuthFeatureGate>
         </div>
       )}
 

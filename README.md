@@ -98,7 +98,9 @@ DB (if used)
 Frameworks
 APIs
 
+add country stat view on main page
+make it iphone friendly (icons/emojis)
+On an iphone, some of the symbols turn into an emoji. I dont want to use emoji and I want the symbols to be unified (the same) across all platforms. Can we convert these symbols into an image or something that can achieve what I want?
 
 add thesis to github repo and add the repo link in site
-particle moves away from cursor
 Fix the chatbot

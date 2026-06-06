@@ -1,3 +1,5 @@
+import AuthFeatureGate from "../auth/AuthFeatureGate";
+
 export default function SidebarContactForm({
   form,
   errors,
@@ -9,6 +11,11 @@ export default function SidebarContactForm({
   return (
     <section id="sidebar-contact" className="sidebar-contact">
       <p className="sidebar-contact-title">Contact</p>
+      <AuthFeatureGate
+        title="Sign In to Contact"
+        message="Sign in before sending a message."
+        className="auth-feature-gate auth-feature-gate-sidebar"
+      >
       <form className="sidebar-contact-form" onSubmit={onSubmit} noValidate>
         <input
           type="text"
@@ -66,6 +73,7 @@ export default function SidebarContactForm({
           </p>
         ) : null}
       </form>
+      </AuthFeatureGate>
     </section>
   );
 }

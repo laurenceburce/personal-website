@@ -1,5 +1,6 @@
 import { DM_Serif_Display, Manrope } from "next/font/google";
 import "./globals.css";
+import AuthWelcome from "./components/auth/AuthWelcome";
 import ChatWidget from "./components/chat/ChatWidget";
 
 const manrope = Manrope({
@@ -65,6 +66,7 @@ export default function RootLayout({ children }) {
           This website is a work in progress — some things may be incomplete or change.
         </div>
         {children}
+        <AuthWelcome />
         <ChatWidget />
       </body>
     </html>

@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextResponse } from "next/server";
+import { auth } from "../../../auth";
 import { PORTFOLIO_CONTEXT } from "../../lib/portfolioContext";
 
 export const runtime = "nodejs";
@@ -27,6 +28,11 @@ function checkRateLimit(ip) {
 
 export async function POST(request) {
   try {
+    const session = await auth();
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+    }
+
     if (!process.env.GEMINI_API_KEY) {
       return NextResponse.json({ error: "AI assistant is not configured." }, { status: 503 });
     }
