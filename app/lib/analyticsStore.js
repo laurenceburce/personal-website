@@ -212,6 +212,74 @@ const ensureSchema = async () => {
           [LINK_MIGRATION_KEY]
         );
       }
+
+      // v2 migration: fix label-only old events that landed in the ELSE branch of v1.
+      // Those had no " | URL" separator, so LIKE patterns missed them and produced
+      // "Link: Education" with event_value="Education". Reclassify to proper names.
+      // Also promotes old 'download' and 'sketch_share_created' types to new format.
+      const LINK_MIGRATION_V2_KEY = "link_events_migrated_v2";
+      const [[migrationFlagV2]] = await pool.query(
+        "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
+        [LINK_MIGRATION_V2_KEY]
+      );
+
+      if (!migrationFlagV2?.counter_value) {
+        // Fix misclassified nav/contact/download "Link: X" events
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET
+            event_type = CASE
+              WHEN event_type = 'Link: About'               THEN 'Sidebar: About'
+              WHEN event_type = 'Link: Work Experience'     THEN 'Sidebar: Work Experience'
+              WHEN event_type = 'Link: Education'           THEN 'Sidebar: Education'
+              WHEN event_type = 'Link: Skills'              THEN 'Sidebar: Skills'
+              WHEN event_type = 'Link: Projects'            THEN 'Sidebar: Projects'
+              WHEN event_type = 'Link: Home'                THEN 'Sidebar: Home'
+              WHEN event_type = 'Link: Laurence Alec Burce' THEN 'Sidebar: Home'
+              WHEN event_type = 'Link: GitHub Profile'      THEN 'Sidebar: GitHub'
+              WHEN event_type = 'Link: LinkedIn Profile'    THEN 'Sidebar: LinkedIn'
+              WHEN event_type = 'Link: Email Laurence'      THEN 'Sidebar: Email'
+              WHEN event_type = 'Link: Call Laurence'       THEN 'Sidebar: Phone'
+              WHEN event_type = 'Link: /api/download/resume' THEN 'Download: Resume'
+              WHEN event_type = 'Link: Download Resume'     THEN 'Download: Resume'
+              WHEN event_type = 'Link: Download Cover Letter' THEN 'Download: Cover Letter'
+              ELSE event_type
+            END,
+            event_value = CASE
+              WHEN event_type IN (
+                'Link: About', 'Link: Work Experience', 'Link: Education',
+                'Link: Skills', 'Link: Projects', 'Link: Home',
+                'Link: Laurence Alec Burce', 'Link: GitHub Profile',
+                'Link: LinkedIn Profile', 'Link: Email Laurence',
+                'Link: Call Laurence', 'Link: Download Resume',
+                'Link: Download Cover Letter'
+              ) THEN ''
+              ELSE event_value
+            END
+          WHERE event_type LIKE 'Link: %'
+        `);
+
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET
+            event_type  = CONCAT('Download: ', event_value),
+            event_value = ''
+          WHERE event_type = 'download'
+            AND event_value IN ('Resume', 'Cover Letter')
+        `);
+
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET event_type = 'Sketch: Share Created'
+          WHERE event_type = 'sketch_share_created'
+        `);
+
+        await pool.query(
+          `INSERT INTO portfolio_analytics_counters (counter_key, counter_value) VALUES (?, 1)
+           ON DUPLICATE KEY UPDATE counter_value = 1`,
+          [LINK_MIGRATION_V2_KEY]
+        );
+      }
     })();
   }
 
@@ -297,7 +365,12 @@ export async function getAnalyticsStats() {
     pool.query(`
       SELECT
         CASE WHEN event_type = 'link_click' THEN event_value
-             ELSE CONCAT(event_type, CASE WHEN event_value != '' THEN CONCAT(' → ', event_value) ELSE '' END) END AS link,
+             ELSE CONCAT(event_type,
+               CASE WHEN event_value != ''
+                         AND event_value != SUBSTR(event_type, INSTR(event_type, ': ') + 2)
+                    THEN CONCAT(' → ', event_value)
+                    ELSE '' END)
+        END AS link,
         COUNT(*) AS count
       FROM portfolio_analytics_events
       WHERE event_type = 'link_click'
