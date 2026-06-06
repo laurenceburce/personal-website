@@ -5,7 +5,7 @@ import { PORTFOLIO_CONTEXT } from "../../lib/portfolioContext";
 
 export const runtime = "nodejs";
 
-const DEFAULT_MODEL = "gemini-2.0-flash";
+const DEFAULT_MODEL = "gemini-2.5-flash";
 
 const rateLimitStore = new Map();
 const WINDOW_MS = 60 * 60 * 1000; // 1 hour
@@ -95,7 +95,10 @@ export async function POST(request) {
           }
         } catch (error) {
           logChatError("Gemini stream error", error, { model });
-          controller.enqueue(encoder.encode("I encountered an issue. Please try again."));
+          const msg = (error?.status === 429 || error?.message?.includes("quota"))
+            ? "The AI assistant is temporarily unavailable due to high demand. Please try again later."
+            : "I encountered an issue. Please try again.";
+          controller.enqueue(encoder.encode(msg));
         } finally {
           controller.close();
         }
@@ -107,6 +110,9 @@ export async function POST(request) {
     });
   } catch (error) {
     logChatError("Chat request error", error);
+    if (error?.status === 429 || error?.message?.includes("429") || error?.message?.includes("quota")) {
+      return NextResponse.json({ error: "The AI assistant is temporarily unavailable due to high demand. Please try again later." }, { status: 503 });
+    }
     return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 });
   }
 }
