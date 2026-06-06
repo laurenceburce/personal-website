@@ -51,9 +51,41 @@ export const metadata = {
   }
 };
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "Person",
+  name: "Laurence Alec Burce",
+  url: "https://laurenceburce.com",
+  jobTitle: "Software Engineer",
+  description:
+    "Software engineer with experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
+  sameAs: [
+    "https://github.com/laurenceburce",
+    "https://www.linkedin.com/in/laurenceburce"
+  ],
+  knowsAbout: [
+    "Java",
+    "Python",
+    "JavaScript",
+    "TypeScript",
+    "React",
+    "Next.js",
+    "Oracle SaaS ERP",
+    "Spring Boot",
+    "AI Automation",
+    "Copilot Studio"
+  ]
+};
+
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      </head>
       <body className={`${manrope.variable} ${dmSerifDisplay.variable}`}>
         {children}
         <AuthSessionTracker />
