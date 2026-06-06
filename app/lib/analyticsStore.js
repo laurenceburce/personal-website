@@ -311,6 +311,29 @@ const ensureSchema = async () => {
           [LINK_MIGRATION_V3_KEY]
         );
       }
+
+      // v4 migration: fix specific remaining misclassified entries.
+      const LINK_MIGRATION_V4_KEY = "link_events_migrated_v4";
+      const [[migrationFlagV4]] = await pool.query(
+        "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
+        [LINK_MIGRATION_V4_KEY]
+      );
+
+      if (!migrationFlagV4?.counter_value) {
+        // "/Laurence-Alec-Burce-C" is LEFT(22) of "/Laurence-Alec-Burce-Cover-Letter.pdf" —
+        // a direct PDF link from an older version before download gating was added.
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET event_type = 'Download: Cover Letter', event_value = ''
+          WHERE event_type = 'Link: /Laurence-Alec-Burce-C'
+        `);
+
+        await pool.query(
+          `INSERT INTO portfolio_analytics_counters (counter_key, counter_value) VALUES (?, 1)
+           ON DUPLICATE KEY UPDATE counter_value = 1`,
+          [LINK_MIGRATION_V4_KEY]
+        );
+      }
     })();
   }
 

@@ -49,8 +49,7 @@ export default function Home() {
       about: "About",
       work: "Work",
       education: "Education",
-      skills: "Skills",
-      projects: "Projects"
+      skills: "Skills"
     };
 
     const getSection = (link) => {
@@ -62,29 +61,42 @@ export default function Home() {
       return "Link";
     };
 
-    const getLabel = (link) => {
-      const raw = (link.getAttribute("aria-label") || link.textContent?.trim() || "").replace(/\s+/g, " ").trim();
-      if (/^(GitHub|LinkedIn)\s+Profile$/i.test(raw)) return raw.replace(/\s+Profile$/i, "");
-      if (/^Email\s+\w+/i.test(raw)) return "Email";
-      if (/^Call\s+\w+/i.test(raw)) return "Phone";
-      if (/^Open\s+menu$/i.test(raw)) return null;
-      return raw || link.getAttribute("href") || "Link";
-    };
-
     const handleLinkClick = (event) => {
       const link = event.target?.closest?.("a[href]");
       if (!link) return;
       if (link.dataset.analyticsSkip) return;
 
-      const label = getLabel(link);
-      if (!label) return;
-
+      const ariaLabel = link.getAttribute("aria-label") || "";
+      const text = link.textContent?.trim() || "";
+      const raw = (ariaLabel || text).replace(/\s+/g, " ").trim();
       const href = link.getAttribute("href") || "";
       const destination = href.startsWith("http") ? href : (link.href || href);
-      const section = getSection(link);
-      const eventName = `${section}: ${label}`.slice(0, 50);
 
-      trackAnalyticsEvent(eventName, destination.slice(0, 200));
+      // Project links: aria-label is "[Project Title] Repository" or "[Project Title] Research Paper".
+      // Use the project title as section and a short link-type label.
+      if (link.closest("#projects") && raw) {
+        if (/\s+Repository$/i.test(raw)) {
+          const title = raw.replace(/\s+Repository$/i, "").trim();
+          trackAnalyticsEvent(`${title}: GitHub`.slice(0, 50), destination.slice(0, 200));
+          return;
+        }
+        if (/\s+Research Paper$/i.test(raw)) {
+          const title = raw.replace(/\s+Research Paper$/i, "").trim();
+          trackAnalyticsEvent(`${title}: IEEE Paper`.slice(0, 50), destination.slice(0, 200));
+          return;
+        }
+      }
+
+      // All other links: derive section from DOM position, label from aria/text.
+      let label = raw;
+      if (/^(GitHub|LinkedIn)\s+Profile$/i.test(raw)) label = raw.replace(/\s+Profile$/i, "");
+      else if (/^Email\s+\w+/i.test(raw)) label = "Email";
+      else if (/^Call\s+\w+/i.test(raw)) label = "Phone";
+      else if (/^Open\s+menu$/i.test(raw)) return;
+      if (!label) return;
+
+      const section = getSection(link);
+      trackAnalyticsEvent(`${section}: ${label}`.slice(0, 50), destination.slice(0, 200));
     };
 
     document.addEventListener("click", handleLinkClick, true);
