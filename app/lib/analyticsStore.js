@@ -312,20 +312,40 @@ const ensureSchema = async () => {
         );
       }
 
-      // v4 migration: fix specific remaining misclassified entries.
-      const LINK_MIGRATION_V4_KEY = "link_events_migrated_v4";
+      // v4+ migration: fix all remaining "Link: X" entries using broad LIKE patterns
+      // so every name-based variant is caught regardless of truncation length.
+      const LINK_MIGRATION_V4_KEY = "link_events_migrated_v4b";
       const [[migrationFlagV4]] = await pool.query(
         "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
         [LINK_MIGRATION_V4_KEY]
       );
 
       if (!migrationFlagV4?.counter_value) {
-        // "/Laurence-Alec-Burce-C" is LEFT(22) of "/Laurence-Alec-Burce-Cover-Letter.pdf" —
-        // a direct PDF link from an older version before download gating was added.
+        // "Link: Laurence%" — any truncation of the brand/home link text when aria-label was
+        // not set ("Laurence Alec Burce", "Laurence Alec Burce home", etc.) → Sidebar: Home
         await pool.query(`
           UPDATE portfolio_analytics_events
-          SET event_type = 'Download: Cover Letter', event_value = ''
-          WHERE event_type = 'Link: /Laurence-Alec-Burce-C'
+          SET event_type = 'Sidebar: Home', event_value = ''
+          WHERE event_type LIKE 'Link: Laurence%'
+        `);
+
+        // "Link: /Laurence-Alec-Burce-%" — direct PDF download links from before gating.
+        // First char after the dash determines file:
+        //   C → Cover Letter  (e.g. /Laurence-Alec-Burce-Cover-Letter.pdf)
+        //   S → Resume        (e.g. /Laurence-Alec-Burce-Software-Engineer-Resume.pdf)
+        //   R → Resume        (e.g. /Laurence-Alec-Burce-Resume.pdf)
+        //   anything else     → generic Document
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET
+            event_type = CASE
+              WHEN event_type LIKE 'Link: /Laurence-Alec-Burce-C%' THEN 'Download: Cover Letter'
+              WHEN event_type LIKE 'Link: /Laurence-Alec-Burce-S%' THEN 'Download: Resume'
+              WHEN event_type LIKE 'Link: /Laurence-Alec-Burce-R%' THEN 'Download: Resume'
+              ELSE 'Download: Document'
+            END,
+            event_value = ''
+          WHERE event_type LIKE 'Link: /Laurence-Alec-Burce-%'
         `);
 
         await pool.query(
