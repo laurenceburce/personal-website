@@ -5,7 +5,7 @@ import AuthFeatureGate from "../auth/AuthFeatureGate";
 
 const GREETING = {
   role: "assistant",
-  content: "Hi! I'm an AI assistant for Laurence's portfolio. Ask me anything about his work experience, skills, or projects!"
+  content: "Hi! I'm Laurence Burce's portfolio assistant. I can answer questions about his software-engineering experience, AI and automation work, projects, skills, education, availability, and contact information."
 };
 
 export default function ChatWidget() {
@@ -186,7 +186,7 @@ export default function ChatWidget() {
                 </svg>
               </button>
             </form>
-            <p className="chat-powered-by">Powered by Gemini 1.5 Flash &middot; Enter to send</p>
+            <p className="chat-powered-by">Powered by Gemini &middot; Enter to send</p>
           </AuthFeatureGate>
         </div>
       )}

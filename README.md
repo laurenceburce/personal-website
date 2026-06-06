@@ -43,6 +43,14 @@ DATABASE_URL=mysql://user:password@host:3306/database
 ANALYTICS_ADMIN_TOKEN=choose_a_private_admin_token
 ```
 
+For the AI portfolio assistant, add a Gemini API key. `GEMINI_MODEL` is
+optional and defaults to `gemini-3.5-flash`.
+
+```env
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-3.5-flash
+```
+
 On Railway, set `DATABASE_URL` as a reference variable to
 `${{MySQL.MYSQL_URL}}`. The sidebar displays total and unique visit counts.
 Visitor emails are stored only after a successful contact form submission and
