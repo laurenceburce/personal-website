@@ -799,7 +799,7 @@ export async function getVisitsList(page = 1) {
              AND event_type = 'time_on_page'
              AND created_at >= v.visited_at
              AND created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
-           ORDER BY created_at ASC
+           ORDER BY created_at DESC
            LIMIT 1
          )
        LEFT JOIN portfolio_analytics_events se

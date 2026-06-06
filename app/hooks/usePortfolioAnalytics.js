@@ -118,7 +118,13 @@ export default function usePortfolioAnalytics() {
     };
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") sendTime();
+      if (document.visibilityState === "hidden") {
+        sendTime();
+      } else {
+        // Tab is visible again — allow re-send on next hide so the cumulative
+        // total keeps updating rather than being frozen at the first tab switch.
+        hasSent.current = false;
+      }
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
