@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getChatLogs } from "../../lib/analyticsStore";
+import ChatTable from "./ChatTable";
 
 export const dynamic = "force-dynamic";
 
@@ -25,21 +26,6 @@ const sectionTitle = {
   textTransform: "uppercase",
   letterSpacing: "0.08em",
   margin: 0
-};
-const th = {
-  textAlign: "left",
-  padding: "12px 14px",
-  color: "#64748b",
-  fontWeight: "800",
-  fontSize: "11px",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  whiteSpace: "nowrap"
-};
-const td = {
-  padding: "12px 14px",
-  color: "#cbd5e1",
-  verticalAlign: "top"
 };
 const paginationLink = {
   padding: "7px 14px",
@@ -130,58 +116,6 @@ function RecentCards({ logs }) {
   );
 }
 
-function ChatTable({ logs }) {
-  return (
-    <div style={{ ...card, overflow: "hidden", marginBottom: "20px" }}>
-      <div style={{ padding: "16px 18px", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-        <p style={sectionTitle}>Detailed Records</p>
-      </div>
-      {logs.length === 0 ? (
-        <p style={{ ...muted, fontSize: "14px", padding: "32px", margin: 0 }}>No conversations yet.</p>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                {["Time", "User", "Question", "Response", "Model", "IP"].map((h) => (
-                  <th key={h} style={th}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {logs.map((log, i) => (
-                <tr
-                  key={log.id}
-                  style={{
-                    borderBottom: i < logs.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none",
-                    background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)"
-                  }}
-                >
-                  <td style={{ ...td, color: "#94a3b8", whiteSpace: "nowrap" }}>{fmtDate(log.createdAt)}</td>
-                  <td style={{ ...td, color: "#bae6fd", whiteSpace: "nowrap", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {log.email || <span style={muted}>Anonymous</span>}
-                  </td>
-                  <td style={{ ...td, maxWidth: "260px" }}>
-                    <div style={{ color: "#e2e8f0", lineHeight: 1.5 }}>{truncate(log.userMessage, 160)}</div>
-                  </td>
-                  <td style={{ ...td, maxWidth: "320px" }}>
-                    <div style={{ color: "#94a3b8", lineHeight: 1.5 }}>{truncate(log.aiResponse, 200)}</div>
-                  </td>
-                  <td style={{ ...td, color: "#64748b", whiteSpace: "nowrap", fontFamily: "monospace", fontSize: "12px" }}>
-                    {log.model || "-"}
-                  </td>
-                  <td style={{ ...td, fontFamily: "monospace", fontSize: "12px", color: "#64748b", whiteSpace: "nowrap" }}>
-                    {log.ipAddress || "-"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default async function ChatsPage({ searchParams }) {
   const page = Math.max(1, Number((await searchParams)?.page) || 1);

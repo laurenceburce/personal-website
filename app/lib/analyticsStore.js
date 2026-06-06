@@ -497,7 +497,7 @@ export async function getChatLogs({ page = 1, pageSize = 50 } = {}) {
       ipAddress: r.ip_address || null,
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
     })),
-    total: Number(total),
+    total: parseInt(String(total ?? 0), 10),
     page,
     pageSize
   };
