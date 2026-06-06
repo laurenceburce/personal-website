@@ -44,7 +44,7 @@ export function SidebarAnalyticsPanel({ analytics, className = "" }) {
           </div>
           {stats.firstVisitAt && (
             <p className="sidebar-analytics-since">
-              Since {new Date(stats.firstVisitAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+              Since {new Date(stats.firstVisitAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", timeZoneName: "shortOffset" })}
             </p>
           )}
         </>

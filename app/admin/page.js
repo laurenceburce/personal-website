@@ -61,12 +61,13 @@ const fmtTime = (seconds) => {
 
 const fmtDate = (iso) => {
   if (!iso) return "-";
-  return new Date(iso).toLocaleDateString("en-US", {
+  return new Date(iso).toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    timeZoneName: "short"
   });
 };
 
@@ -260,7 +261,7 @@ export default async function AdminPage() {
           <MetricCard label="Engagement" value={fmt(totalEngagement)} note="Downloads and link clicks" />
           <MetricCard
             label="Tracking Since"
-            value={stats.firstVisitAt ? new Date(stats.firstVisitAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}
+            value={stats.firstVisitAt ? new Date(stats.firstVisitAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", timeZoneName: "shortOffset" }) : "—"}
             note="Date of the first recorded visit"
           />
         </div>
