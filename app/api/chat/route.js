@@ -2,6 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { PORTFOLIO_CONTEXT } from "../../lib/portfolioContext";
+import { logChatMessage } from "../../lib/analyticsStore";
 
 export const runtime = "nodejs";
 
@@ -85,22 +86,29 @@ export async function POST(request) {
     });
     const result = await chat.sendMessageStream({ message });
 
+    const email = session.user.email;
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        let fullResponse = "";
         try {
           for await (const chunk of result) {
             const text = chunk.text;
-            if (text) controller.enqueue(encoder.encode(text));
+            if (text) {
+              fullResponse += text;
+              controller.enqueue(encoder.encode(text));
+            }
           }
         } catch (error) {
           logChatError("Gemini stream error", error, { model });
           const msg = (error?.status === 429 || error?.message?.includes("quota"))
             ? "The AI assistant is temporarily unavailable due to high demand. Please try again later."
             : "I encountered an issue. Please try again.";
+          fullResponse = msg;
           controller.enqueue(encoder.encode(msg));
         } finally {
           controller.close();
+          logChatMessage({ email, userMessage: message, aiResponse: fullResponse, model, ipAddress: ip }).catch(() => {});
         }
       }
     });

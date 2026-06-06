@@ -141,6 +141,20 @@ const ensureSchema = async () => {
       await runMigration(pool, "ALTER TABLE portfolio_analytics_identified_visitors ADD COLUMN auth_provider VARCHAR(40) NULL");
       await runMigration(pool, "ALTER TABLE portfolio_analytics_identified_visitors ADD COLUMN profile_image VARCHAR(500) NULL");
 
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS portfolio_chat_logs (
+          id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          email        VARCHAR(200) NULL,
+          user_message TEXT         NOT NULL,
+          ai_response  TEXT         NOT NULL,
+          model        VARCHAR(50)  NOT NULL DEFAULT '',
+          ip_address   VARCHAR(45)  NULL,
+          created_at   DATETIME(3)  NOT NULL,
+          INDEX portfolio_chat_logs_email_idx (email),
+          INDEX portfolio_chat_logs_created_idx (created_at DESC)
+        )
+      `);
+
       // Migrate existing visitors table to add new columns
       const migrations = [
         "ALTER TABLE portfolio_analytics_visitors ADD COLUMN ip_hash VARCHAR(16) NULL",
@@ -440,6 +454,53 @@ export async function createSketchShare({ shareId, visitorId, ipAddress, ipHash,
   }
 
   return { shareId: safeShareId };
+}
+
+export async function logChatMessage({ email, userMessage, aiResponse, model, ipAddress }) {
+  const pool = await ensureSchema();
+  if (!pool) return;
+
+  const safeEmail = cleanEmail(email) || null;
+  const safeModel = cleanText(model, 50);
+  const safeIp = typeof ipAddress === "string" ? ipAddress.slice(0, 45) : null;
+
+  await pool.query(
+    `INSERT INTO portfolio_chat_logs (email, user_message, ai_response, model, ip_address, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [safeEmail, String(userMessage || ""), String(aiResponse || ""), safeModel, safeIp, new Date()]
+  );
+}
+
+export async function getChatLogs({ page = 1, pageSize = 50 } = {}) {
+  const pool = await ensureSchema();
+  if (!pool) return { logs: [], total: 0, page, pageSize };
+
+  const offset = (Math.max(1, page) - 1) * pageSize;
+  const [[{ total }], [rows]] = await Promise.all([
+    pool.query("SELECT COUNT(*) AS total FROM portfolio_chat_logs"),
+    pool.query(
+      `SELECT id, email, user_message, ai_response, model, ip_address, created_at
+       FROM portfolio_chat_logs
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+      [pageSize, offset]
+    )
+  ]);
+
+  return {
+    logs: rows.map((r) => ({
+      id: Number(r.id),
+      email: r.email || null,
+      userMessage: r.user_message,
+      aiResponse: r.ai_response,
+      model: r.model,
+      ipAddress: r.ip_address || null,
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
+    })),
+    total: Number(total),
+    page,
+    pageSize
+  };
 }
 
 export async function getSketchShare(shareId) {
