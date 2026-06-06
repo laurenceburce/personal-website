@@ -188,7 +188,8 @@ const emptyStats = () => ({
   topLinkClicks: [],
   downloadEvents: [],
   linkClickEvents: [],
-  avgTimeOnPageSeconds: null
+  avgTimeOnPageSeconds: null,
+  firstVisitAt: null
 });
 
 export async function getAnalyticsStats() {
@@ -207,7 +208,8 @@ export async function getAnalyticsStats() {
     [linkClickRows],
     [downloadEventRows],
     [linkClickEventRows],
-    [timeRows]
+    [timeRows],
+    [firstVisitRows]
   ] = await Promise.all([
     pool.query(
       "SELECT counter_value AS totalVisits FROM portfolio_analytics_counters WHERE counter_key = ?",
@@ -287,7 +289,10 @@ export async function getAnalyticsStats() {
       WHERE event_type = 'time_on_page'
         AND event_value REGEXP '^[0-9]+$'
         AND CAST(event_value AS UNSIGNED) BETWEEN 5 AND 3600
-    `)
+    `),
+    pool.query(
+      "SELECT MIN(first_seen_at) AS firstVisit FROM portfolio_analytics_visitors"
+    )
   ]);
 
   return {
@@ -317,7 +322,10 @@ export async function getAnalyticsStats() {
       authProvider: r.auth_provider || "",
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
     })),
-    avgTimeOnPageSeconds: timeRows[0]?.avgSeconds != null ? Math.round(Number(timeRows[0].avgSeconds)) : null
+    avgTimeOnPageSeconds: timeRows[0]?.avgSeconds != null ? Math.round(Number(timeRows[0].avgSeconds)) : null,
+    firstVisitAt: firstVisitRows[0]?.firstVisit instanceof Date
+      ? firstVisitRows[0].firstVisit.toISOString()
+      : (firstVisitRows[0]?.firstVisit ? String(firstVisitRows[0].firstVisit) : null)
   };
 }
 

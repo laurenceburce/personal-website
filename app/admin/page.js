@@ -258,6 +258,11 @@ export default async function AdminPage() {
           <MetricCard label="Identified Rate" value={identifiedRate} note={`${fmt(stats.identifiedVisitors)} identified visitors`} />
           <MetricCard label="Avg Time" value={fmtTime(stats.avgTimeOnPageSeconds)} note="Average tracked page duration" />
           <MetricCard label="Engagement" value={fmt(totalEngagement)} note="Downloads and link clicks" />
+          <MetricCard
+            label="Tracking Since"
+            value={stats.firstVisitAt ? new Date(stats.firstVisitAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}
+            note="Date of the first recorded visit"
+          />
         </div>
 
         <div className="admin-dashboard-grid" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.1fr) minmax(280px, 0.9fr)", gap: "18px", marginBottom: "18px" }}>

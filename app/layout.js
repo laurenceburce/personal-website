@@ -55,17 +55,6 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className={`${manrope.variable} ${dmSerifDisplay.variable}`}>
-        <div style={{
-          background: "#78716c",
-          color: "#f5f5f4",
-          textAlign: "center",
-          padding: "8px 16px",
-          fontSize: "13px",
-          fontWeight: "500",
-          letterSpacing: "0.02em"
-        }}>
-          This website is a work in progress — some things may be incomplete or change.
-        </div>
         {children}
         <AuthSessionTracker />
         <AuthWelcome />
