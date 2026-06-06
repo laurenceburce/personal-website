@@ -1,21 +1,29 @@
 # Portfolio (Next.js)
 
-A clean, responsive personal portfolio built with Next.js (App Router), React, and CSS.
+A responsive personal portfolio with dark/light theming, an AI-powered chat assistant, OAuth authentication, visitor analytics, and an interactive floating toolkit.
 
 ## Stack
 
-- Next.js App Router
-- React
-- `next/font` for local Google font hosting
-- Plain CSS in `app/globals.css`
-- Resend (contact email delivery)
+- Next.js 16 (App Router) + React 19
+- Plain CSS (`app/globals.css`) + `next/font/google` (Manrope, DM Serif Display)
+- Google Gemini AI (`@google/genai`) — AI portfolio chat assistant
+- NextAuth v5 — OAuth authentication (GitHub / Google)
+- MySQL2 — visitor analytics and admin panel
+- Resend — contact form email delivery
+- html2canvas — sketch-to-image for the floating toolkit
 
 ## Project structure
 
-- `app/layout.js`: global layout + metadata + font setup
-- `app/page.js`: main portfolio page, sidebar interactions, and sidebar contact form
-- `app/api/contact/route.js`: form validation + email delivery endpoint
-- `app/globals.css`: theme, layout, responsive behavior, and animations
+- `app/layout.js` — global layout, metadata, font setup, and persistent widgets
+- `app/page.js` — main portfolio page and sidebar
+- `app/data/portfolio.js` — all editable content: skills, projects, timeline
+- `app/components/portfolio/` — section components (Hero, About, Work, Education, Skills, Projects)
+- `app/components/chat/ChatWidget.js` — Gemini-powered AI chat assistant
+- `app/components/auth/` — NextAuth OAuth sign-in flow and feature gating
+- `app/components/floating-toolbar/` — floating toolkit (sketch overlay, magnifier, calculator, virtual keyboard)
+- `app/api/` — API routes: contact, analytics, chat, auth, sketch-share, download, admin
+- `app/admin/` — admin panel for visit and chat logs
+- `app/globals.css` — theme, layout, responsive behavior, and animations
 
 ## Run locally
 
@@ -72,36 +80,9 @@ npm start
 
 ## Customize quickly
 
-1. Update your name, role, and copy in `app/page.js`.
-2. Update sidebar contact form copy/behavior in `app/page.js`.
-3. Edit arrays in `app/page.js`:
-   - `skills`
+1. Update your name, role, and copy in `app/data/portfolio.js` and `app/page.js`.
+2. Edit arrays in `app/data/portfolio.js`:
+   - `skillGroups`
    - `projects`
    - `timeline`
-4. Adjust colors and spacing in `app/globals.css` under `:root`.
-
-Welcome
-About
-Work
-Education
-Skills
-Projects
-
-Playground
-- chat/voice bot?
-- add a sticky notes/freedom wall/chalkboard
-- stats: total viewers, unique viewers ()
-- financial tracker app
-
-Sketch
-- stickers + text modifier (highlights, etc)
-
-Skills
-copilot studio
-azure deployment tools
-
-List all technologies used
-Programming Language
-DB (if used)
-Frameworks
-APIs
+3. Adjust colors and spacing in `app/globals.css` under `:root`.

@@ -1,19 +1,19 @@
 export const skillGroups = [
   {
     title: "Programming Languages",
-    items: ["Java", "Python", "C/C++", "JavaScript", "TypeScript"]
+    items: ["Java", "Python", "C/C++", "C#", "JavaScript", "TypeScript"]
   },
   {
     title: "Frontend",
-    items: ["React"]
+    items: ["React", "Next.js", "HTML", "CSS"]
   },
   {
     title: "Backend & Frameworks",
-    items: ["Spring Boot", "FastAPI", "Oracle ADF", "Oracle SaaS ERP", "REST APIs", "JDBC"]
+    items: ["Spring Boot", "FastAPI", "Oracle ADF", "Oracle SaaS ERP", "REST APIs", "JDBC", "JPA"]
   },
   {
     title: "Data & Databases",
-    items: ["PostgreSQL", "SQL"]
+    items: ["PostgreSQL", "MySQL", "SQL"]
   },
   {
     title: "AI & Automation",
@@ -30,8 +30,8 @@ export const projects = [
     title: "Personal Portfolio Website",
     period: "Apr 2022 – Present",
     description:
-      "Designed and built this responsive portfolio with reusable Next.js sections, theme support, a sidebar contact flow, downloadable documents, and an interactive floating toolkit with page annotations, magnifier, calculator, and virtual keyboard tools.",
-    tech: ["Next.js", "React", "CSS", "Responsive UI", "Interactive Tools"],
+      "Designed and built this responsive personal portfolio featuring dark/light theming, an AI-powered chat assistant, OAuth authentication, visitor analytics with a MySQL-backed admin panel, a sidebar contact form with email delivery, auth-gated document downloads, and an interactive floating toolkit with shareable page sketch annotations, magnifier, calculator, and virtual keyboard.",
+    tech: ["Next.js", "React", "CSS", "Google Gemini AI", "NextAuth", "MySQL", "Resend", "html2canvas"],
     link: "https://github.com/laurenceburce/personal-website"
   },
   {
