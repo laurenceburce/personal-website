@@ -168,6 +168,18 @@ export default function ProjectsSection({ projects }) {
                       Repository
                     </a>
                   ) : null}
+                  {project.paper ? (
+                    <a
+                      href={project.paper}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="work-card-site"
+                      aria-label={`${project.title} Research Paper`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      IEEE Paper
+                    </a>
+                  ) : null}
                   <span className="project-card-detail">View details</span>
                 </div>
                 <svg
@@ -205,6 +217,11 @@ export default function ProjectsSection({ projects }) {
               {selectedProject.link ? (
                 <a href={selectedProject.link} target="_blank" rel="noreferrer" className="project-detail-link" aria-label={`${selectedProject.title} Repository`}>
                   View Repository
+                </a>
+              ) : null}
+              {selectedProject.paper ? (
+                <a href={selectedProject.paper} target="_blank" rel="noreferrer" className="project-detail-link" aria-label={`${selectedProject.title} Research Paper`}>
+                  IEEE Research Paper
                 </a>
               ) : null}
             </div>

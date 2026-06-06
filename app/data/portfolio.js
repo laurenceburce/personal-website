@@ -56,7 +56,9 @@ export const projects = [
     association: "Mapúa University",
     description:
       "Created a low-powered IoT wireless sensor network for monitoring soil quality. Implemented a power management technique utilizing the sleep mode feature of the Wi-Fi module. The system measures soil properties, verifies if values are in the appropriate range, and notifies the user when values are out of range.",
-    tech: ["C++", "C#", "C", "SQL", "Windows", "Linux"]
+    tech: ["C++", "C#", "C", "SQL", "Windows", "Linux"],
+    link: "https://github.com/laurenceburce/soil-quality-monitoring-system",
+    paper: "https://ieeexplore.ieee.org/document/9762443"
   }
 ];
 

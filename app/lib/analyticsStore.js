@@ -484,7 +484,7 @@ export async function getChatLogs({ page = 1, pageSize = 50 } = {}) {
   if (!pool) return { logs: [], total: 0, page, pageSize };
 
   const offset = (Math.max(1, page) - 1) * pageSize;
-  const [[{ total }], [rows]] = await Promise.all([
+  const [[[{ total }]], [rows]] = await Promise.all([
     pool.query("SELECT COUNT(*) AS total FROM portfolio_chat_logs"),
     pool.query(
       `SELECT id, email, user_message, ai_response, model, ip_address, created_at
@@ -543,7 +543,7 @@ export async function getVisitsList(page = 1) {
 
   const offset = (Math.max(1, page) - 1) * PAGE_SIZE;
 
-  const [[{ total }], [rows]] = await Promise.all([
+  const [[[{ total }]], [rows]] = await Promise.all([
     pool.query("SELECT COUNT(*) AS total FROM portfolio_analytics_visits"),
     pool.query(
       `SELECT
