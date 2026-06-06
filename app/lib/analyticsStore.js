@@ -354,6 +354,30 @@ const ensureSchema = async () => {
           [LINK_MIGRATION_V4_KEY]
         );
       }
+
+      // v5: delete the unrecoverable "Projects: GitHub" and "Projects: IEEE Paper" rows
+      // whose URLs were cleared by v3 before the project name could be captured.
+      // New events correctly record "Personal Portfolio Website: GitHub" etc. from the
+      // aria-label, so these generic rows have no value.
+      const LINK_MIGRATION_V5_KEY = "link_events_migrated_v5";
+      const [[migrationFlagV5]] = await pool.query(
+        "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
+        [LINK_MIGRATION_V5_KEY]
+      );
+
+      if (!migrationFlagV5?.counter_value) {
+        await pool.query(`
+          DELETE FROM portfolio_analytics_events
+          WHERE event_type IN ('Projects: GitHub', 'Projects: IEEE Paper')
+            AND event_value = ''
+        `);
+
+        await pool.query(
+          `INSERT INTO portfolio_analytics_counters (counter_key, counter_value) VALUES (?, 1)
+           ON DUPLICATE KEY UPDATE counter_value = 1`,
+          [LINK_MIGRATION_V5_KEY]
+        );
+      }
     })();
   }
 
