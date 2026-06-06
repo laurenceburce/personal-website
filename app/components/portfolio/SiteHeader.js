@@ -40,7 +40,11 @@ export default function SiteHeader({
           <a href="#home" className="mobile-nav-brand" onClick={onMenuClose}>
             Laurence Alec Burce
           </a>
-          <p className="mobile-nav-role">Software Engineer • AI & Automation Engineer</p>
+          <p className="mobile-nav-role">
+            Software Engineer
+            <svg width="3" height="3" viewBox="0 0 3 3" aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", margin: "0 5px", flexShrink: 0 }}><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/></svg>
+            AI &amp; Automation Engineer
+          </p>
           <a href="mailto:laurenceburce@gmail.com" className="mobile-nav-email">
             <IconMail />
             laurenceburce@gmail.com

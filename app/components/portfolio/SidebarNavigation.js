@@ -29,7 +29,11 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
         <a href="#home" className="scroll-brand">
           Laurence Alec Burce
         </a>
-        <p className="scroll-role">Software Engineer • AI & Automation Engineer</p>
+        <p className="scroll-role">
+          Software Engineer
+          <svg width="3" height="3" viewBox="0 0 3 3" aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", margin: "0 5px", flexShrink: 0 }}><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/></svg>
+          AI &amp; Automation Engineer
+        </p>
         <a href="mailto:laurenceburce@gmail.com" className="scroll-email">
           <IconMail />
           laurenceburce@gmail.com

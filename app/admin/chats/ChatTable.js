@@ -104,7 +104,7 @@ export default function ChatTable({ logs }) {
       {logs.length === 0 ? (
         <p style={{ ...muted, fontSize: "14px", padding: "32px", margin: 0 }}>No conversations yet.</p>
       ) : (
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "620px" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>

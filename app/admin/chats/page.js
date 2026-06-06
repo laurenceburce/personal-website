@@ -38,19 +38,6 @@ const paginationLink = {
   textDecoration: "none"
 };
 
-const fmtDate = (iso) => {
-  if (!iso) return "-";
-  return new Date(iso).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-};
-
-const truncate = (text, max) =>
-  text && text.length > max ? `${text.slice(0, max)}…` : (text || "-");
 
 function Header({ total }) {
   return (
@@ -76,45 +63,6 @@ function Header({ total }) {
   );
 }
 
-function RecentCards({ logs }) {
-  return (
-    <div style={{ ...card, padding: "18px", marginBottom: "18px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", marginBottom: "14px" }}>
-        <p style={sectionTitle}>Recent Conversations</p>
-        <span style={{ ...muted, fontSize: "12px" }}>latest {Math.min(logs.length, 6)}</span>
-      </div>
-      {logs.length === 0 ? (
-        <p style={{ ...muted, fontSize: "14px", margin: 0 }}>No conversations yet.</p>
-      ) : (
-        <div className="admin-session-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "12px" }}>
-          {logs.slice(0, 6).map((log) => (
-            <div key={log.id} style={{
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: "12px",
-              padding: "14px",
-              background: "rgba(255,255,255,0.025)"
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", marginBottom: "8px" }}>
-                <span style={{ color: "#bae6fd", fontSize: "13px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {log.email || "Anonymous"}
-                </span>
-                <span style={{ ...muted, fontSize: "12px", whiteSpace: "nowrap" }}>{fmtDate(log.createdAt)}</span>
-              </div>
-              <p style={{ color: "#e2e8f0", fontSize: "13px", margin: "0 0 8px", lineHeight: 1.5 }}>
-                <span style={{ ...muted, fontWeight: "700" }}>Q: </span>
-                {truncate(log.userMessage, 120)}
-              </p>
-              <p style={{ color: "#94a3b8", fontSize: "13px", margin: 0, lineHeight: 1.5 }}>
-                <span style={{ fontWeight: "700" }}>A: </span>
-                {truncate(log.aiResponse, 140)}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 
 export default async function ChatsPage({ searchParams }) {
@@ -126,7 +74,6 @@ export default async function ChatsPage({ searchParams }) {
     <div className="admin-page" style={pageStyle}>
       <div className="admin-shell" style={shell}>
         <Header total={total} />
-        <RecentCards logs={logs} />
         <ChatTable logs={logs} />
 
         {totalPages > 1 && (

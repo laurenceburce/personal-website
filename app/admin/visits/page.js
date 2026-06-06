@@ -120,43 +120,6 @@ function Header({ total }) {
   );
 }
 
-function SessionSummary({ visits }) {
-  return (
-    <div style={{ ...card, padding: "18px", marginBottom: "18px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "12px", marginBottom: "14px" }}>
-        <p style={sectionTitle}>Recent Sessions</p>
-        <span style={{ ...muted, fontSize: "12px" }}>latest {Math.min(visits.length, 6)}</span>
-      </div>
-      {visits.length === 0 ? (
-        <p style={{ ...muted, fontSize: "14px", margin: 0 }}>No visits recorded yet.</p>
-      ) : (
-        <div className="admin-session-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "12px" }}>
-          {visits.slice(0, 6).map((visit) => (
-            <div key={visit.id} style={{
-              border: "1px solid rgba(255,255,255,0.07)",
-              borderRadius: "12px",
-              padding: "14px",
-              background: "rgba(255,255,255,0.025)"
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", marginBottom: "10px" }}>
-                <strong style={{ color: "#e2e8f0", fontSize: "13px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {formatVisitor(visit)}
-                </strong>
-                {visit.deviceType ? badge(visit.deviceType, deviceColors[visit.deviceType]) : null}
-              </div>
-              <p style={{ color: "#94a3b8", fontSize: "12px", margin: "0 0 6px" }}>{fmtDate(visit.visitedAt)}</p>
-              <p style={{ color: "#cbd5e1", fontSize: "13px", margin: "0 0 6px" }}>{formatLocation(visit)}</p>
-              <p style={{ ...muted, fontSize: "12px", margin: "0 0 6px" }}>{formatAuthProvider(visit.authProvider)}</p>
-              <p style={{ ...muted, fontSize: "12px", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {formatReferrer(visit)}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function VisitTable({ visits }) {
   return (
@@ -167,7 +130,7 @@ function VisitTable({ visits }) {
       {visits.length === 0 ? (
         <p style={{ ...muted, fontSize: "14px", padding: "32px", margin: 0 }}>No visits recorded yet.</p>
       ) : (
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "620px" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -233,7 +196,6 @@ export default async function VisitsPage({ searchParams }) {
     <div className="admin-page" style={pageStyle}>
       <div className="admin-shell" style={shell}>
         <Header total={total} />
-        <SessionSummary visits={visits} />
         <VisitTable visits={visits} />
 
         {totalPages > 1 && (

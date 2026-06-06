@@ -89,7 +89,9 @@ const fmtAuthProvider = (provider) => {
 
 const fmtEventValue = (value) => {
   if (!value) return "-";
-  return value.length > 76 ? `${value.slice(0, 73)}...` : value;
+  const separatorIdx = value.indexOf(" | ");
+  const label = separatorIdx !== -1 ? value.slice(0, separatorIdx) : value;
+  return label.length > 76 ? `${label.slice(0, 73)}...` : label;
 };
 
 const sumCounts = (items) => items.reduce((sum, item) => sum + Number(item.count || 0), 0);

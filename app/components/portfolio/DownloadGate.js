@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { getSession } from "next-auth/react";
 import AuthProviderButtons from "../auth/AuthProviderButtons";
 import { identifyAnalyticsVisitor } from "../../utils/analyticsClient";
@@ -99,7 +100,7 @@ export default function DownloadGate({ links }) {
         </button>
       ))}
 
-      {activeLink ? (
+      {activeLink ? createPortal(
         <div className="download-gate" role="dialog" aria-modal="true" aria-labelledby="download-gate-title">
           <button
             className="download-gate-backdrop"
@@ -129,7 +130,8 @@ export default function DownloadGate({ links }) {
             />
             {status ? <p className="download-gate-status">{status}</p> : null}
           </div>
-        </div>
+        </div>,
+        document.body
       ) : null}
     </>
   );

@@ -139,7 +139,14 @@ export default function ProjectsSection({ projects }) {
                   <span className="work-card-company project-card-title">{project.title}</span>
                   {(project.period || project.association) && (
                     <span className="work-card-meta project-card-meta-line">
-                      {[project.period, project.association].filter(Boolean).join(" · ")}
+                      {[project.period, project.association].filter(Boolean).map((item, i, arr) => (
+                        <span key={i}>
+                          {item}
+                          {i < arr.length - 1 && (
+                            <svg width="3" height="3" viewBox="0 0 3 3" aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", margin: "0 4px", flexShrink: 0 }}><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/></svg>
+                          )}
+                        </span>
+                      ))}
                     </span>
                   )}
                   <div className="project-card-tech" aria-label={`${project.title} technologies`}>
