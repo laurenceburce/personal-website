@@ -31,7 +31,9 @@ export async function POST(request) {
     const stats = await identifyVisitor({
       visitorId: body?.visitorId,
       email: body?.email,
-      name: body?.name
+      name: body?.name,
+      authProvider: body?.authProvider,
+      profileImage: body?.profileImage
     });
 
     return NextResponse.json(stats);

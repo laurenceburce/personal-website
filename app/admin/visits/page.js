@@ -69,6 +69,17 @@ const formatVisitor = (visit) => {
   return `Anonymous ${visit.visitorId.slice(0, 8)}`;
 };
 
+const formatAuthProvider = (provider) => {
+  const labels = {
+    google: "Google",
+    github: "GitHub",
+    linkedin: "LinkedIn",
+    "microsoft-entra-id": "Microsoft"
+  };
+
+  return labels[provider] || provider || "-";
+};
+
 const formatLocation = (visit) => {
   if (visit.city && visit.country) return `${visit.city}, ${visit.country}`;
   return visit.country || "Unknown location";
@@ -135,6 +146,7 @@ function SessionSummary({ visits }) {
               </div>
               <p style={{ color: "#94a3b8", fontSize: "12px", margin: "0 0 6px" }}>{fmtDate(visit.visitedAt)}</p>
               <p style={{ color: "#cbd5e1", fontSize: "13px", margin: "0 0 6px" }}>{formatLocation(visit)}</p>
+              <p style={{ ...muted, fontSize: "12px", margin: "0 0 6px" }}>{formatAuthProvider(visit.authProvider)}</p>
               <p style={{ ...muted, fontSize: "12px", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {formatReferrer(visit)}
               </p>
@@ -159,7 +171,7 @@ function VisitTable({ visits }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                {["Time", "Visitor", "Location", "Source", "Share", "Device", "Browser", "Duration", "IP"].map((h) => (
+                {["Time", "Visitor", "Auth", "Location", "Source", "Share", "Device", "Browser", "Duration", "IP"].map((h) => (
                   <th key={h} style={th}>{h}</th>
                 ))}
               </tr>
@@ -184,6 +196,7 @@ function VisitTable({ visits }) {
                       </div>
                     ) : null}
                   </td>
+                  <td style={{ ...td, color: "#94a3b8", whiteSpace: "nowrap" }}>{formatAuthProvider(visit.authProvider)}</td>
                   <td style={{ ...td, whiteSpace: "nowrap" }}>{formatLocation(visit)}</td>
                   <td style={{ ...td, maxWidth: "190px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#cbd5e1" }}>
                     {formatReferrer(visit)}

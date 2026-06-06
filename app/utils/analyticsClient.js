@@ -52,7 +52,7 @@ export const markSessionTracked = () => {
   } catch {}
 };
 
-export const identifyAnalyticsVisitor = async ({ email, name }) => {
+export const identifyAnalyticsVisitor = async ({ email, name, authProvider, profileImage }) => {
   if (analyticsTrackingDisabled()) return null;
 
   const visitorId = getOrCreateVisitorId();
@@ -61,7 +61,7 @@ export const identifyAnalyticsVisitor = async ({ email, name }) => {
   const response = await fetch("/api/analytics/identify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ visitorId, email, name })
+    body: JSON.stringify({ visitorId, email, name, authProvider, profileImage })
   });
 
   return response.ok ? response.json() : null;

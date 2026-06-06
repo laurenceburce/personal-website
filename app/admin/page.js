@@ -76,6 +76,17 @@ const fmtVisitor = (event) => {
   return `Anonymous ${event.visitorId?.slice(0, 8) || "visitor"}`;
 };
 
+const fmtAuthProvider = (provider) => {
+  const labels = {
+    google: "Google",
+    github: "GitHub",
+    linkedin: "LinkedIn",
+    "microsoft-entra-id": "Microsoft"
+  };
+
+  return labels[provider] || provider || "-";
+};
+
 const fmtEventValue = (value) => {
   if (!value) return "-";
   return value.length > 76 ? `${value.slice(0, 73)}...` : value;
@@ -174,6 +185,7 @@ function ActivityList({ title, items, type }) {
               </div>
               <div style={{ ...muted, fontSize: "12px", marginTop: "3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {fmtVisitor(event)}
+                {event.authProvider ? ` - ${fmtAuthProvider(event.authProvider)}` : ""}
               </div>
             </div>
             <span style={{ color: "#94a3b8", fontSize: "12px", whiteSpace: "nowrap" }}>{fmtDate(event.createdAt)}</span>
@@ -200,7 +212,7 @@ function IdentifiedVisitors({ visitors }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
             <thead>
               <tr>
-                {["Name", "Email", "Last Seen"].map((h) => (
+                {["Name", "Email", "Provider", "Last Seen"].map((h) => (
                   <th key={h} style={th}>{h}</th>
                 ))}
               </tr>
@@ -210,6 +222,7 @@ function IdentifiedVisitors({ visitors }) {
                 <tr key={v.visitorId} style={{ borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
                   <td style={td}>{v.name || "-"}</td>
                   <td style={{ ...td, color: "#bae6fd" }}>{v.email}</td>
+                  <td style={{ ...td, color: "#94a3b8", whiteSpace: "nowrap" }}>{fmtAuthProvider(v.authProvider)}</td>
                   <td style={{ ...td, color: "#94a3b8", whiteSpace: "nowrap" }}>{fmtDate(v.lastSeenAt)}</td>
                 </tr>
               ))}

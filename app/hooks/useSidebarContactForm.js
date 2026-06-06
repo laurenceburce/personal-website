@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { getSession } from "next-auth/react";
 import { getOrCreateVisitorId, identifyAnalyticsVisitor } from "../utils/analyticsClient";
 import { sidebarContactInitial, validateSidebarContact } from "../utils/sidebarContact";
 
@@ -72,9 +73,13 @@ export default function useSidebarContactForm() {
         throw new Error(payload.error || "Unable to send message right now.");
       }
 
+      const session = await getSession().catch(() => null);
+
       identifyAnalyticsVisitor({
         email: form.email,
-        name: form.name
+        name: form.name,
+        authProvider: session?.user?.provider || "",
+        profileImage: session?.user?.image || ""
       }).catch(() => {});
 
       setStatus({

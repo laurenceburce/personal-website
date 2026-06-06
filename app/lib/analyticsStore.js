@@ -86,6 +86,8 @@ const ensureSchema = async () => {
           visitor_id   VARCHAR(80)  PRIMARY KEY,
           email        VARCHAR(200) NOT NULL,
           name         VARCHAR(120) NOT NULL DEFAULT '',
+          auth_provider VARCHAR(40) NULL,
+          profile_image VARCHAR(500) NULL,
           last_seen_at DATETIME(3)  NOT NULL,
           INDEX portfolio_analytics_identified_email_idx (email)
         )
@@ -136,6 +138,8 @@ const ensureSchema = async () => {
       await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN ip_address VARCHAR(45) NULL AFTER visitor_id");
       await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN referred_by_share_id VARCHAR(40) NULL");
       await runMigration(pool, "ALTER TABLE portfolio_analytics_visits ADD COLUMN referred_by_ip_address VARCHAR(45) NULL");
+      await runMigration(pool, "ALTER TABLE portfolio_analytics_identified_visitors ADD COLUMN auth_provider VARCHAR(40) NULL");
+      await runMigration(pool, "ALTER TABLE portfolio_analytics_identified_visitors ADD COLUMN profile_image VARCHAR(500) NULL");
 
       // Migrate existing visitors table to add new columns
       const migrations = [
@@ -239,7 +243,8 @@ export async function getAnalyticsStats() {
         e.created_at,
         e.visitor_id,
         iv.email,
-        iv.name
+        iv.name,
+        iv.auth_provider
       FROM portfolio_analytics_events e
       LEFT JOIN portfolio_analytics_identified_visitors iv
         ON iv.visitor_id = e.visitor_id
@@ -253,7 +258,8 @@ export async function getAnalyticsStats() {
         e.created_at,
         e.visitor_id,
         iv.email,
-        iv.name
+        iv.name,
+        iv.auth_provider
       FROM portfolio_analytics_events e
       LEFT JOIN portfolio_analytics_identified_visitors iv
         ON iv.visitor_id = e.visitor_id
@@ -286,6 +292,7 @@ export async function getAnalyticsStats() {
       visitorId: r.visitor_id,
       email: r.email || null,
       name: r.name || "",
+      authProvider: r.auth_provider || "",
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
     })),
     linkClickEvents: linkClickEventRows.map((r) => ({
@@ -293,6 +300,7 @@ export async function getAnalyticsStats() {
       visitorId: r.visitor_id,
       email: r.email || null,
       name: r.name || "",
+      authProvider: r.auth_provider || "",
       createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
     })),
     avgTimeOnPageSeconds: timeRows[0]?.avgSeconds != null ? Math.round(Number(timeRows[0].avgSeconds)) : null
@@ -385,7 +393,7 @@ export async function recordEvent(visitorId, eventType, eventValue) {
   );
 }
 
-export async function identifyVisitor({ visitorId, email, name }) {
+export async function identifyVisitor({ visitorId, email, name, authProvider, profileImage }) {
   const safeVisitorId = cleanVisitorId(visitorId);
   const safeEmail = cleanEmail(email);
   const pool = await ensureSchema();
@@ -394,15 +402,20 @@ export async function identifyVisitor({ visitorId, email, name }) {
 
   const now = new Date();
   const safeName = cleanText(name, 120);
+  const safeAuthProvider = cleanText(authProvider, 40);
+  const safeProfileImage = cleanText(profileImage, 500);
 
   await pool.query(
-    `INSERT INTO portfolio_analytics_identified_visitors (visitor_id, email, name, last_seen_at)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO portfolio_analytics_identified_visitors
+       (visitor_id, email, name, auth_provider, profile_image, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        email        = VALUES(email),
        name         = VALUES(name),
+       auth_provider = COALESCE(VALUES(auth_provider), auth_provider),
+       profile_image = COALESCE(VALUES(profile_image), profile_image),
        last_seen_at = VALUES(last_seen_at)`,
-    [safeVisitorId, safeEmail, safeName, now]
+    [safeVisitorId, safeEmail, safeName, safeAuthProvider || null, safeProfileImage || null, now]
   );
 
   return getAnalyticsStats();
@@ -478,6 +491,8 @@ export async function getVisitsList(page = 1) {
          v.referred_by_ip_address,
          iv.email,
          iv.name,
+         iv.auth_provider,
+         iv.profile_image,
          te.event_value AS time_on_page,
          se.event_value AS created_share_id
        FROM portfolio_analytics_visits v
@@ -525,6 +540,8 @@ export async function getVisitsList(page = 1) {
       createdShareId: r.created_share_id || null,
       email: r.email || null,
       name: r.name || null,
+      authProvider: r.auth_provider || null,
+      profileImage: r.profile_image || null,
       timeOnPage: r.time_on_page ? Number(r.time_on_page) : null
     })),
     total: Number(total),
@@ -538,7 +555,7 @@ export async function getIdentifiedVisitors() {
   if (!pool) return { configured: false, visitors: [] };
 
   const [rows] = await pool.query(
-    `SELECT visitor_id, email, name, last_seen_at
+    `SELECT visitor_id, email, name, auth_provider, profile_image, last_seen_at
      FROM portfolio_analytics_identified_visitors
      ORDER BY last_seen_at DESC
      LIMIT ?`,
@@ -551,6 +568,8 @@ export async function getIdentifiedVisitors() {
       visitorId: row.visitor_id,
       email: row.email,
       name: row.name || "",
+      authProvider: row.auth_provider || "",
+      profileImage: row.profile_image || "",
       lastSeenAt: row.last_seen_at instanceof Date
         ? row.last_seen_at.toISOString()
         : String(row.last_seen_at)

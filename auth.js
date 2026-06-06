@@ -43,5 +43,21 @@ export const { handlers: { GET, POST }, auth } = NextAuth({
   session: {
     strategy: "jwt"
   },
+  callbacks: {
+    async jwt({ token, account }) {
+      if (account?.provider) {
+        token.provider = account.provider;
+      }
+
+      return token;
+    },
+    async session({ session, token }) {
+      if (session.user) {
+        session.user.provider = token.provider || "";
+      }
+
+      return session;
+    }
+  },
   trustHost: true
 });

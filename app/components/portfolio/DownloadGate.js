@@ -27,7 +27,9 @@ export default function DownloadGate({ links }) {
       clearPendingDownload();
       await identifyAnalyticsVisitor({
         email: session.user.email,
-        name: session.user.name || ""
+        name: session.user.name || "",
+        authProvider: session.user.provider || "",
+        profileImage: session.user.image || ""
       });
       startDownload(pendingLink, session.user.email);
     };
@@ -50,7 +52,9 @@ export default function DownloadGate({ links }) {
       if (session?.user?.email) {
         await identifyAnalyticsVisitor({
           email: session.user.email,
-          name: session.user.name || ""
+          name: session.user.name || "",
+          authProvider: session.user.provider || "",
+          profileImage: session.user.image || ""
         });
         startDownload(link, session.user.email);
         return;
