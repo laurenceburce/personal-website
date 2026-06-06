@@ -1,78 +1,99 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSession } from "next-auth/react";
 import AuthProviderButtons from "./AuthProviderButtons";
+import { consumeAuthModalCallback } from "../../utils/authModal";
 
 const WELCOME_DISMISSED_KEY = "portfolio-auth-welcome-dismissed-v1";
 
+const DEFAULT_TITLE = "Welcome";
+const DEFAULT_MESSAGE =
+  "Sign in to unlock downloads, chat, and contact features. You can still browse the portfolio without signing in.";
+
 export default function AuthWelcome() {
   const [visible, setVisible] = useState(false);
+  const [config, setConfig] = useState({});
   const [status, setStatus] = useState("");
+  const callbackIdRef = useRef(null);
 
+  // Auto-show on first visit if not signed in
   useEffect(() => {
     let cancelled = false;
-
     const checkWelcome = async () => {
       try {
         if (window.localStorage.getItem(WELCOME_DISMISSED_KEY) === "true") return;
-
         const session = await getSession();
         if (!cancelled && !session?.user?.email) {
+          setConfig({});
           setVisible(true);
         }
       } catch {
         if (!cancelled) setVisible(true);
       }
     };
-
     checkWelcome();
+    return () => { cancelled = true; };
+  }, []);
 
-    return () => {
-      cancelled = true;
+  // Respond to programmatic openAuthModal() calls
+  useEffect(() => {
+    const handler = (e) => {
+      const detail = e.detail || {};
+      callbackIdRef.current = detail.callbackId ?? null;
+      setConfig({ title: detail.title, message: detail.message });
+      setStatus("");
+      setVisible(true);
     };
+    window.addEventListener("open-auth-modal", handler);
+    return () => window.removeEventListener("open-auth-modal", handler);
   }, []);
 
   const dismiss = () => {
-    try {
-      window.localStorage.setItem(WELCOME_DISMISSED_KEY, "true");
-    } catch {}
+    try { window.localStorage.setItem(WELCOME_DISMISSED_KEY, "true"); } catch {}
     setVisible(false);
+    setStatus("");
+  };
+
+  const handleBeforeSignIn = () => {
+    try { window.localStorage.setItem(WELCOME_DISMISSED_KEY, "true"); } catch {}
+    const cb = consumeAuthModalCallback(callbackIdRef.current);
+    cb?.();
   };
 
   if (!visible) return null;
+
+  const title = config.title || DEFAULT_TITLE;
+  const message = config.message || DEFAULT_MESSAGE;
+  const isWelcome = !config.title;
 
   return (
     <div className="auth-welcome" role="dialog" aria-modal="true" aria-labelledby="auth-welcome-title">
       <button
         className="auth-welcome-backdrop"
         type="button"
-        aria-label="Continue without signing in"
+        aria-label="Close"
         onClick={dismiss}
       />
       <div className="auth-welcome-panel">
         <div className="auth-welcome-head">
-          <p id="auth-welcome-title">Welcome</p>
-          <button type="button" onClick={dismiss} aria-label="Close welcome dialog">
+          <p id="auth-welcome-title">{title}</p>
+          <button type="button" onClick={dismiss} aria-label="Close">
             x
           </button>
         </div>
-        <p className="auth-welcome-copy">
-          Sign in to unlock downloads, chat, and contact features. You can still browse the portfolio without signing in.
-        </p>
+        <p className="auth-welcome-copy">{message}</p>
         <AuthProviderButtons
           callbackUrl={typeof window !== "undefined" ? window.location.href : "/"}
-          onBeforeSignIn={() => {
-            try {
-              window.localStorage.setItem(WELCOME_DISMISSED_KEY, "true");
-            } catch {}
-          }}
+          onBeforeSignIn={handleBeforeSignIn}
           onStatusChange={setStatus}
         />
         {status ? <p className="auth-gate-status">{status}</p> : null}
-        <button className="auth-welcome-skip" type="button" onClick={dismiss}>
-          Continue without signing in
-        </button>
+        {isWelcome && (
+          <button className="auth-welcome-skip" type="button" onClick={dismiss}>
+            Continue without signing in
+          </button>
+        )}
       </div>
     </div>
   );

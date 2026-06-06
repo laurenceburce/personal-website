@@ -1,18 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { getSession } from "next-auth/react";
-import AuthProviderButtons from "../auth/AuthProviderButtons";
 import { identifyAnalyticsVisitor } from "../../utils/analyticsClient";
 import { IconDownload } from "./icons";
 import { trackDownload } from "./navigationLinks";
+import { openAuthModal } from "../../utils/authModal";
 
 const PENDING_DOWNLOAD_KEY = "portfolio-oauth-pending-download-v1";
 
 export default function DownloadGate({ links }) {
-  const [activeLink, setActiveLink] = useState(null);
-  const [status, setStatus] = useState("");
   const [isChecking, setIsChecking] = useState(false);
 
   useEffect(() => {
@@ -46,7 +43,6 @@ export default function DownloadGate({ links }) {
     if (isChecking) return;
 
     setIsChecking(true);
-    setStatus("");
 
     try {
       const session = await getSession();
@@ -61,27 +57,20 @@ export default function DownloadGate({ links }) {
         return;
       }
 
-      setActiveLink(link);
+      rememberPendingDownload(link);
+      openAuthModal({
+        title: "Sign In to Download",
+        message: `Required before downloading ${link.label.toLowerCase()}.`
+      });
     } catch {
-      setActiveLink(link);
-      setStatus("Unable to check sign-in status.");
+      rememberPendingDownload(link);
+      openAuthModal({
+        title: "Sign In to Download",
+        message: `Required before downloading ${link.label.toLowerCase()}.`
+      });
     } finally {
       setIsChecking(false);
     }
-  };
-
-  const handleSignInStart = () => {
-    if (!activeLink || isChecking) return;
-
-    setIsChecking(true);
-    setStatus("Opening sign-in...");
-    rememberPendingDownload(activeLink);
-  };
-
-  const handleClose = () => {
-    if (isChecking) return;
-    setActiveLink(null);
-    setStatus("");
   };
 
   return (
@@ -99,40 +88,6 @@ export default function DownloadGate({ links }) {
           <span>{link.label}</span>
         </button>
       ))}
-
-      {activeLink ? createPortal(
-        <div className="download-gate" role="dialog" aria-modal="true" aria-labelledby="download-gate-title">
-          <button
-            className="download-gate-backdrop"
-            type="button"
-            aria-label="Close download dialog"
-            onClick={handleClose}
-          />
-          <div className="download-gate-panel">
-            <div className="download-gate-head">
-              <p id="download-gate-title">Sign In to Download</p>
-              <button type="button" onClick={handleClose} aria-label="Close download dialog">
-                x
-              </button>
-            </div>
-            <p className="download-gate-note">
-              Required before downloading {activeLink.label.toLowerCase()}.
-            </p>
-            <AuthProviderButtons
-              className="download-gate-providers"
-              callbackUrl={typeof window !== "undefined" ? window.location.href : "/"}
-              onBeforeSignIn={handleSignInStart}
-              onSignInError={() => {
-                clearPendingDownload();
-                setIsChecking(false);
-              }}
-              onStatusChange={setStatus}
-            />
-            {status ? <p className="download-gate-status">{status}</p> : null}
-          </div>
-        </div>,
-        document.body
-      ) : null}
     </>
   );
 }
