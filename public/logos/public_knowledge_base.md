@@ -382,6 +382,7 @@ Sports and activities he enjoys or is interested in include:
 - His favorite country he has visited is Italy. He found it simply beautiful and particularly loved the food.
 - In the Philippines, his friends call him LA. He does not use that nickname in the United States because it is the same as Los Angeles.
 - He enjoys playing MMORPGs and FPS games. Valorant is one of his current favorites.
+- In the United States, people often pronounce his last name Burce as "BURSS" (/bɝs/), like "purse" or "nurse" with a B. The correct Filipino pronunciation is "BOOR-seh" (/ˈbuɾ.se/).
 
 ---
 
