@@ -31,16 +31,23 @@ export function SidebarAnalyticsPanel({ analytics, className = "" }) {
           {disabled ? "Tracking disabled" : "Analytics pending"}
         </p>
       ) : (
-        <div className="sidebar-analytics-grid">
-          <div>
-            <strong>{status === "loading" ? "--" : formatCount(stats.totalVisits)}</strong>
-            <span>Total</span>
+        <>
+          <div className="sidebar-analytics-grid">
+            <div>
+              <strong>{status === "loading" ? "--" : formatCount(stats.totalVisits)}</strong>
+              <span>Total</span>
+            </div>
+            <div>
+              <strong>{status === "loading" ? "--" : formatCount(stats.uniqueVisitors)}</strong>
+              <span>Unique</span>
+            </div>
           </div>
-          <div>
-            <strong>{status === "loading" ? "--" : formatCount(stats.uniqueVisitors)}</strong>
-            <span>Unique</span>
-          </div>
-        </div>
+          {stats.firstVisitAt && (
+            <p className="sidebar-analytics-since">
+              Since {new Date(stats.firstVisitAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            </p>
+          )}
+        </>
       )}
     </section>
   );

@@ -986,6 +986,13 @@ button.scroll-download-link {
   margin: 0.42rem 0 0;
 }
 
+.sidebar-analytics-since {
+  margin: 0.3rem 0 0;
+  color: var(--subtle);
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
 .contact-honeypot {
   position: absolute;
   left: -9999px;

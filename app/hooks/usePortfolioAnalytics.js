@@ -19,7 +19,8 @@ const initialStats = {
   deviceBreakdown: [],
   browserBreakdown: [],
   topDownloads: [],
-  avgTimeOnPageSeconds: null
+  avgTimeOnPageSeconds: null,
+  firstVisitAt: null
 };
 
 export default function usePortfolioAnalytics() {
