@@ -6,7 +6,7 @@ import { logChatMessage } from "../../lib/analyticsStore";
 
 export const runtime = "nodejs";
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.1-flash-lite";
 
 const rateLimitStore = new Map();
 const WINDOW_MS = 60 * 60 * 1000; // 1 hour

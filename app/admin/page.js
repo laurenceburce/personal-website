@@ -114,6 +114,7 @@ function Header() {
       </div>
       <div className="admin-header-actions" style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
         <Link href="/admin/visits" style={primaryLink}>Visit Log</Link>
+        <Link href="/admin/chats" style={primaryLink}>Chat Logs</Link>
         <AdminLogout />
       </div>
     </div>
