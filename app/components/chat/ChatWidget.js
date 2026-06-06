@@ -3,6 +3,56 @@
 import { useEffect, useRef, useState } from "react";
 import AuthFeatureGate from "../auth/AuthFeatureGate";
 
+function parseInline(text) {
+  const parts = [];
+  const re = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[2] != null) parts.push(<strong key={m.index}>{m[2]}</strong>);
+    else if (m[3] != null) parts.push(<em key={m.index}>{m[3]}</em>);
+    else if (m[4] != null) parts.push(<code key={m.index}>{m[4]}</code>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function MarkdownMessage({ text }) {
+  const lines = text.split("\n");
+  const nodes = [];
+  let listItems = null;
+  let listType = null;
+
+  const flushList = () => {
+    if (!listItems) return;
+    const Tag = listType;
+    nodes.push(<Tag key={`list-${nodes.length}`}>{listItems}</Tag>);
+    listItems = null;
+    listType = null;
+  };
+
+  lines.forEach((line, i) => {
+    const ulMatch = line.match(/^[\*\-]\s+(.+)/);
+    const olMatch = line.match(/^\d+\.\s+(.+)/);
+
+    if (ulMatch) {
+      if (listType !== "ul") { flushList(); listType = "ul"; listItems = []; }
+      listItems.push(<li key={i}>{parseInline(ulMatch[1])}</li>);
+    } else if (olMatch) {
+      if (listType !== "ol") { flushList(); listType = "ol"; listItems = []; }
+      listItems.push(<li key={i}>{parseInline(olMatch[1])}</li>);
+    } else {
+      flushList();
+      const trimmed = line.trim();
+      if (trimmed) nodes.push(<p key={i}>{parseInline(trimmed)}</p>);
+    }
+  });
+  flushList();
+
+  return <div className="chat-bubble-md">{nodes}</div>;
+}
+
 const GREETING = {
   role: "assistant",
   content: "Hi! I'm Laurence Burce's portfolio assistant. I can answer questions about his software-engineering experience, AI and automation work, projects, skills, education, availability, and contact information."
@@ -153,6 +203,8 @@ export default function ChatWidget() {
                     <span className="chat-typing" aria-label="AI is typing">
                       <span /><span /><span />
                     </span>
+                  ) : msg.role === "assistant" ? (
+                    <MarkdownMessage text={msg.content} />
                   ) : (
                     <span className="chat-bubble-text">{msg.content}</span>
                   )}
