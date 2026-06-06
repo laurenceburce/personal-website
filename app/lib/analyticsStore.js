@@ -280,6 +280,37 @@ const ensureSchema = async () => {
           [LINK_MIGRATION_V2_KEY]
         );
       }
+
+      // v3 migration: for any remaining "Link: X" rows that still carry a URL in event_value,
+      // derive a clean human-readable name from the domain and clear the raw URL.
+      const LINK_MIGRATION_V3_KEY = "link_events_migrated_v3";
+      const [[migrationFlagV3]] = await pool.query(
+        "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
+        [LINK_MIGRATION_V3_KEY]
+      );
+
+      if (!migrationFlagV3?.counter_value) {
+        await pool.query(`
+          UPDATE portfolio_analytics_events
+          SET
+            event_type = CASE
+              WHEN event_value LIKE '%ieeexplore.ieee.org%' THEN 'Projects: IEEE Paper'
+              WHEN event_value LIKE '%github.com%'          THEN 'Projects: GitHub'
+              WHEN event_value LIKE '%maxxpotential.com%'   THEN 'Work: Maxx Potential'
+              WHEN event_value LIKE '%oracle.com%'          THEN 'Work: Oracle'
+              ELSE event_type
+            END,
+            event_value = ''
+          WHERE event_type LIKE 'Link: %'
+            AND event_value LIKE 'http%'
+        `);
+
+        await pool.query(
+          `INSERT INTO portfolio_analytics_counters (counter_key, counter_value) VALUES (?, 1)
+           ON DUPLICATE KEY UPDATE counter_value = 1`,
+          [LINK_MIGRATION_V3_KEY]
+        );
+      }
     })();
   }
 
@@ -364,13 +395,7 @@ export async function getAnalyticsStats() {
     `),
     pool.query(`
       SELECT
-        CASE WHEN event_type = 'link_click' THEN event_value
-             ELSE CONCAT(event_type,
-               CASE WHEN event_value != ''
-                         AND event_value != SUBSTR(event_type, INSTR(event_type, ': ') + 2)
-                    THEN CONCAT(' → ', event_value)
-                    ELSE '' END)
-        END AS link,
+        CASE WHEN event_type = 'link_click' THEN event_value ELSE event_type END AS link,
         COUNT(*) AS count
       FROM portfolio_analytics_events
       WHERE event_type = 'link_click'
