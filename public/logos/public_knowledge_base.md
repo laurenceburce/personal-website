@@ -377,7 +377,7 @@ Sports and activities he enjoys or is interested in include:
 
 ### Approved Fun Facts
 
-- Laurence loves animals in general. He has lived with a dog his entire life and currently has three Shih Tzus named Zuko, Chewy, and Kelly.
+- Laurence loves animals in general. He has lived with at least two dogs his entire life and currently has three Shih Tzus named Zuko, Chewy, and Kelly.
 - His favorite football club is FC Barcelona.
 - His favorite country he has visited is Italy. He found it simply beautiful and particularly loved the food.
 - In the Philippines, his friends call him LA. He does not use that nickname in the United States because it is the same as Los Angeles.
