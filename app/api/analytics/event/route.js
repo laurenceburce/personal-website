@@ -8,7 +8,15 @@ const eventRateLimit = new Map();
 const EVENT_LIMIT_MS = 60 * 1000;
 const EVENT_LIMIT_MAX = 90;
 
-const ALLOWED_TYPES = new Set(["download", "link_click", "time_on_page", "sketch_share_created"]);
+// Allow "time_on_page" (metric) and "Section: Label" format events (max 50 chars)
+const isAllowedEventType = (type) => {
+  if (typeof type !== "string" || type.length === 0 || type.length > 50) return false;
+  if (type === "time_on_page") return true;
+  // Legacy formats kept for backward compatibility during transition
+  if (type === "download" || type === "link_click" || type === "sketch_share_created") return true;
+  // New format: "Section: Label" — section is alpha+spaces, label is any readable text
+  return /^[A-Za-z][A-Za-z\d\s&\-]{0,24}: [A-Za-z].{0,22}$/.test(type);
+};
 
 export async function POST(request) {
   try {
@@ -32,7 +40,7 @@ export async function POST(request) {
     const body = await request.json();
     const { visitorId, eventType, eventValue } = body ?? {};
 
-    if (!ALLOWED_TYPES.has(eventType)) {
+    if (!isAllowedEventType(eventType)) {
       return NextResponse.json({ error: "Invalid event type." }, { status: 400 });
     }
 

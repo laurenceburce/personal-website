@@ -108,12 +108,13 @@ export default function DownloadGate({ links }) {
 }
 
 function startDownload(link, email) {
-  trackDownload(link.label);
+  trackDownload(link.label, link.href);
   const anchor = document.createElement("a");
   anchor.href = link.href;
   anchor.download = "";
   anchor.rel = "noopener";
   anchor.dataset.email = email;
+  anchor.dataset.analyticsSkip = "true";
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();

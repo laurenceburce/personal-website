@@ -15,8 +15,8 @@ export const downloadLinks = [
   }
 ];
 
-export const trackDownload = (label) => {
+export const trackDownload = (label, href = "") => {
   if (analyticsTrackingDisabled()) return;
   const visitorId = getOrCreateVisitorId();
-  if (visitorId) trackAnalyticsEvent("download", label);
+  if (visitorId) trackAnalyticsEvent(`Download: ${label}`, href);
 };

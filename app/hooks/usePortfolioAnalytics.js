@@ -101,15 +101,18 @@ export default function usePortfolioAnalytics() {
     };
   }, []);
 
-  // Track time on page — fires on tab hide or page unload
+  // Track time on page — fires on tab hide or page unload (guarded against double-fire)
   useEffect(() => {
     if (analyticsTrackingDisabled()) return;
 
     const startTime = Date.now();
+    const hasSent = { current: false };
 
     const sendTime = () => {
+      if (hasSent.current) return;
       const seconds = Math.round((Date.now() - startTime) / 1000);
       if (seconds >= 5) {
+        hasSent.current = true;
         trackAnalyticsEvent("time_on_page", String(seconds));
       }
     };

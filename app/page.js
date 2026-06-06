@@ -45,15 +45,46 @@ export default function Home() {
   }, [menuOpen]);
 
   useEffect(() => {
+    const sectionIdMap = {
+      about: "About",
+      work: "Work",
+      education: "Education",
+      skills: "Skills",
+      projects: "Projects"
+    };
+
+    const getSection = (link) => {
+      if (link.closest("aside.sidebar-fixed, aside[aria-label='Section navigation']")) return "Sidebar";
+      if (link.closest("header")) return "Header";
+      for (const [id, name] of Object.entries(sectionIdMap)) {
+        if (link.closest(`#${id}`)) return name;
+      }
+      return "Link";
+    };
+
+    const getLabel = (link) => {
+      const raw = (link.getAttribute("aria-label") || link.textContent?.trim() || "").replace(/\s+/g, " ").trim();
+      if (/^(GitHub|LinkedIn)\s+Profile$/i.test(raw)) return raw.replace(/\s+Profile$/i, "");
+      if (/^Email\s+\w+/i.test(raw)) return "Email";
+      if (/^Call\s+\w+/i.test(raw)) return "Phone";
+      if (/^Open\s+menu$/i.test(raw)) return null;
+      return raw || link.getAttribute("href") || "Link";
+    };
+
     const handleLinkClick = (event) => {
       const link = event.target?.closest?.("a[href]");
       if (!link) return;
+      if (link.dataset.analyticsSkip) return;
+
+      const label = getLabel(link);
+      if (!label) return;
 
       const href = link.getAttribute("href") || "";
-      const label = link.getAttribute("aria-label") || link.textContent?.trim() || href;
-      const destination = href.startsWith("http") ? href : link.href || href;
+      const destination = href.startsWith("http") ? href : (link.href || href);
+      const section = getSection(link);
+      const eventName = `${section}: ${label}`.slice(0, 50);
 
-      trackAnalyticsEvent("link_click", `${label.slice(0, 80)} | ${destination.slice(0, 110)}`);
+      trackAnalyticsEvent(eventName, destination.slice(0, 200));
     };
 
     document.addEventListener("click", handleLinkClick, true);

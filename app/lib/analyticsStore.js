@@ -242,20 +242,31 @@ export async function getAnalyticsStats() {
       GROUP BY browser ORDER BY count DESC LIMIT 8
     `),
     pool.query(`
-      SELECT event_value AS file, COUNT(*) AS count
+      SELECT
+        CASE WHEN event_type = 'download' THEN event_value
+             ELSE SUBSTR(event_type, 11) END AS file,
+        COUNT(*) AS count
       FROM portfolio_analytics_events
-      WHERE event_type = 'download'
-      GROUP BY event_value ORDER BY count DESC LIMIT 10
-    `),
-    pool.query(`
-      SELECT event_value AS link, COUNT(*) AS count
-      FROM portfolio_analytics_events
-      WHERE event_type = 'link_click'
-      GROUP BY event_value ORDER BY count DESC LIMIT 20
+      WHERE event_type = 'download' OR event_type LIKE 'Download: %'
+      GROUP BY file ORDER BY count DESC LIMIT 10
     `),
     pool.query(`
       SELECT
-        e.event_value AS file,
+        CASE WHEN event_type = 'link_click' THEN event_value
+             ELSE CONCAT(event_type, CASE WHEN event_value != '' THEN CONCAT(' → ', event_value) ELSE '' END) END AS link,
+        COUNT(*) AS count
+      FROM portfolio_analytics_events
+      WHERE event_type = 'link_click'
+         OR (event_type LIKE '%: %'
+             AND event_type NOT LIKE 'Download: %'
+             AND event_type NOT LIKE 'Sketch: %'
+             AND event_type != 'time_on_page')
+      GROUP BY link ORDER BY count DESC LIMIT 20
+    `),
+    pool.query(`
+      SELECT
+        CASE WHEN e.event_type = 'download' THEN e.event_value
+             ELSE SUBSTR(e.event_type, 11) END AS file,
         e.created_at,
         e.visitor_id,
         iv.email,
@@ -264,13 +275,14 @@ export async function getAnalyticsStats() {
       FROM portfolio_analytics_events e
       LEFT JOIN portfolio_analytics_identified_visitors iv
         ON iv.visitor_id = e.visitor_id
-      WHERE e.event_type = 'download'
+      WHERE e.event_type = 'download' OR e.event_type LIKE 'Download: %'
       ORDER BY e.created_at DESC
       LIMIT 25
     `),
     pool.query(`
       SELECT
-        e.event_value AS link,
+        CASE WHEN e.event_type = 'link_click' THEN e.event_value
+             ELSE e.event_type END AS link,
         e.created_at,
         e.visitor_id,
         iv.email,
@@ -280,6 +292,10 @@ export async function getAnalyticsStats() {
       LEFT JOIN portfolio_analytics_identified_visitors iv
         ON iv.visitor_id = e.visitor_id
       WHERE e.event_type = 'link_click'
+         OR (e.event_type LIKE '%: %'
+             AND e.event_type NOT LIKE 'Download: %'
+             AND e.event_type NOT LIKE 'Sketch: %'
+             AND e.event_type != 'time_on_page')
       ORDER BY e.created_at DESC
       LIMIT 25
     `),
@@ -458,7 +474,7 @@ export async function createSketchShare({ shareId, visitorId, ipAddress, ipHash,
   );
 
   if (safeVisitorId) {
-    await recordEvent(safeVisitorId, "sketch_share_created", safeShareId);
+    await recordEvent(safeVisitorId, "Sketch: Share Created", safeShareId);
   }
 
   return { shareId: safeShareId };
@@ -581,7 +597,7 @@ export async function getVisitsList(page = 1) {
          ON se.id = (
            SELECT id FROM portfolio_analytics_events
            WHERE visitor_id = v.visitor_id
-             AND event_type = 'sketch_share_created'
+             AND (event_type = 'sketch_share_created' OR event_type = 'Sketch: Share Created')
              AND created_at >= v.visited_at
              AND created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
            ORDER BY created_at ASC
@@ -593,30 +609,66 @@ export async function getVisitsList(page = 1) {
     )
   ]);
 
-  return {
-    visits: rows.map((r) => ({
-      id: Number(r.id),
-      visitorId: r.visitor_id,
-      visitedAt: r.visited_at instanceof Date ? r.visited_at.toISOString() : String(r.visited_at),
-      ipAddress: r.ip_address || null,
-      country: r.country || null,
-      city: r.city || null,
-      referrer: r.referrer || null,
-      deviceType: r.device_type || null,
-      browser: r.browser || null,
-      referredByShareId: r.referred_by_share_id || null,
-      referredByIpAddress: r.referred_by_ip_address || null,
-      createdShareId: r.created_share_id || null,
-      email: r.email || null,
-      name: r.name || null,
-      authProvider: r.auth_provider || null,
-      profileImage: r.profile_image || null,
-      timeOnPage: r.time_on_page ? Number(r.time_on_page) : null
-    })),
-    total: Number(total),
-    page,
-    pageSize: PAGE_SIZE
-  };
+  const visits = rows.map((r) => ({
+    id: Number(r.id),
+    visitorId: r.visitor_id,
+    visitedAt: r.visited_at instanceof Date ? r.visited_at.toISOString() : String(r.visited_at),
+    ipAddress: r.ip_address || null,
+    country: r.country || null,
+    city: r.city || null,
+    referrer: r.referrer || null,
+    deviceType: r.device_type || null,
+    browser: r.browser || null,
+    referredByShareId: r.referred_by_share_id || null,
+    referredByIpAddress: r.referred_by_ip_address || null,
+    createdShareId: r.created_share_id || null,
+    email: r.email || null,
+    name: r.name || null,
+    authProvider: r.auth_provider || null,
+    profileImage: r.profile_image || null,
+    timeOnPage: r.time_on_page ? Number(r.time_on_page) : null,
+    clicks: []
+  }));
+
+  // Fetch all click events within each visit's 4-hour session window
+  if (visits.length > 0) {
+    const visitIds = visits.map((v) => v.id);
+    const [eventRows] = await pool.query(
+      `SELECT
+         v.id          AS visit_id,
+         e.id          AS event_id,
+         e.event_type,
+         e.event_value,
+         e.created_at
+       FROM portfolio_analytics_visits v
+       JOIN portfolio_analytics_events e
+         ON e.visitor_id = v.visitor_id
+        AND e.created_at >= v.visited_at
+        AND e.created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
+        AND e.event_type != 'time_on_page'
+       WHERE v.id IN (?)
+       ORDER BY v.id, e.created_at ASC`,
+      [visitIds]
+    );
+
+    const byVisitId = {};
+    for (const e of eventRows) {
+      const vid = Number(e.visit_id);
+      if (!byVisitId[vid]) byVisitId[vid] = [];
+      byVisitId[vid].push({
+        id: Number(e.event_id),
+        eventName: e.event_type,
+        timestamp: e.created_at instanceof Date ? e.created_at.toISOString() : String(e.created_at),
+        metadata: e.event_value || ""
+      });
+    }
+
+    for (const visit of visits) {
+      visit.clicks = byVisitId[visit.id] || [];
+    }
+  }
+
+  return { visits, total: Number(total), page, pageSize: PAGE_SIZE };
 }
 
 export async function getIdentifiedVisitors() {
