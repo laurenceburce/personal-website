@@ -72,8 +72,6 @@ export default function Home() {
       const href = link.getAttribute("href") || "";
       const destination = href.startsWith("http") ? href : (link.href || href);
 
-      // Project links: aria-label is "[Project Title] Repository" or "[Project Title] Research Paper".
-      // Use the project title as section and a short link-type label.
       if (link.closest("#projects") && raw) {
         if (/\s+Repository$/i.test(raw)) {
           const title = raw.replace(/\s+Repository$/i, "").trim();
@@ -87,7 +85,6 @@ export default function Home() {
         }
       }
 
-      // All other links: derive section from DOM position, label from aria/text.
       let label = raw;
       if (/^(GitHub|LinkedIn)\s+Profile$/i.test(raw)) label = raw.replace(/\s+Profile$/i, "");
       else if (/^Email\s+\w+/i.test(raw)) label = "Email";

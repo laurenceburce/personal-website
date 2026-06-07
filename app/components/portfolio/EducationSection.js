@@ -19,7 +19,12 @@ export default function EducationSection() {
             </span>
             <div className="timeline-logo-meta">
               <span>Manila, Philippines</span>
-              <a href="https://www.mapua.edu.ph" target="_blank" rel="noreferrer" aria-label="Mapua University Website">
+              <a
+                href="https://www.mapua.edu.ph"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Mapua University Website"
+              >
                 Website
               </a>
             </div>
@@ -33,16 +38,14 @@ export default function EducationSection() {
               <article className="timeline-role-item">
                 <div className="timeline-role-head">
                   <h4>B.S. in Computer Engineering</h4>
-                  <time>Aug 2017 - Feb 2022</time>
+                  <time>Aug 2017 – Feb 2022</time>
                 </div>
                 <p>
                   Specialization in HP Unix Administration
                   <br />
                   Academic Scholar
                   <br />
-                  GWA: 2.01 / 1.00
-                  <br />
-                  GPA equivalent ≈ 3.4
+                  GWA: 2.01 / 1.00 &nbsp;&middot;&nbsp; GPA equivalent ≈ 3.4
                 </p>
               </article>
             </div>

@@ -31,7 +31,13 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
         </a>
         <p className="scroll-role">
           Software Engineer
-          <svg width="3" height="3" viewBox="0 0 3 3" aria-hidden="true" style={{ display: "inline-block", verticalAlign: "middle", margin: "0 5px", flexShrink: 0 }}><circle cx="1.5" cy="1.5" r="1.5" fill="currentColor"/></svg>
+          <svg
+            width="3" height="3" viewBox="0 0 3 3"
+            aria-hidden="true"
+            style={{ display: "inline-block", verticalAlign: "middle", margin: "0 5px", flexShrink: 0 }}
+          >
+            <circle cx="1.5" cy="1.5" r="1.5" fill="currentColor" />
+          </svg>
           AI &amp; Automation Engineer
         </p>
         <a href="mailto:laurenceburce@gmail.com" className="scroll-email" aria-label="Email Laurence">
@@ -43,11 +49,23 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
           +1 619 635 0470
         </a>
         <div className="scroll-social">
-          <a href="https://github.com/laurenceburce" target="_blank" rel="noreferrer" className="scroll-social-link" aria-label="GitHub Profile">
+          <a
+            href="https://github.com/laurenceburce"
+            target="_blank"
+            rel="noreferrer"
+            className="scroll-social-link"
+            aria-label="GitHub Profile"
+          >
             <IconGitHub />
             GitHub
           </a>
-          <a href="https://www.linkedin.com/in/laurence-burce" target="_blank" rel="noreferrer" className="scroll-social-link" aria-label="LinkedIn Profile">
+          <a
+            href="https://www.linkedin.com/in/laurence-burce"
+            target="_blank"
+            rel="noreferrer"
+            className="scroll-social-link"
+            aria-label="LinkedIn Profile"
+          >
             <IconLinkedIn />
             LinkedIn
           </a>
