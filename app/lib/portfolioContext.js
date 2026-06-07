@@ -2,12 +2,12 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 const systemRules = readFileSync(
-  join(process.cwd(), "public", "logos", "chatbot_system_rules.md"),
+  join(process.cwd(), "app", "data", "chatbot_system_rules.md"),
   "utf-8"
 );
 
 const knowledgeBase = readFileSync(
-  join(process.cwd(), "public", "logos", "public_knowledge_base.md"),
+  join(process.cwd(), "app", "data", "public_knowledge_base.md"),
   "utf-8"
 );
 

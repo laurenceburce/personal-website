@@ -120,25 +120,46 @@ export default function WorkSection({ timeline }) {
   const handleMouseEnter = () => { hoveredRef.current = true;  setPaused(true); };
   const handleMouseLeave = () => { hoveredRef.current = false; tryResume(); };
 
-  /* ── Pan / drag (mouse + touch) ────────────────────────────────────── */
-  const handlePanStart = () => {
+  /* ── Drag / swipe via raw pointer events on the outer container ─────
+   *  Registering on the outer div (not the track) means pointer-down on
+   *  any child card reliably reaches us. setPointerCapture keeps tracking
+   *  even when the pointer moves outside the element.
+   * ─────────────────────────────────────────────────────────────────── */
+  const lastPtrXRef = useRef(0);
+  const dragDistRef = useRef(0); // accumulates total horizontal travel
+
+  const handlePointerDown = (e) => {
+    // Ignore non-primary buttons on mouse (right-click etc.)
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     draggingRef.current = true;
+    lastPtrXRef.current = e.clientX;
+    dragDistRef.current = 0;
     setPaused(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
-  const handlePan = (_e, info) => {
+  const handlePointerMove = (e) => {
+    if (!draggingRef.current) return;
+    const delta = e.clientX - lastPtrXRef.current;
+    lastPtrXRef.current = e.clientX;
+    dragDistRef.current += Math.abs(delta);
     const sw = setWidthRef.current;
     if (sw <= 0) return;
-    let nx = x.get() + info.delta.x;
-    // Keep x in the valid [-sw, 0) scroll range
-    if (nx <= -sw) nx += sw;
-    if (nx > 0)    nx -= sw;
+    let nx = x.get() + delta;
+    // Wrap x into [-sw, 0) so the loop stays seamless
+    while (nx < -sw) nx += sw;
+    while (nx >= 0)  nx -= sw;
     x.set(nx);
   };
 
-  const handlePanEnd = () => {
+  const handlePointerUp = () => {
     draggingRef.current = false;
     tryResume();
+  };
+
+  // After a real drag, prevent the synthetic click that fires on pointer-up
+  const handleClickCapture = (e) => {
+    if (dragDistRef.current > 5) e.stopPropagation();
   };
 
   /* ── Center selected card — springs to the nearest instance ────────── */
@@ -302,6 +323,11 @@ export default function WorkSection({ timeline }) {
           className="work-carousel-wrap carousel-marquee-outer"
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onClickCapture={handleClickCapture}
         >
           <div className="work-fade work-fade--left"  aria-hidden="true" />
           <div className="work-fade work-fade--right" aria-hidden="true" />
@@ -310,9 +336,6 @@ export default function WorkSection({ timeline }) {
             ref={trackRef}
             className="carousel-marquee-track"
             style={{ x }}
-            onPanStart={handlePanStart}
-            onPan={handlePan}
-            onPanEnd={handlePanEnd}
           >
             {/* Set 1 — primary, fully accessible */}
             <div ref={firstSetRef} className="carousel-marquee-set">
