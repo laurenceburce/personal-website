@@ -93,7 +93,7 @@ export default function Home() {
       if (!label) return;
 
       const section = getSection(link);
-      if (section === "Sidebar") return;
+      if (section === "Sidebar" && !/^(GitHub|LinkedIn)$/i.test(label)) return;
       trackAnalyticsEvent(`${section}: ${label}`.slice(0, 50), destination.slice(0, 200));
     };
 
