@@ -17,14 +17,24 @@ const dmSerifDisplay = DM_Serif_Display({
 
 export const metadata = {
   metadataBase: new URL("https://laurenceburce.com"),
+  applicationName: "Laurence Alec Burce",
   title: "Laurence Alec Burce | Software Engineer",
   description:
     "Portfolio of Laurence Alec Burce - software engineer with 3 years of experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
+  alternates: {
+    canonical: "/"
+  },
   icons: {
     icon: [
-      { url: "/logos/lab-favicon.svg", type: "image/svg+xml", sizes: "512x512" }
+      { url: "/favicon-48x48.png", type: "image/png", sizes: "48x48" },
+      { url: "/favicon-96x96.png", type: "image/png", sizes: "96x96" },
+      { url: "/favicon-192x192.png", type: "image/png", sizes: "192x192" },
+      { url: "/logos/lab-favicon.svg", type: "image/svg+xml", sizes: "any" }
     ],
-    shortcut: "/logos/lab-favicon.svg"
+    shortcut: "/favicon-48x48.png",
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }
+    ]
   },
   openGraph: {
     title: "Laurence Alec Burce | Software Engineer",
@@ -53,27 +63,42 @@ export const metadata = {
 
 const jsonLd = {
   "@context": "https://schema.org",
-  "@type": "Person",
-  name: "Laurence Alec Burce",
-  url: "https://laurenceburce.com",
-  jobTitle: "Software Engineer",
-  description:
-    "Software engineer with experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
-  sameAs: [
-    "https://github.com/laurenceburce",
-    "https://www.linkedin.com/in/laurenceburce"
-  ],
-  knowsAbout: [
-    "Java",
-    "Python",
-    "JavaScript",
-    "TypeScript",
-    "React",
-    "Next.js",
-    "Oracle SaaS ERP",
-    "Spring Boot",
-    "AI Automation",
-    "Copilot Studio"
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://laurenceburce.com/#website",
+      name: "Laurence Alec Burce",
+      url: "https://laurenceburce.com",
+      publisher: {
+        "@id": "https://laurenceburce.com/#person"
+      }
+    },
+    {
+      "@type": "Person",
+      "@id": "https://laurenceburce.com/#person",
+      name: "Laurence Alec Burce",
+      url: "https://laurenceburce.com",
+      image: "https://laurenceburce.com/logo-512.png",
+      jobTitle: "Software Engineer",
+      description:
+        "Software engineer with experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
+      sameAs: [
+        "https://github.com/laurenceburce",
+        "https://www.linkedin.com/in/laurence-burce"
+      ],
+      knowsAbout: [
+        "Java",
+        "Python",
+        "JavaScript",
+        "TypeScript",
+        "React",
+        "Next.js",
+        "Oracle SaaS ERP",
+        "Spring Boot",
+        "AI Automation",
+        "Copilot Studio"
+      ]
+    }
   ]
 };
 
