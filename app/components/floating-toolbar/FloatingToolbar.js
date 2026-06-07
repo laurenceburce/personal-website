@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { trackAnalyticsEvent } from "../../utils/analyticsClient";
 import { IcoCalc, IcoGrid, IcoHistory, IcoKeyboard, IcoMag, IcoMail, IcoPen } from "./icons";
 import ToolWindow from "./ToolWindow";
 import Calculator from "./tools/Calculator";
@@ -167,7 +168,10 @@ export default function FloatingToolbar() {
       window.removeEventListener("pointerup", onUp);
 
       if (!moved) {
-        setMenuOpen((open) => !open);
+        setMenuOpen((open) => {
+          if (!open) trackAnalyticsEvent("Toolbar: Open", "");
+          return !open;
+        });
       }
     };
 
@@ -179,6 +183,7 @@ export default function FloatingToolbar() {
     setMenuOpen(false);
 
     if (openToolsRef.current[id]) {
+      // Tool is already open — closing it, no tracking needed
       if (id === "calculator") {
         setCalculatorHistoryOpen(false);
       }
@@ -194,8 +199,10 @@ export default function FloatingToolbar() {
       return;
     }
 
-    const { x, y } = circlePosRef.current;
     const tool = TOOLS.find((item) => item.id === id);
+    trackAnalyticsEvent(`Toolbar: ${tool?.label ?? id}`, "");
+
+    const { x, y } = circlePosRef.current;
     const width = tool?.width ?? 290;
     const offset = Object.keys(openToolsRef.current).length;
     const isRight = x > window.innerWidth / 2;

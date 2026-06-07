@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import AuthFeatureGate from "../auth/AuthFeatureGate";
+import { trackAnalyticsEvent } from "../../utils/analyticsClient";
 
 function parseInline(text) {
   const parts = [];
@@ -78,6 +79,7 @@ export default function ChatWidget() {
     e?.preventDefault();
     const text = input.trim();
     if (!text || loading) return;
+    trackAnalyticsEvent("Chat: Message Sent", "");
 
     const history = messages
       .slice(1)
@@ -245,7 +247,7 @@ export default function ChatWidget() {
 
       <button
         className={`chat-fab${open ? " chat-fab--open" : ""}`}
-        onClick={() => setOpen(o => !o)}
+        onClick={() => setOpen(o => { if (!o) trackAnalyticsEvent("Chat: Open", ""); return !o; })}
         aria-label={open ? "Close AI assistant" : "Open AI portfolio assistant"}
         title="AI Portfolio Assistant"
       >
