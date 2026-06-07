@@ -109,19 +109,44 @@ export default function ProjectsSection({ projects }) {
   const handleMouseEnter = () => { hoveredRef.current = true;  setPaused(true); };
   const handleMouseLeave = () => { hoveredRef.current = false; tryResume(); };
 
-  /* ── Pan / drag (mouse + touch) ────────────────────────────────────── */
-  const handlePanStart = () => { draggingRef.current = true;  setPaused(true); };
+  /* ── Drag / swipe via raw pointer events on the outer container ─────
+   *  Registering on the outer div (not the track) means pointer-down on
+   *  any child card reliably reaches us. setPointerCapture keeps tracking
+   *  even when the pointer moves outside the element.
+   * ─────────────────────────────────────────────────────────────────── */
+  const lastPtrXRef = useRef(0);
+  const dragDistRef = useRef(0);
 
-  const handlePan = (_e, info) => {
+  const handlePointerDown = (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    draggingRef.current = true;
+    lastPtrXRef.current = e.clientX;
+    dragDistRef.current = 0;
+    setPaused(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e) => {
+    if (!draggingRef.current) return;
+    const delta = e.clientX - lastPtrXRef.current;
+    lastPtrXRef.current = e.clientX;
+    dragDistRef.current += Math.abs(delta);
     const sw = setWidthRef.current;
     if (sw <= 0) return;
-    let nx = x.get() + info.delta.x;
-    if (nx <= -sw) nx += sw;
-    if (nx > 0)    nx -= sw;
+    let nx = x.get() + delta;
+    while (nx < -sw) nx += sw;
+    while (nx >= 0)  nx -= sw;
     x.set(nx);
   };
 
-  const handlePanEnd = () => { draggingRef.current = false; tryResume(); };
+  const handlePointerUp = () => {
+    draggingRef.current = false;
+    tryResume();
+  };
+
+  const handleClickCapture = (e) => {
+    if (dragDistRef.current > 5) e.stopPropagation();
+  };
 
   /* ── Center selected card — nearest instance ───────────────────────── */
   useEffect(() => {
@@ -297,6 +322,11 @@ export default function ProjectsSection({ projects }) {
           className="work-carousel-wrap carousel-marquee-outer"
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onClickCapture={handleClickCapture}
         >
           <div className="work-fade work-fade--left"  aria-hidden="true" />
           <div className="work-fade work-fade--right" aria-hidden="true" />
@@ -305,9 +335,6 @@ export default function ProjectsSection({ projects }) {
             ref={trackRef}
             className="carousel-marquee-track"
             style={{ x }}
-            onPanStart={handlePanStart}
-            onPan={handlePan}
-            onPanEnd={handlePanEnd}
           >
             <div ref={firstSetRef} className="carousel-marquee-set">
               {projects.map((project, i) => renderCard(project, i, 0))}
