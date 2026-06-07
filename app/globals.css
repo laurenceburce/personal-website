@@ -2064,6 +2064,7 @@ html[data-theme="dark"] .brand-mark-yousource {
   width: 100%;
   cursor: grab;
   user-select: none;
+  touch-action: pan-y;
   /* Buffer so Framer Motion hover-lift shadows aren't clipped */
   padding-top: 20px;
   margin-top: -20px;

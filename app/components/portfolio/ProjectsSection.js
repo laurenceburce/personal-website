@@ -110,9 +110,10 @@ export default function ProjectsSection({ projects }) {
   const handleMouseLeave = () => { hoveredRef.current = false; tryResume(); };
 
   /* ── Drag / swipe via raw pointer events on the outer container ─────
-   *  Registering on the outer div (not the track) means pointer-down on
-   *  any child card reliably reaches us. setPointerCapture keeps tracking
-   *  even when the pointer moves outside the element.
+   *  No setPointerCapture: capture redirects the resulting click event to
+   *  the outer div, preventing card onClick from ever firing. Touch is
+   *  implicitly captured by the browser anyway. A global pointerup listener
+   *  ensures dragging state resets if the pointer is released outside.
    * ─────────────────────────────────────────────────────────────────── */
   const lastPtrXRef = useRef(0);
   const dragDistRef = useRef(0);
@@ -123,7 +124,6 @@ export default function ProjectsSection({ projects }) {
     lastPtrXRef.current = e.clientX;
     dragDistRef.current = 0;
     setPaused(true);
-    e.currentTarget.setPointerCapture(e.pointerId);
   };
 
   const handlePointerMove = (e) => {
@@ -144,9 +144,25 @@ export default function ProjectsSection({ projects }) {
     tryResume();
   };
 
+  // Suppress clicks after a real drag; threshold of 10px tolerates mobile touch jitter
   const handleClickCapture = (e) => {
-    if (dragDistRef.current > 5) e.stopPropagation();
+    if (dragDistRef.current > 10) e.stopPropagation();
   };
+
+  // Global fallback: reset drag state if pointer is released outside the element
+  useEffect(() => {
+    const onRelease = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      if (!hoveredRef.current && selectedRef.current === null) pausedRef.current = false;
+    };
+    window.addEventListener("pointerup", onRelease);
+    window.addEventListener("pointercancel", onRelease);
+    return () => {
+      window.removeEventListener("pointerup", onRelease);
+      window.removeEventListener("pointercancel", onRelease);
+    };
+  }, []);
 
   /* ── Center selected card — nearest instance ───────────────────────── */
   useEffect(() => {
