@@ -2,7 +2,7 @@ import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import { auth } from "../../../auth";
 import { PORTFOLIO_CONTEXT } from "../../lib/portfolioContext";
-import { logChatMessage } from "../../lib/analyticsStore";
+import { logChatMessage, recordEvent } from "../../lib/analyticsStore";
 
 export const runtime = "nodejs";
 
@@ -63,10 +63,13 @@ export async function POST(request) {
     const body = await request.json();
     const message = String(body?.message || "").trim();
     const history = Array.isArray(body?.history) ? body.history : [];
+    const visitorId = body?.visitorId;
 
     if (!message || message.length > 1000) {
       return NextResponse.json({ error: "Invalid message." }, { status: 400 });
     }
+
+    await recordEvent(visitorId, "Chat: Message Sent", message).catch(() => {});
 
     const geminiHistory = history
       .filter(m => m?.content?.trim())

@@ -839,7 +839,9 @@ export async function getVisitsList(page = 1) {
     clicks: []
   }));
 
-  // Fetch all click events within each visit's 4-hour session window
+  // Fetch all click events within each visit's 4-hour session window.
+  // Chat messages are also kept in portfolio_chat_logs, so include them as a
+  // fallback for sessions where the browser-side analytics event was missed.
   if (visits.length > 0) {
     const visitIds = visits.map((v) => v.id);
     const [eventRows] = await pool.query(
@@ -860,6 +862,31 @@ export async function getVisitsList(page = 1) {
       [visitIds]
     );
 
+    const [chatRows] = await pool.query(
+      `SELECT
+         v.id AS visit_id,
+         c.id AS chat_id,
+         c.user_message,
+         c.created_at
+       FROM portfolio_analytics_visits v
+       LEFT JOIN portfolio_analytics_identified_visitors iv
+         ON iv.visitor_id = v.visitor_id
+       JOIN portfolio_chat_logs c
+         ON c.created_at >= v.visited_at
+        AND c.created_at <= DATE_ADD(v.visited_at, INTERVAL 4 HOUR)
+        AND c.ip_address IS NOT NULL
+        AND v.ip_address IS NOT NULL
+        AND c.ip_address = v.ip_address
+        AND (
+          c.email IS NULL
+          OR iv.email IS NULL
+          OR c.email = iv.email
+        )
+       WHERE v.id IN (?)
+       ORDER BY v.id, c.created_at ASC`,
+      [visitIds]
+    );
+
     const byVisitId = {};
     for (const e of eventRows) {
       const vid = Number(e.visit_id);
@@ -872,8 +899,31 @@ export async function getVisitsList(page = 1) {
       });
     }
 
+    for (const chat of chatRows) {
+      const vid = Number(chat.visit_id);
+      const timestamp = chat.created_at instanceof Date ? chat.created_at.toISOString() : String(chat.created_at);
+      const clicks = byVisitId[vid] || [];
+      const hasTrackedChatEvent = clicks.some((click) => (
+        click.eventName === "Chat: Message Sent" &&
+        Math.abs(new Date(click.timestamp) - new Date(timestamp)) <= 10 * 60 * 1000
+      ));
+
+      if (!hasTrackedChatEvent) {
+        clicks.push({
+          id: `chat-${Number(chat.chat_id)}`,
+          eventName: "Chat: Message Sent",
+          timestamp,
+          metadata: chat.user_message || ""
+        });
+      }
+
+      byVisitId[vid] = clicks;
+    }
+
     for (const visit of visits) {
-      visit.clicks = byVisitId[visit.id] || [];
+      visit.clicks = (byVisitId[visit.id] || []).sort((a, b) => (
+        new Date(a.timestamp) - new Date(b.timestamp)
+      ));
     }
   }
 

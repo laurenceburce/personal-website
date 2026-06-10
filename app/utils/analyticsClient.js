@@ -74,17 +74,23 @@ export const trackAnalyticsEvent = (eventType, eventValue) => {
   if (!visitorId) return;
 
   const payload = JSON.stringify({ visitorId, eventType, eventValue });
-
-  // Use sendBeacon when available (works on page unload), fall back to fetch
-  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-    const blob = new Blob([payload], { type: "application/json" });
-    navigator.sendBeacon("/api/analytics/event", blob);
-  } else {
+  const sendWithFetch = () => {
     fetch("/api/analytics/event", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: payload,
       keepalive: true
     }).catch(() => {});
+  };
+
+  // Use sendBeacon when available (works on page unload), fall back to fetch
+  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+    const blob = new Blob([payload], { type: "application/json" });
+    if (navigator.sendBeacon("/api/analytics/event", blob)) return;
+  } else {
+    sendWithFetch();
+    return;
   }
+
+  sendWithFetch();
 };

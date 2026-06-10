@@ -2,7 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import AuthFeatureGate from "../auth/AuthFeatureGate";
-import { trackAnalyticsEvent } from "../../utils/analyticsClient";
+import {
+  analyticsTrackingDisabled,
+  getOrCreateVisitorId,
+  trackAnalyticsEvent
+} from "../../utils/analyticsClient";
 
 function parseInline(text) {
   const parts = [];
@@ -79,7 +83,7 @@ export default function ChatWidget() {
     e?.preventDefault();
     const text = input.trim();
     if (!text || loading) return;
-    trackAnalyticsEvent("Chat: Message Sent", "");
+    const visitorId = analyticsTrackingDisabled() ? "" : getOrCreateVisitorId();
 
     const history = messages
       .slice(1)
@@ -97,7 +101,7 @@ export default function ChatWidget() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history })
+        body: JSON.stringify({ message: text, history, visitorId })
       });
 
       if (!res.ok) {
