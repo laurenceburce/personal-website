@@ -619,6 +619,151 @@ function convertToUsd(amount, currency, exchangeRate) {
   return currency === "PHP" ? toMoney(value / exchangeRate) : value;
 }
 
+function normalizeMatchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function hasTextMatch(first, second) {
+  const left = normalizeMatchText(first);
+  const right = normalizeMatchText(second);
+  if (!left || !right) return false;
+  if (left.includes(right) || right.includes(left)) return true;
+
+  const rightTokens = right.split(" ").filter((token) => token.length >= 3);
+  if (rightTokens.length === 0) return false;
+  return rightTokens.every((token) => left.includes(token));
+}
+
+const MATCH_FEE_WORDS = new Set(["fee", "fees", "charge", "charges", "maintenance", "service"]);
+
+function matchTokens(value) {
+  return normalizeMatchText(value).split(" ").filter(Boolean);
+}
+
+function hasMatchToken(value, tokens) {
+  return matchTokens(value).some((token) => tokens.has(token));
+}
+
+function billAllowsFeeTransaction(bill, transaction) {
+  const transactionText = [transaction.merchant, transaction.note, transaction.category].filter(Boolean).join(" ");
+  const transactionLooksLikeFee = hasMatchToken(transactionText, MATCH_FEE_WORDS);
+  if (!transactionLooksLikeFee) return true;
+  return hasMatchToken(bill.name, MATCH_FEE_WORDS);
+}
+
+function dueDayFromLabel(dueLabel) {
+  const text = String(dueLabel || "").trim().toLowerCase();
+  const exactDay = text.match(/^([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?$/);
+  const looseDay = text.match(/\b([1-9]|[12][0-9]|3[01])\b/);
+  const day = Number(exactDay?.[1] || looseDay?.[1] || 0);
+  return day >= 1 && day <= 31 ? day : null;
+}
+
+function billDueDateForMonth(dueLabel, month) {
+  const day = dueDayFromLabel(dueLabel);
+  if (!day) return null;
+
+  const [year, monthNumber] = String(month || "").split("-").map(Number);
+  if (!year || !monthNumber) return null;
+
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  return new Date(Date.UTC(year, monthNumber - 1, Math.min(day, lastDay), 12));
+}
+
+function distanceInDays(firstDate, secondDate) {
+  if (!firstDate || !secondDate) return 0;
+  return Math.abs(Math.round((firstDate.getTime() - secondDate.getTime()) / 86400000));
+}
+
+function transactionAmountUsd(transaction, exchangeRate) {
+  return convertToUsd(transaction.amount, transaction.currency, exchangeRate);
+}
+
+function billAmountUsd(bill, exchangeRate) {
+  const usd = toMoney(bill.amountUsd);
+  if (usd > 0) return usd;
+  return convertToUsd(bill.amountPhp, "PHP", exchangeRate);
+}
+
+function isCloseAmount(firstAmount, secondAmount) {
+  const first = Math.abs(Number(firstAmount || 0));
+  const second = Math.abs(Number(secondAmount || 0));
+  if (!first || !second) return false;
+
+  const tolerance = Math.max(0.25, Math.min(5, Math.min(first, second) * 0.05));
+  return Math.abs(first - second) <= tolerance;
+}
+
+function scoreRecurringBillTransaction(bill, transaction, exchangeRate, month) {
+  if (transaction.kind !== "expense" || transaction.pending) return null;
+
+  const expectedAmountUsd = billAmountUsd(bill, exchangeRate);
+  const actualAmountUsd = transactionAmountUsd(transaction, exchangeRate);
+  const amountMatched = isCloseAmount(expectedAmountUsd, actualAmountUsd);
+
+  const merchantText = [transaction.merchant, transaction.note, transaction.category].filter(Boolean).join(" ");
+  const sourceText = [transaction.accountName, transaction.institutionName, transaction.provider].filter(Boolean).join(" ");
+  const nameMatched = hasTextMatch(merchantText, bill.name);
+  const sourceMatched = bill.paymentAccount ? hasTextMatch(sourceText, bill.paymentAccount) : false;
+
+  if (!nameMatched || !billAllowsFeeTransaction(bill, transaction)) return null;
+
+  const transactionDate = new Date(`${transaction.date}T12:00:00Z`);
+  const dueDate = billDueDateForMonth(bill.dueLabel, month);
+  const dateDistance = dueDate ? distanceInDays(transactionDate, dueDate) : 0;
+  const dateScore = dueDate ? (dateDistance <= 7 ? 2 : dateDistance <= 14 ? 1 : -1) : 0;
+
+  return {
+    score: (nameMatched ? 5 : 0) + (amountMatched ? 2 : 0) + (sourceMatched ? 3 : 0) + dateScore,
+    dateDistance,
+    transaction
+  };
+}
+
+function findRecurringBillMatch(bill, transactions, exchangeRate, month) {
+  const matches = transactions
+    .map((transaction) => scoreRecurringBillTransaction(bill, transaction, exchangeRate, month))
+    .filter(Boolean)
+    .sort((first, second) => second.score - first.score || first.dateDistance - second.dateDistance);
+
+  return matches[0]?.transaction || null;
+}
+
+function attachRecurringBillMatches(recurringBills, transactions, exchangeRate, month) {
+  const usedTransactionIds = new Set();
+
+  return recurringBills.map((bill) => {
+    const availableTransactions = transactions.filter((transaction) => !usedTransactionIds.has(transaction.id));
+    const matchedTransaction = findRecurringBillMatch(bill, availableTransactions, exchangeRate, month);
+    if (matchedTransaction) usedTransactionIds.add(matchedTransaction.id);
+
+    const compactMatch = matchedTransaction
+      ? {
+          id: matchedTransaction.id,
+          date: matchedTransaction.date,
+          merchant: matchedTransaction.merchant || matchedTransaction.category,
+          amount: matchedTransaction.amount,
+          currency: matchedTransaction.currency,
+          accountName: matchedTransaction.accountName,
+          institutionName: matchedTransaction.institutionName,
+          provider: matchedTransaction.provider
+        }
+      : null;
+
+    return {
+      ...bill,
+      isManuallyPaid: bill.isPaid,
+      isPaid: Boolean(bill.isPaid || compactMatch),
+      paidSource: bill.isPaid ? "manual" : compactMatch ? "transaction" : "",
+      matchedTransaction: compactMatch
+    };
+  });
+}
+
 function mapTransaction(row) {
   return {
     id: Number(row.id),
@@ -626,7 +771,9 @@ function mapTransaction(row) {
     kind: row.kind,
     accountId: row.account_id ? Number(row.account_id) : null,
     accountName: row.account_name || "",
+    accountType: row.account_type || "",
     accountColor: row.account_color || DEFAULT_COLOR,
+    institutionName: row.institution_name || "",
     category: row.category || "Uncategorized",
     merchant: row.merchant || "",
     note: row.note || "",
@@ -660,6 +807,7 @@ function buildEmptyDashboard(month) {
     accounts: [],
     connections: [],
     transactions: [],
+    allTransactions: [],
     budgets: [],
     recurringBills: [],
     goals: [],
@@ -707,6 +855,7 @@ export async function getFinanceDashboard({ month } = {}) {
     connectionsResult,
     accountsResult,
     transactionsResult,
+    allTransactionsResult,
     budgetsResult,
     recurringResult,
     goalsResult,
@@ -789,15 +938,46 @@ export async function getFinanceDashboard({ month } = {}) {
         t.created_at,
         t.updated_at,
         a.name AS account_name,
-        a.color AS account_color
+        a.account_type AS account_type,
+        a.color AS account_color,
+        c.institution_name
       FROM personal_finance_transactions t
       LEFT JOIN personal_finance_accounts a
         ON a.id = t.account_id
+      LEFT JOIN personal_finance_connections c
+        ON c.id = a.connection_id
       WHERE t.transaction_date >= ?
         AND t.transaction_date < ?
       ORDER BY t.transaction_date DESC, t.id DESC
       LIMIT 500
     `, [monthStart, nextMonthStart]),
+    pool.query(`
+      SELECT
+        t.id,
+        DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+        t.kind,
+        t.account_id,
+        t.category,
+        t.merchant,
+        t.note,
+        t.amount,
+        t.currency,
+        t.external_provider,
+        t.external_transaction_id,
+        t.pending,
+        t.created_at,
+        t.updated_at,
+        a.name AS account_name,
+        a.account_type AS account_type,
+        a.color AS account_color,
+        c.institution_name
+      FROM personal_finance_transactions t
+      LEFT JOIN personal_finance_accounts a
+        ON a.id = t.account_id
+      LEFT JOIN personal_finance_connections c
+        ON c.id = a.connection_id
+      ORDER BY t.transaction_date DESC, t.id DESC
+    `),
     pool.query(`
       SELECT id, budget_month, category, amount, currency, created_at, updated_at
       FROM personal_finance_budgets
@@ -853,6 +1033,7 @@ export async function getFinanceDashboard({ month } = {}) {
   const [connectionRows] = connectionsResult;
   const [accountRows] = accountsResult;
   const [transactionRows] = transactionsResult;
+  const [allTransactionRows] = allTransactionsResult;
   const [budgetRows] = budgetsResult;
   const [recurringRows] = recurringResult;
   const [goalRows] = goalsResult;
@@ -911,6 +1092,7 @@ export async function getFinanceDashboard({ month } = {}) {
   });
 
   const transactions = transactionRows.map(mapTransaction);
+  const allTransactions = allTransactionRows.map(mapTransaction);
   const budgets = budgetRows.map((row) => ({
     id: Number(row.id),
     month: row.budget_month,
@@ -920,7 +1102,7 @@ export async function getFinanceDashboard({ month } = {}) {
     amountUsd: convertToUsd(row.amount, row.currency || "USD", exchangeRate)
   }));
 
-  const recurringBills = recurringRows.map((row) => ({
+  const rawRecurringBills = recurringRows.map((row) => ({
     id: Number(row.id),
     name: row.name,
     amountUsd: toMoney(row.amount_usd),
@@ -931,6 +1113,7 @@ export async function getFinanceDashboard({ month } = {}) {
     isAutopay: Boolean(row.is_autopay),
     displayOrder: Number(row.display_order || 0)
   }));
+  const recurringBills = attachRecurringBillMatches(rawRecurringBills, transactions, exchangeRate, safeMonth);
 
   const goals = goalRows.map((row) => {
     const targetAmount = toMoney(row.target_amount);
@@ -1011,6 +1194,7 @@ export async function getFinanceDashboard({ month } = {}) {
   const recurringUsd = toMoney(recurringBills.reduce((sum, bill) => sum + bill.amountUsd, 0));
   const recurringPhp = toMoney(recurringBills.reduce((sum, bill) => sum + bill.amountPhp, 0));
   const dueSoonBills = recurringBills.filter((bill) => {
+    if (bill.isPaid) return false;
     const day = Number(bill.dueLabel);
     if (!Number.isInteger(day)) return false;
     const today = new Date();
@@ -1032,6 +1216,7 @@ export async function getFinanceDashboard({ month } = {}) {
     accounts,
     connections,
     transactions,
+    allTransactions,
     budgets,
     recurringBills,
     goals,
