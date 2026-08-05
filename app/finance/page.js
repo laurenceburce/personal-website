@@ -51,7 +51,6 @@ export default async function FinancePage({ searchParams }) {
   return (
     <FinanceAppClient
       snapshot={snapshot}
-      ownerEmail={access.email}
       initialTab={tab}
     />
   );

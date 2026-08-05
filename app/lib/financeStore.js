@@ -885,10 +885,11 @@ export async function getFinanceDashboard({ month } = {}) {
     const nativeAvailableBalance = row.available_balance !== null && row.available_balance !== undefined
       ? toMoney(row.available_balance)
       : null;
-    const linkedBalanceSign = hasLinkedBalance && ["credit", "loan"].includes(row.account_type) ? -1 : 1;
-    const currentBalance = hasLinkedBalance
-      ? toMoney(convertToUsd(nativeCurrentBalance, currency, exchangeRate) * linkedBalanceSign)
+    const isLiability = ["credit", "loan"].includes(row.account_type);
+    const rawCurrentBalance = hasLinkedBalance
+      ? convertToUsd(nativeCurrentBalance, currency, exchangeRate)
       : toMoney(openingBalance + transactionTotal);
+    const currentBalance = isLiability ? toMoney(-Math.abs(rawCurrentBalance)) : toMoney(rawCurrentBalance);
     return {
       id: Number(row.id),
       name: row.name,

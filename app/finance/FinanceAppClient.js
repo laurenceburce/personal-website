@@ -13,6 +13,15 @@ const TAB_ALIASES = {
 };
 const ACCOUNT_TYPES = ["checking", "savings", "credit", "cash", "investment", "loan", "other"];
 const COLORS = ["#34d399", "#22d3ee", "#fbbf24", "#fb7185", "#a78bfa", "#f97316"];
+const WEEKDAY_DUE_ORDER = {
+  monday: 41,
+  tuesday: 42,
+  wednesday: 43,
+  thursday: 44,
+  friday: 45,
+  saturday: 46,
+  sunday: 47
+};
 
 const usdFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -23,6 +32,27 @@ const phpFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "PHP",
   maximumFractionDigits: 0
+});
+
+const phpRateFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "PHP",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4
+});
+
+const compactUsdFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  notation: "compact",
+  maximumFractionDigits: 1
+});
+
+const compactPhpFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "PHP",
+  notation: "compact",
+  maximumFractionDigits: 1
 });
 
 function normalizeTab(tab) {
@@ -59,6 +89,16 @@ function money(value, currency = "USD") {
     : usdFormatter.format(Number(value || 0));
 }
 
+function compactMoney(value, currency = "USD") {
+  return currency === "PHP"
+    ? compactPhpFormatter.format(Number(value || 0))
+    : compactUsdFormatter.format(Number(value || 0));
+}
+
+function exchangeRateMoney(value) {
+  return phpRateFormatter.format(Number(value || 0));
+}
+
 function toMoneyValue(value) {
   const amount = Number(value || 0);
   return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0;
@@ -88,11 +128,72 @@ function colorForConnection(provider) {
   return provider === "finverse" ? "#fbbf24" : "#22d3ee";
 }
 
-function formatMonth(month) {
-  return new Date(`${month}-01T12:00:00`).toLocaleDateString("en-US", {
-    month: "long",
-    year: "numeric"
-  });
+function niceAxisMax(value) {
+  const amount = Math.abs(Number(value || 0));
+  if (!Number.isFinite(amount) || amount <= 0) return 100;
+
+  const exponent = Math.floor(Math.log10(amount));
+  const base = 10 ** exponent;
+  const fraction = amount / base;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+
+  return niceFraction * base;
+}
+
+function shortChartLabel(label) {
+  const text = String(label || "").trim();
+  return text.length > 12 ? `${text.slice(0, 10)}...` : text;
+}
+
+function dueDayFromLabel(dueLabel) {
+  const text = String(dueLabel || "").trim().toLowerCase();
+  const exactDay = text.match(/^([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?$/);
+  const looseDay = text.match(/\b([1-9]|[12][0-9]|3[01])\b/);
+  const day = Number(exactDay?.[1] || looseDay?.[1] || 0);
+  return day >= 1 && day <= 31 ? day : null;
+}
+
+function dueSortValue(dueLabel) {
+  const day = dueDayFromLabel(dueLabel);
+  if (day) return day;
+
+  const text = String(dueLabel || "").trim().toLowerCase();
+  return WEEKDAY_DUE_ORDER[text] || 99;
+}
+
+function sortBillsByDueDate(first, second) {
+  const dueDiff = dueSortValue(first.dueLabel) - dueSortValue(second.dueLabel);
+  if (dueDiff !== 0) return dueDiff;
+  return String(first.name || "").localeCompare(String(second.name || ""));
+}
+
+function billDueDate(bill, month) {
+  const day = dueDayFromLabel(bill.dueLabel);
+  if (!day) return null;
+
+  const [year, monthNumber] = String(month || "").split("-").map(Number);
+  if (!year || !monthNumber) return null;
+
+  const lastDay = new Date(year, monthNumber, 0).getDate();
+  return new Date(year, monthNumber - 1, Math.min(day, lastDay), 23, 59, 59, 999);
+}
+
+function isBillOverdue(bill, month) {
+  if (bill.isPaid) return false;
+
+  const dueDate = billDueDate(bill, month);
+  if (!dueDate) return false;
+
+  const [year, monthNumber] = String(month || "").split("-").map(Number);
+  if (!year || !monthNumber) return false;
+
+  const now = new Date();
+  const monthStart = new Date(year, monthNumber - 1, 1);
+  const nextMonthStart = new Date(year, monthNumber, 1);
+
+  if (now < monthStart) return false;
+  if (now >= nextMonthStart) return true;
+  return dueDate < now;
 }
 
 function todayForMonth(month) {
@@ -185,12 +286,15 @@ function Panel({ title, action, children, className = "" }) {
   );
 }
 
-export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
+export default function FinanceAppClient({ snapshot, initialTab }) {
   const router = useRouter();
   const displayCurrency = snapshot.plan.displayCurrency || "USD";
   const exchangeRate = Number(snapshot.plan.exchangeRate || 1);
   const showCurrency = (value, fromCurrency = "USD") => (
     money(convertAmount(value, fromCurrency, displayCurrency, exchangeRate), displayCurrency)
+  );
+  const showCompactCurrency = (value, fromCurrency = "USD") => (
+    compactMoney(convertAmount(value, fromCurrency, displayCurrency, exchangeRate), displayCurrency)
   );
   const toUsdFromDisplay = (value) => convertAmount(value, displayCurrency, "USD", exchangeRate);
   const toPhpFromDisplay = (value) => convertAmount(value, displayCurrency, "PHP", exchangeRate);
@@ -199,6 +303,7 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [installPrompt, setInstallPrompt] = useState(null);
+  const [toolbarOpen, setToolbarOpen] = useState(false);
   const [transactionEditId, setTransactionEditId] = useState(null);
   const [transactionForm, setTransactionForm] = useState(() => defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
   const [planForm, setPlanForm] = useState(() => ({
@@ -217,9 +322,73 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
 
   const connections = snapshot.connections || [];
   const recentTransactions = snapshot.transactions.slice(0, 8);
-  const unpaidBills = snapshot.recurringBills.filter((bill) => !bill.isPaid);
+  const sortedRecurringBills = useMemo(() => {
+    return [...snapshot.recurringBills].sort(sortBillsByDueDate);
+  }, [snapshot.recurringBills]);
+  const unpaidBills = sortedRecurringBills.filter((bill) => !bill.isPaid);
+  const overdueBills = sortedRecurringBills.filter((bill) => isBillOverdue(bill, snapshot.month));
+  const overdueBillIds = new Set(overdueBills.map((bill) => bill.id));
+  const accountBalanceItems = snapshot.accounts.map((account) => {
+    const valueUsd = ["credit", "loan"].includes(account.type)
+      ? -Math.abs(Number(account.currentBalance || 0))
+      : Number(account.currentBalance || 0);
+    const details = [
+      account.institutionName || account.provider || account.type,
+      account.isLinked ? "linked" : "manual",
+      account.isLinked && account.currency !== displayCurrency ? money(account.nativeCurrentBalance, account.currency) : ""
+    ].filter(Boolean).join(" - ");
+
+    return {
+      id: `account-${account.id}`,
+      label: account.name,
+      detail: details,
+      valueUsd: toMoneyValue(valueUsd),
+      tone: valueUsd < 0 ? "bad" : "good"
+    };
+  });
+  const billsRemainingUsd = toMoneyValue(unpaidBills.reduce((sum, bill) => sum + Number(bill.amountUsd || 0), 0));
+  const totalAccountBalanceUsd = toMoneyValue(accountBalanceItems.reduce((sum, item) => sum + item.valueUsd, 0));
+  const positiveFundsUsd = toMoneyValue(accountBalanceItems.filter((item) => item.valueUsd > 0).reduce((sum, item) => sum + item.valueUsd, 0));
+  const negativeBalancesUsd = toMoneyValue(accountBalanceItems.filter((item) => item.valueUsd < 0).reduce((sum, item) => sum + item.valueUsd, 0));
+  const afterBillsUsd = toMoneyValue(totalAccountBalanceUsd - billsRemainingUsd);
+  const balanceChartItems = [
+    ...accountBalanceItems,
+    {
+      id: "bills-remaining",
+      label: "Bills remaining",
+      detail: `${unpaidBills.length} unpaid`,
+      valueUsd: billsRemainingUsd > 0 ? toMoneyValue(-billsRemainingUsd) : 0,
+      tone: billsRemainingUsd > 0 ? "warn" : "good"
+    },
+    {
+      id: "after-bills",
+      label: "After bills",
+      detail: "accounts minus unpaid bills",
+      valueUsd: afterBillsUsd,
+      tone: afterBillsUsd >= 0 ? "info" : "bad",
+      isTotal: true
+    }
+  ];
+  const balanceAxisMaxUsd = niceAxisMax(Math.max(1, ...balanceChartItems.map((item) => Math.abs(item.valueUsd))));
+  const balanceChartWidth = Math.max(560, balanceChartItems.length * 88 + 92);
+  const balanceChartHeight = 318;
+  const balanceChartTop = 24;
+  const balanceChartRight = balanceChartWidth - 18;
+  const balanceChartBottom = balanceChartHeight - 70;
+  const balanceChartLeft = 66;
+  const balanceChartInnerHeight = balanceChartBottom - balanceChartTop;
+  const balanceChartInnerWidth = balanceChartRight - balanceChartLeft;
+  const balanceChartSlot = balanceChartInnerWidth / Math.max(1, balanceChartItems.length);
+  const balanceBarWidth = Math.min(42, Math.max(24, balanceChartSlot * 0.46));
+  const balanceChartTicks = [-balanceAxisMaxUsd, -balanceAxisMaxUsd / 2, 0, balanceAxisMaxUsd / 2, balanceAxisMaxUsd];
+  const balanceChartY = (valueUsd) => {
+    const value = Math.max(-balanceAxisMaxUsd, Math.min(balanceAxisMaxUsd, Number(valueUsd || 0)));
+    return balanceChartTop + ((balanceAxisMaxUsd - value) / (balanceAxisMaxUsd * 2)) * balanceChartInnerHeight;
+  };
+  const balanceZeroY = balanceChartY(0);
   const connectionIssues = connections.filter((connection) => ["error", "needs_sync"].includes(connection.status));
   const attentionItems = [
+    overdueBills.length > 0 ? `${overdueBills.length} overdue bill${overdueBills.length === 1 ? "" : "s"}.` : "",
     snapshot.summary.dueSoonBills > 0 ? `${snapshot.summary.dueSoonBills} bill${snapshot.summary.dueSoonBills === 1 ? "" : "s"} due soon.` : "",
     snapshot.summary.netUsd < 0 ? `This month is ${showCurrency(Math.abs(snapshot.summary.netUsd), "USD")} negative.` : "",
     snapshot.plan.recurringRemainingUsd < 0 ? `Recurring bills exceed monthly income by ${showCurrency(Math.abs(snapshot.plan.recurringRemainingUsd), "USD")}.` : "",
@@ -266,11 +435,6 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
     }
   }
 
-  function goToMonth(value) {
-    if (!value) return;
-    router.push(`/finance?month=${value}&tab=${activeTab}`);
-  }
-
   async function callFinanceAction(action, data) {
     const response = await fetch("/api/finance", {
       method: "POST",
@@ -306,6 +470,7 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
     installPrompt.prompt();
     await installPrompt.userChoice.catch(() => {});
     setInstallPrompt(null);
+    setToolbarOpen(false);
   }
 
   async function submitPlan(event) {
@@ -329,6 +494,7 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
       { currency: nextCurrency },
       `Showing ${nextCurrency}.`
     );
+    setToolbarOpen(false);
   }
 
   async function refreshExchangeRate() {
@@ -531,33 +697,34 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
     if (ok && accountForm.id === account.id) setAccountForm(defaultAccount());
   }
 
-  const seedStarter = () => runAction("seedStarter", {}, "Spreadsheet starter imported.");
-
   return (
     <main className="finance-app">
       <header className="finance-topbar">
-        <div>
-          <p className="finance-kicker">Private Finance</p>
-          <h1>{formatMonth(snapshot.month)}</h1>
-          <span>{ownerEmail}</span>
-        </div>
-        <div className="finance-top-actions">
-          {installPrompt ? (
-            <button type="button" onClick={installApp}>Install</button>
-          ) : null}
-          <button type="button" onClick={switchDisplayCurrency}>
-            Show {displayCurrency === "USD" ? "PHP" : "USD"}
-          </button>
-          <button type="button" onClick={() => signOut({ callbackUrl: "/finance/login" })}>Sign out</button>
-        </div>
+        <h1>Private Finance</h1>
       </header>
 
-      <div className="finance-month-row">
-        <label>
-          <span>Month</span>
-          <input type="month" value={snapshot.month} onChange={(event) => goToMonth(event.target.value)} />
-        </label>
-        <button type="button" onClick={() => setTab("transactions")}>Quick add</button>
+      <div className="finance-floating-toolbar">
+        {toolbarOpen ? (
+          <div id="finance-toolbar-menu" className="finance-toolbar-menu" role="menu">
+            {installPrompt ? (
+              <button type="button" role="menuitem" onClick={installApp}>Install</button>
+            ) : null}
+            <button type="button" role="menuitem" onClick={switchDisplayCurrency}>
+              Show {displayCurrency === "USD" ? "PHP" : "USD"}
+            </button>
+            <button type="button" role="menuitem" onClick={() => signOut({ callbackUrl: "/finance/login" })}>Sign out</button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className={toolbarOpen ? "finance-toolbar-toggle active" : "finance-toolbar-toggle"}
+          aria-controls="finance-toolbar-menu"
+          aria-expanded={toolbarOpen}
+          aria-label="Finance actions"
+          onClick={() => setToolbarOpen((open) => !open)}
+        >
+          ...
+        </button>
       </div>
 
       {!snapshot.configured ? (
@@ -574,23 +741,109 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
 
       {activeTab === "home" ? (
         <div className="finance-stack">
-          {snapshot.starterAvailable ? (
-            <Panel
-              title="Spreadsheet Starter"
-              action={<button type="button" onClick={seedStarter} disabled={disabled || Boolean(saving)}>Import</button>}
-            >
-              <p className="finance-muted">
-                Recurring bills, exchange rate, bi-weekly plan, and starter goals from the workbook.
-              </p>
-            </Panel>
-          ) : null}
-
           <section className="finance-metric-grid">
             <Metric label="Net" value={showCurrency(snapshot.summary.netUsd, "USD")} tone={snapshot.summary.netUsd >= 0 ? "good" : "bad"} detail={`${snapshot.summary.savingsRate}% saved`} />
-            <Metric label="Recurring" value={showCurrency(snapshot.plan.recurringUsd, "USD")} detail={`1 USD = ${money(snapshot.plan.exchangeRate, "PHP")}`} />
+            <Metric label="Recurring" value={showCurrency(snapshot.plan.recurringUsd, "USD")} detail={`1 USD = ${exchangeRateMoney(snapshot.plan.exchangeRate)}`} />
             <Metric label="Unpaid" value={snapshot.summary.unpaidBills} tone={snapshot.summary.unpaidBills ? "warn" : "good"} detail={`${snapshot.summary.dueSoonBills} due soon`} />
-            <Metric label="Balance" value={showCurrency(snapshot.summary.totalBalanceUsd, "USD")} tone="info" detail={`${snapshot.accounts.length} accounts`} />
+            <Metric label="Balance" value={showCurrency(totalAccountBalanceUsd, "USD")} tone="info" detail={`${snapshot.accounts.length} accounts`} />
           </section>
+
+          <Panel title="Balances" className="finance-balance-panel">
+            <div className="finance-balance-summary">
+              <span>
+                <b>{showCurrency(positiveFundsUsd, "USD")}</b>
+                <small>funds</small>
+              </span>
+              <span>
+                <b className={negativeBalancesUsd < 0 ? "finance-bad" : ""}>{showCurrency(negativeBalancesUsd, "USD")}</b>
+                <small>credit debt</small>
+              </span>
+              <span>
+                <b className={billsRemainingUsd > 0 ? "finance-warn" : "finance-good"}>{showCurrency(billsRemainingUsd > 0 ? -billsRemainingUsd : 0, "USD")}</b>
+                <small>bills left</small>
+              </span>
+              <span>
+                <b className={afterBillsUsd >= 0 ? "finance-info" : "finance-bad"}>{showCurrency(afterBillsUsd, "USD")}</b>
+                <small>after bills</small>
+              </span>
+            </div>
+
+            <figure className="finance-axis-chart">
+              <div className="finance-axis-scroll">
+                <svg
+                  className="finance-axis-svg"
+                  viewBox={`0 0 ${balanceChartWidth} ${balanceChartHeight}`}
+                  role="img"
+                  aria-labelledby="finance-balance-chart-title finance-balance-chart-desc"
+                >
+                  <title id="finance-balance-chart-title">Balances</title>
+                  <desc id="finance-balance-chart-desc">Positive account balances, negative credit balances, unpaid bills, and after-bills total.</desc>
+                  {balanceChartTicks.map((tick) => {
+                    const y = balanceChartY(tick);
+
+                    return (
+                      <g key={tick}>
+                        <line
+                          className={tick === 0 ? "finance-axis-zero-line" : "finance-axis-grid-line"}
+                          x1={balanceChartLeft}
+                          x2={balanceChartRight}
+                          y1={y}
+                          y2={y}
+                        />
+                        <text className="finance-axis-y-label" x={balanceChartLeft - 9} y={y + 4} textAnchor="end">
+                          {showCompactCurrency(tick, "USD")}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartLeft} y1={balanceChartTop} y2={balanceChartBottom} />
+                  <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartRight} y1={balanceZeroY} y2={balanceZeroY} />
+                  <text className="finance-axis-title" x={balanceChartLeft} y={16}>Amount</text>
+                  <text className="finance-axis-title" x={balanceChartRight} y={balanceChartHeight - 12} textAnchor="end">Accounts</text>
+
+                  {balanceChartItems.map((item, index) => {
+                    const x = balanceChartLeft + index * balanceChartSlot + (balanceChartSlot - balanceBarWidth) / 2;
+                    const valueY = balanceChartY(item.valueUsd);
+                    const barY = Math.min(valueY, balanceZeroY);
+                    const barHeight = Math.max(2, Math.abs(balanceZeroY - valueY));
+                    const labelY = item.valueUsd < 0
+                      ? Math.min(balanceChartBottom + 18, barY + barHeight + 15)
+                      : Math.max(14, barY - 8);
+                    const labelClassName = item.valueUsd < 0 ? "finance-axis-value finance-axis-value-negative" : "finance-axis-value";
+
+                    return (
+                      <g key={item.id}>
+                        <rect
+                          className={`finance-axis-bar finance-axis-${item.tone}${item.isTotal ? " finance-axis-total" : ""}`}
+                          x={x}
+                          y={barY}
+                          width={balanceBarWidth}
+                          height={barHeight}
+                          rx="5"
+                        />
+                        <text className={labelClassName} x={x + balanceBarWidth / 2} y={labelY} textAnchor="middle">
+                          {showCompactCurrency(item.valueUsd, "USD")}
+                        </text>
+                        <text className="finance-axis-x-label" x={x + balanceBarWidth / 2} y={balanceChartBottom + 38} textAnchor="middle">
+                          {shortChartLabel(item.label)}
+                        </text>
+                      </g>
+                    );
+                  })}
+                </svg>
+              </div>
+
+              <figcaption className="finance-chart-values">
+                {balanceChartItems.map((item) => (
+                  <span key={item.id}>
+                    <i className={`finance-chart-dot finance-${item.tone}`} />
+                    <strong>{item.label}</strong>
+                    <b className={item.valueUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(item.valueUsd, "USD")}</b>
+                  </span>
+                ))}
+              </figcaption>
+            </figure>
+          </Panel>
 
           <Panel title="Bi-weekly Plan">
             <div className="finance-plan-grid">
@@ -606,13 +859,43 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
               <p className="finance-muted">No unpaid recurring bills.</p>
             ) : (
               <div className="finance-list">
-                {unpaidBills.slice(0, 5).map((bill) => (
-                  <button key={bill.id} type="button" className="finance-list-row" onClick={() => toggleBill(bill)}>
+                {unpaidBills.slice(0, 5).map((bill) => {
+                  const overdue = overdueBillIds.has(bill.id);
+
+                  return (
+                    <button
+                      key={bill.id}
+                      type="button"
+                      className={overdue ? "finance-list-row finance-list-row-overdue" : "finance-list-row"}
+                      onClick={() => toggleBill(bill)}
+                      disabled={disabled || Boolean(saving)}
+                    >
+                      <span>
+                        <strong>{bill.name}</strong>
+                        <small>{bill.paymentAccount || "Manual"} - {overdue ? "overdue" : `due ${bill.dueLabel || "open"}`}</small>
+                      </span>
+                      <b>{showCurrency(bill.amountUsd, "USD")}</b>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Recent Transactions" action={<button type="button" onClick={() => setTab("transactions")}>Open</button>}>
+            {recentTransactions.length === 0 ? (
+              <p className="finance-muted">No transactions for this month.</p>
+            ) : (
+              <div className="finance-list">
+                {recentTransactions.slice(0, 5).map((transaction) => (
+                  <button key={transaction.id} type="button" className="finance-list-row" onClick={() => editTransaction(transaction)}>
                     <span>
-                      <strong>{bill.name}</strong>
-                      <small>{bill.paymentAccount || "Manual"} - due {bill.dueLabel || "open"}</small>
+                      <strong>{transaction.merchant || transaction.category}</strong>
+                      <small>{transaction.date} - {transaction.accountName || "Unassigned"}</small>
                     </span>
-                    <b>{showCurrency(bill.amountUsd, "USD")}</b>
+                    <b className={transaction.kind === "income" ? "finance-good" : "finance-bad"}>
+                      {showCurrency(transaction.amount, transaction.currency)}
+                    </b>
                   </button>
                 ))}
               </div>
@@ -725,7 +1008,7 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
             action={<button type="button" onClick={refreshExchangeRate} disabled={Boolean(saving)}>Refresh</button>}
           >
             <div className="finance-plan-grid">
-              <Metric label="USD to PHP" value={money(snapshot.plan.exchangeRate, "PHP")} detail={snapshot.plan.exchangeRateSource || "Frankfurter"} />
+              <Metric label="USD to PHP" value={exchangeRateMoney(snapshot.plan.exchangeRate)} detail={snapshot.plan.exchangeRateSource || "Frankfurter"} />
               <Metric label="Updated" value={snapshot.plan.exchangeRateDate || "Latest"} detail={formatRateTimestamp(snapshot.plan.exchangeRateUpdatedAt)} />
             </div>
           </Panel>
@@ -782,26 +1065,45 @@ export default function FinanceAppClient({ snapshot, ownerEmail, initialTab }) {
           </Panel>
 
           <Panel title="Recurring Bills">
-            {snapshot.recurringBills.length === 0 ? (
+            {sortedRecurringBills.length === 0 ? (
               <p className="finance-muted">No recurring bills yet.</p>
             ) : (
               <div className="finance-bill-list">
-                {snapshot.recurringBills.map((bill) => (
-                  <article key={bill.id} className={bill.isPaid ? "finance-bill finance-bill-paid" : "finance-bill"}>
-                    <button type="button" className="finance-bill-check" onClick={() => toggleBill(bill)} aria-label={bill.isPaid ? `Mark ${bill.name} unpaid` : `Mark ${bill.name} paid`}>
-                      {bill.isPaid ? "Paid" : "Open"}
-                    </button>
-                    <div>
-                      <strong>{bill.name}</strong>
-                      <span>{bill.paymentAccount || "Manual"} - due {bill.dueLabel || "open"}</span>
-                    </div>
-                    <b>{showCurrency(bill.amountUsd, "USD")}</b>
-                    <div className="finance-mini-actions">
-                      <button type="button" onClick={() => editBill(bill)}>Edit</button>
-                      <button type="button" onClick={() => deleteBill(bill)}>Delete</button>
-                    </div>
-                  </article>
-                ))}
+                {sortedRecurringBills.map((bill) => {
+                  const overdue = overdueBillIds.has(bill.id);
+                  const billClassName = [
+                    "finance-bill",
+                    bill.isPaid ? "finance-bill-paid" : "",
+                    overdue ? "finance-bill-overdue" : ""
+                  ].filter(Boolean).join(" ");
+                  const statusClassName = [
+                    "finance-bill-status",
+                    bill.isPaid ? "finance-bill-status-paid" : overdue ? "finance-bill-status-overdue" : "finance-bill-status-open"
+                  ].join(" ");
+
+                  return (
+                    <article key={bill.id} className={billClassName}>
+                      <span className={statusClassName}>{bill.isPaid ? "Paid" : overdue ? "Overdue" : "Open"}</span>
+                      <div>
+                        <strong>{bill.name}</strong>
+                        <span>{bill.paymentAccount || "Manual"} - due {bill.dueLabel || "open"}{bill.isAutopay ? " - auto" : ""}</span>
+                      </div>
+                      <b>{showCurrency(bill.amountUsd, "USD")}</b>
+                      <div className="finance-mini-actions">
+                        <button
+                          type="button"
+                          className={bill.isPaid ? "" : "finance-pay-button"}
+                          onClick={() => toggleBill(bill)}
+                          disabled={disabled || Boolean(saving)}
+                        >
+                          {bill.isPaid ? "Mark unpaid" : "Mark paid"}
+                        </button>
+                        <button type="button" onClick={() => editBill(bill)}>Edit</button>
+                        <button type="button" onClick={() => deleteBill(bill)}>Delete</button>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </Panel>
