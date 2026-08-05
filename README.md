@@ -8,7 +8,7 @@ A responsive personal portfolio with dark/light theming, an AI-powered chat assi
 - Plain CSS (`app/globals.css`) + `next/font/google` (Manrope, DM Serif Display)
 - Google Gemini AI (`@google/genai`) — AI portfolio chat assistant
 - NextAuth v5 — OAuth authentication (GitHub / Google)
-- MySQL2 — visitor analytics and admin panel
+- MySQL2 — visitor analytics, admin panel, and private finance tracker
 - Resend — contact form email delivery
 - html2canvas — sketch-to-image for the floating toolkit
 
@@ -23,6 +23,7 @@ A responsive personal portfolio with dark/light theming, an AI-powered chat assi
 - `app/components/floating-toolbar/` — floating toolkit (sketch overlay, magnifier, calculator, virtual keyboard)
 - `app/api/` — API routes: contact, analytics, chat, auth, sketch-share, download, admin
 - `app/admin/` — admin panel for visit and chat logs
+- `app/finance/` — private owner-only finance tracker
 - `app/globals.css` — theme, layout, responsive behavior, and animations
 
 ## Run locally
@@ -57,6 +58,45 @@ optional and defaults to `gemini-3.5-flash`.
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash
+```
+
+For the private finance tracker, configure OAuth and keep
+`FINANCE_ALLOWED_EMAILS` limited to the owner account. If omitted, it defaults
+to `laurenceburce@gmail.com`.
+
+```env
+FINANCE_ALLOWED_EMAILS=laurenceburce@gmail.com
+FINANCE_TOKEN_SECRET=use_a_long_private_random_string
+```
+
+For local-only finance testing without OAuth, add this to `.env.local` and
+restart `npm run dev`:
+
+```env
+FINANCE_DEV_BYPASS=true
+```
+
+The bypass is ignored when `NODE_ENV=production`.
+
+Linked bank accounts are optional. Plaid can sync U.S. balances and
+transactions after these are set:
+
+```env
+PLAID_CLIENT_ID=...
+PLAID_SECRET=...
+PLAID_ENV=production
+PLAID_REDIRECT_URI=http://localhost:3000/finance
+```
+
+Finverse linking uses the API base URL, then the server creates a short-lived
+Finverse Link URL:
+
+```env
+FINVERSE_LINK_URL=https://api.prod.finverse.net/
+FINVERSE_CLIENT_ID=...
+FINVERSE_CLIENT_SECRET=...
+FINVERSE_REDIRECT_URI=http://localhost:3000/finance/finverse/callback
+FINVERSE_ENV=production
 ```
 
 On Railway, set `DATABASE_URL` as a reference variable to

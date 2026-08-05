@@ -23,12 +23,12 @@ const nextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.plaid.com",
               "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data:",
+              "img-src 'self' data: https://*.plaid.com",
               "font-src 'self'",
-              "connect-src 'self'",
-              "frame-src 'self'"
+              "connect-src 'self' https://*.plaid.com",
+              "frame-src 'self' https://*.plaid.com"
             ].join("; ")
           },
           { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" }

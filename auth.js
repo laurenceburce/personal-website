@@ -5,6 +5,18 @@ import LinkedIn from "next-auth/providers/linkedin";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 
 const providers = [];
+const DEFAULT_FINANCE_EMAIL = "laurenceburce@gmail.com";
+
+export function getFinanceAllowedEmails() {
+  return (process.env.FINANCE_ALLOWED_EMAILS || DEFAULT_FINANCE_EMAIL)
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isFinanceAuthorizedEmail(email) {
+  return getFinanceAllowedEmails().includes(String(email || "").trim().toLowerCase());
+}
 
 if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
   providers.push(Google({
@@ -54,6 +66,7 @@ export const { handlers: { GET, POST }, auth } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         session.user.provider = token.provider || "";
+        session.user.isFinanceAuthorized = isFinanceAuthorizedEmail(session.user.email);
       }
 
       return session;

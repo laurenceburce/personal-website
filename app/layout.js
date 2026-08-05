@@ -1,8 +1,6 @@
 import { DM_Serif_Display, Manrope } from "next/font/google";
 import "./globals.css";
-import AuthSessionTracker from "./components/auth/AuthSessionTracker";
-import AuthWelcome from "./components/auth/AuthWelcome";
-import ChatWidget from "./components/chat/ChatWidget";
+import PublicWidgets from "./components/PublicWidgets";
 
 const manrope = Manrope({
   subsets: ["latin"],
@@ -18,6 +16,7 @@ const dmSerifDisplay = DM_Serif_Display({
 export const metadata = {
   metadataBase: new URL("https://laurenceburce.com"),
   applicationName: "Laurence Alec Burce",
+  manifest: "/manifest.webmanifest",
   title: "Laurence Alec Burce | Software Engineer",
   description:
     "Portfolio of Laurence Alec Burce - software engineer with 3 years of experience in Oracle SaaS ERP systems, client web apps, AI automation, and Copilot Studio chatbots.",
@@ -58,6 +57,11 @@ export const metadata = {
     description:
       "Enterprise software engineering, Oracle SaaS ERP, client web apps, AI automation, and Copilot Studio chatbot projects by Laurence Alec Burce.",
     images: ["/logos/og-banner.svg"]
+  },
+  appleWebApp: {
+    capable: true,
+    title: "Finance",
+    statusBarStyle: "black-translucent"
   }
 };
 
@@ -113,9 +117,7 @@ export default function RootLayout({ children }) {
       </head>
       <body className={`${manrope.variable} ${dmSerifDisplay.variable}`}>
         {children}
-        <AuthSessionTracker />
-        <AuthWelcome />
-        <ChatWidget />
+        <PublicWidgets />
       </body>
     </html>
   );
