@@ -377,6 +377,12 @@ function requirePlaidConfig() {
   return { clientId, secret };
 }
 
+function plaidTransactionsDaysRequested() {
+  const requestedDays = Number(process.env.PLAID_TRANSACTIONS_DAYS_REQUESTED || 730);
+  if (!Number.isFinite(requestedDays)) return 730;
+  return Math.max(1, Math.min(730, Math.round(requestedDays)));
+}
+
 function finverseBaseUrl() {
   const env = String(process.env.FINVERSE_ENV || "sandbox").toLowerCase();
   const rawUrl = process.env.FINVERSE_LINK_URL
@@ -1634,6 +1640,12 @@ export async function createPlaidLinkToken(email) {
       credit: { account_subtypes: ["credit card"] }
     }
   };
+
+  if (products.includes("transactions")) {
+    body.transactions = {
+      days_requested: plaidTransactionsDaysRequested()
+    };
+  }
 
   if (process.env.PLAID_REDIRECT_URI) body.redirect_uri = process.env.PLAID_REDIRECT_URI;
 
