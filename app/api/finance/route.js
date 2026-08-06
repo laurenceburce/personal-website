@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireFinanceAccess } from "../../lib/financeAuth";
 import {
   archiveFinanceAccount,
-  createFinverseLink,
+  createBrankasLink,
   createFinanceAccount,
   createFinanceTransaction,
   createPlaidLinkToken,
@@ -60,8 +60,8 @@ export async function POST(request) {
         return NextResponse.json({ ok: true, result: await createPlaidLinkToken(access.email) });
       case "exchangePlaidPublicToken":
         return NextResponse.json({ ok: true, result: await exchangePlaidPublicToken(data) });
-      case "createFinverseLink":
-        return NextResponse.json({ ok: true, result: await createFinverseLink(access.email) });
+      case "createBrankasLink":
+        return NextResponse.json({ ok: true, result: await createBrankasLink(access.email) });
       case "syncConnection":
         return NextResponse.json({ ok: true, result: await syncFinanceConnection(data.id) });
       case "updatePlan":

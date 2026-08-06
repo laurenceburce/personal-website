@@ -310,7 +310,7 @@ function cleanCurrency(value) {
 
 function cleanProvider(value) {
   const provider = String(value || "").toLowerCase().trim();
-  if (!["plaid", "finverse"].includes(provider)) throw appError("Connection provider is invalid.");
+  if (!["plaid", "brankas"].includes(provider)) throw appError("Connection provider is invalid.");
   return provider;
 }
 
@@ -383,33 +383,49 @@ function plaidTransactionsDaysRequested() {
   return Math.max(1, Math.min(730, Math.round(requestedDays)));
 }
 
-function finverseBaseUrl() {
-  const env = String(process.env.FINVERSE_ENV || "sandbox").toLowerCase();
-  const rawUrl = process.env.FINVERSE_LINK_URL
-    || process.env.FINVERSE_BASE_URL
-    || (env === "production" || env === "prod"
-      ? "https://api.prod.finverse.net/"
-      : "https://api.sandbox.finverse.net/");
+function requireBrankasConfig() {
+  const linkUrl = process.env.BRANKAS_LINK_URL || process.env.BRANKAS_STATIC_LINK_URL || "";
+  const redirectUri = process.env.BRANKAS_REDIRECT_URI || "";
+
+  if (!linkUrl) {
+    throw appError("Brankas is not configured. Add BRANKAS_LINK_URL from your Brankas Data/Statement dashboard.", 503);
+  }
 
   try {
-    const url = new URL(rawUrl);
+    const url = new URL(linkUrl);
     if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid protocol");
-    return url.toString().replace(/\/+$/, "");
   } catch {
-    throw appError("FINVERSE_LINK_URL must be a valid Finverse API base URL.", 503);
+    throw appError("BRANKAS_LINK_URL must be a valid Brankas Link URL.", 503);
   }
+
+  return { linkUrl, redirectUri };
 }
 
-function requireFinverseConfig() {
-  const clientId = process.env.FINVERSE_CLIENT_ID;
-  const clientSecret = process.env.FINVERSE_CLIENT_SECRET;
-  const redirectUri = process.env.FINVERSE_REDIRECT_URI;
+function buildBrankasLinkUrl(email) {
+  const { linkUrl, redirectUri } = requireBrankasConfig();
+  const state = crypto.randomBytes(16).toString("hex");
+  const userId = stableFinanceUserId(email);
+  let urlText = linkUrl
+    .replaceAll("{redirect_uri}", encodeURIComponent(redirectUri))
+    .replaceAll("{user_id}", encodeURIComponent(userId))
+    .replaceAll("{state}", encodeURIComponent(state));
 
-  if (!clientId || !clientSecret || !redirectUri) {
-    throw appError("Finverse needs FINVERSE_CLIENT_ID, FINVERSE_CLIENT_SECRET, and FINVERSE_REDIRECT_URI.", 503);
+  if (process.env.BRANKAS_APPEND_QUERY_PARAMS === "true") {
+    const url = new URL(urlText);
+    if (redirectUri && !url.searchParams.has("redirect_uri")) url.searchParams.set("redirect_uri", redirectUri);
+    if (!url.searchParams.has("user_id")) url.searchParams.set("user_id", userId);
+    if (!url.searchParams.has("state")) url.searchParams.set("state", state);
+    urlText = url.toString();
   }
 
-  return { clientId, clientSecret, redirectUri };
+  return urlText;
+}
+
+function cleanCallbackParams(params) {
+  return Object.fromEntries(Object.entries(params || {})
+    .map(([key, value]) => [cleanText(key, 80), Array.isArray(value) ? value[0] : value])
+    .filter(([key, value]) => key && value !== undefined && value !== null)
+    .map(([key, value]) => [key, cleanText(value, 1000)]));
 }
 
 async function plaidRequest(endpoint, data = {}) {
@@ -433,49 +449,6 @@ async function plaidRequest(endpoint, data = {}) {
   return payload;
 }
 
-function externalApiErrorMessage(payload, fallback) {
-  if (!payload || typeof payload !== "object") return fallback;
-  return payload?.error?.message
-    || payload?.error?.details
-    || payload?.error_description
-    || payload?.error
-    || payload?.message
-    || fallback;
-}
-
-async function finverseRequest(endpoint, { body, accessToken = "", form = false } = {}) {
-  const response = await fetch(`${finverseBaseUrl()}${endpoint}`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": form ? "application/x-www-form-urlencoded" : "application/json",
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
-    },
-    body: form ? body : JSON.stringify(body || {})
-  });
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    throw appError(externalApiErrorMessage(payload, "Finverse request failed."), response.status || 502);
-  }
-
-  return payload;
-}
-
-async function getFinverseCustomerAccessToken() {
-  const { clientId, clientSecret } = requireFinverseConfig();
-  const payload = await finverseRequest("/auth/customer/token", {
-    body: {
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "client_credentials"
-    }
-  });
-
-  if (!payload?.access_token) throw appError("Finverse did not return a customer access token.", 502);
-  return payload.access_token;
-}
-
 function mapProviderAccountType(type, subtype) {
   const normalized = String(subtype || type || "").toLowerCase();
   if (normalized.includes("checking")) return "checking";
@@ -487,7 +460,7 @@ function mapProviderAccountType(type, subtype) {
 }
 
 function colorForProvider(provider) {
-  return provider === "finverse" ? "#fbbf24" : "#22d3ee";
+  return provider === "brankas" ? "#fbbf24" : "#22d3ee";
 }
 
 function cleanColor(value) {
@@ -1711,90 +1684,53 @@ export async function syncFinanceConnection(id) {
 
   const provider = cleanProvider(connection.provider);
   if (provider === "plaid") return syncPlaidConnection(pool, connectionId);
+  if (provider === "brankas") {
+    throw appError("Brankas connection is saved, but sync needs Brankas Data/Statement account and transaction endpoint details before it can pull balances and transactions.", 503);
+  }
 
-  throw appError("Finverse sync needs your Finverse app credentials and endpoint details before it can pull balances and transactions.", 503);
+  throw appError("This connection provider cannot be synced yet.", 503);
 }
 
-export async function createFinverseLink(email) {
-  const { clientId, redirectUri } = requireFinverseConfig();
-  const customerAccessToken = await getFinverseCustomerAccessToken();
-  const countries = String(process.env.FINVERSE_COUNTRIES || "PHL")
-    .split(",")
-    .map((country) => country.trim().toUpperCase())
-    .filter(Boolean);
-  const productsRequested = String(process.env.FINVERSE_PRODUCTS || "ACCOUNTS,TRANSACTIONS")
-    .split(",")
-    .map((product) => product.trim().toUpperCase())
-    .filter(Boolean);
-
-  const payload = await finverseRequest("/link/token", {
-    accessToken: customerAccessToken,
-    body: {
-      client_id: clientId,
-      user_id: stableFinanceUserId(email),
-      redirect_uri: redirectUri,
-      state: crypto.randomBytes(16).toString("hex"),
-      response_mode: "query",
-      response_type: "code",
-      grant_type: "client_credentials",
-      ui_mode: "redirect",
-      countries,
-      products_requested: productsRequested
-    }
-  });
-
-  if (!payload?.link_url) throw appError("Finverse did not return a Link URL.", 502);
-
+export async function createBrankasLink(email) {
   return {
-    url: payload.link_url,
-    expiresIn: payload.expires_in || null
+    url: buildBrankasLinkUrl(email),
+    expiresIn: null
   };
 }
 
-export async function exchangeFinverseAuthorizationCode(code) {
+export async function saveBrankasCallback(params) {
   const pool = requirePool(await ensureFinanceSchema());
-  const authorizationCode = cleanText(code, 800);
-  const { clientId, redirectUri } = requireFinverseConfig();
+  const payload = cleanCallbackParams(params);
+  const tokenSource = payload.code
+    || payload.consent_id
+    || payload.customer_id
+    || payload.request_id
+    || payload.reference_id
+    || payload.state
+    || JSON.stringify(payload);
+  if (!tokenSource || tokenSource === "{}") throw appError("Brankas did not return a usable callback payload.", 400);
 
-  if (!authorizationCode) throw appError("Finverse authorization code is missing.");
-  const customerAccessToken = await getFinverseCustomerAccessToken();
-
-  const body = new URLSearchParams({
-    client_id: clientId,
-    code: authorizationCode,
-    redirect_uri: redirectUri,
-    grant_type: "authorization_code"
-  });
-
-  const payload = await finverseRequest("/auth/token", {
-    accessToken: customerAccessToken,
-    form: true,
-    body
-  });
-
-  const token = payload?.access_token
-    || payload?.login_identity_token
-    || payload?.token
-    || payload?.id_token
-    || "";
-  if (!token) throw appError("Finverse did not return a token payload the app can store.", 502);
-
-  const tokenHash = crypto.createHash("sha256").update(token).digest("hex").slice(0, 48);
+  const tokenHash = crypto.createHash("sha256").update(tokenSource).digest("hex").slice(0, 48);
   const itemId = cleanText(
-    payload?.login_identity_id
-      || payload?.login_identity?.id
-      || payload?.customer_id
+    payload.consent_id
+      || payload.customer_id
+      || payload.request_id
+      || payload.reference_id
       || tokenHash,
     160,
     tokenHash
   );
-  const institutionName = cleanText(payload?.institution_name || payload?.bank_name || "Finverse", 160, "Finverse");
+  const institutionName = cleanText(
+    payload.institution_name || payload.bank_name || process.env.BRANKAS_INSTITUTION_NAME || "Brankas",
+    160,
+    "Brankas"
+  );
   const now = new Date();
 
   const [result] = await pool.query(
     `INSERT INTO personal_finance_connections
        (provider, institution_name, item_id, encrypted_access_token, status, created_at, updated_at)
-     VALUES ('finverse', ?, ?, ?, 'linked', ?, ?)
+     VALUES ('brankas', ?, ?, ?, 'linked', ?, ?)
      ON DUPLICATE KEY UPDATE
        institution_name = VALUES(institution_name),
        encrypted_access_token = VALUES(encrypted_access_token),
@@ -1804,7 +1740,7 @@ export async function exchangeFinverseAuthorizationCode(code) {
   );
 
   const insertedConnectionId = Number(result.insertId || 0);
-  const connectionId = insertedConnectionId || await getConnectionIdByItem(pool, "finverse", itemId);
+  const connectionId = insertedConnectionId || await getConnectionIdByItem(pool, "brankas", itemId);
   return { id: connectionId, status: "linked" };
 }
 

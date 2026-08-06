@@ -133,7 +133,7 @@ function formatRateTimestamp(value) {
 }
 
 function colorForConnection(provider) {
-  return provider === "finverse" ? "#fbbf24" : "#22d3ee";
+  return provider === "brankas" ? "#fbbf24" : "#22d3ee";
 }
 
 function niceAxisMax(value) {
@@ -1382,17 +1382,17 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
     }
   }
 
-  async function connectFinverse() {
-    setSaving("createFinverseLink");
+  async function connectBrankas() {
+    setSaving("createBrankasLink");
     setNotice("");
     setError("");
 
     try {
-      const result = await callFinanceAction("createFinverseLink", {});
-      if (!result?.url) throw new Error("Finverse did not return a link URL.");
+      const result = await callFinanceAction("createBrankasLink", {});
+      if (!result?.url) throw new Error("Brankas did not return a link URL.");
       window.location.assign(result.url);
     } catch (err) {
-      setError(err.message || "Finverse Link failed.");
+      setError(err.message || "Brankas Link failed.");
       setSaving("");
     }
   }
@@ -2345,7 +2345,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
             action={(
               <div className="finance-button-row">
                 <button type="button" onClick={connectPlaid} disabled={disabled || Boolean(saving)}>Plaid</button>
-                <button type="button" onClick={connectFinverse} disabled={disabled || Boolean(saving)}>Finverse</button>
+                <button type="button" onClick={connectBrankas} disabled={disabled || Boolean(saving)}>Brankas</button>
               </div>
             )}
           >

@@ -88,15 +88,15 @@ PLAID_ENV=production
 PLAID_REDIRECT_URI=http://localhost:3000/finance
 ```
 
-Finverse linking uses the API base URL, then the server creates a short-lived
-Finverse Link URL:
+Brankas linking uses a Brankas Data/Statement Link URL from your Brankas
+dashboard or partner setup. If Brankas gives you a templated URL, the app can
+replace `{redirect_uri}`, `{user_id}`, and `{state}` before redirecting:
 
 ```env
-FINVERSE_LINK_URL=https://api.prod.finverse.net/
-FINVERSE_CLIENT_ID=...
-FINVERSE_CLIENT_SECRET=...
-FINVERSE_REDIRECT_URI=http://localhost:3000/finance/finverse/callback
-FINVERSE_ENV=production
+BRANKAS_LINK_URL=...
+BRANKAS_REDIRECT_URI=http://localhost:3000/finance/brankas/callback
+BRANKAS_INSTITUTION_NAME=Brankas
+BRANKAS_APPEND_QUERY_PARAMS=false
 ```
 
 On Railway, set `DATABASE_URL` as a reference variable to
