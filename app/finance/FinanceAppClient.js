@@ -13,6 +13,8 @@ const TAB_ALIASES = {
 };
 const ACCOUNT_TYPES = ["checking", "savings", "credit", "cash", "investment", "loan", "other"];
 const COLORS = ["#34d399", "#22d3ee", "#fbbf24", "#fb7185", "#a78bfa", "#f97316"];
+const PAY_PERIOD_ANCHOR_START = "2026-07-18";
+const MS_PER_DAY = 86_400_000;
 const WEEKDAY_DUE_ORDER = {
   monday: 41,
   tuesday: 42,
@@ -25,13 +27,16 @@ const WEEKDAY_DUE_ORDER = {
 
 const usdFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
-  currency: "USD"
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
 });
 
 const phpFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "PHP",
-  maximumFractionDigits: 0
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
 });
 
 const phpRateFormatter = new Intl.NumberFormat("en-US", {
@@ -85,11 +90,10 @@ function compactAmountText(value) {
     { value: 1_000, suffix: "K" }
   ];
   const unit = units.find((item) => amount >= item.value);
-  if (!unit) return String(Math.round(amount));
+  if (!unit) return amount.toFixed(2);
 
   const scaled = amount / unit.value;
-  const digits = scaled < 10 && !Number.isInteger(scaled) ? 1 : 0;
-  return `${scaled.toFixed(digits).replace(/\.0$/, "")}${unit.suffix}`;
+  return `${scaled.toFixed(2)}${unit.suffix}`;
 }
 
 function compactMoney(value, currency = "USD") {
@@ -192,6 +196,87 @@ function formatShortDate(value) {
     month: "short",
     day: "numeric"
   });
+}
+
+function formatMonthLabel(month) {
+  if (!month) return "Month";
+  return new Date(`${month}-01T12:00:00`).toLocaleDateString("en-US", {
+    month: "short",
+    year: "numeric"
+  });
+}
+
+function utcTimeForDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return Number.NaN;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function dateFromUtcTime(value) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function latestTransactionDate(transactions, fallbackDate) {
+  return [...transactions]
+    .map((transaction) => transaction.date)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || fallbackDate;
+}
+
+function payPeriodForDate(value) {
+  const dateTime = utcTimeForDate(value);
+  const anchorTime = utcTimeForDate(PAY_PERIOD_ANCHOR_START);
+  const safeDateTime = Number.isFinite(dateTime) ? dateTime : anchorTime;
+  const periodIndex = Math.floor((safeDateTime - anchorTime) / (MS_PER_DAY * 14));
+  const startTime = anchorTime + periodIndex * MS_PER_DAY * 14;
+  const endTime = startTime + MS_PER_DAY * 13;
+  const start = dateFromUtcTime(startTime);
+  const end = dateFromUtcTime(endTime);
+
+  return {
+    id: start,
+    start,
+    end,
+    label: `${formatShortDate(start)} - ${formatShortDate(end)}`,
+    detail: `${start} to ${end}`
+  };
+}
+
+function buildMonthOptions(transactions, fallbackMonth) {
+  const months = new Set([
+    fallbackMonth,
+    ...transactions.map((transaction) => String(transaction.date || "").slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month))
+  ]);
+
+  return [...months].sort().reverse();
+}
+
+function buildYearOptions(transactions, fallbackYear) {
+  const years = new Set([
+    fallbackYear,
+    ...transactions.map((transaction) => String(transaction.date || "").slice(0, 4)).filter((year) => /^\d{4}$/.test(year))
+  ]);
+
+  return [...years].sort().reverse();
+}
+
+function buildPayPeriodOptions(transactions, fallbackDate) {
+  const periods = new Map();
+  const dates = transactions.map((transaction) => transaction.date).filter(Boolean);
+  const sourceDates = dates.length > 0 ? dates : [fallbackDate];
+
+  for (const date of sourceDates) {
+    const period = payPeriodForDate(date);
+    periods.set(period.id, period);
+  }
+
+  return [...periods.values()].sort((first, second) => second.start.localeCompare(first.start));
+}
+
+function transactionInPayPeriod(transaction, period) {
+  if (!period || !transaction.date) return false;
+  return transaction.date >= period.start && transaction.date <= period.end;
 }
 
 function formatBillDue(bill, month) {
@@ -525,6 +610,11 @@ function billExpectedAmountUsd(bill, exchangeRate) {
   return toMoneyValue(convertAmount(bill?.amountPhp || 0, "PHP", "USD", exchangeRate));
 }
 
+function billActualPaidUsd(bill, exchangeRate) {
+  if (bill?.matchedTransaction) return transactionAmountUsd(bill.matchedTransaction, exchangeRate);
+  return bill?.isPaid ? billExpectedAmountUsd(bill, exchangeRate) : 0;
+}
+
 function billVarianceForGroup(group, transactionsInGroup, exchangeRate) {
   if (group.type !== "bill" || !group.bill) return null;
 
@@ -543,6 +633,38 @@ function billVarianceForGroup(group, transactionsInGroup, exchangeRate) {
     expectedUsd,
     actualUsd
   };
+}
+
+function buildFundsExpenseSeries(transactions, exchangeRate) {
+  const sortedTransactions = [...transactions].sort((first, second) => (
+    String(first.date || "").localeCompare(String(second.date || "")) || Number(first.id || 0) - Number(second.id || 0)
+  ));
+  let incomeUsd = 0;
+  let expenseUsd = 0;
+
+  return sortedTransactions.map((transaction, index) => {
+    const amountUsd = transactionAmountUsd(transaction, exchangeRate);
+    if (transaction.kind === "income") {
+      incomeUsd = toMoneyValue(incomeUsd + amountUsd);
+    } else {
+      expenseUsd = toMoneyValue(expenseUsd + amountUsd);
+    }
+
+    return {
+      id: transaction.id || `${transaction.date}-${index}`,
+      date: transaction.date,
+      incomeUsd,
+      expenseUsd,
+      transaction,
+      amountUsd
+    };
+  });
+}
+
+function buildLinePath(items, valueKey, xForIndex, yForValue) {
+  return items
+    .map((item, index) => `${index === 0 ? "M" : "L"} ${xForIndex(index).toFixed(2)} ${yForValue(item[valueKey]).toFixed(2)}`)
+    .join(" ");
 }
 
 function sourceName(transaction) {
@@ -857,10 +979,23 @@ function Panel({ title, action, children, className = "" }) {
   );
 }
 
+function FinanceHeader({ onHome }) {
+  return (
+    <header className="finance-topbar">
+      <h1>Private Finance</h1>
+      <button type="button" className="finance-header-home" onClick={onHome}>
+        Home
+      </button>
+    </header>
+  );
+}
+
 export default function FinanceAppClient({ snapshot, initialTab }) {
   const router = useRouter();
   const displayCurrency = snapshot.plan.displayCurrency || "USD";
   const exchangeRate = Number(snapshot.plan.exchangeRate || 1);
+  const initialAllTransactions = snapshot.allTransactions || snapshot.transactions || [];
+  const initialFundsDate = latestTransactionDate(initialAllTransactions, `${snapshot.month}-01`);
   const showCurrency = (value, fromCurrency = "USD") => (
     money(convertAmount(value, fromCurrency, displayCurrency, exchangeRate), displayCurrency)
   );
@@ -876,7 +1011,15 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   const [installPrompt, setInstallPrompt] = useState(null);
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [chartTooltip, setChartTooltip] = useState(null);
+  const [billTooltip, setBillTooltip] = useState(null);
+  const [fundsFilter, setFundsFilter] = useState(() => ({
+    mode: "month",
+    month: snapshot.month,
+    year: String(snapshot.month || "").slice(0, 4) || String(initialFundsDate).slice(0, 4),
+    payPeriod: payPeriodForDate(initialFundsDate).id
+  }));
   const [expandedTransactionGroups, setExpandedTransactionGroups] = useState(() => new Set());
+  const [transactionModalOpen, setTransactionModalOpen] = useState(false);
   const [transactionEditId, setTransactionEditId] = useState(null);
   const [transactionForm, setTransactionForm] = useState(() => defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
   const [planForm, setPlanForm] = useState(() => ({
@@ -894,8 +1037,40 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   }, [snapshot.monthlySeries]);
 
   const connections = snapshot.connections || [];
-  const allTransactions = snapshot.allTransactions || snapshot.transactions || [];
+  const allTransactions = initialAllTransactions;
   const recentTransactions = allTransactions.slice(0, 8);
+  const fundsMonthOptions = useMemo(() => {
+    return buildMonthOptions(allTransactions, snapshot.month);
+  }, [allTransactions, snapshot.month]);
+  const fundsYearOptions = useMemo(() => {
+    return buildYearOptions(allTransactions, String(snapshot.month || "").slice(0, 4));
+  }, [allTransactions, snapshot.month]);
+  const fundsPayPeriodOptions = useMemo(() => {
+    return buildPayPeriodOptions(allTransactions, initialFundsDate);
+  }, [allTransactions, initialFundsDate]);
+  const activeFundsPayPeriod = fundsPayPeriodOptions.find((period) => period.id === fundsFilter.payPeriod)
+    || fundsPayPeriodOptions[0]
+    || payPeriodForDate(initialFundsDate);
+  const filteredFundsTransactions = useMemo(() => {
+    if (fundsFilter.mode === "year") {
+      return allTransactions.filter((transaction) => String(transaction.date || "").startsWith(`${fundsFilter.year}-`));
+    }
+
+    if (fundsFilter.mode === "payPeriod") {
+      return allTransactions.filter((transaction) => transactionInPayPeriod(transaction, activeFundsPayPeriod));
+    }
+
+    if (fundsFilter.mode === "all") return allTransactions;
+
+    return allTransactions.filter((transaction) => String(transaction.date || "").startsWith(fundsFilter.month));
+  }, [allTransactions, fundsFilter, activeFundsPayPeriod]);
+  const fundsFilterDetail = fundsFilter.mode === "year"
+    ? fundsFilter.year
+    : fundsFilter.mode === "payPeriod"
+      ? activeFundsPayPeriod.detail
+      : fundsFilter.mode === "all"
+        ? "All transactions"
+        : formatMonthLabel(fundsFilter.month);
   const sortedRecurringBills = useMemo(() => {
     return [...snapshot.recurringBills].sort(sortBillsByDueDate);
   }, [snapshot.recurringBills]);
@@ -923,26 +1098,17 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       tone: valueUsd < 0 ? "bad" : "good"
     };
   });
-  const billsRemainingUsd = toMoneyValue(unpaidBills.reduce((sum, bill) => sum + Number(bill.amountUsd || 0), 0));
   const totalAccountBalanceUsd = toMoneyValue(accountBalanceItems.reduce((sum, item) => sum + item.valueUsd, 0));
   const positiveFundsUsd = toMoneyValue(accountBalanceItems.filter((item) => item.valueUsd > 0).reduce((sum, item) => sum + item.valueUsd, 0));
   const negativeBalancesUsd = toMoneyValue(accountBalanceItems.filter((item) => item.valueUsd < 0).reduce((sum, item) => sum + item.valueUsd, 0));
-  const afterBillsUsd = toMoneyValue(totalAccountBalanceUsd - billsRemainingUsd);
   const balanceChartItems = [
     ...accountBalanceItems,
     {
-      id: "bills-remaining",
-      label: "Bills remaining",
-      detail: `${unpaidBills.length} unpaid`,
-      valueUsd: billsRemainingUsd > 0 ? toMoneyValue(-billsRemainingUsd) : 0,
-      tone: billsRemainingUsd > 0 ? "warn" : "good"
-    },
-    {
-      id: "after-bills",
-      label: "After bills",
-      detail: "accounts minus unpaid bills",
-      valueUsd: afterBillsUsd,
-      tone: afterBillsUsd >= 0 ? "info" : "bad",
+      id: "accounts-total",
+      label: "Total",
+      detail: `${snapshot.accounts.length} accounts`,
+      valueUsd: totalAccountBalanceUsd,
+      tone: totalAccountBalanceUsd >= 0 ? "info" : "bad",
       isTotal: true
     }
   ];
@@ -968,6 +1134,74 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   const activeChartItem = chartTooltip
     ? balanceChartItems.find((item) => item.id === chartTooltip.id)
     : null;
+  const billChartTotals = sortedRecurringBills.reduce((totals, bill) => {
+    const expectedUsd = billExpectedAmountUsd(bill, exchangeRate);
+    const actualUsd = billActualPaidUsd(bill, exchangeRate);
+
+    totals.expectedUsd = toMoneyValue(totals.expectedUsd + expectedUsd);
+
+    if (!bill.isPaid) {
+      totals.remainingUsd = toMoneyValue(totals.remainingUsd + expectedUsd);
+      return totals;
+    }
+
+    const paidBaseUsd = expectedUsd > 0 ? Math.min(actualUsd || expectedUsd, expectedUsd) : actualUsd;
+    totals.paidUsd = toMoneyValue(totals.paidUsd + paidBaseUsd);
+
+    if (actualUsd > expectedUsd) {
+      totals.overExpectedUsd = toMoneyValue(totals.overExpectedUsd + actualUsd - expectedUsd);
+    } else if (actualUsd < expectedUsd) {
+      totals.voidedOverflowUsd = toMoneyValue(totals.voidedOverflowUsd + expectedUsd - actualUsd);
+    }
+
+    return totals;
+  }, {
+    expectedUsd: 0,
+    remainingUsd: 0,
+    paidUsd: 0,
+    voidedOverflowUsd: 0,
+    overExpectedUsd: 0
+  });
+  const billPieLegendItems = [
+    { id: "remaining", label: "Remaining", valueUsd: billChartTotals.remainingUsd, tone: "warn" },
+    { id: "paid", label: "Paid", valueUsd: billChartTotals.paidUsd, tone: "good" },
+    { id: "voided", label: "Voided/Overflow", valueUsd: billChartTotals.voidedOverflowUsd, tone: "info" },
+    { id: "over", label: "Over expected", valueUsd: billChartTotals.overExpectedUsd, tone: "bad" }
+  ];
+  const billPieItems = billPieLegendItems.filter((item) => item.valueUsd > 0);
+  const billPieTotalUsd = toMoneyValue(billPieItems.reduce((sum, item) => sum + item.valueUsd, 0));
+  const billPieRadius = 42;
+  const billPieCircumference = 2 * Math.PI * billPieRadius;
+  let billPieRunningOffset = 0;
+  const billPieSegments = billPieItems.map((item) => {
+    const dash = billPieTotalUsd > 0 ? (item.valueUsd / billPieTotalUsd) * billPieCircumference : 0;
+    const segment = { ...item, dash, offset: billPieRunningOffset };
+    billPieRunningOffset += dash;
+    return segment;
+  });
+  const fundsExpenseSeries = useMemo(() => {
+    return buildFundsExpenseSeries(filteredFundsTransactions, exchangeRate);
+  }, [filteredFundsTransactions, exchangeRate]);
+  const latestFundsPoint = fundsExpenseSeries[fundsExpenseSeries.length - 1] || { incomeUsd: 0, expenseUsd: 0 };
+  const fundsIncomeUsd = toMoneyValue(latestFundsPoint.incomeUsd);
+  const fundsExpenseUsd = toMoneyValue(latestFundsPoint.expenseUsd);
+  const fundsNetUsd = toMoneyValue(fundsIncomeUsd - fundsExpenseUsd);
+  const fundsChartWidth = Math.max(620, fundsExpenseSeries.length * 22 + 108);
+  const fundsChartHeight = 260;
+  const fundsChartTop = 24;
+  const fundsChartRight = fundsChartWidth - 18;
+  const fundsChartBottom = fundsChartHeight - 42;
+  const fundsChartLeft = 62;
+  const fundsChartInnerWidth = fundsChartRight - fundsChartLeft;
+  const fundsChartInnerHeight = fundsChartBottom - fundsChartTop;
+  const fundsAxisMaxUsd = niceAxisMax(Math.max(1, ...fundsExpenseSeries.flatMap((item) => [item.incomeUsd, item.expenseUsd])));
+  const fundsChartTicks = [0, fundsAxisMaxUsd / 2, fundsAxisMaxUsd];
+  const fundsChartX = (index) => fundsChartLeft + (fundsExpenseSeries.length <= 1 ? 0 : (index / (fundsExpenseSeries.length - 1)) * fundsChartInnerWidth);
+  const fundsChartY = (valueUsd) => fundsChartTop + ((fundsAxisMaxUsd - Number(valueUsd || 0)) / fundsAxisMaxUsd) * fundsChartInnerHeight;
+  const fundsIncomePath = buildLinePath(fundsExpenseSeries, "incomeUsd", fundsChartX, fundsChartY);
+  const fundsExpensePath = buildLinePath(fundsExpenseSeries, "expenseUsd", fundsChartX, fundsChartY);
+  const fundsLabelSlots = Math.max(4, Math.floor(fundsChartInnerWidth / 120));
+  const fundsLabelStep = Math.max(1, Math.ceil(fundsExpenseSeries.length / fundsLabelSlots));
   const connectionIssues = connections.filter((connection) => ["error", "needs_sync"].includes(connection.status));
   const attentionItems = [
     overdueBills.length > 0 ? `${overdueBills.length} overdue bill${overdueBills.length === 1 ? "" : "s"}.` : "",
@@ -994,7 +1228,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   }, []);
 
   useEffect(() => {
-    if (!transactionEditId) {
+    if (!transactionEditId && !transactionModalOpen) {
       setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
     }
 
@@ -1004,7 +1238,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       biweeklyBillsUsd: String(convertAmount(snapshot.plan.biweeklyBillsUsd, "USD", displayCurrency, exchangeRate)),
       biweeklySavingsUsd: String(convertAmount(snapshot.plan.biweeklySavingsUsd, "USD", displayCurrency, exchangeRate))
     });
-  }, [snapshot.month, snapshot.accounts, snapshot.plan, transactionEditId, displayCurrency, exchangeRate]);
+  }, [snapshot.month, snapshot.accounts, snapshot.plan, transactionEditId, transactionModalOpen, displayCurrency, exchangeRate]);
 
   function setTab(tab) {
     const normalized = normalizeTab(tab);
@@ -1015,6 +1249,28 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       params.set("month", snapshot.month);
       window.history.replaceState(null, "", `/finance?${params.toString()}`);
     }
+  }
+
+  function updateBillTooltip(event, item) {
+    const figure = event.currentTarget.closest(".finance-pie-chart");
+    const figureBounds = figure?.getBoundingClientRect();
+    const targetBounds = event.currentTarget.getBoundingClientRect();
+    const clientX = event.clientX || targetBounds.left + targetBounds.width / 2;
+    const clientY = event.clientY || targetBounds.top + targetBounds.height / 2;
+    const percent = billPieTotalUsd > 0 ? Math.round((item.valueUsd / billPieTotalUsd) * 100) : 0;
+
+    setBillTooltip({
+      id: item.id,
+      label: item.label,
+      value: showCurrency(item.valueUsd, "USD"),
+      detail: `${percent}% of tracked bills`,
+      x: figureBounds ? clientX - figureBounds.left : 70,
+      y: figureBounds ? clientY - figureBounds.top : 70
+    });
+  }
+
+  function hideBillTooltip() {
+    setBillTooltip(null);
   }
 
   async function callFinanceAction(action, data) {
@@ -1145,6 +1401,19 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
     await runAction("syncConnection", { id: connection.id }, `${connection.institutionName} synced.`);
   }
 
+  function openNewTransaction() {
+    setTab("transactions");
+    setTransactionEditId(null);
+    setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
+    setTransactionModalOpen(true);
+  }
+
+  function closeTransactionModal() {
+    setTransactionModalOpen(false);
+    setTransactionEditId(null);
+    setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
+  }
+
   async function submitTransaction(event) {
     event.preventDefault();
     const action = transactionEditId ? "updateTransaction" : "createTransaction";
@@ -1155,8 +1424,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
     );
 
     if (ok) {
-      setTransactionEditId(null);
-      setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
+      closeTransactionModal();
     }
   }
 
@@ -1173,6 +1441,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       merchant: transaction.merchant,
       note: transaction.note
     });
+    setTransactionModalOpen(true);
   }
 
   function toggleTransactionGroup(groupId) {
@@ -1191,15 +1460,14 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
     if (!window.confirm("Delete this transaction?")) return;
     const ok = await runAction("deleteTransaction", { id: transaction.id }, "Transaction deleted.");
     if (ok && transactionEditId === transaction.id) {
-      setTransactionEditId(null);
-      setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
+      closeTransactionModal();
     }
   }
 
   function renderTransactionDetail(transaction, className = "") {
     return (
       <article key={transaction.id} className={`finance-transaction-detail ${className}`.trim()}>
-        <button type="button" className="finance-transaction-detail-main" onClick={() => editTransaction(transaction)}>
+        <div className="finance-transaction-detail-main">
           <span className="finance-transaction-detail-head">
             <strong>{transactionTitle(transaction)}</strong>
             <b className={transaction.kind === "income" ? "finance-good" : "finance-bad"}>
@@ -1214,9 +1482,74 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
             {transaction.pending ? <small className="finance-warn">Pending</small> : null}
           </span>
           {transaction.note ? <small className="finance-transaction-note">{transaction.note}</small> : null}
-        </button>
-        <button type="button" onClick={() => deleteTransaction(transaction)} aria-label={`Delete ${transactionTitle(transaction)}`}>Delete</button>
+        </div>
+        <div className="finance-transaction-actions">
+          <button type="button" onClick={() => editTransaction(transaction)} aria-label={`Edit ${transactionTitle(transaction)}`}>Edit</button>
+          <button type="button" onClick={() => deleteTransaction(transaction)} aria-label={`Delete ${transactionTitle(transaction)}`}>Delete</button>
+        </div>
       </article>
+    );
+  }
+
+  function renderTransactionForm() {
+    return (
+      <form className="finance-form" onSubmit={submitTransaction}>
+        <div className="finance-form-grid">
+          <Field label="Date">
+            <input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm((form) => ({ ...form, date: event.target.value }))} required disabled={disabled} />
+          </Field>
+          <Field label="Type">
+            <select value={transactionForm.kind} onChange={(event) => setTransactionForm((form) => ({ ...form, kind: event.target.value }))} disabled={disabled}>
+              <option value="expense">Expense</option>
+              <option value="income">Income</option>
+            </select>
+          </Field>
+        </div>
+
+        <div className="finance-form-grid">
+          <Field label="Amount">
+            <input type="number" inputMode="decimal" step="0.01" min="0" value={transactionForm.amount} onChange={(event) => setTransactionForm((form) => ({ ...form, amount: event.target.value }))} required disabled={disabled} />
+          </Field>
+          <Field label="Currency">
+            <select value={transactionForm.currency} onChange={(event) => setTransactionForm((form) => ({ ...form, currency: event.target.value }))} disabled={disabled}>
+              <option value="USD">USD</option>
+              <option value="PHP">PHP</option>
+            </select>
+          </Field>
+        </div>
+
+        <Field label="Category">
+          <input list="finance-categories" value={transactionForm.category} onChange={(event) => setTransactionForm((form) => ({ ...form, category: event.target.value }))} required disabled={disabled} />
+        </Field>
+
+        <Field label="Account">
+          <select value={transactionForm.accountId} onChange={(event) => setTransactionForm((form) => ({ ...form, accountId: event.target.value }))} disabled={disabled}>
+            <option value="">Unassigned</option>
+            {snapshot.accounts.map((account) => (
+              <option key={account.id} value={account.id}>
+                {joinSourceParts([account.name, account.institutionName, account.provider])}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Merchant or payer">
+          <input value={transactionForm.merchant} onChange={(event) => setTransactionForm((form) => ({ ...form, merchant: event.target.value }))} disabled={disabled} maxLength={120} />
+        </Field>
+
+        <Field label="Note">
+          <textarea value={transactionForm.note} onChange={(event) => setTransactionForm((form) => ({ ...form, note: event.target.value }))} disabled={disabled} maxLength={300} />
+        </Field>
+
+        <div className="finance-button-row">
+          <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>
+            {transactionEditId ? "Save" : "Add"}
+          </button>
+          <button type="button" onClick={closeTransactionModal}>
+            Cancel
+          </button>
+        </div>
+      </form>
     );
   }
 
@@ -1323,6 +1656,8 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
             {installPrompt ? (
               <button type="button" role="menuitem" onClick={installApp}>Install</button>
             ) : null}
+            <button type="button" role="menuitem" onClick={() => { setTab("home"); setToolbarOpen(false); }}>Home</button>
+            <button type="button" role="menuitem" onClick={() => { setTab("profile"); setToolbarOpen(false); }}>Profile</button>
             <button type="button" role="menuitem" onClick={switchDisplayCurrency}>
               Show {displayCurrency === "USD" ? "PHP" : "USD"}
             </button>
@@ -1341,11 +1676,32 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
         </button>
       </div>
 
+      {transactionModalOpen ? (
+        <div
+          className="finance-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeTransactionModal();
+          }}
+        >
+          <section
+            className="finance-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="finance-transaction-modal-title"
+          >
+            <header className="finance-modal-header">
+              <h2 id="finance-transaction-modal-title">{transactionEditId ? "Edit Transaction" : "Add Transaction"}</h2>
+              <button type="button" onClick={closeTransactionModal} aria-label="Close transaction form">Close</button>
+            </header>
+            {renderTransactionForm()}
+          </section>
+        </div>
+      ) : null}
+
       {activeTab !== "home" ? (
         <>
-          <header className="finance-topbar">
-            <h1>Private Finance</h1>
-          </header>
+          <FinanceHeader onHome={() => setTab("home")} />
 
           {!snapshot.configured ? (
             <div className="finance-alert finance-alert-warn">
@@ -1364,9 +1720,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       {activeTab === "home" ? (
         <div className="finance-home-layout">
           <main className="finance-home-main" aria-label="Finance dashboard">
-            <header className="finance-topbar">
-              <h1>Private Finance</h1>
-            </header>
+            <FinanceHeader onHome={() => setTab("home")} />
 
             {!snapshot.configured ? (
               <div className="finance-alert finance-alert-warn">
@@ -1387,154 +1741,321 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
               <Metric label="Balance" value={showCurrency(totalAccountBalanceUsd, "USD")} tone="info" detail={`${snapshot.accounts.length} accounts`} />
             </section>
 
-          <Panel title="Balances" className="finance-balance-panel">
-            <div className="finance-balance-summary">
-              <span>
-                <b>{showCurrency(positiveFundsUsd, "USD")}</b>
-                <small>funds</small>
-              </span>
-              <span>
-                <b className={negativeBalancesUsd < 0 ? "finance-bad" : ""}>{showCurrency(negativeBalancesUsd, "USD")}</b>
-                <small>credit debt</small>
-              </span>
-              <span>
-                <b className={billsRemainingUsd > 0 ? "finance-warn" : "finance-good"}>{showCurrency(billsRemainingUsd > 0 ? -billsRemainingUsd : 0, "USD")}</b>
-                <small>bills left</small>
-              </span>
-              <span>
-                <b className={afterBillsUsd >= 0 ? "finance-info" : "finance-bad"}>{showCurrency(afterBillsUsd, "USD")}</b>
-                <small>after bills</small>
-              </span>
-            </div>
-
-            <figure className="finance-axis-chart">
-              <div className="finance-axis-scroll">
-                <svg
-                  className="finance-axis-svg"
-                  viewBox={`0 0 ${balanceChartWidth} ${balanceChartHeight}`}
-                  role="img"
-                  aria-labelledby="finance-balance-chart-title finance-balance-chart-desc"
-                >
-                  <title id="finance-balance-chart-title">Balances</title>
-                  <desc id="finance-balance-chart-desc">Positive account balances, negative credit balances, unpaid bills, and after-bills total.</desc>
-                  {balanceChartTicks.map((tick) => {
-                    const y = balanceChartY(tick);
-
-                    return (
-                      <g key={tick}>
-                        <line
-                          className={tick === 0 ? "finance-axis-zero-line" : "finance-axis-grid-line"}
-                          x1={balanceChartLeft}
-                          x2={balanceChartRight}
-                          y1={y}
-                          y2={y}
-                        />
-                        <text className="finance-axis-y-label" x={balanceChartLeft - 9} y={y + 4} textAnchor="end">
-                          {showCompactCurrency(tick, "USD")}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartLeft} y1={balanceChartTop} y2={balanceChartBottom} />
-                  <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartRight} y1={balanceZeroY} y2={balanceZeroY} />
-                  <text className="finance-axis-title" x={balanceChartLeft} y={16}>Amount</text>
-                  <text className="finance-axis-title" x={balanceChartRight} y={balanceChartHeight - 12} textAnchor="end">Accounts</text>
-
-                  {balanceChartItems.map((item, index) => {
-                    const x = balanceChartLeft + index * balanceChartSlot + (balanceChartSlot - balanceBarWidth) / 2;
-                    const valueY = balanceChartY(item.valueUsd);
-                    const barY = Math.min(valueY, balanceZeroY);
-                    const barHeight = Math.max(2, Math.abs(balanceZeroY - valueY));
-                    const tooltipX = Math.min(
-                      balanceChartRight - balanceTooltipWidth,
-                      Math.max(balanceChartLeft, x + balanceBarWidth / 2 - balanceTooltipWidth / 2)
-                    );
-                    const tooltipY = item.valueUsd < 0
-                      ? Math.min(balanceChartBottom - balanceTooltipHeight, barY + barHeight + 10)
-                      : Math.max(balanceChartTop + 6, barY - balanceTooltipHeight - 10);
-                    const labelY = item.valueUsd < 0
-                      ? Math.min(balanceChartBottom + 18, barY + barHeight + 15)
-                      : Math.max(14, barY - 8);
-                    const labelClassName = item.valueUsd < 0 ? "finance-axis-value finance-axis-value-negative" : "finance-axis-value";
-                    const openTooltip = () => setChartTooltip({ id: item.id, x: tooltipX, y: tooltipY });
-
-                    return (
-                      <g
-                        key={item.id}
-                        className="finance-axis-bar-group"
-                        tabIndex={0}
-                        role="button"
-                        aria-label={`${item.label}: ${showCurrency(item.valueUsd, "USD")}. ${item.detail}`}
-                        onClick={openTooltip}
-                        onFocus={openTooltip}
-                        onBlur={() => setChartTooltip(null)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" || event.key === " ") {
-                            event.preventDefault();
-                            openTooltip();
-                          }
-                        }}
-                        onPointerEnter={openTooltip}
-                        onPointerLeave={() => setChartTooltip(null)}
-                      >
-                        <title>{`${item.label}: ${showCurrency(item.valueUsd, "USD")} - ${item.detail}`}</title>
-                        <rect
-                          className={`finance-axis-bar finance-axis-${item.tone}${item.isTotal ? " finance-axis-total" : ""}`}
-                          x={x}
-                          y={barY}
-                          width={balanceBarWidth}
-                          height={barHeight}
-                          rx="5"
-                        />
-                        <text className={labelClassName} x={x + balanceBarWidth / 2} y={labelY} textAnchor="middle">
-                          {showCompactCurrency(item.valueUsd, "USD")}
-                        </text>
-                        <text className="finance-axis-x-label" x={x + balanceBarWidth / 2} y={balanceChartBottom + 38} textAnchor="middle">
-                          {shortChartLabel(item.label)}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  {activeChartItem && chartTooltip ? (
-                    <g className="finance-axis-tooltip" transform={`translate(${chartTooltip.x}, ${chartTooltip.y})`} pointerEvents="none">
-                      <rect width={balanceTooltipWidth} height={balanceTooltipHeight} rx="8" />
-                      <text className="finance-axis-tooltip-label" x="11" y="19">
-                        {shortChartLabel(activeChartItem.label, 22)}
-                      </text>
-                      <text className="finance-axis-tooltip-detail" x="11" y="38">
-                        {shortChartLabel(activeChartItem.detail, 28)}
-                      </text>
-                      <text className="finance-axis-tooltip-value" x={balanceTooltipWidth - 11} y="53" textAnchor="end">
-                        {showCurrency(activeChartItem.valueUsd, "USD")}
-                      </text>
-                    </g>
-                  ) : null}
-                </svg>
+          <section className="finance-home-charts">
+            <Panel title="Accounts" className="finance-chart-panel finance-accounts-panel">
+              <div className="finance-balance-summary">
+                <span>
+                  <b>{showCurrency(positiveFundsUsd, "USD")}</b>
+                  <small>funds</small>
+                </span>
+                <span>
+                  <b className={negativeBalancesUsd < 0 ? "finance-bad" : ""}>{showCurrency(negativeBalancesUsd, "USD")}</b>
+                  <small>credit debt</small>
+                </span>
+                <span>
+                  <b className={totalAccountBalanceUsd >= 0 ? "finance-info" : "finance-bad"}>{showCurrency(totalAccountBalanceUsd, "USD")}</b>
+                  <small>total</small>
+                </span>
+                <span>
+                  <b>{snapshot.accounts.length}</b>
+                  <small>accounts</small>
+                </span>
               </div>
 
-              <figcaption className="finance-chart-values">
-                {balanceChartItems.map((item) => (
-                  <span key={item.id}>
-                    <i className={`finance-chart-dot finance-${item.tone}`} />
-                    <span>
-                      <strong>{item.label}</strong>
-                      <small>{item.detail}</small>
-                    </span>
-                    <b className={item.valueUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(item.valueUsd, "USD")}</b>
-                  </span>
-                ))}
-              </figcaption>
-            </figure>
-          </Panel>
+              <figure className="finance-axis-chart">
+                <div className="finance-axis-scroll">
+                  <svg
+                    className="finance-axis-svg"
+                    viewBox={`0 0 ${balanceChartWidth} ${balanceChartHeight}`}
+                    role="img"
+                    aria-labelledby="finance-balance-chart-title finance-balance-chart-desc"
+                  >
+                    <title id="finance-balance-chart-title">Accounts</title>
+                    <desc id="finance-balance-chart-desc">Funds in every account, credit card balances as negative values, and the total balance.</desc>
+                    {balanceChartTicks.map((tick) => {
+                      const y = balanceChartY(tick);
 
-          <Panel title="Bi-weekly Plan">
-            <div className="finance-plan-grid">
-              <Metric label="Income" value={showCurrency(snapshot.plan.biweeklyIncomeUsd, "USD")} />
-              <Metric label="Bills" value={showCurrency(snapshot.plan.biweeklyBillsUsd, "USD")} />
-              <Metric label="Savings" value={showCurrency(snapshot.plan.biweeklySavingsUsd, "USD")} />
-              <Metric label="Left" value={showCurrency(snapshot.plan.biweeklyRemainingUsd, "USD")} tone={snapshot.plan.biweeklyRemainingUsd >= 0 ? "good" : "bad"} />
-            </div>
-          </Panel>
+                      return (
+                        <g key={tick}>
+                          <line
+                            className={tick === 0 ? "finance-axis-zero-line" : "finance-axis-grid-line"}
+                            x1={balanceChartLeft}
+                            x2={balanceChartRight}
+                            y1={y}
+                            y2={y}
+                          />
+                          <text className="finance-axis-y-label" x={balanceChartLeft - 9} y={y + 4} textAnchor="end">
+                            {showCompactCurrency(tick, "USD")}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartLeft} y1={balanceChartTop} y2={balanceChartBottom} />
+                    <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartRight} y1={balanceZeroY} y2={balanceZeroY} />
+                    <text className="finance-axis-title" x={balanceChartLeft} y={16}>Amount</text>
+                    <text className="finance-axis-title" x={balanceChartRight} y={balanceChartHeight - 12} textAnchor="end">Accounts</text>
+
+                    {balanceChartItems.map((item, index) => {
+                      const x = balanceChartLeft + index * balanceChartSlot + (balanceChartSlot - balanceBarWidth) / 2;
+                      const valueY = balanceChartY(item.valueUsd);
+                      const barY = Math.min(valueY, balanceZeroY);
+                      const barHeight = Math.max(2, Math.abs(balanceZeroY - valueY));
+                      const tooltipX = Math.min(
+                        balanceChartRight - balanceTooltipWidth,
+                        Math.max(balanceChartLeft, x + balanceBarWidth / 2 - balanceTooltipWidth / 2)
+                      );
+                      const tooltipY = item.valueUsd < 0
+                        ? Math.min(balanceChartBottom - balanceTooltipHeight, barY + barHeight + 10)
+                        : Math.max(balanceChartTop + 6, barY - balanceTooltipHeight - 10);
+                      const labelY = item.valueUsd < 0
+                        ? Math.min(balanceChartBottom + 18, barY + barHeight + 15)
+                        : Math.max(14, barY - 8);
+                      const labelClassName = item.valueUsd < 0 ? "finance-axis-value finance-axis-value-negative" : "finance-axis-value";
+                      const openTooltip = () => setChartTooltip({ id: item.id, x: tooltipX, y: tooltipY });
+
+                      return (
+                        <g
+                          key={item.id}
+                          className="finance-axis-bar-group"
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`${item.label}: ${showCurrency(item.valueUsd, "USD")}. ${item.detail}`}
+                          onClick={openTooltip}
+                          onFocus={openTooltip}
+                          onBlur={() => setChartTooltip(null)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openTooltip();
+                            }
+                          }}
+                          onPointerEnter={openTooltip}
+                          onPointerLeave={() => setChartTooltip(null)}
+                        >
+                          <title>{`${item.label}: ${showCurrency(item.valueUsd, "USD")} - ${item.detail}`}</title>
+                          <rect
+                            className={`finance-axis-bar finance-axis-${item.tone}${item.isTotal ? " finance-axis-total" : ""}`}
+                            x={x}
+                            y={barY}
+                            width={balanceBarWidth}
+                            height={barHeight}
+                            rx="5"
+                          />
+                          <text className={labelClassName} x={x + balanceBarWidth / 2} y={labelY} textAnchor="middle">
+                            {showCompactCurrency(item.valueUsd, "USD")}
+                          </text>
+                          <text className="finance-axis-x-label" x={x + balanceBarWidth / 2} y={balanceChartBottom + 38} textAnchor="middle">
+                            {shortChartLabel(item.label)}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    {activeChartItem && chartTooltip ? (
+                      <g className="finance-axis-tooltip" transform={`translate(${chartTooltip.x}, ${chartTooltip.y})`} pointerEvents="none">
+                        <rect width={balanceTooltipWidth} height={balanceTooltipHeight} rx="8" />
+                        <text className="finance-axis-tooltip-label" x="11" y="19">
+                          {shortChartLabel(activeChartItem.label, 22)}
+                        </text>
+                        <text className="finance-axis-tooltip-detail" x="11" y="38">
+                          {shortChartLabel(activeChartItem.detail, 28)}
+                        </text>
+                        <text className="finance-axis-tooltip-value" x={balanceTooltipWidth - 11} y="53" textAnchor="end">
+                          {showCurrency(activeChartItem.valueUsd, "USD")}
+                        </text>
+                      </g>
+                    ) : null}
+                  </svg>
+                </div>
+
+                <figcaption className="finance-chart-values">
+                  {balanceChartItems.map((item) => (
+                    <span key={item.id}>
+                      <i className={`finance-chart-dot finance-${item.tone}`} />
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{item.detail}</small>
+                      </span>
+                      <b className={item.valueUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(item.valueUsd, "USD")}</b>
+                    </span>
+                  ))}
+                </figcaption>
+              </figure>
+            </Panel>
+
+            <Panel title="Bills" className="finance-chart-panel finance-bills-panel">
+              <figure className="finance-pie-chart">
+                <svg className="finance-pie-svg" viewBox="0 0 140 140" role="img" aria-labelledby="finance-bills-chart-title finance-bills-chart-desc">
+                  <title id="finance-bills-chart-title">Bills</title>
+                  <desc id="finance-bills-chart-desc">Remaining bills, paid bills, voided or overflow amount, and any paid amount over expected.</desc>
+                  <circle className="finance-pie-track" cx="70" cy="70" r={billPieRadius} />
+                  {billPieSegments.map((item) => (
+                    <circle
+                      key={item.id}
+                      className={`finance-pie-slice finance-pie-${item.tone}`}
+                      tabIndex={0}
+                      role="img"
+                      aria-label={`${item.label}: ${showCurrency(item.valueUsd, "USD")}`}
+                      cx="70"
+                      cy="70"
+                      r={billPieRadius}
+                      strokeDasharray={`${item.dash} ${Math.max(0, billPieCircumference - item.dash)}`}
+                      strokeDashoffset={-item.offset}
+                      transform="rotate(-90 70 70)"
+                      onPointerEnter={(event) => updateBillTooltip(event, item)}
+                      onPointerMove={(event) => updateBillTooltip(event, item)}
+                      onPointerLeave={hideBillTooltip}
+                      onFocus={(event) => updateBillTooltip(event, item)}
+                      onBlur={hideBillTooltip}
+                    >
+                      <title>{`${item.label}: ${showCurrency(item.valueUsd, "USD")}`}</title>
+                    </circle>
+                  ))}
+                  <text className="finance-pie-center-label" x="70" y="65" textAnchor="middle">Tracked</text>
+                  <text className="finance-pie-center-value" x="70" y="82" textAnchor="middle">{showCompactCurrency(billPieTotalUsd, "USD")}</text>
+                </svg>
+                {billTooltip ? (
+                  <div
+                    className="finance-pie-tooltip"
+                    style={{
+                      left: `${billTooltip.x}px`,
+                      top: `${billTooltip.y}px`
+                    }}
+                  >
+                    <strong>{billTooltip.label}</strong>
+                    <b>{billTooltip.value}</b>
+                    <small>{billTooltip.detail}</small>
+                  </div>
+                ) : null}
+              </figure>
+            </Panel>
+
+            <Panel
+              title="Funds / Expense"
+              className="finance-chart-panel finance-line-panel"
+              action={(
+                <div className="finance-chart-filter">
+                  <select
+                    aria-label="Funds chart range"
+                    value={fundsFilter.mode}
+                    onChange={(event) => setFundsFilter((filter) => ({ ...filter, mode: event.target.value }))}
+                  >
+                    <option value="month">Month</option>
+                    <option value="year">Year</option>
+                    <option value="payPeriod">Pay period</option>
+                    <option value="all">All</option>
+                  </select>
+                  {fundsFilter.mode === "month" ? (
+                    <select
+                      aria-label="Funds chart month"
+                      value={fundsFilter.month}
+                      onChange={(event) => setFundsFilter((filter) => ({ ...filter, month: event.target.value }))}
+                    >
+                      {fundsMonthOptions.map((month) => (
+                        <option key={month} value={month}>{formatMonthLabel(month)}</option>
+                      ))}
+                    </select>
+                  ) : null}
+                  {fundsFilter.mode === "year" ? (
+                    <select
+                      aria-label="Funds chart year"
+                      value={fundsFilter.year}
+                      onChange={(event) => setFundsFilter((filter) => ({ ...filter, year: event.target.value }))}
+                    >
+                      {fundsYearOptions.map((year) => (
+                        <option key={year} value={year}>{year}</option>
+                      ))}
+                    </select>
+                  ) : null}
+                  {fundsFilter.mode === "payPeriod" ? (
+                    <select
+                      aria-label="Funds chart pay period"
+                      value={activeFundsPayPeriod.id}
+                      onChange={(event) => setFundsFilter((filter) => ({ ...filter, payPeriod: event.target.value }))}
+                    >
+                      {fundsPayPeriodOptions.map((period) => (
+                        <option key={period.id} value={period.id}>{period.label}</option>
+                      ))}
+                    </select>
+                  ) : null}
+                </div>
+              )}
+            >
+              <figure className="finance-line-chart">
+                <div className="finance-chart-summary">
+                  <span>{fundsFilterDetail}</span>
+                  <b>{filteredFundsTransactions.length} transaction{filteredFundsTransactions.length === 1 ? "" : "s"}</b>
+                </div>
+                <div className="finance-line-scroll">
+                  <svg className="finance-line-svg" style={{ minWidth: `${fundsChartWidth}px` }} viewBox={`0 0 ${fundsChartWidth} ${fundsChartHeight}`} role="img" aria-labelledby="finance-funds-chart-title finance-funds-chart-desc">
+                    <title id="finance-funds-chart-title">Funds and expense</title>
+                    <desc id="finance-funds-chart-desc">Cumulative incoming and outbound totals across all transactions.</desc>
+                    {fundsChartTicks.map((tick) => {
+                      const y = fundsChartY(tick);
+
+                      return (
+                        <g key={tick}>
+                          <line className={tick === 0 ? "finance-axis-zero-line" : "finance-axis-grid-line"} x1={fundsChartLeft} x2={fundsChartRight} y1={y} y2={y} />
+                          <text className="finance-axis-y-label" x={fundsChartLeft - 9} y={y + 4} textAnchor="end">
+                            {showCompactCurrency(tick, "USD")}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    <line className="finance-axis-line" x1={fundsChartLeft} x2={fundsChartLeft} y1={fundsChartTop} y2={fundsChartBottom} />
+                    <line className="finance-axis-line" x1={fundsChartLeft} x2={fundsChartRight} y1={fundsChartBottom} y2={fundsChartBottom} />
+                    <path className="finance-line-path finance-line-income" d={fundsIncomePath} />
+                    <path className="finance-line-path finance-line-expense" d={fundsExpensePath} />
+                    {fundsExpenseSeries.map((item, index) => {
+                      const showLabel = index === 0 || index === fundsExpenseSeries.length - 1 || index % fundsLabelStep === 0;
+                      const pointTitle = [
+                        transactionTitle(item.transaction),
+                        formatShortDate(item.date),
+                        showCurrency(transactionSignedNativeAmount(item.transaction), item.transaction?.currency || "USD"),
+                        transactionSourceLabel(item.transaction)
+                      ].filter(Boolean).join(" - ");
+
+                      return (
+                        <g key={item.id}>
+                          {showLabel ? (
+                            <text className="finance-axis-x-label" x={fundsChartX(index)} y={fundsChartBottom + 26} textAnchor="middle">
+                              {formatShortDate(item.date)}
+                            </text>
+                          ) : null}
+                          {item.transaction?.kind === "income" ? (
+                            <circle className="finance-line-point finance-line-income-point" cx={fundsChartX(index)} cy={fundsChartY(item.incomeUsd)} r="3.2">
+                              <title>{pointTitle}</title>
+                            </circle>
+                          ) : null}
+                          {item.transaction?.kind === "expense" ? (
+                            <circle className="finance-line-point finance-line-expense-point" cx={fundsChartX(index)} cy={fundsChartY(item.expenseUsd)} r="3.2">
+                              <title>{pointTitle}</title>
+                            </circle>
+                          ) : null}
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+                <figcaption className="finance-line-legend">
+                  <span>
+                    <i className="finance-chart-dot finance-good" />
+                    <strong>Incoming</strong>
+                    <b className="finance-good">{showCurrency(fundsIncomeUsd, "USD")}</b>
+                  </span>
+                  <span>
+                    <i className="finance-chart-dot finance-bad" />
+                    <strong>Outbound</strong>
+                    <b className="finance-bad">{showCurrency(fundsExpenseUsd, "USD")}</b>
+                  </span>
+                  <span>
+                    <i className="finance-chart-dot finance-info" />
+                    <strong>Net</strong>
+                    <b className={fundsNetUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(fundsNetUsd, "USD")}</b>
+                  </span>
+                </figcaption>
+              </figure>
+            </Panel>
+          </section>
 
           {attentionItems.length > 0 ? (
             <Panel title="Needs Attention">
@@ -1590,7 +2111,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
             ) : (
               <div className="finance-list">
                 {recentTransactions.slice(0, 5).map((transaction) => (
-                  <button key={transaction.id} type="button" className="finance-list-row" onClick={() => editTransaction(transaction)}>
+                  <article key={transaction.id} className="finance-list-row finance-list-row-card">
                     <span>
                       <strong>{transaction.merchant || transaction.category}</strong>
                       <small>{formatShortDate(transaction.date)} - {transactionSourceLabel(transaction)}</small>
@@ -1598,7 +2119,8 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
                     <b className={transaction.kind === "income" ? "finance-good" : "finance-bad"}>
                       {showCurrency(transaction.amount, transaction.currency)}
                     </b>
-                  </button>
+                    <button type="button" onClick={() => editTransaction(transaction)} aria-label={`Edit ${transactionTitle(transaction)}`}>Edit</button>
+                  </article>
                 ))}
               </div>
             )}
@@ -1609,69 +2131,15 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
 
       {activeTab === "transactions" ? (
         <main className="finance-stack finance-transactions-stack">
-          <Panel title={transactionEditId ? "Edit Transaction" : "Add Transaction"}>
-            <form className="finance-form" onSubmit={submitTransaction}>
-              <div className="finance-form-grid">
-                <Field label="Date">
-                  <input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm((form) => ({ ...form, date: event.target.value }))} required disabled={disabled} />
-                </Field>
-                <Field label="Type">
-                  <select value={transactionForm.kind} onChange={(event) => setTransactionForm((form) => ({ ...form, kind: event.target.value }))} disabled={disabled}>
-                    <option value="expense">Expense</option>
-                    <option value="income">Income</option>
-                  </select>
-                </Field>
+          <Panel
+            title="Transaction History"
+            action={(
+              <div className="finance-panel-actions">
+                <span className="finance-panel-count">{transactionGroups.length} entries</span>
+                <button type="button" className="finance-primary" onClick={openNewTransaction} disabled={disabled}>Add</button>
               </div>
-
-              <div className="finance-form-grid">
-                <Field label="Amount">
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={transactionForm.amount} onChange={(event) => setTransactionForm((form) => ({ ...form, amount: event.target.value }))} required disabled={disabled} />
-                </Field>
-                <Field label="Currency">
-                  <select value={transactionForm.currency} onChange={(event) => setTransactionForm((form) => ({ ...form, currency: event.target.value }))} disabled={disabled}>
-                    <option value="USD">USD</option>
-                    <option value="PHP">PHP</option>
-                  </select>
-                </Field>
-              </div>
-
-              <Field label="Category">
-                <input list="finance-categories" value={transactionForm.category} onChange={(event) => setTransactionForm((form) => ({ ...form, category: event.target.value }))} required disabled={disabled} />
-              </Field>
-
-              <Field label="Account">
-                <select value={transactionForm.accountId} onChange={(event) => setTransactionForm((form) => ({ ...form, accountId: event.target.value }))} disabled={disabled}>
-                  <option value="">Unassigned</option>
-                  {snapshot.accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {joinSourceParts([account.name, account.institutionName, account.provider])}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-
-              <Field label="Merchant or payer">
-                <input value={transactionForm.merchant} onChange={(event) => setTransactionForm((form) => ({ ...form, merchant: event.target.value }))} disabled={disabled} maxLength={120} />
-              </Field>
-
-              <Field label="Note">
-                <textarea value={transactionForm.note} onChange={(event) => setTransactionForm((form) => ({ ...form, note: event.target.value }))} disabled={disabled} maxLength={300} />
-              </Field>
-
-              <div className="finance-button-row">
-                <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>
-                  {transactionEditId ? "Save" : "Add"}
-                </button>
-                {transactionEditId ? (
-                  <button type="button" onClick={() => { setTransactionEditId(null); setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency)); }}>
-                    Cancel
-                  </button>
-                ) : null}
-              </div>
-            </form>
-          </Panel>
-
-          <Panel title="Transaction History" action={<span className="finance-panel-count">{transactionGroups.length} entries</span>}>
+            )}
+          >
             {allTransactions.length === 0 ? (
               <p className="finance-muted">No transactions yet.</p>
             ) : (
@@ -2040,25 +2508,6 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
           </Panel>
         </main>
       ) : null}
-
-      <nav className="finance-bottom-nav" aria-label="Finance sections">
-        {[
-          ["home", "Home"],
-          ["bills", "Bills"],
-          ["transactions", "Transactions"],
-          ["profile", "Profile"]
-        ].map(([tab, label]) => (
-          <button
-            key={tab}
-            type="button"
-            className={activeTab === tab ? "active" : ""}
-            aria-current={activeTab === tab ? "page" : undefined}
-            onClick={() => setTab(tab)}
-          >
-            {label}
-          </button>
-        ))}
-      </nav>
 
       <datalist id="finance-categories">
         {snapshot.categories.map((category) => (
