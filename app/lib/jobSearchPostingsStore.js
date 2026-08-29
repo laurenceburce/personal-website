@@ -67,65 +67,96 @@ export function mapPostingRow(row) {
 
 // Upserts one normalized posting (see jobSearchAtsSources.js / jobSearchDiscovery.js)
 // on its natural key (ats_type, board_token, external_job_id). Returns whether
-// the row was freshly created and whether it was reopened from a previously-closed state.
+// the row was freshly created.
+//
+// Atomic INSERT ... ON DUPLICATE KEY UPDATE, not a separate SELECT-then-branch
+// — the two-step version had a real race: the manual "Run Discovery Now"
+// button and the scheduled cron worker can now genuinely overlap (both poll
+// the same direct-poll company list every run), and two concurrent callers
+// both seeing "no existing row" for the same natural key would have one
+// INSERT succeed and the other throw an uncaught duplicate-key error,
+// aborting whichever run lost the race. The `status` CASE mirrors the old
+// PRE_DECISION_STATUSES-based branch exactly, just evaluated in SQL against
+// the existing row's own `status`/`content_hash` (bare column refs), not the
+// values being written (VALUES(...)) — MySQL resolves both correctly within
+// the same ON DUPLICATE KEY UPDATE clause.
 export async function upsertPosting(normalized) {
   const pool = requirePool(await ensureJobSearchSchema());
   const now = new Date();
 
-  const [existingRows] = await pool.query(
-    "SELECT id, status, content_hash FROM job_search_postings WHERE ats_type = ? AND board_token = ? AND external_job_id = ? LIMIT 1",
+  const [result] = await pool.query(
+    `INSERT INTO job_search_postings
+       (ats_type, board_token, external_job_id, company_name, title, department,
+        location_text, remote_type, seniority_guess, salary_min, salary_max, salary_currency,
+        description_text, apply_url, posted_at, content_hash,
+        status, is_active, first_seen_at, last_seen_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       company_name = VALUES(company_name),
+       title = VALUES(title),
+       department = VALUES(department),
+       location_text = VALUES(location_text),
+       remote_type = VALUES(remote_type),
+       seniority_guess = VALUES(seniority_guess),
+       salary_min = VALUES(salary_min),
+       salary_max = VALUES(salary_max),
+       salary_currency = VALUES(salary_currency),
+       description_text = VALUES(description_text),
+       apply_url = VALUES(apply_url),
+       posted_at = VALUES(posted_at),
+       is_active = 1,
+       last_seen_at = VALUES(updated_at),
+       updated_at = VALUES(updated_at),
+       status = CASE
+         WHEN status = 'closed' THEN 'new'
+         WHEN status IN ('new','filtered_out','below_threshold','scored_low','scored')
+              AND content_hash != VALUES(content_hash) THEN 'new'
+         ELSE status
+       END,
+       content_hash = VALUES(content_hash)`,
+    [
+      normalized.atsType, normalized.boardToken, normalized.externalJobId,
+      normalized.companyName,
+      normalized.title,
+      normalized.department || "",
+      normalized.locationText || "",
+      normalized.remoteType || "unknown",
+      normalized.seniorityGuess || "unknown",
+      normalized.salaryMin ?? null,
+      normalized.salaryMax ?? null,
+      normalized.salaryCurrency ?? null,
+      normalized.descriptionText || null,
+      normalized.applyUrl || "",
+      normalized.postedAt || null,
+      normalized.contentHash,
+      now, now, now, now
+    ]
+  );
+
+  // Confirmed live that neither signal alone is trustworthy under a genuine
+  // concurrent race on the same natural key (two callers both hitting this
+  // for the same posting at once — exactly the scenario this atomic rewrite
+  // exists for): affectedRows can read 1 for BOTH callers, not just the one
+  // that actually inserted, and the "losing" caller's insertId can come back
+  // 0 even outside a race, where it normally holds the existing row's id
+  // (that's MySQL's documented LAST_INSERT_ID() behavior for ON DUPLICATE KEY
+  // UPDATE on an auto-increment column). So: affectedRows decides `isNew`
+  // (right in the overwhelming non-racing case; at worst a harmless
+  // off-by-one in a "N new postings" log count under a true race), but `id`
+  // NEVER trusts a zero/missing insertId — it always falls back to a fresh
+  // lookup, since every downstream caller depends on that id being correct,
+  // not just the isNew flag.
+  const isNew = result.affectedRows === 1;
+  const id = (isNew && result.insertId) ? Number(result.insertId) : await lookupPostingId(pool, normalized);
+  return { id, isNew };
+}
+
+async function lookupPostingId(pool, normalized) {
+  const [rows] = await pool.query(
+    "SELECT id FROM job_search_postings WHERE ats_type = ? AND board_token = ? AND external_job_id = ? LIMIT 1",
     [normalized.atsType, normalized.boardToken, normalized.externalJobId]
   );
-  const existing = existingRows[0];
-
-  const commonFields = [
-    normalized.companyName,
-    normalized.title,
-    normalized.department || "",
-    normalized.locationText || "",
-    normalized.remoteType || "unknown",
-    normalized.seniorityGuess || "unknown",
-    normalized.salaryMin ?? null,
-    normalized.salaryMax ?? null,
-    normalized.salaryCurrency ?? null,
-    normalized.descriptionText || null,
-    normalized.applyUrl || "",
-    normalized.postedAt || null,
-    normalized.contentHash
-  ];
-
-  if (!existing) {
-    const [result] = await pool.query(
-      `INSERT INTO job_search_postings
-         (ats_type, board_token, external_job_id, company_name, title, department,
-          location_text, remote_type, seniority_guess, salary_min, salary_max, salary_currency,
-          description_text, apply_url, posted_at, content_hash,
-          status, is_active, first_seen_at, last_seen_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?)`,
-      [
-        normalized.atsType, normalized.boardToken, normalized.externalJobId,
-        ...commonFields, now, now, now, now
-      ]
-    );
-    return { id: Number(result.insertId), isNew: true, reopened: false };
-  }
-
-  const reopened = existing.status === "closed";
-  const shouldReprocess = reopened
-    || (PRE_DECISION_STATUSES.has(existing.status) && existing.content_hash !== normalized.contentHash);
-  const nextStatus = shouldReprocess ? "new" : existing.status;
-
-  await pool.query(
-    `UPDATE job_search_postings
-     SET company_name = ?, title = ?, department = ?, location_text = ?,
-         remote_type = ?, seniority_guess = ?, salary_min = ?, salary_max = ?, salary_currency = ?,
-         description_text = ?, apply_url = ?, posted_at = ?,
-         content_hash = ?, status = ?, is_active = 1, last_seen_at = ?, updated_at = ?
-     WHERE id = ?`,
-    [...commonFields, nextStatus, now, now, existing.id]
-  );
-
-  return { id: Number(existing.id), isNew: false, reopened };
+  return rows[0] ? Number(rows[0].id) : null;
 }
 
 export async function getPostingById(id) {

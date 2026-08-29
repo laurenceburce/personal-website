@@ -84,29 +84,36 @@ function namesPlausiblyMatch(searched, returned) {
 // probe-time just stays 'unknown' rather than getting mislabeled — no retry
 // mechanism exists yet, but that's a safer failure mode than the reverse.
 
+// Every hit below carries jobCount alongside atsType/boardToken — the
+// signal probeCompanyAts() uses to pick between more than one genuine match
+// for the same slug (an ATS migration leaving a stale-but-still-responding
+// old board, or two unrelated companies coincidentally sharing a slug on
+// different platforms). A real, currently-used board almost always has
+// meaningfully more open postings than a leftover or coincidental one.
+
 async function probeGreenhouse(slug) {
   const data = await fetchJson(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=false`);
   if (!data || !Array.isArray(data.jobs) || data.jobs.length === 0) return null;
-  return { atsType: "greenhouse", boardToken: slug };
+  return { atsType: "greenhouse", boardToken: slug, jobCount: data.jobs.length };
 }
 
 async function probeLever(slug) {
   const data = await fetchJson(`https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`);
   if (!Array.isArray(data) || data.length === 0) return null; // {ok:false,...} for a nonexistent site
-  return { atsType: "lever", boardToken: slug };
+  return { atsType: "lever", boardToken: slug, jobCount: data.length };
 }
 
 async function probeAshby(slug) {
   const data = await fetchJson(`https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}`);
   if (!data || !Array.isArray(data.jobs) || data.jobs.length === 0) return null;
-  return { atsType: "ashby", boardToken: slug };
+  return { atsType: "ashby", boardToken: slug, jobCount: data.jobs.length };
 }
 
 async function probeWorkable(slug, companyName) {
   const data = await fetchJson(`https://apply.workable.com/api/v1/widget/accounts/${encodeURIComponent(slug)}`);
   if (!data || !data.name || !Array.isArray(data.jobs) || data.jobs.length === 0) return null;
   if (!namesPlausiblyMatch(companyName, data.name)) return null;
-  return { atsType: "workable", boardToken: slug };
+  return { atsType: "workable", boardToken: slug, jobCount: data.jobs.length };
 }
 
 async function probeSmartRecruiters(slug, companyName) {
@@ -121,24 +128,43 @@ async function probeSmartRecruiters(slug, companyName) {
   if (!data || !data.totalFound) return null;
   const returnedName = data.content?.[0]?.company?.name;
   if (!returnedName || !namesPlausiblyMatch(companyName, returnedName)) return null;
-  return { atsType: "smartrecruiters", boardToken: slug };
+  return { atsType: "smartrecruiters", boardToken: slug, jobCount: data.totalFound };
 }
 
-// Tries every candidate slug against every platform, cheapest/most-likely
-// first, and stops at the first hit. Never throws — a company nobody can
-// find on any of these stays untagged (ats_type stays 'unknown'), which is
-// exactly as informative as it sounds: still worth a retry someday, but nothing
-// to poll directly right now.
+// Checks every platform for a given slug CONCURRENTLY rather than stopping
+// at the first hit — a company can genuinely (or coincidentally) match more
+// than one platform for the same slug, and picking whichever was checked
+// first would silently lock in the wrong one forever, since a company is
+// never re-probed once known. Confirmed genuinely possible two ways this
+// session: an ATS migration can leave an old board still responding, and a
+// generic slug can coincidentally belong to a different, unrelated company
+// on another platform. Whichever match has the most currently-open postings
+// wins — a real, actively-used board almost always dwarfs a stale or
+// coincidental one.
+async function probeAllPlatforms(slug, companyName) {
+  const results = await Promise.all([
+    probeGreenhouse(slug),
+    probeLever(slug),
+    probeAshby(slug),
+    probeWorkable(slug, companyName),
+    probeSmartRecruiters(slug, companyName)
+  ]);
+
+  const hits = results.filter(Boolean);
+  if (hits.length === 0) return null;
+  return hits.reduce((best, hit) => (hit.jobCount > best.jobCount ? hit : best));
+}
+
+// Tries each candidate slug shape in turn, checking every platform for each
+// one before moving to the next. Never throws — a company nobody can find on
+// any of these stays untagged (ats_type stays 'unknown'), which is exactly
+// as informative as it sounds: still worth a retry someday, but nothing to
+// poll directly right now.
 export async function probeCompanyAts(companyName) {
   const candidates = generateSlugCandidates(companyName);
 
   for (const slug of candidates) {
-    const hit =
-      (await probeGreenhouse(slug)) ||
-      (await probeLever(slug)) ||
-      (await probeAshby(slug)) ||
-      (await probeWorkable(slug, companyName)) ||
-      (await probeSmartRecruiters(slug, companyName));
+    const hit = await probeAllPlatforms(slug, companyName);
     if (hit) return hit;
   }
 

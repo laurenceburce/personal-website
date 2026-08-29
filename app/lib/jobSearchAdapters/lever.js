@@ -116,8 +116,13 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
       if (!value) continue;
       const locator = page.locator(`input[name="${name.replace(/"/g, '\\"')}"]`).first();
       if (await locator.count().catch(() => 0) === 0) continue;
-      await locator.fill(String(value)).catch(() => {});
-      submittedAnswers[name] = value;
+      // Track whether the fill actually landed — a swallowed error here used
+      // to still record the field as answered, so a silently-failed fill on
+      // a real identity field (name/email/phone) would never surface as a
+      // problem before an actual submit attempt.
+      const filled = await locator.fill(String(value)).then(() => true).catch(() => false);
+      if (filled) submittedAnswers[name] = value;
+      else manualReviewFields.push(name);
     }
 
     const cards = await collectCards(page);
@@ -135,12 +140,10 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
           const radio = value
             ? page.locator(`input[type="radio"][name="${fieldName.replace(/"/g, '\\"')}"][value="${value}"]`)
             : null;
-          if (value && await radio.count().catch(() => 0) > 0) {
-            await radio.check().catch(() => {});
-            submittedAnswers[field.text] = value;
-          } else if (required) {
-            manualReviewFields.push(field.text);
-          }
+          const radioExists = value ? await radio.count().catch(() => 0) > 0 : false;
+          const checked = radioExists ? await radio.check().then(() => true).catch(() => false) : false;
+          if (checked) submittedAnswers[field.text] = value;
+          else if (required) manualReviewFields.push(field.text);
           continue;
         }
 
@@ -149,12 +152,10 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
           const radio = value
             ? page.locator(`input[type="radio"][name="${fieldName.replace(/"/g, '\\"')}"][value="${value}"]`)
             : null;
-          if (value && await radio.count().catch(() => 0) > 0) {
-            await radio.check().catch(() => {});
-            submittedAnswers[field.text] = value;
-          } else if (required) {
-            manualReviewFields.push(field.text);
-          }
+          const radioExists = value ? await radio.count().catch(() => 0) > 0 : false;
+          const checked = radioExists ? await radio.check().then(() => true).catch(() => false) : false;
+          if (checked) submittedAnswers[field.text] = value;
+          else if (required) manualReviewFields.push(field.text);
           continue;
         }
 
@@ -184,10 +185,12 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
           await incrementLlmUsage("score");
           if (answer) {
             const locator = page.locator(`[name="${fieldName.replace(/"/g, '\\"')}"]`).first();
-            await locator.fill(answer).catch(() => {});
-            submittedAnswers[field.text] = answer;
-            llmAnsweredCount += 1;
-            continue;
+            const filled = await locator.fill(answer).then(() => true).catch(() => false);
+            if (filled) {
+              submittedAnswers[field.text] = answer;
+              llmAnsweredCount += 1;
+              continue;
+            }
           }
         }
 

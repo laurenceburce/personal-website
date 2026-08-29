@@ -203,8 +203,15 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
         // Every remaining posting this run would hit the same cap — stop
         // iterating rather than re-checking (and logging) it postings.length
         // more times. They stay at 'new' and get picked up on the next run,
-        // once tomorrow's budget resets or the cap is raised.
-        tally.budgetExceeded = postings.length - (tally.filteredOut + tally.belowThreshold + tally.pendingReview + tally.scoredLow + tally.errors);
+        // once tomorrow's budget resets or the cap is raised. Every outcome
+        // bucket has to be subtracted here, including the two auto-apply
+        // ones — omitting them (as this once did) inflates the "deferred"
+        // count by however many postings auto-apply already submitted or
+        // skipped earlier in this same run.
+        tally.budgetExceeded = postings.length - (
+          tally.filteredOut + tally.belowThreshold + tally.pendingReview + tally.scoredLow
+          + tally.autoSubmitted + tally.autoSkipped + tally.errors
+        );
         console.warn(`[jobSearchScoringPipeline] Daily LLM call budget (${findSettings.maxLlmCallsPerDay}) reached — stopping early, ${tally.budgetExceeded} posting(s) deferred to the next run.`);
         break;
       }

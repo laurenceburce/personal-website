@@ -28,15 +28,39 @@ export async function POST(request) {
         return NextResponse.json({ ok: true, result: await approveOne(data.id, access.email) });
       case "reject":
         return NextResponse.json({ ok: true, result: await rejectOne(data.id, access.email, data.note) });
+      // Per-id isolation on both batch actions: each decidePosting() call is
+      // its own independent write, not wrapped in a transaction, so without
+      // this one bad id (or one transient DB hiccup) partway through a batch
+      // would throw, aborting the loop and silently leaving every id after
+      // it unprocessed while returning a bare error for the whole request —
+      // masking that some of the batch actually did succeed.
       case "batchApprove": {
         const ids = Array.isArray(data.ids) ? data.ids : [];
-        for (const id of ids) await approveOne(id, access.email);
-        return NextResponse.json({ ok: true, result: { count: ids.length } });
+        let succeeded = 0;
+        const failed = [];
+        for (const id of ids) {
+          try {
+            await approveOne(id, access.email);
+            succeeded += 1;
+          } catch (error) {
+            failed.push({ id, error: error?.message || String(error) });
+          }
+        }
+        return NextResponse.json({ ok: true, result: { count: succeeded, failed } });
       }
       case "batchReject": {
         const ids = Array.isArray(data.ids) ? data.ids : [];
-        for (const id of ids) await rejectOne(id, access.email, data.note);
-        return NextResponse.json({ ok: true, result: { count: ids.length } });
+        let succeeded = 0;
+        const failed = [];
+        for (const id of ids) {
+          try {
+            await rejectOne(id, access.email, data.note);
+            succeeded += 1;
+          } catch (error) {
+            failed.push({ id, error: error?.message || String(error) });
+          }
+        }
+        return NextResponse.json({ ok: true, result: { count: succeeded, failed } });
       }
       case "rescoreNow": {
         const posting = await getPostingById(data.id);

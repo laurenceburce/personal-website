@@ -2,7 +2,22 @@ import { ensureJobSearchSchema, requirePool } from "./jobSearchDb.js";
 import { SALARY_BANDS } from "./jobSearchScoringConfig.js";
 
 const FREE_EMAIL_DOMAINS = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "icloud.com", "aol.com"];
-const OFFICIAL_APPLY_DOMAINS = ["boards.greenhouse.io", "job-boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com"];
+// Every domain atsResolver.js can tag a posting with (see ATS_DOMAIN_PATTERNS
+// there) — this list had gone stale after Workable and the four detect-only
+// platforms were added, meaning a legitimate posting on any of them could
+// pick up a false "apply_url_mismatch" scam flag just for mentioning its own
+// apply link elsewhere in the JD text under a different subdomain.
+const OFFICIAL_APPLY_DOMAINS = [
+  "boards.greenhouse.io", "job-boards.greenhouse.io",
+  "jobs.lever.co",
+  "jobs.ashbyhq.com",
+  "workable.com",
+  "smartrecruiters.com",
+  "myworkdayjobs.com",
+  "icims.com",
+  "taleo.net",
+  "oraclecloud.com"
+];
 const DOMAIN_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DOMAIN_LOOKUP_TIMEOUT_MS = 8000;
 const YOUNG_DOMAIN_DAYS = 90;

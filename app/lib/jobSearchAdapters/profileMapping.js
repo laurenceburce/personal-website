@@ -50,26 +50,31 @@ export function resolveStandardField(label, profile) {
 
 // EEO/work-authorization fields are hard-mapped by exact stored option text and
 // NEVER touch the LLM — this classification gates that in the adapter.
+// Word-boundaried on every single-word alternative — without \b, "race"
+// matches inside "embrace", "visa" inside a hypothetical "visainfo", etc.,
+// which would wrongly hard-map (and likely then skip, absent real EEO/
+// work-auth profile data) an ordinary question that just happens to contain
+// one of these as a substring, instead of ever reaching it with the LLM.
 export function isEeoLabel(label) {
-  return /gender|race|ethnicity|hispanic|latino|veteran|disability/.test(label);
+  return /\b(gender|race|ethnicity|hispanic|latino|veteran|disability)\b/.test(label);
 }
 
 export function isWorkAuthLabel(label) {
-  return /sponsorship|require.*immigration|visa|authorized to work|work authorization/.test(label);
+  return /\bsponsorship\b|require.*immigration|\bvisa\b|authorized to work|work authorization/.test(label);
 }
 
 export function resolveEeoValue(label, eeoAnswers) {
   const eeo = eeoAnswers || {};
-  if (/gender/.test(label)) return eeo.gender || null;
-  if (/race|ethnicity|hispanic|latino/.test(label)) return eeo.raceEthnicity || null;
-  if (/veteran/.test(label)) return eeo.veteranStatus || null;
-  if (/disability/.test(label)) return eeo.disabilityStatus || null;
+  if (/\bgender\b/.test(label)) return eeo.gender || null;
+  if (/\b(race|ethnicity|hispanic|latino)\b/.test(label)) return eeo.raceEthnicity || null;
+  if (/\bveteran\b/.test(label)) return eeo.veteranStatus || null;
+  if (/\bdisability\b/.test(label)) return eeo.disabilityStatus || null;
   return null;
 }
 
 export function resolveWorkAuthValue(label, workAuthorization) {
   const wa = workAuthorization || {};
-  if (/sponsorship|require.*immigration|visa/.test(label)) {
+  if (/\bsponsorship\b|require.*immigration|\bvisa\b/.test(label)) {
     if (wa.requiresSponsorship === "yes") return "Yes";
     if (wa.requiresSponsorship === "no") return "No";
     return null;

@@ -41,50 +41,59 @@ try {
     const resumeWithBlob = defaultResume ? await getResumeById(defaultResume.id, { includeBlob: true }) : null;
 
     for (const posting of approved) {
-      // A discovery-sourced posting is always tagged 'external' until
-      // something resolves its real ATS — this is that resolution, shared
-      // with the auto-apply path, so a human-approved posting doesn't
-      // permanently report "unsupported ATS" just because nobody ever
-      // looked. Cached on the posting row after the first attempt.
-      const { atsType, applyUrl } = await resolvePostingForSubmission(posting);
-      const resolvedPosting = { ...posting, atsType, applyUrl };
+      // Isolated per posting — matches scoreNewPostings' own pattern. Without
+      // this, a single bad posting (a browser-launch failure, which happens
+      // outside every adapter's own try/catch, or a transient DB error on the
+      // insert/update below) would throw uncaught and abort the whole run,
+      // leaving every remaining approved posting this run untouched.
+      try {
+        // A discovery-sourced posting is always tagged 'external' until
+        // something resolves its real ATS — this is that resolution, shared
+        // with the auto-apply path, so a human-approved posting doesn't
+        // permanently report "unsupported ATS" just because nobody ever
+        // looked. Cached on the posting row after the first attempt.
+        const { atsType, applyUrl } = await resolvePostingForSubmission(posting);
+        const resolvedPosting = { ...posting, atsType, applyUrl };
 
-      console.log(`Submitting: "${posting.title}" at ${posting.companyName} (${atsType})...`);
+        console.log(`Submitting: "${posting.title}" at ${posting.companyName} (${atsType})...`);
 
-      const result = await submitApplication(atsType, {
-        posting: resolvedPosting,
-        profile,
-        resumeBuffer: resumeWithBlob?.fileBlob || null,
-        resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
-        headless
-      });
+        const result = await submitApplication(atsType, {
+          posting: resolvedPosting,
+          profile,
+          resumeBuffer: resumeWithBlob?.fileBlob || null,
+          resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
+          headless
+        });
 
-      const applicationStatus = toApplicationStatus(result.status);
+        const applicationStatus = toApplicationStatus(result.status);
 
-      await insertApplicationAttempt({
-        postingId: posting.id,
-        companyName: posting.companyName,
-        jobTitle: posting.title,
-        atsType,
-        applyUrl,
-        resumeId: defaultResume?.id || null,
-        resumeLabel: defaultResume?.label || "",
-        submittedAnswers: result.submittedAnswers,
-        scoreSnapshot: {
-          overall: posting.llmOverallScore,
-          scamRiskScore: posting.scamRiskScore,
-          scamRiskLevel: posting.scamRiskLevel
-        },
-        submissionStatus: applicationStatus,
-        errorMessage: result.manualReviewFields?.length
-          ? `Needs manual review: ${result.manualReviewFields.join(", ")}`
-          : result.errorMessage,
-        atsConfirmationText: result.confirmationText,
-        screenshotBuffer: result.screenshotBuffer
-      });
+        await insertApplicationAttempt({
+          postingId: posting.id,
+          companyName: posting.companyName,
+          jobTitle: posting.title,
+          atsType,
+          applyUrl,
+          resumeId: defaultResume?.id || null,
+          resumeLabel: defaultResume?.label || "",
+          submittedAnswers: result.submittedAnswers,
+          scoreSnapshot: {
+            overall: posting.llmOverallScore,
+            scamRiskScore: posting.scamRiskScore,
+            scamRiskLevel: posting.scamRiskLevel
+          },
+          submissionStatus: applicationStatus,
+          errorMessage: result.manualReviewFields?.length
+            ? `Needs manual review: ${result.manualReviewFields.join(", ")}`
+            : result.errorMessage,
+          atsConfirmationText: result.confirmationText,
+          screenshotBuffer: result.screenshotBuffer
+        });
 
-      await updatePostingScore(posting.id, { status: applicationStatus });
-      console.log(`  -> ${applicationStatus}`);
+        await updatePostingScore(posting.id, { status: applicationStatus });
+        console.log(`  -> ${applicationStatus}`);
+      } catch (error) {
+        console.error(`  -> failed to process "${posting.title}" at ${posting.companyName}:`, error?.message || error);
+      }
     }
   }
 

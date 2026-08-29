@@ -1,6 +1,11 @@
 import { cleanId, cleanText, ensureJobSearchSchema, requirePool } from "./jobSearchDb.js";
 import { normalizeCompanyName, probeCompanyAts } from "./jobSearchCompanyProbe.js";
-import { SUBMITTABLE_ATS_TYPES } from "./jobSearchAdapters/atsResolver.js";
+// From atsTypes.js specifically, NOT atsResolver.js — this file is reachable
+// from page.js (getCompanyDirectoryStats, shown on the Overview tab), and
+// atsResolver.js imports `playwright` at module scope. That import chain
+// once reached the main web app's server bundle this way and broke its
+// production build — see atsTypes.js for the full story.
+import { SUBMITTABLE_ATS_TYPES } from "./jobSearchAdapters/atsTypes.js";
 
 function mapCompanyRow(row) {
   return {

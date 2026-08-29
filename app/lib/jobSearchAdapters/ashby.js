@@ -254,10 +254,12 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         const answer = await answerFreeText({ question: field.label, posting, profile }).catch(() => null);
         await incrementLlmUsage("score");
         if (answer) {
-          await field.locator.fill(answer).catch(() => {});
-          submittedAnswers[field.label] = answer;
-          llmAnsweredCount += 1;
-          continue;
+          const filled = await field.locator.fill(answer).then(() => true).catch(() => false);
+          if (filled) {
+            submittedAnswers[field.label] = answer;
+            llmAnsweredCount += 1;
+            continue;
+          }
         }
       }
 

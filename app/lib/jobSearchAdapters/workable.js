@@ -166,8 +166,12 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         if (STANDARD_NAME_RESOLVERS[q.name]) {
           const value = STANDARD_NAME_RESOLVERS[q.name](profile);
           if (value) {
-            await page.locator(`[name="${q.name}"]`).first().fill(String(value)).catch(() => {});
-            submittedAnswers[q.label || q.name] = value;
+            const filled = await page.locator(`[name="${q.name}"]`).first().fill(String(value)).then(() => true).catch(() => false);
+            if (filled) {
+              submittedAnswers[q.label || q.name] = value;
+              continue;
+            }
+            if (q.required) manualReviewFields.push(q.label || q.name);
             continue;
           }
         }
@@ -182,8 +186,12 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
 
         const standardValue = resolveStandardField(normalizedLabel, profile);
         if (standardValue) {
-          await page.locator(`[name="${q.name}"]`).first().fill(String(standardValue)).catch(() => {});
-          submittedAnswers[q.label] = standardValue;
+          const filled = await page.locator(`[name="${q.name}"]`).first().fill(String(standardValue)).then(() => true).catch(() => false);
+          if (filled) {
+            submittedAnswers[q.label] = standardValue;
+            continue;
+          }
+          if (q.required) manualReviewFields.push(q.label);
           continue;
         }
 
@@ -196,10 +204,12 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           const answer = await answerFreeText({ question: q.label, posting, profile }).catch(() => null);
           await incrementLlmUsage("score");
           if (answer) {
-            await page.locator(`[name="${q.name}"]`).first().fill(answer).catch(() => {});
-            submittedAnswers[q.label] = answer;
-            llmAnsweredCount += 1;
-            continue;
+            const filled = await page.locator(`[name="${q.name}"]`).first().fill(answer).then(() => true).catch(() => false);
+            if (filled) {
+              submittedAnswers[q.label] = answer;
+              llmAnsweredCount += 1;
+              continue;
+            }
           }
         }
 
@@ -212,18 +222,22 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           const value = resolveWorkAuthValue(normalizedLabel, profile.workAuthorization);
           const match = value && q.options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase());
           if (match) {
-            await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().catch(() => {});
-            submittedAnswers[q.label] = match.text;
-            continue;
+            const checked = await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().then(() => true).catch(() => false);
+            if (checked) {
+              submittedAnswers[q.label] = match.text;
+              continue;
+            }
           }
         }
         if (isEeoLabel(normalizedLabel)) {
           const value = resolveEeoValue(normalizedLabel, profile.eeoAnswers);
           const match = value && q.options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase());
           if (match) {
-            await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().catch(() => {});
-            submittedAnswers[q.label] = match.text;
-            continue;
+            const checked = await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().then(() => true).catch(() => false);
+            if (checked) {
+              submittedAnswers[q.label] = match.text;
+              continue;
+            }
           }
         }
         // Any other radio group is a fixed option set with no principled way
