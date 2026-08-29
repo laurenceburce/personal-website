@@ -167,7 +167,14 @@ export async function fetchAshbyJobs({ boardToken, companyName }) {
       salaryMax: comp?.maxValue != null ? Math.round(Number(comp.maxValue)) : null,
       salaryCurrency: comp?.currencyCode || null,
       descriptionText,
-      applyUrl: job.jobUrl || job.applyUrl || "",
+      // Ashby's API exposes two distinct URLs for the same posting: jobUrl (the
+      // general "Overview" page — description only, no guarantee the form is
+      // reachable without an extra click) and applyUrl (a direct link straight
+      // to the application form, at a `/application` suffix). Confirmed live
+      // against a failed submission: navigating to jobUrl showed 0 `label[for]`
+      // elements (no form on that page), while applyUrl showed 45. Preferring
+      // applyUrl avoids handing the submit adapter a page with no form to fill.
+      applyUrl: job.applyUrl || job.jobUrl || "",
       postedAt: job.publishedAt ? new Date(job.publishedAt) : null,
       contentHash: computeContentHash(title, descriptionText)
     };
