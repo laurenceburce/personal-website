@@ -22,6 +22,7 @@ import {
   resolveEeoValue,
   resolveWorkAuthValue
 } from "./profileMapping.js";
+import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
@@ -56,6 +57,10 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
     // Resume/CV" button — setInputFiles targets the element directly and
     // doesn't require it to be visible, confirmed live.
     await fileInput.setInputFiles(tempPath);
+    // setInputFiles() only attaches the file to the DOM input — it says
+    // nothing about whether Lever's own JS then actually uploaded it. See
+    // resumeUploadCheck.js.
+    if (await resumeUploadLikelyFailed(page)) return false;
     return true;
   } finally {
     await unlink(tempPath).catch(() => {});
@@ -108,7 +113,7 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
 
     if (resumeBuffer) {
       const uploaded = await uploadResumeFile(page, resumeBuffer, resumeFileName);
-      if (!uploaded) manualReviewFields.push("Resume upload (no file input found)");
+      if (!uploaded) manualReviewFields.push("Resume upload (could not confirm success)");
     }
 
     for (const [name, resolve] of Object.entries(STANDARD_NAME_RESOLVERS)) {

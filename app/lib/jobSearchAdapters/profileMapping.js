@@ -31,8 +31,14 @@ export const STANDARD_FIELD_RESOLVERS = [
   // verbosely ("The candidate's legal name is Test Candidate.") instead of a
   // clean field value, since it's not really a question needing explanation.
   { test: (l) => l === "full name" || l === "name" || l === "legal name", resolve: (p) => p.fullName },
-  { test: (l) => l === "email", resolve: (p) => p.email },
-  { test: (l) => l === "phone", resolve: (p) => p.phone },
+  // Word-boundaried, not exact-equality — confirmed live as a real miss:
+  // Ashby's own field is labeled "Phone Number", not bare "Phone", so the
+  // old `l === "phone"` never matched it and a phone number that WAS on file
+  // still landed in manual review every time. "Email Address" is the same
+  // risk pre-emptively; both are common enough label variants that a narrow
+  // exact match was never going to hold up.
+  { test: (l) => /\bemail\b/.test(l), resolve: (p) => p.email },
+  { test: (l) => /\bphone\b/.test(l), resolve: (p) => p.phone },
   { test: (l) => l === "country", resolve: (p) => p.country },
   { test: (l) => /location city|current location|^location$/.test(l), resolve: (p) => [p.city, p.stateRegion].filter(Boolean).join(", ") },
   { test: (l) => l.includes("linkedin"), resolve: (p) => p.linkedinUrl },

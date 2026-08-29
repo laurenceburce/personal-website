@@ -144,9 +144,47 @@ async function fillByWidget(page, locator, widget, value) {
   }
 }
 
-async function uploadResumeFile(page) {
+const RESUME_UPLOAD_CONFIRM_TIMEOUT_MS = 15000;
+const RESUME_UPLOAD_ERROR_TEXT = /failed to upload/i;
+
+// setInputFiles() only attaches the File object to the DOM input — Ashby's
+// own JS then asynchronously uploads it to its own storage, and THAT step
+// can fail even when setInputFiles() itself never throws. Confirmed live: a
+// real submission attempt showed exactly this — Playwright's setInputFiles()
+// call succeeded, but Ashby's page then displayed an on-page "... failed to
+// upload" toast that the adapter had no idea about, marked the field
+// submitted anyway, and proceeded to fill the rest of the form and attempt
+// to submit — which then failed minutes later with a confusing, seemingly
+// unrelated timeout clicking the submit button (almost certainly because the
+// still-visible error toast was covering it). A successful upload always
+// renders a "Replace" button next to the attached filename — present, this
+// is a positive, verifiable success signal, checked in a race against the
+// error toast so whichever actually happens wins rather than always waiting
+// out the full timeout.
+async function uploadResumeAndVerify(page, filePath) {
   const fileInput = page.locator("#_systemfield_resume, input[type=\"file\"][name=\"resume\"]").first();
-  return fileInput;
+  if (await fileInput.count().catch(() => 0) === 0) return { ok: false, reason: "no file input found" };
+
+  const replaceButton = page.getByRole("button", { name: "Replace" });
+  const errorToast = page.getByText(RESUME_UPLOAD_ERROR_TEXT);
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await fileInput.setInputFiles(filePath);
+
+    const outcome = await Promise.race([
+      replaceButton.waitFor({ state: "visible", timeout: RESUME_UPLOAD_CONFIRM_TIMEOUT_MS }).then(() => "success").catch(() => "timeout"),
+      errorToast.waitFor({ state: "visible", timeout: RESUME_UPLOAD_CONFIRM_TIMEOUT_MS }).then(() => "error").catch(() => "timeout")
+    ]);
+
+    if (outcome === "success") return { ok: true };
+    if (attempt === 1) {
+      // Best-effort dismiss so a lingering toast from this attempt can't be
+      // mistaken for the retry's own outcome, or obscure the file input.
+      await page.getByRole("button", { name: /close|dismiss/i }).first().click({ timeout: 1000 }).catch(() => {});
+    }
+  }
+
+  return { ok: false, reason: "upload did not confirm after 2 attempts" };
 }
 
 export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, dryRun = false, headless = true }) {
@@ -172,18 +210,17 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     }
 
     if (resumeBuffer) {
-      const fileInput = await uploadResumeFile(page);
-      if (await fileInput.count().catch(() => 0) > 0) {
-        const tempPath = join(tmpdir(), `job-search-resume-${Date.now()}-${resumeFileName || "resume.pdf"}`);
-        await writeFile(tempPath, resumeBuffer);
-        try {
-          await fileInput.setInputFiles(tempPath);
+      const tempPath = join(tmpdir(), `job-search-resume-${Date.now()}-${resumeFileName || "resume.pdf"}`);
+      await writeFile(tempPath, resumeBuffer);
+      try {
+        const uploadResult = await uploadResumeAndVerify(page, tempPath);
+        if (uploadResult.ok) {
           submittedAnswers["Resume"] = resumeFileName || "resume.pdf";
-        } finally {
-          await unlink(tempPath).catch(() => {});
+        } else {
+          manualReviewFields.push(`Resume upload (${uploadResult.reason})`);
         }
-      } else {
-        manualReviewFields.push("Resume upload (no file input found)");
+      } finally {
+        await unlink(tempPath).catch(() => {});
       }
     }
 
