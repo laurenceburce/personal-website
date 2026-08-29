@@ -6,7 +6,6 @@ import { getDatabaseSizeMb } from "../lib/jobSearchDb";
 import { countPostingsByStatus, listPostingsByStatus, listRecentPostings } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
 import { getTodayLlmUsage } from "../lib/jobSearchUsageStore";
-import { listWatchlist } from "../lib/jobSearchWatchlistStore";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +23,6 @@ async function getDashboardSnapshot() {
     findSettings,
     resumes,
     defaultResume,
-    watchlist,
     reviewQueue,
     scoredLow,
     applications,
@@ -37,7 +35,6 @@ async function getDashboardSnapshot() {
     getFindSettings(),
     listResumes(),
     getDefaultResume(),
-    listWatchlist(),
     listPostingsByStatus("pending_review", { limit: 200 }),
     listPostingsByStatus("scored_low", { limit: 200 }),
     listApplications({ limit: 200 }),
@@ -48,7 +45,7 @@ async function getDashboardSnapshot() {
   ]);
 
   return {
-    profile, findSettings, resumes, defaultResume, watchlist, reviewQueue, scoredLow, applications,
+    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, applications,
     statusCounts, recentActivity, llmUsage, dbSizeMb
   };
 }

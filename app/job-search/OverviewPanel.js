@@ -38,38 +38,57 @@ function timeAgo(value) {
   return `${days}d ago`;
 }
 
-function mostRecentPollTime(watchlist) {
-  const times = watchlist.map((w) => w.lastPolledAt).filter(Boolean).map((t) => new Date(t).getTime());
-  return times.length ? new Date(Math.max(...times)) : null;
-}
-
-export default function OverviewPanel({ watchlist, statusCounts, recentActivity, llmUsage, maxLlmCallsPerDay, dbSizeMb }) {
-  const activeCompanies = watchlist.filter((w) => w.isActive).length;
-  const erroredCompanies = watchlist.filter((w) => w.lastPollStatus === "error").length;
-  const lastPoll = mostRecentPollTime(watchlist);
+export default function OverviewPanel({
+  findSettings,
+  statusCounts,
+  recentActivity,
+  llmUsage,
+  maxLlmCallsPerDay,
+  dbSizeMb,
+  saving,
+  onRunDiscovery,
+  onScoreNow
+}) {
   const totalPostings = Object.values(statusCounts || {}).reduce((sum, n) => sum + n, 0);
   const usagePct = llmUsage?.totalCalls != null ? llmUsage.totalCalls : 0;
-
-  const nothingHasRunYet = watchlist.length === 0 && totalPostings === 0;
+  const nothingHasRunYet = totalPostings === 0;
+  const discoveryEnabled = Boolean(findSettings?.discoveryEnabled);
+  const isBusy = Boolean(saving);
 
   return (
     <>
       <section className="job-search-panel">
         <header className="job-search-panel-header">
           <h2>System Status</h2>
+          <div className="job-search-form-actions">
+            <button type="button" disabled={isBusy} onClick={onRunDiscovery}>
+              {saving === "discoveryNow" ? "Running discovery..." : "Run Discovery Now"}
+            </button>
+            <button type="button" disabled={isBusy} onClick={onScoreNow}>
+              {saving === "scoreNow" ? "Scoring..." : "Score New Postings Now"}
+            </button>
+          </div>
         </header>
 
         {nothingHasRunYet ? (
           <p className="job-search-empty">
-            Nothing has run yet — the watchlist is empty and no poll has ever completed. Add at least
-            one company in the Watchlist tab, then either wait for the scheduled Railway cron service
-            or trigger <code>scripts/job-search-worker.mjs</code> manually to see real activity here.
+            Nothing has run yet — no poll or discovery search has completed. Either wait for the
+            scheduled Railway cron service, or click &quot;Run Discovery Now&quot; above to search
+            immediately using your Job Find Settings keywords/location.
           </p>
         ) : null}
 
         <div className="job-search-field-grid">
-          <Metric label="Last poll" value={lastPoll ? timeAgo(lastPoll) : "Never"} />
-          <Metric label="Active companies" value={activeCompanies} detail={erroredCompanies ? `${erroredCompanies} with errors` : null} tone={erroredCompanies ? "warn" : null} />
+          <Metric
+            label="Discovery"
+            value={discoveryEnabled ? "Enabled" : "Disabled"}
+            tone={discoveryEnabled ? null : "warn"}
+            detail={discoveryEnabled ? null : "Enable it in Job Find Settings"}
+          />
+          <Metric
+            label="Last discovery run"
+            value={findSettings?.discoveryLastRunAt ? timeAgo(findSettings.discoveryLastRunAt) : "Never"}
+          />
           <Metric label="Total postings tracked" value={totalPostings} />
           <Metric
             label="Gemini calls today"

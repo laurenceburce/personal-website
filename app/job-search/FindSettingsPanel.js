@@ -48,7 +48,7 @@ function toFormState(findSettings) {
   };
 }
 
-export default function FindSettingsPanel({ findSettings, saving, onSave }) {
+export default function FindSettingsPanel({ findSettings, saving, onSave, onRequeueForRescoring }) {
   const [form, setForm] = useState(() => toFormState(findSettings));
   const isBusy = Boolean(saving);
 
@@ -205,13 +205,13 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
         </Field>
 
         <fieldset className="job-search-fieldset">
-          <legend>Discovery (find jobs without a watchlist)</legend>
+          <legend>Discovery</legend>
           <p className="job-search-panel-hint">
-            Searches by your title keywords above across the web via Adzuna, instead of only checking
-            companies you&apos;ve explicitly added. Results that don&apos;t link to a supported ATS still
-            get scored and show up in your review queue, just require a manual click to apply. Runs on
-            its own schedule below, independent of how often the poller itself runs, since Adzuna&apos;s
-            free tier is far more limited than the direct ATS APIs.
+            Searches by your title keywords above across the web via Adzuna — the only posting source
+            this system uses, no company list to maintain. Results that don&apos;t link to a supported
+            ATS still get scored and show up in your review queue, just require a manual click to apply.
+            Runs on its own schedule below, or on demand via &quot;Run Discovery Now&quot; on the Overview
+            tab, since Adzuna&apos;s free tier is far more limited than the direct ATS APIs.
           </p>
 
           <Field label="Enable discovery">
@@ -255,8 +255,8 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
           <legend>Safety nets</legend>
           <p className="job-search-panel-hint">
             Hard, code-enforced ceilings — independent of whatever quota/plan your Gemini key or MySQL
-            volume actually has. These exist so a big watchlist or an unexpected backlog can&apos;t
-            silently run up cost or fill your database again.
+            volume actually has. These exist so an unexpected backlog can&apos;t silently run up cost
+            or fill your database again.
           </p>
 
           <Field label="Max Gemini calls per day (embedding + scoring combined)">
@@ -282,6 +282,22 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
           <button type="submit" disabled={isBusy}>Save find settings</button>
         </div>
       </form>
+
+      <fieldset className="job-search-fieldset">
+        <legend>Re-score existing postings</legend>
+        <p className="job-search-panel-hint">
+          Changed a filter or threshold above and want it applied retroactively, not just to newly
+          discovered postings? This resets every filtered-out, below-threshold, and scored-low posting
+          back to &quot;new&quot; so the next scoring run (cron, or &quot;Score New Postings Now&quot; on
+          the Overview tab) re-evaluates them against your current settings. Postings you&apos;ve
+          already approved, rejected, or applied to are left alone.
+        </p>
+        <div className="job-search-form-actions">
+          <button type="button" disabled={isBusy} onClick={onRequeueForRescoring}>
+            {saving === "requeueForRescoring" ? "Requeuing..." : "Re-score filtered / low-scored postings"}
+          </button>
+        </div>
+      </fieldset>
     </Panel>
   );
 }

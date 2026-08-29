@@ -1,14 +1,16 @@
-// Keyword-based discovery via Adzuna — the alternative to the watchlist for
-// finding postings without specifying any company up front. Unlike
-// jobSearchAtsSources.js (which polls one already-known company's board),
-// this searches across the whole web by title keywords + location, the same
-// way a person would search on a job board.
+// Keyword-based discovery via Adzuna — the sole posting source for this
+// system, finding postings without specifying any company up front. It
+// searches across the whole web by title keywords + location, the same way a
+// person would search on a job board, rather than polling a known list of
+// company ATS boards.
 //
 // Adzuna's free tier is far more limited than the ATS APIs (roughly
 // 1,000 calls/month, not officially published but widely corroborated), so
 // this is throttled independently via find_settings.discovery_last_run_at —
 // see shouldRunDiscovery() — regardless of how often the poll cron itself runs.
 import { computeContentHash, guessRemoteType, guessSeniority, MAX_DESCRIPTION_TEXT_CHARS, stripHtml } from "./jobSearchAtsSources.js";
+import { upsertPosting } from "./jobSearchPostingsStore.js";
+import { markDiscoveryRun } from "./jobSearchSettingsStore.js";
 
 const FETCH_TIMEOUT_MS = 20000;
 const DEFAULT_DISCOVERY_INTERVAL_MINUTES = 60;
@@ -89,7 +91,7 @@ export async function fetchAdzunaJobs({ keywords, location, country = "us", resu
       title,
       department: job.category?.label || "",
       locationText,
-      remoteType: guessRemoteType(locationText),
+      remoteType: guessRemoteType(locationText, descriptionText),
       seniorityGuess: guessSeniority(title),
       salaryMin: job.salary_min != null ? Math.round(Number(job.salary_min)) : null,
       salaryMax: job.salary_max != null ? Math.round(Number(job.salary_max)) : null,
@@ -100,4 +102,29 @@ export async function fetchAdzunaJobs({ keywords, location, country = "us", resu
       contentHash: computeContentHash(title, descriptionText)
     };
   });
+}
+
+// Shared by the poll-cron worker (throttle-gated via shouldRunDiscovery) and
+// the manual "Run Discovery Now" button (bypasses the throttle on purpose —
+// that's the point of a manual trigger — but still records the run so the
+// cron's own timer doesn't immediately fire again right after).
+export async function runDiscoveryPass(findSettings) {
+  if (!isAdzunaConfigured()) {
+    return { ok: false, reason: "ADZUNA_APP_ID/ADZUNA_APP_KEY is not configured.", found: 0, created: 0 };
+  }
+
+  const jobs = await fetchAdzunaJobs({
+    keywords: findSettings.titleKeywords,
+    location: findSettings.discoveryLocation,
+    country: findSettings.discoveryCountry
+  });
+
+  let created = 0;
+  for (const job of jobs) {
+    const result = await upsertPosting(job);
+    if (result.isNew) created += 1;
+  }
+
+  await markDiscoveryRun();
+  return { ok: true, found: jobs.length, created };
 }

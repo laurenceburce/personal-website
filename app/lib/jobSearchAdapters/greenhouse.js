@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
+import { getFindSettings } from "../jobSearchSettingsStore.js";
+import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
@@ -14,7 +16,14 @@ import {
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
+const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
 const MAX_LLM_ANSWERED_FIELDS = 5;
+
+// Confirmed against Greenhouse's own confirmation-page/inline-validation
+// copy. Deliberately conservative — an unmatched confirmation page falls
+// through to "still on the form" below rather than being guessed as success.
+const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
 
 // Real Greenhouse forms are embedded two ways: inline on boards.greenhouse.io /
 // job-boards.greenhouse.io, or via <iframe src="...greenhouse.io/embed/job_app...">
@@ -155,6 +164,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
   let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
+  const findSettings = await getFindSettings();
 
   try {
     const page = await browser.newPage();
@@ -221,8 +231,19 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       // text/textarea widgets. Never used for a combobox/select/checkbox,
       // since guessing a value into a fixed option set risks submitting
       // something the model invented that doesn't match any real option.
+      // Also metered against the same daily budget as scoring/embedding —
+      // checked fresh per field (not cached across the loop) so it can't
+      // overshoot the cap by more than one in-flight call, matching the same
+      // pattern jobSearchScoringPipeline.scorePosting() uses.
       if ((widget === "text" || widget === "textarea") && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+        const usage = await getTodayLlmUsage();
+        if (usage.totalCalls >= findSettings.maxLlmCallsPerDay) {
+          manualReviewFields.push(field.label);
+          continue;
+        }
+
         const answer = await answerFreeText({ question: field.label, posting, profile }).catch(() => null);
+        await incrementLlmUsage("score");
         if (answer) {
           await field.locator.fill(answer);
           submittedAnswers[field.label] = answer;
@@ -243,10 +264,30 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     } else {
       const submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
       await submitButton.click();
-      await page.waitForTimeout(2500);
-      confirmationText = (await page.locator("body").innerText().catch(() => "")).slice(0, 500);
+
+      // Greenhouse either navigates to a confirmation page/state or re-renders
+      // the same form with inline validation errors — wait for the network to
+      // settle rather than assuming a fixed delay is enough, then actually
+      // inspect what happened instead of blindly marking it submitted.
+      await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
+      await page.waitForTimeout(500); // let inline validation errors finish rendering, if any
+
+      // Read from `scope`, not always `page` — when the form is iframe-embedded,
+      // the confirmation message renders inside the iframe, not the parent page.
+      confirmationText = (await scope.locator("body").innerText().catch(() => "")).slice(0, 500);
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
-      status = "submitted";
+
+      const stillOnFormPage = await submitButton.isVisible().catch(() => false);
+      const hasErrorSignal = ERROR_TEXT_SIGNALS.test(confirmationText);
+      const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(confirmationText);
+
+      if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
+        status = "failed";
+        errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
+          + "the submit button or a validation error. Check the screenshot before assuming this was submitted.";
+      } else {
+        status = "submitted";
+      }
     }
   } catch (error) {
     errorMessage = error?.message || String(error);

@@ -92,28 +92,8 @@ export const ensureJobSearchSchema = async () => {
   if (!schemaReadyPromise) {
     schemaReadyPromise = (async () => {
       await pool.query(`
-        CREATE TABLE IF NOT EXISTS job_search_watchlist (
-          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-          company_name VARCHAR(160) NOT NULL,
-          ats_type VARCHAR(16) NOT NULL,
-          board_token VARCHAR(160) NOT NULL,
-          is_active TINYINT(1) NOT NULL DEFAULT 1,
-          last_polled_at DATETIME(3) NULL,
-          last_poll_status VARCHAR(16) NOT NULL DEFAULT 'pending',
-          last_poll_error VARCHAR(500) NOT NULL DEFAULT '',
-          consecutive_failures INT NOT NULL DEFAULT 0,
-          jobs_found_last_poll INT NOT NULL DEFAULT 0,
-          created_at DATETIME(3) NOT NULL,
-          updated_at DATETIME(3) NOT NULL,
-          UNIQUE KEY job_search_watchlist_ats_token_idx (ats_type, board_token),
-          INDEX job_search_watchlist_active_idx (is_active)
-        )
-      `);
-
-      await pool.query(`
         CREATE TABLE IF NOT EXISTS job_search_postings (
           id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-          watchlist_id BIGINT UNSIGNED NULL,
           ats_type VARCHAR(16) NOT NULL,
           board_token VARCHAR(160) NOT NULL,
           external_job_id VARCHAR(160) NOT NULL,
@@ -283,15 +263,22 @@ export const ensureJobSearchSchema = async () => {
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN max_llm_calls_per_day INT NULL");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN retention_days INT NULL");
 
-      // Keyword-based discovery (Adzuna) — an alternative to the watchlist for
-      // finding postings without specifying any company up front. Throttled
-      // independently of the poll cron's own cadence via discovery_last_run_at,
-      // since the aggregator's free tier is far more limited than the ATS APIs.
+      // Keyword-based discovery (Adzuna) — finds postings without specifying
+      // any company up front. Throttled independently of the poll cron's own
+      // cadence via discovery_last_run_at, since the aggregator's free tier
+      // is far more limited than a direct ATS API would be.
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_enabled TINYINT(1) NOT NULL DEFAULT 0");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_location VARCHAR(160) NOT NULL DEFAULT ''");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_country VARCHAR(4) NOT NULL DEFAULT 'us'");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_interval_minutes INT NULL");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_last_run_at DATETIME(3) NULL");
+
+      // Watchlist fully removed — discovery (Adzuna) is now the sole posting
+      // source. DROP TABLE IF EXISTS is natively idempotent; the column drop
+      // goes through runMigration since a fresh install (table created without
+      // the column above) would otherwise throw errno 1091 every time.
+      await pool.query("DROP TABLE IF EXISTS job_search_watchlist");
+      await runMigration(pool, "ALTER TABLE job_search_postings DROP COLUMN watchlist_id");
 
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.

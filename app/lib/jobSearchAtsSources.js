@@ -43,10 +43,18 @@ export function computeContentHash(title, descriptionText) {
   return createHash("sha256").update(`${title || ""}\n${descriptionText || ""}`).digest("hex");
 }
 
-export function guessRemoteType(locationText) {
+// Description text is a supplementary signal only, checked when the location
+// field itself doesn't already say remote/hybrid — kept to strong, explicit
+// phrasings to avoid false-positiving on a JD that merely mentions "remote"
+// in passing (e.g. "occasional remote days", "remote team tooling") for a
+// role that's actually onsite.
+const STRONG_REMOTE_SIGNALS = /\b(fully remote|100% remote|remote[- ]first|remote position|remote role|work from home|work from anywhere|remote anywhere)\b/i;
+
+export function guessRemoteType(locationText, descriptionText) {
   const text = String(locationText || "").toLowerCase();
   if (/remote/.test(text)) return "remote";
   if (/hybrid/.test(text)) return "hybrid";
+  if (descriptionText && STRONG_REMOTE_SIGNALS.test(descriptionText)) return "remote";
   if (text.trim()) return "onsite";
   return "unknown";
 }
@@ -81,7 +89,7 @@ export async function fetchGreenhouseJobs({ boardToken, companyName }) {
       title,
       department: job.departments?.[0]?.name || "",
       locationText,
-      remoteType: guessRemoteType(locationText),
+      remoteType: guessRemoteType(locationText, descriptionText),
       seniorityGuess: guessSeniority(title),
       salaryMin: null,
       salaryMax: null,
@@ -111,7 +119,7 @@ export async function fetchLeverJobs({ boardToken, companyName }) {
         ? "hybrid"
         : workplaceType.includes("on-site") || workplaceType.includes("onsite")
           ? "onsite"
-          : guessRemoteType(locationText);
+          : guessRemoteType(locationText, descriptionText);
 
     return {
       atsType: "lever",
@@ -153,7 +161,7 @@ export async function fetchAshbyJobs({ boardToken, companyName }) {
       title,
       department: job.department || "",
       locationText,
-      remoteType: job.isRemote ? "remote" : guessRemoteType(locationText),
+      remoteType: job.isRemote ? "remote" : guessRemoteType(locationText, descriptionText),
       seniorityGuess: guessSeniority(title),
       salaryMin: comp?.minValue != null ? Math.round(Number(comp.minValue)) : null,
       salaryMax: comp?.maxValue != null ? Math.round(Number(comp.maxValue)) : null,

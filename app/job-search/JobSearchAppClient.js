@@ -8,15 +8,13 @@ import FindSettingsPanel from "./FindSettingsPanel";
 import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
 import ReviewQueueTable from "./ReviewQueueTable";
-import WatchlistPanel from "./WatchlistPanel";
 
 const TABS = [
   { id: "overview", label: "Overview" },
   { id: "review", label: "Review Queue" },
   { id: "applied", label: "Applied Jobs" },
   { id: "settings", label: "User Settings" },
-  { id: "find", label: "Job Find Settings" },
-  { id: "watchlist", label: "Watchlist" }
+  { id: "find", label: "Job Find Settings" }
 ];
 
 export default function JobSearchAppClient({ snapshot, initialTab }) {
@@ -97,12 +95,15 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
       <main className="job-search-main">
         {tab === "overview" && (
           <OverviewPanel
-            watchlist={snapshot.watchlist}
+            findSettings={snapshot.findSettings}
             statusCounts={snapshot.statusCounts}
             recentActivity={snapshot.recentActivity}
             llmUsage={snapshot.llmUsage}
             maxLlmCallsPerDay={snapshot.findSettings.maxLlmCallsPerDay}
             dbSizeMb={snapshot.dbSizeMb}
+            saving={saving}
+            onRunDiscovery={() => runAction("/api/job-search/run", "discoveryNow", {}, "Discovery run complete.")}
+            onScoreNow={() => runAction("/api/job-search/run", "scoreNow", {}, "Scoring run complete.")}
           />
         )}
 
@@ -145,16 +146,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             findSettings={snapshot.findSettings}
             saving={saving}
             onSave={(data) => runAction("/api/job-search/settings", "updateFindSettings", data, "Find settings saved.")}
-          />
-        )}
-
-        {tab === "watchlist" && (
-          <WatchlistPanel
-            watchlist={snapshot.watchlist}
-            saving={saving}
-            onCreate={(data) => runAction("/api/job-search/settings", "createWatchlistEntry", data, "Added to watchlist.")}
-            onUpdate={(id, data) => runAction("/api/job-search/settings", "updateWatchlistEntry", { id, ...data }, "Updated.")}
-            onDelete={(id) => runAction("/api/job-search/settings", "deleteWatchlistEntry", { id }, "Removed.")}
+            onRequeueForRescoring={() => runAction("/api/job-search/run", "requeueForRescoring", {}, "Requeued for re-scoring.")}
           />
         )}
       </main>

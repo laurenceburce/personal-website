@@ -22,7 +22,6 @@ const PRUNABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "rej
 export function mapPostingRow(row) {
   return {
     id: Number(row.id),
-    watchlistId: row.watchlist_id == null ? null : Number(row.watchlist_id),
     atsType: row.ats_type,
     boardToken: row.board_token,
     externalJobId: row.external_job_id,
@@ -65,10 +64,10 @@ export function mapPostingRow(row) {
   };
 }
 
-// Upserts one normalized ATS posting (see jobSearchAtsSources.js) on its natural
-// key (ats_type, board_token, external_job_id). Returns whether the row was
-// freshly created and whether it was reopened from a previously-closed state.
-export async function upsertPosting(watchlistId, normalized) {
+// Upserts one normalized posting (see jobSearchAtsSources.js / jobSearchDiscovery.js)
+// on its natural key (ats_type, board_token, external_job_id). Returns whether
+// the row was freshly created and whether it was reopened from a previously-closed state.
+export async function upsertPosting(normalized) {
   const pool = requirePool(await ensureJobSearchSchema());
   const now = new Date();
 
@@ -97,13 +96,13 @@ export async function upsertPosting(watchlistId, normalized) {
   if (!existing) {
     const [result] = await pool.query(
       `INSERT INTO job_search_postings
-         (watchlist_id, ats_type, board_token, external_job_id, company_name, title, department,
+         (ats_type, board_token, external_job_id, company_name, title, department,
           location_text, remote_type, seniority_guess, salary_min, salary_max, salary_currency,
           description_text, apply_url, posted_at, content_hash,
           status, is_active, first_seen_at, last_seen_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?)`,
       [
-        watchlistId, normalized.atsType, normalized.boardToken, normalized.externalJobId,
+        normalized.atsType, normalized.boardToken, normalized.externalJobId,
         ...commonFields, now, now, now, now
       ]
     );
@@ -117,28 +116,15 @@ export async function upsertPosting(watchlistId, normalized) {
 
   await pool.query(
     `UPDATE job_search_postings
-     SET watchlist_id = ?, company_name = ?, title = ?, department = ?, location_text = ?,
+     SET company_name = ?, title = ?, department = ?, location_text = ?,
          remote_type = ?, seniority_guess = ?, salary_min = ?, salary_max = ?, salary_currency = ?,
          description_text = ?, apply_url = ?, posted_at = ?,
          content_hash = ?, status = ?, is_active = 1, last_seen_at = ?, updated_at = ?
      WHERE id = ?`,
-    [watchlistId, ...commonFields, nextStatus, now, now, existing.id]
+    [...commonFields, nextStatus, now, now, existing.id]
   );
 
   return { id: Number(existing.id), isNew: false, reopened };
-}
-
-// After a full poll of one board, any active posting for that board not touched
-// during this run is no longer listed by the ATS — mark it closed/delisted.
-export async function markStalePostingsClosed(watchlistId, pollStartedAt) {
-  const pool = requirePool(await ensureJobSearchSchema());
-  const [result] = await pool.query(
-    `UPDATE job_search_postings
-     SET status = 'closed', is_active = 0, updated_at = ?
-     WHERE watchlist_id = ? AND is_active = 1 AND last_seen_at < ?`,
-    [new Date(), watchlistId, pollStartedAt]
-  );
-  return { closedCount: result.affectedRows };
 }
 
 export async function getPostingById(id) {
@@ -260,7 +246,7 @@ export async function countPostingsByStatus() {
 // PRUNABLE_STATUSES) and haven't changed in `retentionDays`. Called on every
 // poll run (see job-search-worker.mjs) so storage stays bounded continuously
 // rather than only reactively — the incident that motivated this happened
-// because nothing ever pruned old data regardless of watchlist size.
+// because nothing ever pruned old data regardless of how much accumulated.
 export async function cleanupOldPostings(retentionDays) {
   const pool = requirePool(await ensureJobSearchSchema());
   const days = Number(retentionDays) > 0 ? Number(retentionDays) : 30;
@@ -276,4 +262,20 @@ export async function cleanupOldPostings(retentionDays) {
   );
 
   return { deletedCount: result.affectedRows, retentionDays: days };
+}
+
+// Bulk "try again with current settings" — resets postings the pipeline
+// already ruled on automatically back to 'new' so the next scoring pass
+// re-evaluates them against whatever Job Find Settings changes were just
+// made. Deliberately excludes 'rejected'/'closed' (human/terminal decisions,
+// never silently reopened) and 'scored' (mid-pipeline, not a rested state).
+const REQUEUABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low"];
+
+export async function requeuePostingsForRescoring() {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const [result] = await pool.query(
+    "UPDATE job_search_postings SET status = 'new', updated_at = ? WHERE status IN (?)",
+    [new Date(), REQUEUABLE_STATUSES]
+  );
+  return { requeuedCount: result.affectedRows };
 }

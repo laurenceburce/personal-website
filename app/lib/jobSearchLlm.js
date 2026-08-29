@@ -4,7 +4,12 @@ import { JOB_SCORE_SCHEMA, SCORE_DIMENSIONS } from "./jobSearchScoringConfig.js"
 // This is the one module every Gemini call goes through — the user's plan is
 // to try a different (still-free) model down the line, so a provider swap
 // should only ever touch this file.
-const DEFAULT_SCORE_MODEL = "gemini-3.5-flash";
+// 3.6 over 3.5: same base architecture (no regression risk), cheaper through
+// end of 2026 ($0.75/$3.75 per 1M vs 3.5's $1.50/$9.00). 3.6 over 3.7: 3.7's
+// gains concentrate in coding/multi-step-agent benchmarks (not this task), and
+// it has a higher hallucination rate than 3.6 at launch — undesirable for a
+// task that needs grounded, non-invented judgments about a job posting.
+const DEFAULT_SCORE_MODEL = "gemini-3.6-flash";
 const DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001";
 const EMBEDDING_DIMENSIONS = 768;
 const MAX_DESCRIPTION_CHARS = 6000;
