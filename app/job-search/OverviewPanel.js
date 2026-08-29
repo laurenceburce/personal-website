@@ -72,9 +72,10 @@ function workerStatusTone(worker, now) {
 
 function formatCountdown(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 // Estimated, not authoritative — derived purely from the gap between this
@@ -89,7 +90,18 @@ function nextRunEstimate(worker, now) {
   const nextMs = new Date(worker.lastCheckedAt).getTime() + worker.observedIntervalMinutes * 60000;
   const remainingMs = nextMs - now;
   const cadence = `every ~${Math.max(1, Math.round(worker.observedIntervalMinutes))}m observed`;
-  if (remainingMs <= 0) return `Any moment now (${cadence})`;
+  if (remainingMs <= 0) {
+    const overdueMs = -remainingMs;
+    // A little overdue is normal cron jitter — "Any moment now" covers that.
+    // Once it's missed a full cycle, say so explicitly instead of still
+    // claiming it's imminent — confirmed live this mattered: a worker whose
+    // cron had genuinely stopped for 4 hours (a deploy-triggered gap) showed
+    // "Any moment now" the whole time, which reads as healthy when it isn't.
+    if (overdueMs > worker.observedIntervalMinutes * 60000) {
+      return `Overdue by ${formatCountdown(overdueMs)} (${cadence})`;
+    }
+    return `Any moment now (${cadence})`;
+  }
   return `${formatCountdown(remainingMs)} (${cadence})`;
 }
 
