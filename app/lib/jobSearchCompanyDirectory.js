@@ -72,18 +72,27 @@ export async function recordCompanyPollResult(id, { ok, jobsFound = 0, error = "
 
 // Called for every distinct company name a fresh Adzuna discovery pass sees.
 // A company already in the directory (found or not) is skipped instantly —
-// this only ever spends real probe calls on genuinely new names, and
-// `limit` caps how many of those a single discovery run will take on, so a
-// pass that surfaces hundreds of new companies fills in the directory
-// gradually over several runs rather than in one burst of API calls.
-export async function discoverNewCompanies(companyNames, { limit = 15 } = {}) {
+// this only ever spends real probe calls on genuinely new names.
+//
+// `limit` is a pathological-case safety valve, not a pacing mechanism —
+// Greenhouse/Lever/Ashby/Workable/SmartRecruiters showed no rate limiting at
+// all across dozens of consecutive live calls this session (unlike Adzuna's
+// real, documented one), so there's no need to trickle new companies in
+// slowly. It's set high enough that a normal batch (one discovery run tops
+// out at 500 raw postings, and duplicates across those postings mean far
+// fewer distinct companies than that) should never hit it — if it ever does,
+// whatever's left over is simply not probed this run rather than queued, so
+// the ceiling exists to bound worst-case runtime, not to spread work out.
+// `concurrency` probes several companies at once (each company's own 5
+// platform checks stay sequential and stop at the first hit, so this is
+// concurrency across companies, not per-company).
+export async function discoverNewCompanies(companyNames, { limit = 200, concurrency = 8 } = {}) {
   const pool = requirePool(await ensureJobSearchSchema());
   const seen = new Set();
-  let probed = 0;
-  let found = 0;
+  const toProbe = [];
 
   for (const rawName of companyNames) {
-    if (probed >= limit) break;
+    if (toProbe.length >= limit) break;
     const companyName = cleanText(rawName, 160);
     if (!companyName) continue;
     const normalized = normalizeCompanyName(companyName);
@@ -96,19 +105,26 @@ export async function discoverNewCompanies(companyNames, { limit = 15 } = {}) {
     );
     if (existing[0]) continue; // already known (found or previously not_found) — never re-probed
 
-    probed += 1;
-    const hit = await probeCompanyAts(companyName).catch(() => null);
-    if (hit) found += 1;
-
-    const now = new Date();
-    await pool.query(
-      `INSERT INTO job_search_known_companies
-         (company_name, normalized_name, ats_type, board_token, last_probed_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE company_name = VALUES(company_name)`,
-      [companyName, normalized, hit?.atsType || "unknown", hit?.boardToken || "", now, now, now]
-    );
+    toProbe.push({ companyName, normalized });
   }
 
-  return { probed, found };
+  let found = 0;
+  for (let i = 0; i < toProbe.length; i += concurrency) {
+    const batch = toProbe.slice(i, i + concurrency);
+    const results = await Promise.all(batch.map(async ({ companyName, normalized }) => {
+      const hit = await probeCompanyAts(companyName).catch(() => null);
+      const now = new Date();
+      await pool.query(
+        `INSERT INTO job_search_known_companies
+           (company_name, normalized_name, ats_type, board_token, last_probed_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE company_name = VALUES(company_name)`,
+        [companyName, normalized, hit?.atsType || "unknown", hit?.boardToken || "", now, now, now]
+      );
+      return hit;
+    }));
+    found += results.filter(Boolean).length;
+  }
+
+  return { probed: toProbe.length, found };
 }
