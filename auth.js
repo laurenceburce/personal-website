@@ -6,6 +6,7 @@ import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
 
 const providers = [];
 const DEFAULT_FINANCE_EMAIL = "laurenceburce@gmail.com";
+const DEFAULT_JOB_SEARCH_EMAIL = "laurenceburce@gmail.com";
 
 export function getFinanceAllowedEmails() {
   return (process.env.FINANCE_ALLOWED_EMAILS || DEFAULT_FINANCE_EMAIL)
@@ -16,6 +17,17 @@ export function getFinanceAllowedEmails() {
 
 export function isFinanceAuthorizedEmail(email) {
   return getFinanceAllowedEmails().includes(String(email || "").trim().toLowerCase());
+}
+
+export function getJobSearchAllowedEmails() {
+  return (process.env.JOB_SEARCH_ALLOWED_EMAILS || DEFAULT_JOB_SEARCH_EMAIL)
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isJobSearchAuthorizedEmail(email) {
+  return getJobSearchAllowedEmails().includes(String(email || "").trim().toLowerCase());
 }
 
 if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
@@ -67,6 +79,7 @@ export const { handlers: { GET, POST }, auth } = NextAuth({
       if (session.user) {
         session.user.provider = token.provider || "";
         session.user.isFinanceAuthorized = isFinanceAuthorizedEmail(session.user.email);
+        session.user.isJobSearchAuthorized = isJobSearchAuthorizedEmail(session.user.email);
       }
 
       return session;

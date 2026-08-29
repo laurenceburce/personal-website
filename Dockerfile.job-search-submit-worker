@@ -1,0 +1,31 @@
+# Dockerfile for the job-search-submit-worker Railway service ONLY.
+#
+# The main web app and job-search-poll-worker services use Railway's default
+# builder (Railpack/Nixpacks) with no Dockerfile at all — do not rename this
+# file to plain "Dockerfile" at the repo root, since Railway auto-detects and
+# prioritizes any root-level Dockerfile for every service sharing that root
+# directory, which would silently switch the main app's build too. This file
+# is opted into only via the RAILWAY_DOCKERFILE_PATH service variable set on
+# the submit-worker service (see the deployment instructions).
+#
+# Playwright's Chromium needs OS-level libraries (libnss3, libgbm1, etc.) that
+# Railway's default builder environment can't install — this is Railway's own
+# documented approach for Playwright: https://docs.railway.com/guides/playwright
+FROM node:22-bookworm
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Installs Chromium plus every OS-level library it needs, matching whatever
+# playwright version package-lock.json actually resolved to — this avoids
+# ever having to hand-pin a Docker base image tag to a specific playwright
+# patch version (Microsoft doesn't publish an image for every patch release).
+RUN npx playwright install --with-deps chromium
+
+COPY . .
+
+ENV JOB_SEARCH_PLAYWRIGHT_HEADLESS=true
+
+CMD ["node", "scripts/job-search-submit-worker.mjs"]

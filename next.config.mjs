@@ -7,6 +7,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
+  // pdf-parse (job-search resume text extraction) wraps pdfjs-dist, which resolves
+  // its worker script via a dynamic path at runtime — bundling it through
+  // Turbopack/webpack breaks that resolution ("Cannot find module .../pdf.worker.mjs").
+  // Excluding it from bundling loads it via native require() instead, which works.
+  serverExternalPackages: ["pdf-parse", "pdfjs-dist"],
   turbopack: {
     root: __dirname
   },

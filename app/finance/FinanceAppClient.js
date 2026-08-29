@@ -15,6 +15,7 @@ const ACCOUNT_TYPES = ["checking", "savings", "credit", "cash", "investment", "l
 const COLORS = ["#34d399", "#22d3ee", "#fbbf24", "#fb7185", "#a78bfa", "#f97316"];
 const PAY_PERIOD_ANCHOR_START = "2026-07-18";
 const MS_PER_DAY = 86_400_000;
+const TRANSACTION_HISTORY_PAGE_SIZE = 50;
 const WEEKDAY_DUE_ORDER = {
   monday: 41,
   tuesday: 42,
@@ -194,7 +195,8 @@ function formatShortDate(value) {
   if (!value) return "";
   return new Date(`${value}T12:00:00`).toLocaleDateString("en-US", {
     month: "short",
-    day: "numeric"
+    day: "numeric",
+    year: "numeric"
   });
 }
 
@@ -279,12 +281,21 @@ function transactionInPayPeriod(transaction, period) {
   return transaction.date >= period.start && transaction.date <= period.end;
 }
 
+function transactionMatchesDateFilter(transaction, filter) {
+  const date = String(transaction.date || "");
+  if (!date) return false;
+  if (filter.from && date < filter.from) return false;
+  if (filter.to && date > filter.to) return false;
+  return true;
+}
+
 function formatBillDue(bill, month) {
   const dueDate = billDueDate(bill, month);
   if (dueDate) {
     return dueDate.toLocaleDateString("en-US", {
       month: "short",
-      day: "numeric"
+      day: "numeric",
+      year: "numeric"
     });
   }
 
@@ -1018,6 +1029,8 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
     year: String(snapshot.month || "").slice(0, 4) || String(initialFundsDate).slice(0, 4),
     payPeriod: payPeriodForDate(initialFundsDate).id
   }));
+  const [transactionDateFilter, setTransactionDateFilter] = useState({ from: "", to: "" });
+  const [transactionPage, setTransactionPage] = useState(1);
   const [expandedTransactionGroups, setExpandedTransactionGroups] = useState(() => new Set());
   const [transactionModalOpen, setTransactionModalOpen] = useState(false);
   const [transactionEditId, setTransactionEditId] = useState(null);
@@ -1039,6 +1052,19 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   const connections = snapshot.connections || [];
   const allTransactions = initialAllTransactions;
   const recentTransactions = allTransactions.slice(0, 8);
+  const filteredHistoryTransactions = useMemo(() => {
+    if (!transactionDateFilter.from && !transactionDateFilter.to) return allTransactions;
+    return allTransactions.filter((transaction) => transactionMatchesDateFilter(transaction, transactionDateFilter));
+  }, [allTransactions, transactionDateFilter]);
+  const transactionDateFilterActive = Boolean(transactionDateFilter.from || transactionDateFilter.to);
+  const transactionPageCount = Math.max(1, Math.ceil(filteredHistoryTransactions.length / TRANSACTION_HISTORY_PAGE_SIZE));
+  const safeTransactionPage = Math.min(transactionPage, transactionPageCount);
+  const transactionPageStart = (safeTransactionPage - 1) * TRANSACTION_HISTORY_PAGE_SIZE;
+  const pagedHistoryTransactions = filteredHistoryTransactions.slice(
+    transactionPageStart,
+    transactionPageStart + TRANSACTION_HISTORY_PAGE_SIZE
+  );
+  const transactionPageEnd = transactionPageStart + pagedHistoryTransactions.length;
   const fundsMonthOptions = useMemo(() => {
     return buildMonthOptions(allTransactions, snapshot.month);
   }, [allTransactions, snapshot.month]);
@@ -1075,8 +1101,8 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
     return [...snapshot.recurringBills].sort(sortBillsByDueDate);
   }, [snapshot.recurringBills]);
   const transactionGroups = useMemo(() => {
-    return buildTransactionHistoryGroups(allTransactions, sortedRecurringBills, exchangeRate);
-  }, [allTransactions, sortedRecurringBills, exchangeRate]);
+    return buildTransactionHistoryGroups(pagedHistoryTransactions, sortedRecurringBills, exchangeRate);
+  }, [pagedHistoryTransactions, sortedRecurringBills, exchangeRate]);
   const unpaidBills = sortedRecurringBills.filter((bill) => !bill.isPaid);
   const overdueBills = sortedRecurringBills.filter((bill) => isBillOverdue(bill, snapshot.month));
   const overdueBillIds = new Set(overdueBills.map((bill) => bill.id));
@@ -1239,6 +1265,16 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       biweeklySavingsUsd: String(convertAmount(snapshot.plan.biweeklySavingsUsd, "USD", displayCurrency, exchangeRate))
     });
   }, [snapshot.month, snapshot.accounts, snapshot.plan, transactionEditId, transactionModalOpen, displayCurrency, exchangeRate]);
+
+  useEffect(() => {
+    setTransactionPage(1);
+  }, [transactionDateFilter.from, transactionDateFilter.to]);
+
+  useEffect(() => {
+    if (transactionPage > transactionPageCount) {
+      setTransactionPage(transactionPageCount);
+    }
+  }, [transactionPage, transactionPageCount]);
 
   function setTab(tab) {
     const normalized = normalizeTab(tab);
@@ -2135,85 +2171,140 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
             title="Transaction History"
             action={(
               <div className="finance-panel-actions">
-                <span className="finance-panel-count">{transactionGroups.length} entries</span>
+                <span className="finance-panel-count">
+                  {filteredHistoryTransactions.length} transaction{filteredHistoryTransactions.length === 1 ? "" : "s"}
+                </span>
                 <button type="button" className="finance-primary" onClick={openNewTransaction} disabled={disabled}>Add</button>
               </div>
             )}
           >
-            {allTransactions.length === 0 ? (
-              <p className="finance-muted">No transactions yet.</p>
-            ) : (
-              <div className="finance-transaction-groups">
-                {transactionGroups.map((group) => {
-                  if (group.itemCount <= 1 && group.transactions[0]) {
-                    return renderTransactionDetail(group.transactions[0], "finance-transaction-single-row");
-                  }
-
-                  const expanded = expandedTransactionGroups.has(group.id);
-                  const varianceLabel = group.billVariance
-                    ? `${group.billVariance.type === "overflow" ? "Overflow" : "Over"} ${showCurrency(group.billVariance.amountUsd, "USD")}`
-                    : "";
-                  const groupDetail = group.type === "transfer"
-                    ? group.title === "Credit Card Payment" ? "paid" : "moved"
-                    : group.type === "adjustment"
-                      ? "reversed"
-                      : varianceLabel
-                        ? varianceLabel
-                      : `${group.itemCount} item${group.itemCount === 1 ? "" : "s"}`;
-
-                  return (
-                    <article key={group.id} className={`finance-transaction-group finance-transaction-group-${group.type}`}>
-                      <button
-                        type="button"
-                        className="finance-transaction-group-summary"
-                        aria-expanded={expanded}
-                        onClick={() => toggleTransactionGroup(group.id)}
-                      >
-                        <span className="finance-transaction-group-toggle" aria-hidden="true">{expanded ? "-" : "+"}</span>
-                        <span className="finance-transaction-group-copy">
-                          <strong>{group.title}</strong>
-                          <small>{group.subtitle}</small>
-                        </span>
-                        <span className="finance-transaction-group-amount">
-                          <b className={`finance-${group.tone}`}>{showCurrency(group.amountUsd, "USD")}</b>
-                          <small>{groupDetail}</small>
-                        </span>
-                      </button>
-
-                      {expanded ? (
-                        <div className="finance-transaction-group-body">
-                          {group.bill ? (
-                            <div className="finance-transaction-group-line finance-transaction-group-line-bill">
-                              <span>
-                                <strong>Recurring bill</strong>
-                                <small>Due {formatBillDue(group.bill, group.month || snapshot.month)} - {billSourceLabel(group.bill)}</small>
-                              </span>
-                              <b className="finance-bad">{showCurrency(-Number(group.bill.amountUsd || 0), "USD")}</b>
-                            </div>
-                          ) : null}
-
-                          {group.billVariance ? (
-                            <div className={`finance-transaction-group-line finance-transaction-group-line-variance finance-transaction-group-line-${group.billVariance.type}`}>
-                              <span>
-                                <strong>{group.billVariance.type === "overflow" ? "Overflow" : "Over expected"}</strong>
-                                <small>Expected {showCurrency(group.billVariance.expectedUsd, "USD")} - actual {showCurrency(group.billVariance.actualUsd, "USD")}</small>
-                              </span>
-                              <b className={group.billVariance.type === "overflow" ? "finance-good" : "finance-bad"}>
-                                {showCurrency(group.billVariance.amountUsd, "USD")}
-                              </b>
-                            </div>
-                          ) : null}
-
-                          {group.transactions.map((transaction) => (
-                            renderTransactionDetail(transaction)
-                          ))}
-                        </div>
-                      ) : null}
-                    </article>
-                  );
-                })}
+            <div className="finance-transaction-history">
+              <div className="finance-transaction-filter" aria-label="Transaction date filter">
+                <label>
+                  <span>From</span>
+                  <input
+                    type="date"
+                    value={transactionDateFilter.from}
+                    onChange={(event) => setTransactionDateFilter((filter) => ({ ...filter, from: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>To</span>
+                  <input
+                    type="date"
+                    value={transactionDateFilter.to}
+                    onChange={(event) => setTransactionDateFilter((filter) => ({ ...filter, to: event.target.value }))}
+                  />
+                </label>
+                {transactionDateFilterActive ? (
+                  <button type="button" onClick={() => setTransactionDateFilter({ from: "", to: "" })}>
+                    Clear
+                  </button>
+                ) : null}
               </div>
-            )}
+
+              {filteredHistoryTransactions.length > 0 ? (
+                <div className="finance-transaction-pager" aria-label="Transaction pages">
+                  <span>
+                    Showing {transactionPageStart + 1}-{transactionPageEnd} of {filteredHistoryTransactions.length}
+                  </span>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setTransactionPage((page) => Math.max(1, page - 1))}
+                      disabled={safeTransactionPage <= 1}
+                    >
+                      Previous
+                    </button>
+                    <b>Page {safeTransactionPage} of {transactionPageCount}</b>
+                    <button
+                      type="button"
+                      onClick={() => setTransactionPage((page) => Math.min(transactionPageCount, page + 1))}
+                      disabled={safeTransactionPage >= transactionPageCount}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {allTransactions.length === 0 ? (
+                <p className="finance-muted">No transactions yet.</p>
+              ) : filteredHistoryTransactions.length === 0 ? (
+                <p className="finance-muted">No transactions match this date range.</p>
+              ) : (
+                <div className="finance-transaction-groups">
+                  {transactionGroups.map((group) => {
+                    if (group.itemCount <= 1 && group.transactions[0]) {
+                      return renderTransactionDetail(group.transactions[0], "finance-transaction-single-row");
+                    }
+
+                    const expanded = expandedTransactionGroups.has(group.id);
+                    const varianceLabel = group.billVariance
+                      ? `${group.billVariance.type === "overflow" ? "Overflow" : "Over"} ${showCurrency(group.billVariance.amountUsd, "USD")}`
+                      : "";
+                    const groupDetail = group.type === "transfer"
+                      ? group.title === "Credit Card Payment" ? "paid" : "moved"
+                      : group.type === "adjustment"
+                        ? "reversed"
+                        : varianceLabel
+                          ? varianceLabel
+                          : `${group.itemCount} item${group.itemCount === 1 ? "" : "s"}`;
+
+                    return (
+                      <article key={group.id} className={`finance-transaction-group finance-transaction-group-${group.type}`}>
+                        <button
+                          type="button"
+                          className="finance-transaction-group-summary"
+                          aria-expanded={expanded}
+                          onClick={() => toggleTransactionGroup(group.id)}
+                        >
+                          <span className="finance-transaction-group-toggle" aria-hidden="true">{expanded ? "-" : "+"}</span>
+                          <span className="finance-transaction-group-copy">
+                            <strong>{group.title}</strong>
+                            <small>{group.subtitle}</small>
+                          </span>
+                          <span className="finance-transaction-group-amount">
+                            <b className={`finance-${group.tone}`}>{showCurrency(group.amountUsd, "USD")}</b>
+                            <small>{groupDetail}</small>
+                          </span>
+                        </button>
+
+                        {expanded ? (
+                          <div className="finance-transaction-group-body">
+                            {group.bill ? (
+                              <div className="finance-transaction-group-line finance-transaction-group-line-bill">
+                                <span>
+                                  <strong>Recurring bill</strong>
+                                  <small>Due {formatBillDue(group.bill, group.month || snapshot.month)} - {billSourceLabel(group.bill)}</small>
+                                </span>
+                                <b className="finance-bad">{showCurrency(-Number(group.bill.amountUsd || 0), "USD")}</b>
+                              </div>
+                            ) : null}
+
+                            {group.billVariance ? (
+                              <div className={`finance-transaction-group-line finance-transaction-group-line-variance finance-transaction-group-line-${group.billVariance.type}`}>
+                                <span>
+                                  <strong>{group.billVariance.type === "overflow" ? "Overflow" : "Over expected"}</strong>
+                                  <small>Expected {showCurrency(group.billVariance.expectedUsd, "USD")} - actual {showCurrency(group.billVariance.actualUsd, "USD")}</small>
+                                </span>
+                                <b className={group.billVariance.type === "overflow" ? "finance-good" : "finance-bad"}>
+                                  {showCurrency(group.billVariance.amountUsd, "USD")}
+                                </b>
+                              </div>
+                            ) : null}
+
+                            {group.transactions.map((transaction) => (
+                              renderTransactionDetail(transaction)
+                            ))}
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </Panel>
         </main>
       ) : null}
