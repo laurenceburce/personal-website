@@ -7,12 +7,13 @@
 // adapter can be dispatched instead of automatically falling through to
 // "unsupported ATS". Read-only — never fills or submits anything.
 import { chromium } from "playwright";
+import { updatePostingAtsResolution } from "../jobSearchPostingsStore.js";
 
 const RESOLVE_TIMEOUT_MS = 20000;
 const REAL_BROWSER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
-// Only greenhouse/lever/ashby have a submission adapter (see
-// jobSearchAutoApply.js's SUBMITTABLE_ATS_TYPES and jobSearchAdapters/index.js) —
+// Only greenhouse/lever/ashby/workable have a submission adapter (see
+// SUBMITTABLE_ATS_TYPES below and jobSearchAdapters/index.js) —
 // the other four are recognized purely so a posting gets labeled accurately
 // (e.g. "workday") instead of a generic "external" one. Confirmed live that
 // none of them are realistically automatable: SmartRecruiters and iCIMS both
@@ -25,11 +26,26 @@ const ATS_DOMAIN_PATTERNS = [
   { atsType: "greenhouse", pattern: /(^|\.)greenhouse\.io$/i },
   { atsType: "lever", pattern: /(^|\.)lever\.co$/i },
   { atsType: "ashby", pattern: /(^|\.)ashbyhq\.com$/i },
+  { atsType: "workable", pattern: /(^|\.)workable\.com$/i },
   { atsType: "smartrecruiters", pattern: /(^|\.)smartrecruiters\.com$/i },
   { atsType: "workday", pattern: /(^|\.)myworkdayjobs\.com$/i },
   { atsType: "icims", pattern: /(^|\.)icims\.com$/i },
   { atsType: "oracle_taleo", pattern: /(^|\.)(taleo\.net|oraclecloud\.com)$/i }
 ];
+
+// Every type resolveAtsDestination() can possibly return — once a posting is
+// labeled as any of these, resolvePostingForSubmission() never re-resolves it
+// again, even if it's one of the four with no adapter (see below). Re-running
+// a full browser launch against a platform already confirmed unsubmittable
+// would just burn time for the same answer every time.
+const KNOWN_ATS_TYPES = new Set(ATS_DOMAIN_PATTERNS.map((p) => p.atsType));
+// Only these three have a real submission adapter (jobSearchAdapters/index.js).
+// The other four in ATS_DOMAIN_PATTERNS are detected purely for accurate
+// labeling — confirmed live that none of them are realistically automatable
+// (SmartRecruiters/iCIMS hard bot-wall the application page before it even
+// renders; Workday/Oracle Recruiting/Taleo require per-tenant account
+// creation and use non-standard, heavily customized form frameworks).
+export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "lever", "ashby", "workable"]);
 
 function detectAtsType(url) {
   try {
@@ -79,7 +95,7 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
     if (!atsType) {
       const applyHref = await page
         .locator(
-          'a[href*="greenhouse.io"], a[href*="lever.co"], a[href*="ashbyhq.com"], ' +
+          'a[href*="greenhouse.io"], a[href*="lever.co"], a[href*="ashbyhq.com"], a[href*="workable.com"], ' +
           'a[href*="smartrecruiters.com"], a[href*="myworkdayjobs.com"], a[href*="icims.com"], ' +
           'a[href*="taleo.net"], a[href*="oraclecloud.com"], a:has-text("Apply")'
         )
@@ -108,4 +124,29 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
   } finally {
     if (browser) await browser.close();
   }
+}
+
+// Shared by both submission paths — auto-apply (jobSearchAutoApply.js) and
+// the manual submit-worker (scripts/job-search-submit-worker.mjs) — so a
+// human-approved posting gets exactly the same ATS resolution auto-apply
+// already got, instead of only ever resolving for the (off by default)
+// auto-apply path and always reporting "unsupported ATS" for everything a
+// human approves by hand.
+//
+// Resolves and PERSISTS the result onto the posting row: once labeled as
+// anything in KNOWN_ATS_TYPES (including the four with no adapter), this
+// never re-resolves that posting again — a real browser launch isn't worth
+// repeating for an answer that can't change.
+export async function resolvePostingForSubmission(posting) {
+  if (KNOWN_ATS_TYPES.has(posting.atsType)) {
+    return { atsType: posting.atsType, applyUrl: posting.applyUrl, resolved: false };
+  }
+
+  const resolved = await resolveAtsDestination(posting.applyUrl).catch(() => null);
+  if (!resolved) {
+    return { atsType: posting.atsType, applyUrl: posting.applyUrl, resolved: false };
+  }
+
+  await updatePostingAtsResolution(posting.id, resolved).catch(() => {});
+  return { atsType: resolved.atsType, applyUrl: resolved.applyUrl, resolved: true };
 }

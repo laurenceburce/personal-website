@@ -46,6 +46,7 @@ export default function OverviewPanel({
   llmUsage,
   maxLlmCallsPerDay,
   dbSizeMb,
+  companyDirectoryStats,
   saving,
   onRunDiscovery,
   onScoreNow
@@ -97,6 +98,11 @@ export default function OverviewPanel({
             detail={`${llmUsage?.embedCalls ?? 0} embed, ${llmUsage?.scoreCalls ?? 0} score`}
           />
           <Metric label="Job-search DB size" value={`${dbSizeMb} MB`} />
+          <Metric
+            label="Companies on a direct-poll ATS"
+            value={companyDirectoryStats?.pollableCompanies ?? 0}
+            detail={`${companyDirectoryStats?.totalProbed ?? 0} companies probed total`}
+          />
         </div>
       </section>
 

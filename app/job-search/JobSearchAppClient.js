@@ -101,6 +101,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             llmUsage={snapshot.llmUsage}
             maxLlmCallsPerDay={snapshot.findSettings.maxLlmCallsPerDay}
             dbSizeMb={snapshot.dbSizeMb}
+            companyDirectoryStats={snapshot.companyDirectoryStats}
             saving={saving}
             onRunDiscovery={() => runAction("/api/job-search/run", "discoveryNow", {}, "Discovery run complete.")}
             onScoreNow={() => runAction("/api/job-search/run", "scoreNow", {}, "Scoring run complete.")}

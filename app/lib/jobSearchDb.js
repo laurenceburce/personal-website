@@ -304,6 +304,32 @@ export const ensureJobSearchSchema = async () => {
       // with nobody in the loop? Surfaced as a badge in Applied Jobs.
       await runMigration(pool, "ALTER TABLE job_search_applications ADD COLUMN auto_applied TINYINT(1) NOT NULL DEFAULT 0");
 
+      // Auto-discovered company -> ATS board directory (see
+      // jobSearchCompanyProbe.js / jobSearchCompanyDirectory.js). Populated
+      // entirely by the system itself as new company names show up in Adzuna
+      // results — never manually curated, unlike the old watchlist. Once a
+      // company is confirmed here on a submittable platform (greenhouse/
+      // lever/ashby/workable), jobSearchDirectPoll.js polls its board
+      // directly instead of waiting for Adzuna to maybe resurface it.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_known_companies (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          company_name VARCHAR(160) NOT NULL,
+          normalized_name VARCHAR(160) NOT NULL,
+          ats_type VARCHAR(24) NOT NULL DEFAULT 'unknown',
+          board_token VARCHAR(160) NOT NULL DEFAULT '',
+          last_probed_at DATETIME(3) NULL,
+          last_polled_at DATETIME(3) NULL,
+          last_poll_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+          last_poll_error VARCHAR(500) NOT NULL DEFAULT '',
+          jobs_found_last_poll INT NOT NULL DEFAULT 0,
+          created_at DATETIME(3) NOT NULL,
+          updated_at DATETIME(3) NOT NULL,
+          UNIQUE KEY job_search_known_companies_name_idx (normalized_name),
+          INDEX job_search_known_companies_ats_idx (ats_type)
+        )
+      `);
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();

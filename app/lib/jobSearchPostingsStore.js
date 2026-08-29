@@ -135,6 +135,22 @@ export async function getPostingById(id) {
   return rows[0] ? mapPostingRow(rows[0]) : null;
 }
 
+// Persists a posting's real ATS destination once resolveAtsDestination() (see
+// jobSearchAdapters/atsResolver.js) figures it out — a discovery-sourced
+// posting always starts tagged 'external' since Adzuna never reveals this.
+// Deliberately narrow and separate from updatePostingScore: this never
+// touches status or any scoring field, only relabels what the posting
+// actually is, so it's safe to call regardless of what stage a posting is at.
+export async function updatePostingAtsResolution(id, { atsType, boardToken, applyUrl }) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const postingId = cleanId(id, "Posting");
+  await pool.query(
+    "UPDATE job_search_postings SET ats_type = ?, board_token = ?, apply_url = ?, updated_at = ? WHERE id = ?",
+    [atsType, boardToken || "", applyUrl, new Date(), postingId]
+  );
+  return { id: postingId };
+}
+
 // Whitelisted, never interpolated from caller input directly — orderBy only
 // ever selects one of these three fixed clauses. NULLs sort last under MySQL's
 // default DESC ordering in both cases, which is exactly right: a posting with

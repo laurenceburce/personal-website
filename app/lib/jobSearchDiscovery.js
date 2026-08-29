@@ -1,14 +1,18 @@
-// Keyword-based discovery via Adzuna — the sole posting source for this
-// system, finding postings without specifying any company up front. It
-// searches across the whole web by title keywords + location, the same way a
-// person would search on a job board, rather than polling a known list of
-// company ATS boards.
+// Keyword-based discovery via Adzuna — the broad-net lead source. It searches
+// across the whole web by title keywords + location, the same way a person
+// would search on a job board, without ever needing to know which companies
+// to look at up front. Every company name it turns up also feeds
+// jobSearchCompanyDirectory.js, which auto-discovers that company's real ATS
+// board (if it has one on a supported platform) so jobSearchDirectPoll.js can
+// poll it directly from then on — a self-populating alternative to the old
+// manually-curated watchlist, not a return to one.
 //
 // Adzuna's free tier is far more limited than the ATS APIs (roughly
 // 1,000 calls/month, not officially published but widely corroborated), so
 // this is throttled independently via find_settings.discovery_last_run_at —
 // see shouldRunDiscovery() — regardless of how often the poll cron itself runs.
 import { computeContentHash, guessRemoteType, guessSeniority, MAX_DESCRIPTION_TEXT_CHARS, stripHtml } from "./jobSearchAtsSources.js";
+import { discoverNewCompanies } from "./jobSearchCompanyDirectory.js";
 import { upsertPosting } from "./jobSearchPostingsStore.js";
 import { markDiscoveryRun } from "./jobSearchSettingsStore.js";
 
@@ -168,6 +172,10 @@ export async function runDiscoveryPass(findSettings) {
     if (result.isNew) created += 1;
   }
 
+  // Best-effort and rate-limited (see discoverNewCompanies) — a probing
+  // hiccup here should never fail the discovery run that already succeeded.
+  const companyDiscovery = await discoverNewCompanies(jobs.map((job) => job.companyName)).catch(() => ({ probed: 0, found: 0 }));
+
   await markDiscoveryRun();
-  return { ok: true, found: jobs.length, created };
+  return { ok: true, found: jobs.length, created, companiesProbed: companyDiscovery.probed, companiesFound: companyDiscovery.found };
 }

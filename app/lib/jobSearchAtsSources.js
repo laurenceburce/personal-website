@@ -174,11 +174,43 @@ export async function fetchAshbyJobs({ boardToken, companyName }) {
   });
 }
 
+export async function fetchWorkableJobs({ boardToken, companyName }) {
+  const url = `https://apply.workable.com/api/v1/widget/accounts/${encodeURIComponent(boardToken)}?details=true`;
+  const data = await fetchJson(url);
+  const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+
+  return jobs.map((job) => {
+    const descriptionText = stripHtml(job.description || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS);
+    const locationText = [job.city, job.state, job.country].filter(Boolean).join(", ");
+    const title = job.title || "";
+
+    return {
+      atsType: "workable",
+      boardToken,
+      externalJobId: job.shortcode,
+      companyName,
+      title,
+      department: job.department || job.function || "",
+      locationText,
+      remoteType: job.telecommuting ? "remote" : guessRemoteType(locationText, descriptionText),
+      seniorityGuess: guessSeniority(title),
+      salaryMin: null,
+      salaryMax: null,
+      salaryCurrency: null,
+      descriptionText,
+      applyUrl: job.application_url || job.url || "",
+      postedAt: job.published_on ? new Date(job.published_on) : null,
+      contentHash: computeContentHash(title, descriptionText)
+    };
+  });
+}
+
 export async function fetchAtsJobs({ atsType, boardToken, companyName }) {
   switch (atsType) {
     case "greenhouse": return fetchGreenhouseJobs({ boardToken, companyName });
     case "lever": return fetchLeverJobs({ boardToken, companyName });
     case "ashby": return fetchAshbyJobs({ boardToken, companyName });
+    case "workable": return fetchWorkableJobs({ boardToken, companyName });
     default: throw new Error(`Unsupported ATS type: ${atsType}`);
   }
 }

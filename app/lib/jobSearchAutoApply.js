@@ -3,7 +3,7 @@
 // 'pending_review'). Every reason this declines to submit on its own is one
 // of AUTO_APPLY_SKIP_REASONS, recorded on the posting — never a silent drop.
 import { submitApplication } from "./jobSearchAdapters/index.js";
-import { resolveAtsDestination } from "./jobSearchAdapters/atsResolver.js";
+import { resolvePostingForSubmission, SUBMITTABLE_ATS_TYPES } from "./jobSearchAdapters/atsResolver.js";
 import { insertApplicationAttempt } from "./jobSearchApplicationStore.js";
 import { getDefaultResume, getResumeById } from "./jobSearchSettingsStore.js";
 
@@ -14,16 +14,6 @@ export const AUTO_APPLY_SKIP_REASONS = {
   SCAM_RISK_TOO_HIGH: "scam_risk_too_high",
   SCORE_TOO_LOW: "score_too_low"
 };
-
-// atsResolver.js recognizes more platforms than this (SmartRecruiters,
-// Workday, iCIMS, Oracle Recruiting/Taleo) purely so postings get labeled
-// correctly instead of a generic "external" — none of those have a
-// submission adapter (confirmed live: SmartRecruiters and iCIMS both hard
-// bot-wall their application flow before it ever renders; Workday requires
-// per-tenant account creation and uses a non-standard component framework;
-// Oracle Recruiting/Taleo shares the same enterprise-account-gated shape).
-// Recognized-but-unsubmittable is treated exactly like fully-unresolved.
-const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "lever", "ashby"]);
 
 function hoursSince(date) {
   if (!date) return Infinity;
@@ -83,26 +73,24 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
     return { status: "skipped_auto_apply", skipReason: cheapSkip.reason, skipDetail: cheapSkip.detail };
   }
 
-  let resolvedAtsType = posting.atsType;
-  let resolvedApplyUrl = posting.applyUrl;
+  // Resolves (and persists onto the posting row) whichever real ATS this
+  // actually is, if not already known — shared with the manual submit-worker
+  // so a human-approved posting gets the exact same resolution.
+  const { atsType: resolvedAtsType, applyUrl: resolvedApplyUrl } = await resolvePostingForSubmission(posting);
 
   if (!SUBMITTABLE_ATS_TYPES.has(resolvedAtsType)) {
-    const resolved = await resolveAtsDestination(posting.applyUrl).catch(() => null);
-    if (!resolved || !SUBMITTABLE_ATS_TYPES.has(resolved.atsType)) {
-      // Also covers a *recognized* but non-submittable platform (SmartRecruiters,
-      // Workday, iCIMS, Oracle Recruiting/Taleo — see atsResolver.js) exactly
-      // like a fully unresolved one: nothing was attempted, so nothing worth an
-      // application-table row, just the skip reason on the posting itself.
-      return {
-        status: "skipped_auto_apply",
-        skipReason: AUTO_APPLY_SKIP_REASONS.UNSUPPORTED_ATS,
-        skipDetail: resolved
-          ? `Resolved to ${resolved.atsType}, which has no submission adapter.`
-          : "Could not resolve this posting to a supported ATS (Greenhouse, Lever, or Ashby)."
-      };
-    }
-    resolvedAtsType = resolved.atsType;
-    resolvedApplyUrl = resolved.applyUrl;
+    // Covers both a fully-unresolved posting and a *recognized* but
+    // non-submittable platform (SmartRecruiters, Workday, iCIMS, Oracle
+    // Recruiting/Taleo — see atsResolver.js) identically: nothing was
+    // attempted, so nothing worth an application-table row, just the skip
+    // reason on the posting itself.
+    return {
+      status: "skipped_auto_apply",
+      skipReason: AUTO_APPLY_SKIP_REASONS.UNSUPPORTED_ATS,
+      skipDetail: resolvedAtsType === "external"
+        ? "Could not resolve this posting to a supported ATS (Greenhouse, Lever, or Ashby)."
+        : `Resolved to ${resolvedAtsType}, which has no submission adapter.`
+    };
   }
 
   const defaultResume = await getDefaultResume();

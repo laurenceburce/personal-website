@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import JobSearchAppClient from "./JobSearchAppClient";
 import { listApplications } from "../lib/jobSearchApplicationStore";
 import { getJobSearchAccess } from "../lib/jobSearchAuth";
+import { getCompanyDirectoryStats } from "../lib/jobSearchCompanyDirectory";
 import { getDatabaseSizeMb } from "../lib/jobSearchDb";
 import { countPostingsByStatus, listPostingsByStatus, listRecentPostings } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
@@ -30,7 +31,8 @@ async function getDashboardSnapshot() {
     statusCounts,
     recentActivity,
     llmUsage,
-    dbSizeMb
+    dbSizeMb,
+    companyDirectoryStats
   ] = await Promise.all([
     getProfile(),
     getFindSettings(),
@@ -43,12 +45,13 @@ async function getDashboardSnapshot() {
     countPostingsByStatus(),
     listRecentPostings({ limit: 25 }),
     getTodayLlmUsage(),
-    getDatabaseSizeMb()
+    getDatabaseSizeMb(),
+    getCompanyDirectoryStats()
   ]);
 
   return {
     profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, applications,
-    statusCounts, recentActivity, llmUsage, dbSizeMb
+    statusCounts, recentActivity, llmUsage, dbSizeMb, companyDirectoryStats
   };
 }
 

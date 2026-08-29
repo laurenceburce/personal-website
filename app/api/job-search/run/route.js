@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
 import { runDiscoveryPass } from "../../../lib/jobSearchDiscovery";
+import { runDirectPollPass } from "../../../lib/jobSearchDirectPoll";
 import { requeuePostingsForRescoring } from "../../../lib/jobSearchPostingsStore";
 import { scoreNewPostings } from "../../../lib/jobSearchScoringPipeline";
 import { getFindSettings } from "../../../lib/jobSearchSettingsStore";
@@ -24,8 +25,12 @@ export async function POST(request) {
     switch (action) {
       case "discoveryNow": {
         const findSettings = await getFindSettings();
-        const result = await runDiscoveryPass(findSettings);
-        return NextResponse.json({ ok: result.ok, result });
+        const discoveryResult = await runDiscoveryPass(findSettings);
+        // Mirrors the cron worker: a manual discovery run also direct-polls
+        // every company already known to be on a supported ATS, not just
+        // Adzuna's own results for this one run.
+        const directPollResult = await runDirectPollPass();
+        return NextResponse.json({ ok: discoveryResult.ok, result: { ...discoveryResult, directPoll: directPollResult } });
       }
       case "scoreNow": {
         const result = await scoreNewPostings({ limit: 200 });

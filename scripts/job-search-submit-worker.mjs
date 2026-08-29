@@ -3,6 +3,7 @@
 // on a Railway Cron Schedule (see the plan doc for the recommended `*/10 * * * *`
 // cadence) rather than looping internally.
 import { submitApplication } from "../app/lib/jobSearchAdapters/index.js";
+import { resolvePostingForSubmission } from "../app/lib/jobSearchAdapters/atsResolver.js";
 import { insertApplicationAttempt } from "../app/lib/jobSearchApplicationStore.js";
 import { getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
 import { listPostingsByStatus, updatePostingScore } from "../app/lib/jobSearchPostingsStore.js";
@@ -40,10 +41,18 @@ try {
     const resumeWithBlob = defaultResume ? await getResumeById(defaultResume.id, { includeBlob: true }) : null;
 
     for (const posting of approved) {
-      console.log(`Submitting: "${posting.title}" at ${posting.companyName} (${posting.atsType})...`);
+      // A discovery-sourced posting is always tagged 'external' until
+      // something resolves its real ATS — this is that resolution, shared
+      // with the auto-apply path, so a human-approved posting doesn't
+      // permanently report "unsupported ATS" just because nobody ever
+      // looked. Cached on the posting row after the first attempt.
+      const { atsType, applyUrl } = await resolvePostingForSubmission(posting);
+      const resolvedPosting = { ...posting, atsType, applyUrl };
 
-      const result = await submitApplication(posting.atsType, {
-        posting,
+      console.log(`Submitting: "${posting.title}" at ${posting.companyName} (${atsType})...`);
+
+      const result = await submitApplication(atsType, {
+        posting: resolvedPosting,
         profile,
         resumeBuffer: resumeWithBlob?.fileBlob || null,
         resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
@@ -56,8 +65,8 @@ try {
         postingId: posting.id,
         companyName: posting.companyName,
         jobTitle: posting.title,
-        atsType: posting.atsType,
-        applyUrl: posting.applyUrl,
+        atsType,
+        applyUrl,
         resumeId: defaultResume?.id || null,
         resumeLabel: defaultResume?.label || "",
         submittedAnswers: result.submittedAnswers,

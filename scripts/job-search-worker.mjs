@@ -1,9 +1,12 @@
-// Runs Adzuna keyword discovery (the sole posting source — no watchlist) and
-// scores whatever's new. Run-once script, meant to be triggered on a Railway
-// Cron Schedule (see the plan doc for the recommended `*/15 * * * *` cadence)
-// rather than looping internally.
+// Runs Adzuna keyword discovery, direct-polls every company the system has
+// auto-discovered a supported ATS board for (see jobSearchCompanyDirectory.js
+// — self-populating, never a manually-typed list), and scores whatever's
+// new. Run-once script, meant to be triggered on a Railway Cron Schedule
+// (see the plan doc for the recommended `*/15 * * * *` cadence) rather than
+// looping internally.
 import { getDatabaseSizeMb, getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
 import { runDiscoveryPass, shouldRunDiscovery } from "../app/lib/jobSearchDiscovery.js";
+import { runDirectPollPass } from "../app/lib/jobSearchDirectPoll.js";
 import { cleanupOldPostings } from "../app/lib/jobSearchPostingsStore.js";
 import { scoreNewPostings } from "../app/lib/jobSearchScoringPipeline.js";
 import { getFindSettings } from "../app/lib/jobSearchSettingsStore.js";
@@ -49,10 +52,24 @@ try {
   if (shouldRunDiscovery(findSettings)) {
     const result = await runDiscoveryPass(findSettings);
     if (result.ok) {
-      console.log(`[discovery] Adzuna (${findSettings.discoveryCountry}): ${result.found} found, ${result.created} new.`);
+      console.log(
+        `[discovery] Adzuna (${findSettings.discoveryCountry}): ${result.found} found, ${result.created} new, ` +
+        `${result.companiesProbed} new companies probed (${result.companiesFound} matched a supported ATS).`
+      );
     } else {
       console.warn(`[discovery] Skipped: ${result.reason}`);
     }
+  }
+
+  // Direct ATS polling has no meaningful free-tier budget to protect (unlike
+  // Adzuna) — every known company's board is checked on every run, same
+  // cadence the old watchlist used, just self-populated instead of typed in.
+  const directPoll = await runDirectPollPass();
+  if (directPoll.companiesTotal > 0) {
+    console.log(
+      `[direct-poll] ${directPoll.companiesPolled}/${directPoll.companiesTotal} companies polled directly, ` +
+      `${directPoll.created} new posting(s), ${directPoll.errors} error(s).`
+    );
   }
 
   console.log("Scoring new postings (hard filters -> embedding rank -> LLM rubric)...");
