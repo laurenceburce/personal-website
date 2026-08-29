@@ -23,6 +23,17 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
   const answers = application.submittedAnswers || {};
   const scoreSnapshot = application.scoreSnapshot || {};
 
+  // "Retry submission" resets the underlying posting back to 'approved' so
+  // the submit-worker cron picks it up again — it never touches THIS row
+  // (each attempt is its own permanent history entry). Without checking the
+  // posting's current live status, a retried row just sat there still
+  // showing its old Failed/Needs manual review badge with nothing anywhere
+  // indicating a new attempt was actually queued.
+  const retryQueued = application.isLatestAttemptForPosting && application.postingStatus === "approved";
+  const superseded = application.isLatestAttemptForPosting === false;
+  const canRetry = (application.submissionStatus === "failed" || application.submissionStatus === "needs_manual_review")
+    && !retryQueued && !superseded;
+
   return (
     <>
       <tr className="job-search-row" onClick={() => setExpanded((v) => !v)}>
@@ -34,6 +45,8 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
           <Badge text={application.submissionStatus} tone={statusTone(application.submissionStatus)} />
           {" "}
           <Badge text={application.autoApplied ? "Auto" : "Manual"} />
+          {retryQueued ? <> <Badge text="Retry queued — waiting for worker" tone="warn" /></> : null}
+          {superseded ? <> <Badge text="Superseded by a newer attempt" tone="neutral" /></> : null}
         </td>
         <td>{application.resumeLabel || "—"}</td>
         <td>{formatDate(application.submittedAt || application.attemptedAt)}</td>
@@ -79,7 +92,7 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
                       onChange={(e) => setNote(e.target.value)}
                     />
                     <button type="button" disabled={isBusy} onClick={() => onUpdateNote(application.id, note)}>Save note</button>
-                    {(application.submissionStatus === "failed" || application.submissionStatus === "needs_manual_review") ? (
+                    {canRetry ? (
                       <button type="button" disabled={isBusy} onClick={() => onRetry(application.id)}>Retry submission</button>
                     ) : null}
                     <button type="button" disabled={isBusy} onClick={() => onDelete(application.id)}>Delete</button>
