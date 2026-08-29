@@ -1,6 +1,6 @@
 "use client";
 
-import { Badge, Metric } from "./JobSearchUi";
+import { atsTypeLabel, Badge, Metric } from "./JobSearchUi";
 
 // Displayed in pipeline order, not alphabetical, so the flow reads left-to-right
 // the same way a posting actually moves through it.
@@ -146,7 +146,7 @@ export default function OverviewPanel({
                     <td>{posting.llmOverallScore != null ? posting.llmOverallScore.toFixed(1) : "—"}</td>
                     <td>{timeAgo(posting.updatedAt)}</td>
                     <td className="job-search-row-actions">
-                      {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">Posting</a> : "—"}
+                      {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(posting.atsType)}</a> : "—"}
                     </td>
                   </tr>
                 ))}

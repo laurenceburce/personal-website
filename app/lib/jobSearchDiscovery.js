@@ -13,6 +13,7 @@
 // see shouldRunDiscovery() — regardless of how often the poll cron itself runs.
 import { computeContentHash, guessRemoteType, guessSeniority, MAX_DESCRIPTION_TEXT_CHARS, stripHtml } from "./jobSearchAtsSources.js";
 import { discoverNewCompanies } from "./jobSearchCompanyDirectory.js";
+import { runHardFilters } from "./jobSearchHardFilters.js";
 import { upsertPosting } from "./jobSearchPostingsStore.js";
 import { markDiscoveryRun } from "./jobSearchSettingsStore.js";
 
@@ -172,9 +173,23 @@ export async function runDiscoveryPass(findSettings) {
     if (result.isNew) created += 1;
   }
 
+  // Only companies whose Adzuna-matched posting would ALSO clear the hard
+  // filter get probed — Adzuna's own keyword match can be looser than ours
+  // (its full-text search matched something, not necessarily a real title
+  // fit), and a company only makes it into the directory because of ONE
+  // posting here; nothing about that posting says the other 50 roles on
+  // their board (if they even use Greenhouse/Lever/Ashby/Workable at all)
+  // are relevant. Confirmed live: without this, companies whose one loosely-
+  // matched posting slipped through Adzuna's search got direct-polled for
+  // their entire (usually unrelated) business ever after — see
+  // jobSearchDirectPoll.js's own hard-filter for the other half of this fix.
+  const relevantCompanyNames = jobs
+    .filter((job) => runHardFilters(job, findSettings).passed)
+    .map((job) => job.companyName);
+
   // Best-effort and rate-limited (see discoverNewCompanies) — a probing
   // hiccup here should never fail the discovery run that already succeeded.
-  const companyDiscovery = await discoverNewCompanies(jobs.map((job) => job.companyName)).catch(() => ({ probed: 0, found: 0 }));
+  const companyDiscovery = await discoverNewCompanies(relevantCompanyNames).catch(() => ({ probed: 0, found: 0 }));
 
   await markDiscoveryRun();
   return { ok: true, found: jobs.length, created, companiesProbed: companyDiscovery.probed, companiesFound: companyDiscovery.found };

@@ -7,14 +7,32 @@
 // self-populated by jobSearchCompanyProbe.js as new names show up in Adzuna
 // results, never typed in by hand. Every posting created this way already
 // carries its real ats_type — no lazy per-posting resolution ever needed.
+//
+// Unlike Adzuna (which only ever returns keyword-matched results in the
+// first place — the `what_or` query narrows at the source), a company's ATS
+// board has no such narrowing: fetchAtsJobs() returns EVERY open role at
+// that company, software or not. A company only ends up in the directory
+// because ONE of their postings once matched an Adzuna search (see
+// jobSearchDiscovery.js), which says nothing about the other 50 roles on
+// their board. Confirmed live: this was pulling baristas, servers, and
+// veterinarians into the pipeline from companies whose one Adzuna-matched
+// posting happened to be IT-adjacent. Hard-filtering here — before ever
+// storing a row — is a deliberate deviation from Adzuna's own "store
+// everything, even filtered_out, for auditability" behavior: that rationale
+// was written for a keyword-narrowed source, not a company's entire
+// unrelated business.
+import { runHardFilters } from "./jobSearchHardFilters.js";
 import { fetchAtsJobs } from "./jobSearchAtsSources.js";
 import { listPollableCompanies, recordCompanyPollResult } from "./jobSearchCompanyDirectory.js";
 import { upsertPosting } from "./jobSearchPostingsStore.js";
+import { getFindSettings } from "./jobSearchSettingsStore.js";
 
 export async function runDirectPollPass() {
   const companies = await listPollableCompanies();
+  const findSettings = await getFindSettings();
   let created = 0;
   let polled = 0;
+  let skipped = 0;
   let errors = 0;
 
   for (const company of companies) {
@@ -26,6 +44,10 @@ export async function runDirectPollPass() {
       });
 
       for (const job of jobs) {
+        if (!runHardFilters(job, findSettings).passed) {
+          skipped += 1;
+          continue;
+        }
         const result = await upsertPosting(job);
         if (result.isNew) created += 1;
       }
@@ -38,5 +60,5 @@ export async function runDirectPollPass() {
     }
   }
 
-  return { companiesTotal: companies.length, companiesPolled: polled, created, errors };
+  return { companiesTotal: companies.length, companiesPolled: polled, created, skipped, errors };
 }

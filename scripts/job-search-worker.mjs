@@ -68,7 +68,7 @@ try {
   if (directPoll.companiesTotal > 0) {
     console.log(
       `[direct-poll] ${directPoll.companiesPolled}/${directPoll.companiesTotal} companies polled directly, ` +
-      `${directPoll.created} new posting(s), ${directPoll.errors} error(s).`
+      `${directPoll.created} new posting(s), ${directPoll.skipped} irrelevant role(s) skipped, ${directPoll.errors} error(s).`
     );
   }
 

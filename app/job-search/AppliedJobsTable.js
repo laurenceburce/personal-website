@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
-import { Badge } from "./JobSearchUi";
+import { atsTypeLabel, Badge } from "./JobSearchUi";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -38,7 +38,7 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry }) {
         <td>{application.resumeLabel || "—"}</td>
         <td>{formatDate(application.submittedAt || application.attemptedAt)}</td>
         <td className="job-search-row-actions" onClick={(e) => e.stopPropagation()}>
-          <a href={application.applyUrl} target="_blank" rel="noreferrer">Posting</a>
+          <a href={application.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(application.atsType)}</a>
           {application.hasScreenshot ? (
             <a href={`/api/job-search/applications/${application.id}/screenshot`} target="_blank" rel="noreferrer">Screenshot</a>
           ) : null}

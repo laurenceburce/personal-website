@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
-import { Badge, scamBadgeTone } from "./JobSearchUi";
+import { atsTypeLabel, Badge, scamBadgeTone } from "./JobSearchUi";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -44,7 +44,7 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
         </td>
         <td>{formatDate(posting.postedAt)}</td>
         <td className="job-search-row-actions" onClick={(e) => e.stopPropagation()}>
-          {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">Posting</a> : null}
+          {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(posting.atsType)}</a> : null}
           <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>Approve</button>
           <button type="button" disabled={isBusy} onClick={() => onReject(posting.id, note)}>Reject</button>
           <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>

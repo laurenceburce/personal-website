@@ -45,6 +45,27 @@ export function scamBadgeTone(level) {
   return "neutral";
 }
 
+const ATS_TYPE_LABELS = {
+  greenhouse: "Greenhouse",
+  lever: "Lever",
+  ashby: "Ashby",
+  workable: "Workable",
+  smartrecruiters: "SmartRecruiters",
+  workday: "Workday",
+  icims: "iCIMS",
+  oracle_taleo: "Oracle/Taleo",
+  external: "External"
+};
+
+// Link text for "go to the actual posting" — shows which ATS it's really on
+// instead of a generic "Posting" label. A discovery-sourced posting stays
+// "External" until something actually resolves it (auto-apply, or a human
+// approving it) — that's an honest reflection of what's currently known, not
+// a placeholder.
+export function atsTypeLabel(atsType) {
+  return ATS_TYPE_LABELS[atsType] || "External";
+}
+
 export async function callJobSearchAction(endpoint, action, data) {
   const response = await fetch(endpoint, {
     method: "POST",
