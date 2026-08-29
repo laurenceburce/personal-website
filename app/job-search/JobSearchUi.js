@@ -54,14 +54,18 @@ const ATS_TYPE_LABELS = {
   workday: "Workday",
   icims: "iCIMS",
   oracle_taleo: "Oracle/Taleo",
-  external: "External"
+  // Adzuna-sourced postings are stored with ats_type='external' until
+  // something actually resolves the real platform (auto-apply, or a human
+  // approving it) — labeled "Adzuna" (not the generic "External" fallback
+  // below) so the source is obvious at a glance, distinct from a posting
+  // found via direct-poll of a company's own board.
+  external: "Adzuna"
 };
 
 // Link text for "go to the actual posting" — shows which ATS it's really on
-// instead of a generic "Posting" label. A discovery-sourced posting stays
-// "External" until something actually resolves it (auto-apply, or a human
-// approving it) — that's an honest reflection of what's currently known, not
-// a placeholder.
+// (or which discovery source, for an unresolved one) instead of a generic
+// "Posting" label. The bare "External" fallback is only for a genuinely
+// unmapped/unexpected ats_type value, not the normal Adzuna case above.
 export function atsTypeLabel(atsType) {
   return ATS_TYPE_LABELS[atsType] || "External";
 }

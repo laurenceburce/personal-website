@@ -220,11 +220,24 @@ export default function OverviewPanel({
   // Read-only — these are the conditions that already silently gate what
   // each worker actually does today (see jobSearchDiscovery.js/
   // jobSearchAutoApply.js); surfaced here so "why didn't it do anything"
-  // never requires reading the source.
+  // never requires reading the source. The poll worker actually runs two
+  // distinct things on every tick (see the module doc-comment at the top of
+  // jobSearchDiscovery.js/jobSearchDirectPoll.js) — labeled here so it's
+  // clear which rule governs which: Discovery (Adzuna keyword search, finds
+  // NEW companies/postings, throttled — Adzuna's free tier has a real
+  // rate limit) vs Direct-poll (re-checks companies already known, no
+  // throttle — the ATS platforms themselves showed no rate limiting).
   const pollRules = [
-    { label: "Adzuna API keys configured", ok: adzunaConfigured },
-    { label: `Discovery ${discoveryEnabled ? "enabled" : "disabled"} in Job Find Settings`, ok: discoveryEnabled },
-    { label: `Last discovery run: ${findSettings?.discoveryLastRunAt ? timeAgo(findSettings.discoveryLastRunAt) : "never"}`, ok: null },
+    { label: "Discovery: Adzuna API keys configured", ok: adzunaConfigured },
+    {
+      label: `Discovery: ${discoveryEnabled ? "enabled" : "disabled"} in Job Find Settings (every ~${findSettings?.discoveryIntervalMinutes || 60}m when it runs)`,
+      ok: discoveryEnabled
+    },
+    { label: `Discovery: last ran ${findSettings?.discoveryLastRunAt ? timeAgo(findSettings.discoveryLastRunAt) : "never"}`, ok: null },
+    {
+      label: `Direct-poll: ${companyDirectoryStats?.pollableCompanies ?? 0} companies on the roster, checked on every run (no throttle)`,
+      ok: null
+    },
     { label: `Gemini calls today: ${usagePct}/${maxLlmCallsPerDay ?? "—"}`, ok: maxLlmCallsPerDay ? usagePct < maxLlmCallsPerDay : null },
     { label: `Job-search DB size: ${dbSizeMb} MB`, ok: null }
   ];
@@ -247,6 +260,13 @@ export default function OverviewPanel({
         <header className="job-search-panel-header">
           <h2>Workers</h2>
         </header>
+        <p className="job-search-panel-hint">
+          The poll worker runs two distinct things on every cron tick, at two different cadences:
+          Discovery searches Adzuna by keyword for new postings and new companies (throttled — Adzuna's
+          free tier has a real rate limit), while Direct-poll re-checks every company already known from
+          past discovery straight against its own ATS board (no throttle — runs on every tick). The submit
+          worker is separate again: it only submits postings you've approved and evaluates auto-apply.
+        </p>
         <div className="job-search-worker-grid">
           <WorkerCard worker={pollWorker} rules={pollRules} saving={saving} now={now} onToggle={onToggleWorker} />
           <WorkerCard worker={submitWorker} rules={submitRules} saving={saving} now={now} onToggle={onToggleWorker} />
@@ -305,6 +325,11 @@ export default function OverviewPanel({
         <header className="job-search-panel-header">
           <h2>Recent Discovery Runs</h2>
         </header>
+        <p className="job-search-panel-hint">
+          One row per poll-worker run. "Discovery (Adzuna)" is the keyword search for new postings/companies
+          — often shows "Skipped" since it only actually runs once per hour by default. "Direct-poll" and
+          "By ATS" are the companies already on the roster, checked fresh every run regardless.
+        </p>
         {(!discoveryRuns || discoveryRuns.length === 0) ? (
           <p className="job-search-empty">No discovery/poll runs recorded yet.</p>
         ) : (
