@@ -1,13 +1,17 @@
 // Picks up every posting at status='approved', runs it through the matching
-// ATS adapter, and records the result. Run-once script, meant to be triggered
-// on a Railway Cron Schedule (see the plan doc for the recommended `*/10 * * * *`
-// cadence) rather than looping internally.
+// ATS adapter, and records the result. Also runs auto-apply (see below) —
+// this is the ONLY place that does, since it's the only Railway service
+// actually provisioned with Playwright's browser binaries, via its own
+// Docker image. Run-once script, meant to be triggered on a Railway Cron
+// Schedule (see the plan doc for the recommended `*/10 * * * *` cadence)
+// rather than looping internally.
 import { submitApplication } from "../app/lib/jobSearchAdapters/index.js";
 import { resolvePostingForSubmission } from "../app/lib/jobSearchAdapters/atsResolver.js";
+import { evaluateAutoApply } from "../app/lib/jobSearchAutoApply.js";
 import { insertApplicationAttempt } from "../app/lib/jobSearchApplicationStore.js";
 import { getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
 import { listPostingsByStatus, updatePostingScore } from "../app/lib/jobSearchPostingsStore.js";
-import { getDefaultResume, getProfile, getResumeById } from "../app/lib/jobSearchSettingsStore.js";
+import { getDefaultResume, getFindSettings, getProfile, getResumeById } from "../app/lib/jobSearchSettingsStore.js";
 
 if (!isJobSearchDbConfigured()) {
   console.error("JOB_SEARCH_DATABASE_URL, DATABASE_URL, or MYSQL_URL is required.");
@@ -93,6 +97,37 @@ try {
         console.log(`  -> ${applicationStatus}`);
       } catch (error) {
         console.error(`  -> failed to process "${posting.title}" at ${posting.companyName}:`, error?.message || error);
+      }
+    }
+  }
+
+  // Auto-apply: opt-in, evaluated only for postings already sitting at
+  // pending_review (scorePosting() itself deliberately never touches this —
+  // see jobSearchScoringPipeline.js). A posting here already has its score/
+  // match/scam fields persisted from scoring, so no extra context needs to
+  // be attached before handing it to evaluateAutoApply().
+  const findSettings = await getFindSettings();
+  if (findSettings.autoApplyEnabled) {
+    const pendingReview = await listPostingsByStatus("pending_review", { limit: 20, orderBy: "score" });
+    console.log(`Auto-apply enabled — evaluating ${pendingReview.length} pending-review posting(s).`);
+
+    if (pendingReview.length > 0) {
+      const profile = await getProfile();
+      for (const posting of pendingReview) {
+        try {
+          const result = await evaluateAutoApply({ posting, findSettings, profile });
+          await updatePostingScore(posting.id, {
+            status: result.status,
+            autoApplySkipReason: result.skipReason || null,
+            decisionNote: result.skipDetail || (result.status === "submitted" ? "Auto-applied." : "")
+          });
+          console.log(`  auto-apply "${posting.title}" at ${posting.companyName} -> ${result.status}${result.skipReason ? ` (${result.skipReason})` : ""}`);
+        } catch (error) {
+          // Never lose a posting that already earned pending_review over an
+          // auto-apply bug/infra error — worst case, a human sees it in the
+          // review queue exactly like auto-apply was never on.
+          console.error(`  auto-apply failed for "${posting.title}" at ${posting.companyName}:`, error?.message || error);
+        }
       }
     }
   }

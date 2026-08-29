@@ -1,10 +1,9 @@
-import { evaluateAutoApply } from "./jobSearchAutoApply.js";
 import { runHardFilters } from "./jobSearchHardFilters.js";
 import { cosineSimilarity, embedText, getEmbeddingModel, isJobSearchLlmConfigured, scoreJob } from "./jobSearchLlm.js";
 import { listPostingsByStatus, updatePostingScore } from "./jobSearchPostingsStore.js";
 import { assessScamRisk } from "./jobSearchScamDetection.js";
 import { SCORE_DIMENSIONS, SCORE_WEIGHTS } from "./jobSearchScoringConfig.js";
-import { getDefaultResume, getFindSettings, getProfile, saveProfileEmbeddingCache } from "./jobSearchSettingsStore.js";
+import { getDefaultResume, getFindSettings, saveProfileEmbeddingCache } from "./jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "./jobSearchUsageStore.js";
 
 const POSTING_EMBEDDING_CHARS = 8000;
@@ -137,40 +136,21 @@ export async function scorePosting(posting, context = {}) {
     scamRiskFlags: scamRisk.flags
   });
 
-  // Auto-apply: opt-in, evaluated only once a posting has cleared the
-  // ordinary human-review bar above. Never runs for scored_low — auto-apply
-  // is strictly an accelerant on top of the existing review-queue bar, never
-  // a way around it.
-  if (nextStatus === "pending_review" && findSettings.autoApplyEnabled) {
-    const profile = context.profile || await getProfile();
-    const autoApplyResult = await evaluateAutoApply({
-      posting: {
-        ...posting,
-        llmOverallScore: overall,
-        embeddingSimilarity: similarity,
-        scamRiskScore: scamRisk.score,
-        scamRiskLevel: scamRisk.level
-      },
-      findSettings,
-      profile
-    }).catch((error) => {
-      // Auto-apply failing outright (bug, infra error) must never lose a
-      // posting that already earned pending_review — worst case, a human
-      // sees it in the review queue exactly like auto-apply was never on.
-      console.error(`[jobSearchScoringPipeline] auto-apply evaluation failed for posting ${posting.id}:`, error?.message || error);
-      return null;
-    });
-
-    if (autoApplyResult) {
-      await updatePostingScore(posting.id, {
-        status: autoApplyResult.status,
-        autoApplySkipReason: autoApplyResult.skipReason || null,
-        decisionNote: autoApplyResult.skipDetail || (autoApplyResult.status === "submitted" ? "Auto-applied." : "")
-      });
-      return { status: autoApplyResult.status, overall, scamRisk };
-    }
-  }
-
+  // Auto-apply evaluation deliberately does NOT happen here, even though a
+  // posting reaching pending_review is exactly the condition it fires on —
+  // it needs a real Playwright browser (jobSearchAutoApply.js ->
+  // atsResolver.js -> `playwright`), and this function runs from contexts
+  // that can't provide one: the main web app's API routes (Score Now,
+  // Re-score) and the regular poll-worker cron, neither of which has
+  // Playwright's browser binaries installed — only the separate
+  // job-search-submit-worker service does, via its own Docker image.
+  // Confirmed live: importing that chain from here once broke the main
+  // app's production build outright ("Cannot find module .../playwright-
+  // core/browsers.json"), not just failed at the point of actually launching
+  // a browser. Auto-apply now runs as its own pass inside
+  // scripts/job-search-submit-worker.mjs, over postings already sitting at
+  // pending_review — same outcome, just from the one place that can
+  // actually do it.
   return { status: nextStatus, overall, scamRisk };
 }
 
@@ -181,7 +161,6 @@ export async function scorePosting(posting, context = {}) {
 // whichever rows happen to have been touched most recently.
 export async function scoreNewPostings({ limit = 100 } = {}) {
   const findSettings = await getFindSettings();
-  const profile = await getProfile();
   const postings = await listPostingsByStatus("new", { limit, orderBy: "posted_at" });
 
   const tally = {
@@ -198,7 +177,7 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
 
   for (const posting of postings) {
     try {
-      const outcome = await scorePosting(posting, { findSettings, profile });
+      const outcome = await scorePosting(posting, { findSettings });
       if (outcome.budgetExceeded) {
         // Every remaining posting this run would hit the same cap — stop
         // iterating rather than re-checking (and logging) it postings.length
