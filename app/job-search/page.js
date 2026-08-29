@@ -30,6 +30,7 @@ async function getDashboardSnapshot() {
     reviewQueue,
     scoredLow,
     autoApplySkipped,
+    approvedWaiting,
     applications,
     statusCounts,
     discoveryRuns,
@@ -45,6 +46,11 @@ async function getDashboardSnapshot() {
     listPostingsByStatus("pending_review", { limit: 200 }),
     listPostingsByStatus("scored_low", { limit: 200 }),
     listPostingsByStatus("skipped_auto_apply", { limit: 200 }),
+    // Approved postings sat with no dashboard visibility at all between
+    // approval and the submit-worker actually picking them up — a human
+    // approving one had no way to see it again until it either succeeded or
+    // failed. Shown as its own Review Queue view, tagged "Waiting for worker".
+    listPostingsByStatus("approved", { limit: 200, orderBy: "score" }),
     listApplications({ limit: 200 }),
     countPostingsByStatus(),
     listRecentDiscoveryRuns({ limit: 20 }),
@@ -55,7 +61,7 @@ async function getDashboardSnapshot() {
   ]);
 
   return {
-    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, applications,
+    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting, applications,
     statusCounts, discoveryRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
     adzunaConfigured: isAdzunaConfigured()
   };

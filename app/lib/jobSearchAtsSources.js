@@ -50,11 +50,55 @@ export function computeContentHash(title, descriptionText) {
 // role that's actually onsite.
 const STRONG_REMOTE_SIGNALS = /\b(fully remote|100% remote|remote[- ]first|remote position|remote role|work from home|work from anywhere|remote anywhere)\b/i;
 
-export function guessRemoteType(locationText, descriptionText) {
+// A "remote" role is often still geography-restricted ("fully remote within
+// European timezones", "remote, US-based only") — genuinely not the same as
+// remote-from-anywhere for a candidate outside that region. Confirmed live: a
+// Clera/Ashby posting located in Amsterdam said exactly "Fully remote within
+// European timezones" with no visa sponsorship — STRONG_REMOTE_SIGNALS alone
+// called that unrestricted "remote", which let it skip location filtering
+// entirely (see jobSearchHardFilters.js's remote_only/locations checks) for a
+// candidate who can't actually work it. This can't catch every phrasing (full
+// geographic-restriction parsing is out of reach for a regex), but it covers
+// the common ones: a region/country name appearing right next to the remote
+// claim, in either word order.
+const REGION_NAMES = "europe|european|emea|apac|apj|asia[- ]pacific|americas|latam|latin america|u\\.?s\\.?a?\\.?|united states|canada|u\\.?k\\.?|united kingdom|australia|india";
+const REGION_RESTRICTED_REMOTE = new RegExp(
+  `\\bremote\\b[^.]{0,60}\\b(within|in|based in|for candidates in)\\b[^.]{0,40}\\b(${REGION_NAMES})\\b` +
+  `|\\bremote\\b[^.]{0,60}\\b(${REGION_NAMES})[- ]based\\b` +
+  `|\\b(${REGION_NAMES})[- ]based\\b[^.]{0,30}\\bremote\\b`,
+  "i"
+);
+
+// Priority order, confirmed live to matter (not arbitrary):
+// 1. The location field itself saying remote/hybrid — a human typed this
+//    directly into the location field, the strongest signal available.
+// 2. An ATS platform's own structured remote flag (Ashby's isRemote,
+//    Workable's telecommuting), when the location field is silent on it —
+//    trusted in BOTH directions once it exists, not just the positive case.
+//    Confirmed live this catches what the free-text heuristic below can't:
+//    a Clera/Ashby "Staff Engineer" posting whose description said "This is
+//    NOT a remote role" still matched STRONG_REMOTE_SIGNALS on the bare
+//    phrase "remote role" (the regex has no concept of negation) — Ashby's
+//    own isRemote:false is what actually gets that one right.
+// 3. The free-text description heuristic, only once neither of the above
+//    gave an answer — kept to strong, explicit phrasings to avoid false-
+//    positiving on a JD that merely mentions "remote" in passing, and now
+//    also rejecting geography-restricted claims (see REGION_RESTRICTED_REMOTE
+//    above) so "fully remote within European timezones" doesn't count as
+//    unrestricted remote for a candidate who can't actually work it.
+// structuredRemote is deliberately NOT allowed to override step 1: a Cinder/
+// Ashby posting whose location field literally said "Remote: SF/NYC/London"
+// still had isRemote:false on that specific listing (a stale/inconsistent
+// checkbox on their own board) — the explicit location text wins over that.
+export function guessRemoteType(locationText, descriptionText, structuredRemote = null) {
   const text = String(locationText || "").toLowerCase();
   if (/remote/.test(text)) return "remote";
   if (/hybrid/.test(text)) return "hybrid";
-  if (descriptionText && STRONG_REMOTE_SIGNALS.test(descriptionText)) return "remote";
+  if (structuredRemote === true) return "remote";
+  if (structuredRemote === false) return "onsite";
+  if (descriptionText && STRONG_REMOTE_SIGNALS.test(descriptionText) && !REGION_RESTRICTED_REMOTE.test(descriptionText)) {
+    return "remote";
+  }
   if (text.trim()) return "onsite";
   return "unknown";
 }
@@ -161,7 +205,10 @@ export async function fetchAshbyJobs({ boardToken, companyName }) {
       title,
       department: job.department || "",
       locationText,
-      remoteType: job.isRemote ? "remote" : guessRemoteType(locationText, descriptionText),
+      // job.isRemote is Ashby's own structured flag — see guessRemoteType's
+      // priority-order comment for exactly how this, the location text, and
+      // the description heuristic are weighed against each other.
+      remoteType: guessRemoteType(locationText, descriptionText, job.isRemote),
       seniorityGuess: guessSeniority(title),
       salaryMin: comp?.minValue != null ? Math.round(Number(comp.minValue)) : null,
       salaryMax: comp?.maxValue != null ? Math.round(Number(comp.maxValue)) : null,
@@ -199,7 +246,8 @@ export async function fetchWorkableJobs({ boardToken, companyName }) {
       title,
       department: job.department || job.function || "",
       locationText,
-      remoteType: job.telecommuting ? "remote" : guessRemoteType(locationText, descriptionText),
+      // Same priority order as Ashby's isRemote above.
+      remoteType: guessRemoteType(locationText, descriptionText, job.telecommuting),
       seniorityGuess: guessSeniority(title),
       salaryMin: null,
       salaryMax: null,

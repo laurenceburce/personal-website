@@ -23,10 +23,16 @@ export function isJobSearchLlmConfigured() {
   return Boolean(getApiKey());
 }
 
+// Constructed once and reused — building a fresh client per call (the
+// previous behavior) doesn't do any network I/O itself, but there's no
+// reason to repeat even that small overhead on every single embed/score call
+// in a scoring run that can make several of these back to back.
+let cachedClient = null;
 function getClient() {
   const apiKey = getApiKey();
   if (!apiKey) throw new Error("GEMINI_API_KEY (or JOB_SEARCH_GEMINI_API_KEY) is not configured.");
-  return new GoogleGenAI({ apiKey });
+  if (!cachedClient) cachedClient = new GoogleGenAI({ apiKey });
+  return cachedClient;
 }
 
 export function getScoreModel() {

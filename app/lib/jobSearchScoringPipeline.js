@@ -30,13 +30,15 @@ function buildProfileQueryText(findSettings, resume) {
 // Cached on job_search_find_settings.profile_embedding, recomputed only when the
 // cache is empty or was built with a different embedding model than is
 // currently configured (findSettings/profile edits already null the cache out).
-async function getOrBuildProfileQueryEmbedding(findSettings) {
+// Takes the default resume as a param rather than fetching it itself — the
+// caller (scorePosting) already needs it for scoreJob() too, so fetching it
+// once and sharing it avoids a redundant DB round-trip on every re-score.
+async function getOrBuildProfileQueryEmbedding(findSettings, resume) {
   const currentModel = getEmbeddingModel();
   if (findSettings.profileEmbedding && findSettings.profileEmbeddingModel === currentModel) {
     return findSettings.profileEmbedding;
   }
 
-  const resume = await getDefaultResume();
   const queryText = buildProfileQueryText(findSettings, resume);
   if (!queryText.trim()) return null;
 
@@ -79,11 +81,17 @@ export async function scorePosting(posting, context = {}) {
     return { status: posting.status, reasons: ["Daily LLM call budget reached"], budgetExceeded: true };
   }
 
+  // Fetched once up front and shared — both the profile-embedding cache build
+  // (only on a cold/invalidated cache) and the LLM rubric call below need the
+  // resume text, and re-fetching it a second time for the same posting was a
+  // pure wasted DB round-trip.
+  const resume = await getDefaultResume();
+
   const embeddingModel = getEmbeddingModel();
   let embedding = null;
   let similarity = null;
   try {
-    const profileEmbedding = await getOrBuildProfileQueryEmbedding(findSettings);
+    const profileEmbedding = await getOrBuildProfileQueryEmbedding(findSettings, resume);
     if (profileEmbedding) {
       embedding = await embedText({
         text: `${posting.title}\n\n${(posting.descriptionText || "").slice(0, POSTING_EMBEDDING_CHARS)}`,
@@ -105,20 +113,25 @@ export async function scorePosting(posting, context = {}) {
     return { status: "below_threshold", similarity };
   }
 
-  const resume = await getDefaultResume();
-  const scoreResult = await scoreJob({ posting, findSettings, resumeText: resume?.parsedText });
+  // The LLM rubric call and the scam-risk check are fully independent of each
+  // other (scam-risk only ever reads the posting itself, never the LLM's
+  // scores) — run them concurrently instead of back to back. In the common
+  // case scam-risk has no RDAP lookup to do at all (see
+  // jobSearchScamDetection.js) and finishes near-instantly, so this mostly
+  // helps the less-common case where it does have one to make (up to an 8s
+  // timeout) by overlapping it with the LLM call instead of adding to it.
+  const [scoreResult, scamRisk] = await Promise.all([
+    scoreJob({ posting, findSettings, resumeText: resume?.parsedText }),
+    assessScamRisk(posting).catch((error) => {
+      // Scam risk is informational only — a failure here should never lose
+      // an otherwise-good LLM score.
+      console.error(`[jobSearchScoringPipeline] scam-risk check failed for posting ${posting.id}:`, error?.message || error);
+      return { score: 0, level: "low", flags: [] };
+    })
+  ]);
   await incrementLlmUsage("score");
   const overall = computeOverallScore(scoreResult.dimensionScores);
   const nextStatus = overall >= findSettings.minLlmScore ? "pending_review" : "scored_low";
-
-  // Scam risk is a pure rules+RDAP check, no LLM — informational only, so a
-  // failure here should never lose an otherwise-good LLM score.
-  let scamRisk = { score: 0, level: "low", flags: [] };
-  try {
-    scamRisk = await assessScamRisk(posting);
-  } catch (error) {
-    console.error(`[jobSearchScoringPipeline] scam-risk check failed for posting ${posting.id}:`, error?.message || error);
-  }
 
   await updatePostingScore(posting.id, {
     status: nextStatus,

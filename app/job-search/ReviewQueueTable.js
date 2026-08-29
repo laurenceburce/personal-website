@@ -36,7 +36,9 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
         </td>
         <td>{posting.llmOverallScore != null ? posting.llmOverallScore.toFixed(1) : "—"}</td>
         <td>
-          {posting.status === "skipped_auto_apply" ? (
+          {posting.status === "approved" ? (
+            <Badge text="Waiting for worker" tone="neutral" />
+          ) : posting.status === "skipped_auto_apply" ? (
             <Badge text={SKIP_REASON_LABELS[posting.autoApplySkipReason] || "Skipped"} tone="warn" />
           ) : (
             <Badge text={`${posting.scamRiskLevel || "low"}${posting.scamRiskScore ? ` (${posting.scamRiskScore})` : ""}`} tone={scamBadgeTone(posting.scamRiskLevel)} />
@@ -45,9 +47,13 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
         <td>{formatDate(posting.postedAt)}</td>
         <td className="job-search-row-actions" onClick={(e) => e.stopPropagation()}>
           {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(posting.atsType)}</a> : null}
-          <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>Approve</button>
+          {posting.status !== "approved" ? (
+            <>
+              <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>Approve</button>
+              <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>
+            </>
+          ) : null}
           <button type="button" disabled={isBusy} onClick={() => onReject(posting.id, note)}>Reject</button>
-          <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>
           <button type="button" disabled={isBusy} onClick={() => onMarkApplied(posting.id)}>Mark as Applied</button>
         </td>
       </tr>
@@ -114,10 +120,13 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   );
 }
 
-export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied }) {
+export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped, approvedWaiting, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied }) {
   const [selected, setSelected] = useState(new Set());
   const [view, setView] = useState("pending");
-  const list = view === "scoredLow" ? scoredLow : view === "autoSkipped" ? (autoApplySkipped || []) : postings;
+  const list = view === "scoredLow" ? scoredLow
+    : view === "autoSkipped" ? (autoApplySkipped || [])
+    : view === "approved" ? (approvedWaiting || [])
+    : postings;
   const isBusy = Boolean(saving);
 
   function toggleSelect(id) {
@@ -161,6 +170,9 @@ export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped
           </button>
           <button type="button" className={view === "autoSkipped" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoSkipped")}>
             Skipped auto-apply ({(autoApplySkipped || []).length})
+          </button>
+          <button type="button" className={view === "approved" ? "job-search-toggle-active" : ""} onClick={() => switchList("approved")}>
+            Waiting for worker ({(approvedWaiting || []).length})
           </button>
         </div>
       </header>
