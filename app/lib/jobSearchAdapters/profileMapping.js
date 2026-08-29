@@ -26,7 +26,11 @@ function splitName(fullName) {
 export const STANDARD_FIELD_RESOLVERS = [
   { test: (l) => l === "first name", resolve: (p) => splitName(p.fullName).first },
   { test: (l) => l === "last name", resolve: (p) => splitName(p.fullName).last },
-  { test: (l) => l === "full name" || l === "name", resolve: (p) => p.fullName },
+  // "Legal Name" confirmed live on a real Ashby form — without this, it fell
+  // through to the LLM free-text fallback, which answered truthfully but
+  // verbosely ("The candidate's legal name is Test Candidate.") instead of a
+  // clean field value, since it's not really a question needing explanation.
+  { test: (l) => l === "full name" || l === "name" || l === "legal name", resolve: (p) => p.fullName },
   { test: (l) => l === "email", resolve: (p) => p.email },
   { test: (l) => l === "phone", resolve: (p) => p.phone },
   { test: (l) => l === "country", resolve: (p) => p.country },

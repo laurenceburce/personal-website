@@ -59,7 +59,8 @@ try {
   const tally = await scoreNewPostings({ limit: 200 });
   console.log(
     `Scored ${tally.total}: ${tally.filteredOut} filtered out, ${tally.belowThreshold} below match threshold, ` +
-    `${tally.pendingReview} pending review, ${tally.scoredLow} scored low, ${tally.errors} errors` +
+    `${tally.pendingReview} pending review, ${tally.scoredLow} scored low, ${tally.autoSubmitted} auto-submitted, ` +
+    `${tally.autoSkipped} auto-apply skipped, ${tally.errors} errors` +
     (tally.budgetExceeded ? `, ${tally.budgetExceeded} deferred (daily LLM budget reached)` : "") + "."
   );
 

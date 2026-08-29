@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
+import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
@@ -172,6 +173,12 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
 
     const scope = await findFormScope(page);
     await scope.locator("label[for]").first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+
+    const blockerReason = await detectSubmissionBlocker(scope);
+    if (blockerReason) {
+      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+      return { status: "blocked", submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+    }
 
     if (resumeBuffer) {
       const uploaded = await uploadResumeFile(scope, resumeBuffer, resumeFileName);

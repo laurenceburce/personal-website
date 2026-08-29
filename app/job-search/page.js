@@ -25,6 +25,7 @@ async function getDashboardSnapshot() {
     defaultResume,
     reviewQueue,
     scoredLow,
+    autoApplySkipped,
     applications,
     statusCounts,
     recentActivity,
@@ -37,6 +38,7 @@ async function getDashboardSnapshot() {
     getDefaultResume(),
     listPostingsByStatus("pending_review", { limit: 200 }),
     listPostingsByStatus("scored_low", { limit: 200 }),
+    listPostingsByStatus("skipped_auto_apply", { limit: 200 }),
     listApplications({ limit: 200 }),
     countPostingsByStatus(),
     listRecentPostings({ limit: 25 }),
@@ -45,7 +47,7 @@ async function getDashboardSnapshot() {
   ]);
 
   return {
-    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, applications,
+    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, applications,
     statusCounts, recentActivity, llmUsage, dbSizeMb
   };
 }

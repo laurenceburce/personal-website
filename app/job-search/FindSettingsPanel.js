@@ -44,6 +44,11 @@ function toFormState(findSettings) {
     discoveryLocation: findSettings.discoveryLocation ?? "",
     discoveryCountry: findSettings.discoveryCountry ?? "us",
     discoveryIntervalMinutes: findSettings.discoveryIntervalMinutes ?? 60,
+    autoApplyEnabled: findSettings.autoApplyEnabled ?? false,
+    autoApplyMinScore: findSettings.autoApplyMinScore ?? 80,
+    autoApplyMinMatch: findSettings.autoApplyMinMatch ?? 0.65,
+    autoApplyMaxScamRisk: findSettings.autoApplyMaxScamRisk ?? 30,
+    autoApplyMaxAgeHours: findSettings.autoApplyMaxAgeHours ?? 24,
     excludedCompanies: toCsv(findSettings.excludedCompanies)
   };
 }
@@ -79,6 +84,11 @@ export default function FindSettingsPanel({ findSettings, saving, onSave, onRequ
       discoveryLocation: form.discoveryLocation,
       discoveryCountry: form.discoveryCountry,
       discoveryIntervalMinutes: Number(form.discoveryIntervalMinutes),
+      autoApplyEnabled: form.autoApplyEnabled,
+      autoApplyMinScore: Number(form.autoApplyMinScore),
+      autoApplyMinMatch: Number(form.autoApplyMinMatch),
+      autoApplyMaxScamRisk: Number(form.autoApplyMaxScamRisk),
+      autoApplyMaxAgeHours: Number(form.autoApplyMaxAgeHours),
       excludedCompanies: fromCsv(form.excludedCompanies, 160)
     });
   }
@@ -247,6 +257,77 @@ export default function FindSettingsPanel({ findSettings, saving, onSave, onRequ
               min="15"
               value={form.discoveryIntervalMinutes}
               onChange={(e) => setForm((f) => ({ ...f, discoveryIntervalMinutes: e.target.value }))}
+            />
+          </Field>
+
+          <p className="job-search-panel-hint">
+            How many results come back isn&apos;t a separate number to set — each run pages through
+            Adzuna&apos;s newest-first results until postings age past the &quot;Max posting age&quot;
+            limit above (or a safety ceiling of 500 results, whichever comes first), so it naturally
+            pulls more when there&apos;s more fresh volume and less when there isn&apos;t.
+          </p>
+        </fieldset>
+
+        <fieldset className="job-search-fieldset">
+          <legend>Auto-apply</legend>
+          <p className="job-search-panel-hint">
+            Off by default. When enabled, a posting that already clears the review-queue bar above is
+            evaluated against the stricter thresholds below; only if it passes every one of them does the
+            system submit it on its own, with nobody in the loop. Anything that doesn&apos;t clear a
+            threshold, hits a CAPTCHA or login wall, can&apos;t be resolved to a supported ATS
+            (Greenhouse/Lever/Ashby), or has a required field it can&apos;t confidently answer lands in
+            Review Queue &rarr; &quot;Skipped auto-apply&quot; with the specific reason instead — never
+            silently dropped, and always still approvable by hand from there.
+          </p>
+
+          <Field label="Enable auto-apply">
+            <input
+              type="checkbox"
+              checked={form.autoApplyEnabled}
+              onChange={(e) => setForm((f) => ({ ...f, autoApplyEnabled: e.target.checked }))}
+            />
+          </Field>
+
+          <Field label={`Minimum score to auto-apply: ${form.autoApplyMinScore} / 100 (independent of, and normally higher than, the review-queue minimum above)`}>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={form.autoApplyMinScore}
+              onChange={(e) => setForm((f) => ({ ...f, autoApplyMinScore: e.target.value }))}
+            />
+          </Field>
+
+          <Field label={`Minimum resume match to auto-apply: ${Number(form.autoApplyMinMatch).toFixed(2)} (embedding cosine similarity, 0-1)`}>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={form.autoApplyMinMatch}
+              onChange={(e) => setForm((f) => ({ ...f, autoApplyMinMatch: e.target.value }))}
+            />
+          </Field>
+
+          <Field label={`Maximum scam-risk score to auto-apply: ${form.autoApplyMaxScamRisk} / 100`}>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={form.autoApplyMaxScamRisk}
+              onChange={(e) => setForm((f) => ({ ...f, autoApplyMaxScamRisk: e.target.value }))}
+            />
+          </Field>
+
+          <Field label="Only auto-apply to postings newer than this many hours">
+            <input
+              type="number"
+              min="1"
+              max="8760"
+              value={form.autoApplyMaxAgeHours}
+              onChange={(e) => setForm((f) => ({ ...f, autoApplyMaxAgeHours: e.target.value }))}
             />
           </Field>
         </fieldset>

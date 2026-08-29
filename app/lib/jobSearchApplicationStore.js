@@ -16,6 +16,7 @@ export function mapApplicationRow(row) {
     errorMessage: row.error_message,
     atsConfirmationText: row.ats_confirmation_text,
     hasScreenshot: Boolean(row.has_screenshot),
+    autoApplied: Boolean(row.auto_applied),
     userNote: row.user_note || "",
     attemptedAt: row.attempted_at,
     submittedAt: row.submitted_at,
@@ -31,7 +32,7 @@ export async function listApplications({ limit = 200 } = {}) {
     // separately by the screenshot route (Milestone 5) when actually needed.
     `SELECT id, posting_id, company_name, job_title, ats_type, apply_url, resume_id, resume_label,
             submitted_answers, score_snapshot, submission_status, error_message, ats_confirmation_text,
-            (screenshot IS NOT NULL) AS has_screenshot, user_note, attempted_at, submitted_at, created_at, updated_at
+            (screenshot IS NOT NULL) AS has_screenshot, auto_applied, user_note, attempted_at, submitted_at, created_at, updated_at
      FROM job_search_applications
      ORDER BY attempted_at DESC
      LIMIT ?`,
@@ -46,7 +47,7 @@ export async function getApplicationById(id) {
   const [rows] = await pool.query(
     `SELECT id, posting_id, company_name, job_title, ats_type, apply_url, resume_id, resume_label,
             submitted_answers, score_snapshot, submission_status, error_message, ats_confirmation_text,
-            (screenshot IS NOT NULL) AS has_screenshot, user_note, attempted_at, submitted_at, created_at, updated_at
+            (screenshot IS NOT NULL) AS has_screenshot, auto_applied, user_note, attempted_at, submitted_at, created_at, updated_at
      FROM job_search_applications WHERE id = ? LIMIT 1`,
     [applicationId]
   );
@@ -76,7 +77,8 @@ export async function insertApplicationAttempt({
   submissionStatus,
   errorMessage,
   atsConfirmationText,
-  screenshotBuffer
+  screenshotBuffer,
+  autoApplied = false
 }) {
   const pool = requirePool(await ensureJobSearchSchema());
   const now = new Date();
@@ -85,8 +87,8 @@ export async function insertApplicationAttempt({
     `INSERT INTO job_search_applications
        (posting_id, company_name, job_title, ats_type, apply_url, resume_id, resume_label,
         submitted_answers, score_snapshot, submission_status, error_message, ats_confirmation_text,
-        screenshot, attempted_at, submitted_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        screenshot, auto_applied, attempted_at, submitted_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       cleanId(postingId, "Posting"),
       cleanText(companyName, 160),
@@ -101,6 +103,7 @@ export async function insertApplicationAttempt({
       cleanText(errorMessage, 500),
       cleanText(atsConfirmationText, 500),
       screenshotBuffer || null,
+      autoApplied ? 1 : 0,
       now,
       submissionStatus === "submitted" ? now : null,
       now,

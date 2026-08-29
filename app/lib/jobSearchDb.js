@@ -272,6 +272,12 @@ export const ensureJobSearchSchema = async () => {
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_country VARCHAR(4) NOT NULL DEFAULT 'us'");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_interval_minutes INT NULL");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_last_run_at DATETIME(3) NULL");
+      // discovery_max_results (a flat "how many results" count) was replaced
+      // by paginating Adzuna's date-sorted results until they age past
+      // max_posting_age_hours instead — the freshness window already
+      // configured for the hard filter, rather than an unrelated number the
+      // user had to separately guess at. See jobSearchDiscovery.js.
+      await runMigration(pool, "ALTER TABLE job_search_find_settings DROP COLUMN discovery_max_results");
 
       // Watchlist fully removed — discovery (Adzuna) is now the sole posting
       // source. DROP TABLE IF EXISTS is natively idempotent; the column drop
@@ -279,6 +285,24 @@ export const ensureJobSearchSchema = async () => {
       // the column above) would otherwise throw errno 1091 every time.
       await pool.query("DROP TABLE IF EXISTS job_search_watchlist");
       await runMigration(pool, "ALTER TABLE job_search_postings DROP COLUMN watchlist_id");
+
+      // Auto-apply: opt-in, all-or-nothing gate evaluated (see
+      // jobSearchAutoApply.js) only for postings that already cleared the
+      // ordinary pending_review bar. Deliberately separate, generally
+      // stricter thresholds from the base minLlmScore/resumeMatchThreshold
+      // used for the human review queue — defaults applied at the code level
+      // (see jobSearchSettingsStore.js) whenever a column is NULL.
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN auto_apply_enabled TINYINT(1) NOT NULL DEFAULT 0");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN auto_apply_min_score FLOAT NULL");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN auto_apply_min_match FLOAT NULL");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN auto_apply_max_scam_risk INT NULL");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN auto_apply_max_age_hours INT NULL");
+      // Recorded whenever auto-apply declines to submit on its own — never a
+      // silent drop, always one of the fixed AUTO_APPLY_SKIP_REASONS.
+      await runMigration(pool, "ALTER TABLE job_search_postings ADD COLUMN auto_apply_skip_reason VARCHAR(40) NULL");
+      // Audit trail: did a human approve this, or did auto-apply submit it
+      // with nobody in the loop? Surfaced as a badge in Applied Jobs.
+      await runMigration(pool, "ALTER TABLE job_search_applications ADD COLUMN auto_applied TINYINT(1) NOT NULL DEFAULT 0");
 
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.

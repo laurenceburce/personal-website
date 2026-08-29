@@ -140,6 +140,13 @@ function mapFindSettingsRow(row) {
     discoveryIntervalMinutes: row.discovery_interval_minutes == null ? 60 : Number(row.discovery_interval_minutes),
     discoveryLastRunAt: row.discovery_last_run_at,
     excludedCompanies: parseJsonColumn(row.excluded_companies, []),
+    // Auto-apply is opt-in (defaults false) with its own, generally stricter
+    // thresholds than the human-review bar above — see jobSearchAutoApply.js.
+    autoApplyEnabled: Boolean(row.auto_apply_enabled),
+    autoApplyMinScore: row.auto_apply_min_score == null ? 80 : Number(row.auto_apply_min_score),
+    autoApplyMinMatch: row.auto_apply_min_match == null ? 0.65 : Number(row.auto_apply_min_match),
+    autoApplyMaxScamRisk: row.auto_apply_max_scam_risk == null ? 30 : Number(row.auto_apply_max_scam_risk),
+    autoApplyMaxAgeHours: row.auto_apply_max_age_hours == null ? 24 : Number(row.auto_apply_max_age_hours),
     profileEmbedding: parseJsonColumn(row.profile_embedding),
     profileEmbeddingModel: row.profile_embedding_model,
     profileEmbeddingUpdatedAt: row.profile_embedding_updated_at,
@@ -163,6 +170,8 @@ export async function updateFindSettings(data) {
          seniority_levels = ?, salary_floor_usd = ?, max_posting_age_hours = ?,
          resume_match_threshold = ?, min_llm_score = ?, max_llm_calls_per_day = ?, retention_days = ?,
          discovery_enabled = ?, discovery_location = ?, discovery_country = ?, discovery_interval_minutes = ?,
+         auto_apply_enabled = ?, auto_apply_min_score = ?, auto_apply_min_match = ?,
+         auto_apply_max_scam_risk = ?, auto_apply_max_age_hours = ?,
          excluded_companies = ?, profile_embedding = NULL, profile_embedding_model = NULL,
          profile_embedding_updated_at = NULL, updated_at = ?
      WHERE id = 1`,
@@ -184,6 +193,11 @@ export async function updateFindSettings(data) {
       cleanText(data?.discoveryLocation, 160),
       cleanText(data?.discoveryCountry, 4, "us").toLowerCase(),
       Math.round(cleanFloat(data?.discoveryIntervalMinutes, 60, { min: 15, max: 1440 })),
+      data?.autoApplyEnabled ? 1 : 0,
+      cleanFloat(data?.autoApplyMinScore, 80, { min: 0, max: 100 }),
+      cleanFloat(data?.autoApplyMinMatch, 0.65, { min: 0, max: 1 }),
+      Math.round(cleanFloat(data?.autoApplyMaxScamRisk, 30, { min: 0, max: 100 })),
+      Math.round(cleanFloat(data?.autoApplyMaxAgeHours, 24, { min: 1, max: 8760 })),
       toJsonParam(cleanStringArray(data?.excludedCompanies, 200, 160)),
       now
     ]

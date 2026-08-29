@@ -12,6 +12,7 @@ const STATUS_ORDER = [
   { key: "pending_review", label: "Pending review" },
   { key: "approved", label: "Approved" },
   { key: "rejected", label: "Rejected" },
+  { key: "skipped_auto_apply", label: "Skipped auto-apply" },
   { key: "submitted", label: "Submitted" },
   { key: "failed", label: "Failed" },
   { key: "needs_manual_review", label: "Needs manual review" },
@@ -22,7 +23,7 @@ const STATUS_ORDER = [
 function statusTone(status) {
   if (["submitted", "approved", "pending_review"].includes(status)) return "success";
   if (["failed", "rejected"].includes(status)) return "danger";
-  if (["needs_manual_review", "scored_low", "below_threshold"].includes(status)) return "warn";
+  if (["needs_manual_review", "scored_low", "below_threshold", "skipped_auto_apply"].includes(status)) return "warn";
   return "neutral";
 }
 
@@ -125,6 +126,7 @@ export default function OverviewPanel({
                   <th>Status</th>
                   <th>Score</th>
                   <th>Updated</th>
+                  <th>Link</th>
                 </tr>
               </thead>
               <tbody>
@@ -137,6 +139,9 @@ export default function OverviewPanel({
                     <td><Badge text={posting.status.replace(/_/g, " ")} tone={statusTone(posting.status)} /></td>
                     <td>{posting.llmOverallScore != null ? posting.llmOverallScore.toFixed(1) : "—"}</td>
                     <td>{timeAgo(posting.updatedAt)}</td>
+                    <td className="job-search-row-actions">
+                      {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">Posting</a> : "—"}
+                    </td>
                   </tr>
                 ))}
               </tbody>

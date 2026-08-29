@@ -30,7 +30,11 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry }) {
           <strong>{application.jobTitle}</strong>
           <div className="job-search-cell-note">{application.companyName} · {application.atsType}</div>
         </td>
-        <td><Badge text={application.submissionStatus} tone={statusTone(application.submissionStatus)} /></td>
+        <td>
+          <Badge text={application.submissionStatus} tone={statusTone(application.submissionStatus)} />
+          {" "}
+          <Badge text={application.autoApplied ? "Auto" : "Manual"} />
+        </td>
         <td>{application.resumeLabel || "—"}</td>
         <td>{formatDate(application.submittedAt || application.attemptedAt)}</td>
         <td className="job-search-row-actions" onClick={(e) => e.stopPropagation()}>

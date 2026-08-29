@@ -9,6 +9,14 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+const SKIP_REASON_LABELS = {
+  unsupported_ats: "Unsupported ATS",
+  required_field_unknown: "Required field unknown",
+  captcha_or_login_required: "CAPTCHA / login required",
+  scam_risk_too_high: "Scam risk too high",
+  score_too_low: "Below auto-apply threshold"
+};
+
 function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, saving }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState("");
@@ -28,10 +36,15 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
         </td>
         <td>{posting.llmOverallScore != null ? posting.llmOverallScore.toFixed(1) : "—"}</td>
         <td>
-          <Badge text={`${posting.scamRiskLevel || "low"}${posting.scamRiskScore ? ` (${posting.scamRiskScore})` : ""}`} tone={scamBadgeTone(posting.scamRiskLevel)} />
+          {posting.status === "skipped_auto_apply" ? (
+            <Badge text={SKIP_REASON_LABELS[posting.autoApplySkipReason] || "Skipped"} tone="warn" />
+          ) : (
+            <Badge text={`${posting.scamRiskLevel || "low"}${posting.scamRiskScore ? ` (${posting.scamRiskScore})` : ""}`} tone={scamBadgeTone(posting.scamRiskLevel)} />
+          )}
         </td>
         <td>{formatDate(posting.postedAt)}</td>
         <td className="job-search-row-actions" onClick={(e) => e.stopPropagation()}>
+          {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">Posting</a> : null}
           <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>Approve</button>
           <button type="button" disabled={isBusy} onClick={() => onReject(posting.id, note)}>Reject</button>
           <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>
@@ -49,6 +62,10 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
                 className="job-search-expanded"
               >
                 <div className="job-search-expanded-inner" onClick={(e) => e.stopPropagation()}>
+                  {posting.status === "skipped_auto_apply" && posting.decisionNote ? (
+                    <p className="job-search-alert">Auto-apply skipped this: {posting.decisionNote}</p>
+                  ) : null}
+
                   {posting.llmSummary ? <p className="job-search-summary">{posting.llmSummary}</p> : null}
 
                   {posting.llmConcerns?.length > 0 && (
@@ -96,10 +113,10 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   );
 }
 
-export default function ReviewQueueTable({ postings, scoredLow, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore }) {
+export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore }) {
   const [selected, setSelected] = useState(new Set());
-  const [showScoredLow, setShowScoredLow] = useState(false);
-  const list = showScoredLow ? scoredLow : postings;
+  const [view, setView] = useState("pending");
+  const list = view === "scoredLow" ? scoredLow : view === "autoSkipped" ? (autoApplySkipped || []) : postings;
   const isBusy = Boolean(saving);
 
   function toggleSelect(id) {
@@ -115,8 +132,8 @@ export default function ReviewQueueTable({ postings, scoredLow, saving, onApprov
     setSelected((prev) => (prev.size === list.length ? new Set() : new Set(list.map((p) => p.id))));
   }
 
-  function switchList(showLow) {
-    setShowScoredLow(showLow);
+  function switchList(nextView) {
+    setView(nextView);
     setSelected(new Set());
   }
 
@@ -135,11 +152,14 @@ export default function ReviewQueueTable({ postings, scoredLow, saving, onApprov
       <header className="job-search-panel-header">
         <h2>Review Queue</h2>
         <div className="job-search-toggle-group">
-          <button type="button" className={!showScoredLow ? "job-search-toggle-active" : ""} onClick={() => switchList(false)}>
+          <button type="button" className={view === "pending" ? "job-search-toggle-active" : ""} onClick={() => switchList("pending")}>
             Pending review ({postings.length})
           </button>
-          <button type="button" className={showScoredLow ? "job-search-toggle-active" : ""} onClick={() => switchList(true)}>
+          <button type="button" className={view === "scoredLow" ? "job-search-toggle-active" : ""} onClick={() => switchList("scoredLow")}>
             Scored low ({scoredLow.length})
+          </button>
+          <button type="button" className={view === "autoSkipped" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoSkipped")}>
+            Skipped auto-apply ({(autoApplySkipped || []).length})
           </button>
         </div>
       </header>

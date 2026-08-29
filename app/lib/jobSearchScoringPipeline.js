@@ -1,3 +1,4 @@
+import { evaluateAutoApply } from "./jobSearchAutoApply.js";
 import { runHardFilters } from "./jobSearchHardFilters.js";
 import { cosineSimilarity, embedText, getEmbeddingModel, isJobSearchLlmConfigured, scoreJob } from "./jobSearchLlm.js";
 import { listPostingsByStatus, updatePostingScore } from "./jobSearchPostingsStore.js";
@@ -136,6 +137,40 @@ export async function scorePosting(posting, context = {}) {
     scamRiskFlags: scamRisk.flags
   });
 
+  // Auto-apply: opt-in, evaluated only once a posting has cleared the
+  // ordinary human-review bar above. Never runs for scored_low — auto-apply
+  // is strictly an accelerant on top of the existing review-queue bar, never
+  // a way around it.
+  if (nextStatus === "pending_review" && findSettings.autoApplyEnabled) {
+    const profile = context.profile || await getProfile();
+    const autoApplyResult = await evaluateAutoApply({
+      posting: {
+        ...posting,
+        llmOverallScore: overall,
+        embeddingSimilarity: similarity,
+        scamRiskScore: scamRisk.score,
+        scamRiskLevel: scamRisk.level
+      },
+      findSettings,
+      profile
+    }).catch((error) => {
+      // Auto-apply failing outright (bug, infra error) must never lose a
+      // posting that already earned pending_review — worst case, a human
+      // sees it in the review queue exactly like auto-apply was never on.
+      console.error(`[jobSearchScoringPipeline] auto-apply evaluation failed for posting ${posting.id}:`, error?.message || error);
+      return null;
+    });
+
+    if (autoApplyResult) {
+      await updatePostingScore(posting.id, {
+        status: autoApplyResult.status,
+        autoApplySkipReason: autoApplyResult.skipReason || null,
+        decisionNote: autoApplyResult.skipDetail || (autoApplyResult.status === "submitted" ? "Auto-applied." : "")
+      });
+      return { status: autoApplyResult.status, overall, scamRisk };
+    }
+  }
+
   return { status: nextStatus, overall, scamRisk };
 }
 
@@ -155,6 +190,8 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
     belowThreshold: 0,
     pendingReview: 0,
     scoredLow: 0,
+    autoSubmitted: 0,
+    autoSkipped: 0,
     errors: 0,
     budgetExceeded: 0
   };
@@ -175,6 +212,8 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
       else if (outcome.status === "below_threshold") tally.belowThreshold += 1;
       else if (outcome.status === "pending_review") tally.pendingReview += 1;
       else if (outcome.status === "scored_low") tally.scoredLow += 1;
+      else if (outcome.status === "submitted") tally.autoSubmitted += 1;
+      else if (outcome.status === "skipped_auto_apply") tally.autoSkipped += 1;
     } catch (error) {
       tally.errors += 1;
       console.error(`[jobSearchScoringPipeline] scoring failed for posting ${posting.id}:`, error?.message || error);

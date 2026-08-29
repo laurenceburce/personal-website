@@ -111,6 +111,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
           <ReviewQueueTable
             postings={snapshot.reviewQueue}
             scoredLow={snapshot.scoredLow}
+            autoApplySkipped={snapshot.autoApplySkipped}
             saving={saving}
             onApprove={(id) => runAction("/api/job-search/review-queue", "approve", { id }, "Approved.")}
             onReject={(id, note) => runAction("/api/job-search/review-queue", "reject", { id, note }, "Rejected.")}

@@ -19,7 +19,11 @@ const headless = process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false";
 
 function toApplicationStatus(adapterStatus) {
   if (adapterStatus === "submitted") return "submitted";
-  if (adapterStatus === "needs_manual_review") return "needs_manual_review";
+  // 'blocked' (CAPTCHA/anti-bot puzzle/login wall — see blockerDetection.js)
+  // is also routed to manual review here: automation correctly refused to
+  // push through it, so a human finishing the application by hand is exactly
+  // the right next step, same as an unanswerable required field.
+  if (adapterStatus === "needs_manual_review" || adapterStatus === "blocked") return "needs_manual_review";
   if (adapterStatus === "unsupported_ats") return "unsupported_ats";
   return "failed";
 }

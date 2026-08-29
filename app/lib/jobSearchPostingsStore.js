@@ -17,7 +17,7 @@ const PRE_DECISION_STATUSES = new Set(["new", "filtered_out", "below_threshold",
 // window. Deliberately excludes anything still relevant: pending_review,
 // approved, submitted, needs_manual_review, and failed (kept in case of retry)
 // are never touched here.
-const PRUNABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "rejected", "closed"];
+const PRUNABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "rejected", "closed", "skipped_auto_apply"];
 
 export function mapPostingRow(row) {
   return {
@@ -53,6 +53,7 @@ export function mapPostingRow(row) {
     scamRiskScore: row.scam_risk_score == null ? null : Number(row.scam_risk_score),
     scamRiskLevel: row.scam_risk_level,
     scamRiskFlags: parseJsonColumn(row.scam_risk_flags, []),
+    autoApplySkipReason: row.auto_apply_skip_reason,
     decidedAt: row.decided_at,
     decidedBy: row.decided_by,
     decisionNote: row.decision_note,
@@ -199,6 +200,17 @@ export async function updatePostingScore(id, patch) {
     assign("scam_risk_flags", toJsonParam(patch.scamRiskFlags || []));
   }
 
+  // Auto-apply outcome — set together whenever the pipeline itself decided
+  // (submitted/skipped) rather than a human via decidePosting(). decisionNote
+  // carries the specific detail (exact score/threshold, etc.); the reason
+  // code is what's filterable/badge-able in the UI.
+  if ("autoApplySkipReason" in patch) {
+    assign("auto_apply_skip_reason", patch.autoApplySkipReason ?? null);
+    assign("decision_note", String(patch.decisionNote || "").slice(0, 500));
+    assign("decided_at", now);
+    assign("decided_by", "auto-apply");
+  }
+
   values.push(postingId);
   await pool.query(`UPDATE job_search_postings SET ${setClauses.join(", ")} WHERE id = ?`, values);
   return { id: postingId };
@@ -269,7 +281,10 @@ export async function cleanupOldPostings(retentionDays) {
 // re-evaluates them against whatever Job Find Settings changes were just
 // made. Deliberately excludes 'rejected'/'closed' (human/terminal decisions,
 // never silently reopened) and 'scored' (mid-pipeline, not a rested state).
-const REQUEUABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low"];
+// 'skipped_auto_apply' is included since it's the same kind of automatic
+// (non-human) decision as the other three — a raised threshold or a fixed
+// adapter bug both warrant giving auto-apply another shot.
+const REQUEUABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "skipped_auto_apply"];
 
 export async function requeuePostingsForRescoring() {
   const pool = requirePool(await ensureJobSearchSchema());
