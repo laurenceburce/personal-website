@@ -283,9 +283,8 @@ function QueuePostingsTable({ postings }) {
 // Everything the submit worker will actually look at on its next run —
 // approved postings waiting their turn, plus (if auto-apply is on)
 // pending-review postings that already clear its free thresholds. Same
-// underlying data as the Review Queue's own "Waiting for worker"/
-// "Auto-Apply Queue" tabs, surfaced here as a quick-access popup right on
-// the card that's going to process them.
+// underlying data as Review's own "In Queue" tab, surfaced here as a
+// quick-access popup right on the card that's going to process them.
 function SubmitQueueTable({ approvedWaiting, autoApplyQueue }) {
   const approved = approvedWaiting || [];
   const autoQueue = autoApplyQueue || [];
@@ -532,9 +531,9 @@ export default function OverviewPanel({
       {historyModal === "submitQueue" ? (
         <HistoryModal
           title="Submit Worker — Current Queue"
-          hint={"Same data as the Review Queue's own \"Waiting for worker\"/\"Auto-Apply Queue\" tabs, shown here for "
-            + "quick access. The auto-apply list is a preview, not a guarantee — a posting can still get skipped for "
-            + "a reason only discoverable by actually attempting it."}
+          hint={"Same data as Review's own \"In Queue\" tab, shown here for quick access. The auto-apply portion is a "
+            + "preview, not a guarantee — a posting can still get skipped for a reason only discoverable by "
+            + "actually attempting it."}
           onClose={() => setHistoryModal(null)}
         >
           <SubmitQueueTable approvedWaiting={approvedWaiting} autoApplyQueue={autoApplyQueue} />

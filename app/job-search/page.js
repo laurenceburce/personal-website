@@ -54,12 +54,12 @@ async function getDashboardSnapshot() {
     // Approved postings sat with no dashboard visibility at all between
     // approval and the submit-worker actually picking them up — a human
     // approving one had no way to see it again until it either succeeded or
-    // failed. Shown as its own Review Queue view, tagged "Waiting for worker".
+    // failed. Shown in Review's "In Queue" tab, tagged "Waiting for worker".
     listPostingsByStatus("approved", { limit: 200, orderBy: "score" }),
     // Same gap, worse: a posting whose submission attempt (manual approval OR
-    // auto-apply) actually failed or needed manual review had NO Review
-    // Queue view at all until now — the only trace was on the application
-    // row in Applied Jobs, with no path back to act on the posting itself
+    // auto-apply) actually failed or needed manual review had NO Review view
+    // at all until now — the only trace was on the application row in
+    // Applied Jobs, with no path back to act on the posting itself
     // (re-approve, reject, mark applied by hand). See jobSearchPostingsStore
     // .js's new submissionNote handling for how the reason gets here.
     listPostingsByStatus("needs_manual_review", { limit: 200 }),
@@ -82,7 +82,7 @@ async function getDashboardSnapshot() {
   // A posting can still pass this preview and later get skipped for a
   // reason only discoverable by actually attempting it (unsupported ATS,
   // CAPTCHA, an unanswerable required field) — those only show up in the
-  // "Skipped auto-apply" tab once a real run has actually tried. Sorted by
+  // "Auto-apply Failed" tab once a real run has actually tried. Sorted by
   // score, matching the submit-worker's own processing order.
   const autoApplyQueue = findSettings.autoApplyEnabled
     ? reviewQueue

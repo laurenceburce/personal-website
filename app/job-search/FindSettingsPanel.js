@@ -98,7 +98,7 @@ export default function FindSettingsPanel({ findSettings, saving, onSave, onRequ
       <p className="job-search-panel-hint">
         Controls the hard filters (free, run before anything touches an LLM) and the thresholds that
         decide what reaches your review queue. Changes apply on the next poll — use &quot;Re-score&quot; on a
-        posting in the Review Queue to test them against something already collected.
+        posting in Review to test them against something already collected.
       </p>
 
       <form onSubmit={handleSubmit} className="job-search-form">
@@ -276,7 +276,7 @@ export default function FindSettingsPanel({ findSettings, saving, onSave, onRequ
             system submit it on its own, with nobody in the loop. Anything that doesn&apos;t clear a
             threshold, hits a CAPTCHA or login wall, can&apos;t be resolved to a supported ATS
             (Greenhouse/Lever/Ashby), or has a required field it can&apos;t confidently answer lands in
-            Review Queue &rarr; &quot;Skipped auto-apply&quot; with the specific reason instead — never
+            Review &rarr; &quot;Auto-apply Failed&quot; with the specific reason instead — never
             silently dropped, and always still approvable by hand from there.
           </p>
 

@@ -57,6 +57,8 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
         <td>
           {posting.status === "approved" ? (
             <Badge text="Waiting for worker" tone="neutral" />
+          ) : posting.isAutoApplyQueuePreview ? (
+            <Badge text="Auto-apply eligible" tone="success" />
           ) : posting.status === "skipped_auto_apply" ? (
             <Badge text={SKIP_REASON_LABELS[posting.autoApplySkipReason] || "Skipped"} tone="warn" />
           ) : posting.status === "needs_manual_review" ? (
@@ -66,7 +68,10 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
           ) : posting.status === "failed" ? (
             <Badge text="Failed" tone="danger" />
           ) : (
-            <Badge text={`${posting.scamRiskLevel || "low"}${posting.scamRiskScore ? ` (${posting.scamRiskScore})` : ""}`} tone={scamBadgeTone(posting.scamRiskLevel)} />
+            <>
+              {posting.status === "scored_low" ? <><Badge text="Scored low" tone="warn" /> </> : null}
+              <Badge text={`${posting.scamRiskLevel || "low"}${posting.scamRiskScore ? ` (${posting.scamRiskScore})` : ""}`} tone={scamBadgeTone(posting.scamRiskLevel)} />
+            </>
           )}
         </td>
         <td>{formatDate(posting.postedAt)}</td>
@@ -153,14 +158,28 @@ export default function ReviewQueueTable({
   saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied
 }) {
   const [selected, setSelected] = useState(new Set());
-  const [view, setView] = useState("pending");
-  const list = view === "scoredLow" ? scoredLow
-    : view === "autoSkipped" ? (autoApplySkipped || [])
-    : view === "approved" ? (approvedWaiting || [])
-    : view === "autoApplyQueue" ? (autoApplyQueue || [])
-    : view === "needsManualReview" ? (needsManualReview || [])
-    : view === "failed" ? (failedPostings || [])
-    : postings;
+  const [view, setView] = useState("all");
+
+  // Four tabs instead of seven — each one a union of statuses that share the
+  // same next action, not a 1:1 mirror of every distinct posting.status
+  // value. Every row still carries its own specific reason/tag regardless of
+  // which tab merged it in (see ReviewQueueRow's badge switch above) — this
+  // only changes how the lists are grouped, not what's shown per posting.
+  const allView = [...postings, ...(scoredLow || [])];
+  const autoApplyFailedView = [...(autoApplySkipped || []), ...(failedPostings || [])];
+  // Tagged so the row can show "Auto-apply eligible" instead of falling
+  // through to a generic scam-risk badge — these are still pending_review,
+  // not actually approved yet, just a preview of what auto-apply would pick
+  // up next (see jobSearchAutoApplyGates.js).
+  const inQueueView = [
+    ...(approvedWaiting || []),
+    ...(autoApplyQueue || []).map((p) => ({ ...p, isAutoApplyQueuePreview: true }))
+  ];
+
+  const list = view === "manualReview" ? (needsManualReview || [])
+    : view === "autoApplyFailed" ? autoApplyFailedView
+    : view === "inQueue" ? inQueueView
+    : allView;
   const isBusy = Boolean(saving);
 
   function toggleSelect(id) {
@@ -194,41 +213,31 @@ export default function ReviewQueueTable({
   return (
     <section className="job-search-panel job-search-review-panel">
       <header className="job-search-panel-header">
-        <h2>Review Queue</h2>
+        <h2>Review</h2>
         <div className="job-search-toggle-group">
-          <button type="button" className={view === "pending" ? "job-search-toggle-active" : ""} onClick={() => switchList("pending")}>
-            Pending review ({postings.length})
+          <button type="button" className={view === "all" ? "job-search-toggle-active" : ""} onClick={() => switchList("all")}>
+            All ({allView.length})
           </button>
-          <button type="button" className={view === "scoredLow" ? "job-search-toggle-active" : ""} onClick={() => switchList("scoredLow")}>
-            Scored low ({scoredLow.length})
+          <button type="button" className={view === "manualReview" ? "job-search-toggle-active" : ""} onClick={() => switchList("manualReview")}>
+            Manual Review ({(needsManualReview || []).length})
           </button>
-          <button type="button" className={view === "autoSkipped" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoSkipped")}>
-            Skipped auto-apply ({(autoApplySkipped || []).length})
+          <button type="button" className={view === "autoApplyFailed" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoApplyFailed")}>
+            Auto-apply Failed ({autoApplyFailedView.length})
           </button>
-          <button type="button" className={view === "approved" ? "job-search-toggle-active" : ""} onClick={() => switchList("approved")}>
-            Waiting for worker ({(approvedWaiting || []).length})
-          </button>
-          <button type="button" className={view === "autoApplyQueue" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoApplyQueue")}>
-            Auto-Apply Queue ({(autoApplyQueue || []).length})
-          </button>
-          <button type="button" className={view === "needsManualReview" ? "job-search-toggle-active" : ""} onClick={() => switchList("needsManualReview")}>
-            Needs Manual Review ({(needsManualReview || []).length})
-          </button>
-          <button type="button" className={view === "failed" ? "job-search-toggle-active" : ""} onClick={() => switchList("failed")}>
-            Failed ({(failedPostings || []).length})
+          <button type="button" className={view === "inQueue" ? "job-search-toggle-active" : ""} onClick={() => switchList("inQueue")}>
+            In Queue ({inQueueView.length})
           </button>
         </div>
       </header>
 
-      {view === "autoApplyQueue" ? (
+      {view === "all" ? (
         <p className="job-search-panel-hint">
-          {autoApplyEnabled
-            ? "Pending-review postings that already clear every free auto-apply threshold (score, resume match, scam risk, freshness) — these are what the submit worker will actually attempt next, ranked highest score first. A posting can still land in \"Skipped auto-apply\" afterward for a reason only discoverable by actually trying it (unsupported ATS, CAPTCHA, an unanswerable required field) — this list is a preview, not a guarantee."
-            : "Auto-apply is currently disabled in Job Find Settings, so nothing here gets submitted automatically — approve postings by hand instead, or enable auto-apply to have qualifying postings like these submitted on their own."}
+          Every posting that's been scored and is waiting on a decision — including ones scored below your
+          review/auto-apply threshold, tagged "Scored low". Approve, reject, or re-score any of them.
         </p>
       ) : null}
 
-      {view === "needsManualReview" ? (
+      {view === "manualReview" ? (
         <p className="job-search-panel-hint">
           A submission attempt (approved by hand, or auto-applied) hit at least one required field it couldn't
           confidently fill on its own — expand a row to see exactly which ones. Fill in the missing info in your
@@ -236,11 +245,22 @@ export default function ReviewQueueTable({
         </p>
       ) : null}
 
-      {view === "failed" ? (
+      {view === "autoApplyFailed" ? (
         <p className="job-search-panel-hint">
-          A submission attempt genuinely failed (a real error, a timeout) or resolved to an ATS platform with no
-          submission adapter — expand a row to see the specific error. "Retry" re-queues it for the submit worker;
-          if it's the same error every time, it likely needs a code-level fix rather than another attempt.
+          Either auto-apply declined to even attempt a submission (a skip reason — below the score/match/scam-risk/
+          freshness threshold, an unanswerable field, CAPTCHA, or an unsupported ATS) or a real submission attempt
+          genuinely errored out — expand a row to see which. "Retry" re-queues it for the submit worker; if it's
+          the same error every time, it likely needs a code-level fix rather than another attempt.
+        </p>
+      ) : null}
+
+      {view === "inQueue" ? (
+        <p className="job-search-panel-hint">
+          Everything either confirmed queued for the submit worker ("Waiting for worker") or, if auto-apply is
+          enabled, eligible to be auto-applied to on its next run ("Auto-apply eligible" — a preview, not a
+          guarantee, since a posting can still get skipped afterward for a reason only discoverable by actually
+          attempting it).
+          {!autoApplyEnabled ? " Auto-apply is currently disabled in Job Find Settings, so only approved postings show here." : ""}
         </p>
       ) : null}
 
@@ -262,7 +282,7 @@ export default function ReviewQueueTable({
                 <th><input type="checkbox" checked={selected.size === list.length && list.length > 0} onChange={toggleSelectAll} /></th>
                 <th>Job</th>
                 <th>Score</th>
-                <th>Scam risk</th>
+                <th>Status</th>
                 <th>Posted</th>
                 <th aria-label="Actions" />
               </tr>

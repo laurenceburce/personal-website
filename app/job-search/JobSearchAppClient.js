@@ -11,7 +11,7 @@ import ReviewQueueTable from "./ReviewQueueTable";
 
 const TABS = [
   { id: "overview", label: "Overview" },
-  { id: "review", label: "Review Queue" },
+  { id: "review", label: "Review" },
   { id: "applied", label: "Applied Jobs" },
   { id: "settings", label: "User Settings" },
   { id: "find", label: "Job Find Settings" }

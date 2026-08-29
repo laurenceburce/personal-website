@@ -10,10 +10,9 @@ function formatDate(value) {
 }
 
 // Applied Jobs is now a pure success log — anything that failed, needs
-// manual review, or hit an unsupported ATS shows up in the Review Queue's
-// own tabs instead (where it's actually actionable: retry, reject, mark
-// applied by hand), not buried here alongside real successes. See
-// ReviewQueueTable.js.
+// manual review, or hit an unsupported ATS shows up in Review instead
+// (where it's actually actionable: retry, reject, mark applied by hand),
+// not buried here alongside real successes. See ReviewQueueTable.js.
 function AppliedJobRow({ application, saving, onUpdateNote, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState(application.userNote || "");
@@ -118,13 +117,13 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
 
       <p className="job-search-panel-hint">
         Only successfully submitted applications show here. Anything that failed, needs manual review, or hit an
-        unsupported ATS is in the Review Queue's own tabs instead, where it's actually actionable.
+        unsupported ATS is in Review instead, where it's actually actionable.
       </p>
 
       {applications.length === 0 ? (
-        <p className="job-search-empty">No applications submitted yet — approve a posting in the Review Queue, or enable auto-apply, to get started.</p>
+        <p className="job-search-empty">No applications submitted yet — approve a posting in Review, or enable auto-apply, to get started.</p>
       ) : successfulApplications.length === 0 ? (
-        <p className="job-search-empty">No successful submissions yet — check the Review Queue's Needs Manual Review / Failed tabs for anything waiting on you.</p>
+        <p className="job-search-empty">No successful submissions yet — check Review's Manual Review / Auto-apply Failed tabs for anything waiting on you.</p>
       ) : list.length === 0 ? (
         <p className="job-search-empty">Nothing here right now.</p>
       ) : (
