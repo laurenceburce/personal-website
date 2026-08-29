@@ -17,7 +17,7 @@ const SKIP_REASON_LABELS = {
   score_too_low: "Below auto-apply threshold"
 };
 
-function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, saving }) {
+function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, saving }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState("");
   const isBusy = Boolean(saving);
@@ -48,6 +48,7 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
           <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>Approve</button>
           <button type="button" disabled={isBusy} onClick={() => onReject(posting.id, note)}>Reject</button>
           <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>
+          <button type="button" disabled={isBusy} onClick={() => onMarkApplied(posting.id)}>Mark as Applied</button>
         </td>
       </tr>
       <AnimatePresence initial={false}>
@@ -113,7 +114,7 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   );
 }
 
-export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore }) {
+export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied }) {
   const [selected, setSelected] = useState(new Set());
   const [view, setView] = useState("pending");
   const list = view === "scoredLow" ? scoredLow : view === "autoSkipped" ? (autoApplySkipped || []) : postings;
@@ -197,6 +198,7 @@ export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped
                   onApprove={onApprove}
                   onReject={onReject}
                   onRescore={onRescore}
+                  onMarkApplied={onMarkApplied}
                   saving={saving}
                 />
               ))}

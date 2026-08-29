@@ -114,6 +114,18 @@ export async function insertApplicationAttempt({
   return { id: Number(result.insertId) };
 }
 
+// Removes only the application record (audit-trail row + its screenshot, if
+// any) — never touches the posting itself, so deleting a stray/duplicate/test
+// entry from Applied Jobs doesn't silently reopen or reclassify the posting
+// it came from. Same "just delete the one thing asked for" scope as the
+// existing deleteResume().
+export async function deleteApplication(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const applicationId = cleanId(id, "Application");
+  await pool.query("DELETE FROM job_search_applications WHERE id = ?", [applicationId]);
+  return { id: applicationId };
+}
+
 export async function updateApplicationNote(id, note) {
   const pool = requirePool(await ensureJobSearchSchema());
   const applicationId = cleanId(id, "Application");

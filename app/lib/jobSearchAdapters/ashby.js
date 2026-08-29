@@ -301,5 +301,13 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     await browser.close();
   }
 
+  // A screenshot is only worth its storage cost (~600KB/attempt, LONGBLOB,
+  // never pruned — see jobSearchApplicationStore.js) when a human actually
+  // needs to look at it: failed/needs_manual_review/blocked outcomes, where
+  // it's the only way to see what the page actually looked like without
+  // re-running Playwright. A successful submission already has
+  // confirmationText as its receipt, so it doesn't need one too.
+  if (status === "submitted") screenshotBuffer = null;
+
   return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
 }

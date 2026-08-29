@@ -34,6 +34,11 @@ export async function runDirectPollPass() {
   let polled = 0;
   let skipped = 0;
   let errors = 0;
+  // Raw per-board totals (before hard-filtering) — powers the Overview tab's
+  // "jobs found on each ATS" breakdown. Deliberately pre-filter: it answers
+  // "how much is actually on these boards", not "how much was relevant",
+  // which the skipped/created counters already cover in aggregate.
+  const jobsFoundByAts = {};
 
   for (const company of companies) {
     try {
@@ -42,6 +47,8 @@ export async function runDirectPollPass() {
         boardToken: company.boardToken,
         companyName: company.companyName
       });
+
+      jobsFoundByAts[company.atsType] = (jobsFoundByAts[company.atsType] || 0) + jobs.length;
 
       for (const job of jobs) {
         if (!runHardFilters(job, findSettings).passed) {
@@ -60,5 +67,5 @@ export async function runDirectPollPass() {
     }
   }
 
-  return { companiesTotal: companies.length, companiesPolled: polled, created, skipped, errors };
+  return { companiesTotal: companies.length, companiesPolled: polled, created, skipped, errors, jobsFoundByAts };
 }

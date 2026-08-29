@@ -16,7 +16,7 @@ function statusTone(status) {
   return "neutral";
 }
 
-function AppliedJobRow({ application, saving, onUpdateNote, onRetry }) {
+function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState(application.userNote || "");
   const isBusy = Boolean(saving);
@@ -82,6 +82,7 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry }) {
                     {(application.submissionStatus === "failed" || application.submissionStatus === "needs_manual_review") ? (
                       <button type="button" disabled={isBusy} onClick={() => onRetry(application.id)}>Retry submission</button>
                     ) : null}
+                    <button type="button" disabled={isBusy} onClick={() => onDelete(application.id)}>Delete</button>
                   </div>
                 </div>
               </motion.div>
@@ -93,7 +94,7 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry }) {
   );
 }
 
-export default function AppliedJobsTable({ applications, saving, onUpdateNote, onRetry }) {
+export default function AppliedJobsTable({ applications, saving, onUpdateNote, onRetry, onDelete }) {
   return (
     <section className="job-search-panel job-search-applied-panel">
       <header className="job-search-panel-header">
@@ -116,7 +117,7 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
             </thead>
             <tbody>
               {applications.map((application) => (
-                <AppliedJobRow key={application.id} application={application} saving={saving} onUpdateNote={onUpdateNote} onRetry={onRetry} />
+                <AppliedJobRow key={application.id} application={application} saving={saving} onUpdateNote={onUpdateNote} onRetry={onRetry} onDelete={onDelete} />
               ))}
             </tbody>
           </table>

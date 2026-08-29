@@ -354,6 +354,35 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // One row per poll-worker cycle (cron or manual "Run Discovery Now") —
+      // powers the Overview tab's "Recent Discovery Runs" metrics view.
+      // Deliberately separate from job_search_worker_status (a singleton
+      // "current state" row per worker): this is an append-only history, so
+      // it needs its own retention (see pruneOldDiscoveryRuns in
+      // jobSearchDiscoveryRunStore.js) rather than being overwritten in place.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_discovery_runs (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          ran_at DATETIME(3) NOT NULL,
+          discovery_ran TINYINT(1) NOT NULL DEFAULT 0,
+          discovery_skip_reason VARCHAR(200) NOT NULL DEFAULT '',
+          jobs_found INT NOT NULL DEFAULT 0,
+          jobs_created INT NOT NULL DEFAULT 0,
+          companies_probed INT NOT NULL DEFAULT 0,
+          companies_found INT NOT NULL DEFAULT 0,
+          direct_poll_companies_total INT NOT NULL DEFAULT 0,
+          direct_poll_companies_polled INT NOT NULL DEFAULT 0,
+          direct_poll_created INT NOT NULL DEFAULT 0,
+          direct_poll_skipped INT NOT NULL DEFAULT 0,
+          direct_poll_errors INT NOT NULL DEFAULT 0,
+          jobs_found_by_ats JSON NULL,
+          ok TINYINT(1) NOT NULL DEFAULT 1,
+          error VARCHAR(500) NOT NULL DEFAULT '',
+          created_at DATETIME(3) NOT NULL,
+          INDEX job_search_discovery_runs_ran_at_idx (ran_at)
+        )
+      `);
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();

@@ -97,7 +97,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
           <OverviewPanel
             findSettings={snapshot.findSettings}
             statusCounts={snapshot.statusCounts}
-            recentActivity={snapshot.recentActivity}
+            discoveryRuns={snapshot.discoveryRuns}
             llmUsage={snapshot.llmUsage}
             maxLlmCallsPerDay={snapshot.findSettings.maxLlmCallsPerDay}
             dbSizeMb={snapshot.dbSizeMb}
@@ -128,6 +128,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             onBatchApprove={(ids) => runAction("/api/job-search/review-queue", "batchApprove", { ids }, `Approved ${ids.length}.`)}
             onBatchReject={(ids, note) => runAction("/api/job-search/review-queue", "batchReject", { ids, note }, `Rejected ${ids.length}.`)}
             onRescore={(id) => runAction("/api/job-search/review-queue", "rescoreNow", { id }, "Re-scored.")}
+            onMarkApplied={(id) => runAction("/api/job-search/review-queue", "markAppliedManually", { id }, "Marked as applied.")}
           />
         )}
 
@@ -137,6 +138,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             saving={saving}
             onUpdateNote={(id, note) => runAction("/api/job-search/applications", "updateApplicationNote", { id, note }, "Note saved.")}
             onRetry={(id) => runAction("/api/job-search/applications", "retrySubmission", { id }, "Re-queued for the next submit run.")}
+            onDelete={(id) => runAction("/api/job-search/applications", "deleteApplication", { id }, "Application deleted.")}
           />
         )}
 

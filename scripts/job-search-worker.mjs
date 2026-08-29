@@ -7,6 +7,7 @@
 import { getDatabaseSizeMb, getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
 import { runDiscoveryPass, shouldRunDiscovery } from "../app/lib/jobSearchDiscovery.js";
 import { runDirectPollPass } from "../app/lib/jobSearchDirectPoll.js";
+import { recordDiscoveryRun } from "../app/lib/jobSearchDiscoveryRunStore.js";
 import { cleanupOldPostings } from "../app/lib/jobSearchPostingsStore.js";
 import { scoreNewPostings } from "../app/lib/jobSearchScoringPipeline.js";
 import { getFindSettings } from "../app/lib/jobSearchSettingsStore.js";
@@ -62,13 +63,26 @@ try {
     // shouldRunDiscovery) since Adzuna's free tier is far more limited than a
     // direct ATS API would be — safe to check on every run regardless.
     let discoveryLog = "discovery not due yet";
+    let discoveryRan = false;
+    let discoverySkipReason = "not due yet";
+    let discoveryFound = 0;
+    let discoveryCreated = 0;
+    let companiesProbed = 0;
+    let companiesFound = 0;
     if (shouldRunDiscovery(findSettings)) {
       const result = await runDiscoveryPass(findSettings);
       if (result.ok) {
+        discoveryRan = true;
+        discoverySkipReason = "";
+        discoveryFound = result.found;
+        discoveryCreated = result.created;
+        companiesProbed = result.companiesProbed;
+        companiesFound = result.companiesFound;
         discoveryLog = `Adzuna (${findSettings.discoveryCountry}): ${result.found} found, ${result.created} new, ` +
           `${result.companiesProbed} new companies probed (${result.companiesFound} matched a supported ATS)`;
         console.log(`[discovery] ${discoveryLog}`);
       } else {
+        discoverySkipReason = result.reason;
         discoveryLog = `skipped: ${result.reason}`;
         console.warn(`[discovery] ${discoveryLog}`);
       }
@@ -84,6 +98,14 @@ try {
         `${directPoll.created} new posting(s), ${directPoll.skipped} irrelevant role(s) skipped, ${directPoll.errors} error(s).`
       );
     }
+
+    await recordDiscoveryRun({
+      discoveryRan, discoverySkipReason, jobsFound: discoveryFound, jobsCreated: discoveryCreated,
+      companiesProbed, companiesFound,
+      directPollCompaniesTotal: directPoll.companiesTotal, directPollCompaniesPolled: directPoll.companiesPolled,
+      directPollCreated: directPoll.created, directPollSkipped: directPoll.skipped, directPollErrors: directPoll.errors,
+      jobsFoundByAts: directPoll.jobsFoundByAts, ok: true
+    }).catch((error) => console.error("[discovery-run] Failed to record run history:", error?.message || error));
 
     console.log("Scoring new postings (hard filters -> embedding rank -> LLM rubric)...");
     const tally = await scoreNewPostings({ limit: 200 });

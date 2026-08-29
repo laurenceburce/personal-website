@@ -7740,6 +7740,17 @@ html[data-theme="light"] .auth-feature-gate {
   gap: 8px;
 }
 
+.job-search-ats-count {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
 .job-search-description summary {
   cursor: pointer;
   color: var(--accent);

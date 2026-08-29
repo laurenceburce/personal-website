@@ -1,6 +1,15 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { atsTypeLabel, Badge, Metric } from "./JobSearchUi";
+
+// How often the Workers panel re-fetches worker status from the server so
+// "Last run"/"Next expected" reflect an actual cron run landing in the
+// background, without the user having to refresh the tab. Cheap (2-row
+// SELECT) relative to how rarely the underlying data actually changes
+// (cron cadences here are 10-15+ minutes) — this is about latency to
+// noticing a change, not about the data itself being expensive to read.
+const WORKER_STATUS_POLL_MS = 20000;
 
 // Displayed in pipeline order, not alphabetical, so the flow reads left-to-right
 // the same way a posting actually moves through it.
@@ -21,13 +30,6 @@ const STATUS_ORDER = [
   { key: "duplicate", label: "Duplicate (merged)" }
 ];
 
-function statusTone(status) {
-  if (["submitted", "approved", "pending_review"].includes(status)) return "success";
-  if (["failed", "rejected"].includes(status)) return "danger";
-  if (["needs_manual_review", "scored_low", "below_threshold", "skipped_auto_apply"].includes(status)) return "warn";
-  return "neutral";
-}
-
 function timeAgo(value) {
   if (!value) return "—";
   const ms = Date.now() - new Date(value).getTime();
@@ -47,42 +49,51 @@ function timeAgo(value) {
 // multiplier is deliberately generous — real cron cadences jitter by a
 // minute or two around their nominal schedule and that should never read as
 // "broken".
-function isWorkerStale(worker) {
+function isWorkerStale(worker, now) {
   if (!worker.enabled || !worker.lastCheckedAt || !worker.observedIntervalMinutes) return false;
-  const minutesSinceCheckIn = (Date.now() - new Date(worker.lastCheckedAt).getTime()) / 60000;
+  const minutesSinceCheckIn = (now - new Date(worker.lastCheckedAt).getTime()) / 60000;
   return minutesSinceCheckIn > worker.observedIntervalMinutes * 3;
 }
 
-function workerStatusLabel(worker) {
+function workerStatusLabel(worker, now) {
   if (!worker.enabled) return "Disabled";
-  if (isWorkerStale(worker)) return "Stale — hasn't checked in recently";
+  if (isWorkerStale(worker, now)) return "Stale — hasn't checked in recently";
   if (!worker.lastRunAt) return "Waiting for first run";
   if (worker.lastRunOk === false) return "Last run failed";
   return "Healthy";
 }
 
-function workerStatusTone(worker) {
+function workerStatusTone(worker, now) {
   if (!worker.enabled) return "warn";
-  if (isWorkerStale(worker) || worker.lastRunOk === false) return "danger";
+  if (isWorkerStale(worker, now) || worker.lastRunOk === false) return "danger";
   if (!worker.lastRunAt) return "warn";
   return "success";
+}
+
+function formatCountdown(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 // Estimated, not authoritative — derived purely from the gap between this
 // worker's own last two check-ins (see jobSearchWorkerStatusStore.js), so it
 // self-calibrates to whatever cadence Railway's cron is actually running on
 // instead of requiring that schedule to be duplicated into app config by hand.
-function nextRunEstimate(worker) {
+// Takes `now` as a param (rather than reading Date.now() internally) so it
+// ticks in lockstep with the once-a-second re-render driven by that state.
+function nextRunEstimate(worker, now) {
   if (!worker.enabled) return "—";
   if (!worker.lastCheckedAt || !worker.observedIntervalMinutes) return "Estimating (needs a second run)...";
   const nextMs = new Date(worker.lastCheckedAt).getTime() + worker.observedIntervalMinutes * 60000;
-  const diffMinutes = Math.round((nextMs - Date.now()) / 60000);
+  const remainingMs = nextMs - now;
   const cadence = `every ~${Math.max(1, Math.round(worker.observedIntervalMinutes))}m observed`;
-  if (diffMinutes <= 0) return `Any moment now (${cadence})`;
-  return `~${diffMinutes}m (${cadence})`;
+  if (remainingMs <= 0) return `Any moment now (${cadence})`;
+  return `${formatCountdown(remainingMs)} (${cadence})`;
 }
 
-function WorkerCard({ worker, rules, saving, onToggle }) {
+function WorkerCard({ worker, rules, saving, now, onToggle }) {
   const isBusy = Boolean(saving);
   const label = worker.workerName === "poll" ? "Poll worker" : "Submit worker";
   const description = worker.workerName === "poll"
@@ -102,9 +113,9 @@ function WorkerCard({ worker, rules, saving, onToggle }) {
       </div>
 
       <div className="job-search-field-grid">
-        <Metric label="Status" value={workerStatusLabel(worker)} tone={workerStatusTone(worker)} />
+        <Metric label="Status" value={workerStatusLabel(worker, now)} tone={workerStatusTone(worker, now)} />
         <Metric label="Last run" value={worker.lastRunAt ? timeAgo(worker.lastRunAt) : "Never"} detail={worker.lastRunSummary || null} />
-        <Metric label="Next expected" value={nextRunEstimate(worker)} />
+        <Metric label="Next expected" value={nextRunEstimate(worker, now)} />
       </div>
 
       {worker.lastError ? <p className="job-search-alert job-search-alert-error">{worker.lastError}</p> : null}
@@ -125,7 +136,7 @@ function WorkerCard({ worker, rules, saving, onToggle }) {
 export default function OverviewPanel({
   findSettings,
   statusCounts,
-  recentActivity,
+  discoveryRuns,
   llmUsage,
   maxLlmCallsPerDay,
   dbSizeMb,
@@ -145,8 +156,54 @@ export default function OverviewPanel({
   const autoApplyEnabled = Boolean(findSettings?.autoApplyEnabled);
   const isBusy = Boolean(saving);
 
-  const pollWorker = workerStatus?.find((w) => w.workerName === "poll") || { workerName: "poll", enabled: true };
-  const submitWorker = workerStatus?.find((w) => w.workerName === "submit") || { workerName: "submit", enabled: true };
+  // The server only hands over a fresh workerStatus when the page itself
+  // re-renders (a button-triggered router.refresh()) — the two effects below
+  // keep "Last run"/"Next expected" live in between those without requiring
+  // one.
+  const [liveWorkerStatus, setLiveWorkerStatus] = useState(workerStatus);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Resync whenever the parent hands over a new snapshot (e.g. right after
+  // toggling a worker) so that action's result is reflected immediately
+  // rather than waiting for the next poll tick.
+  useEffect(() => {
+    setLiveWorkerStatus(workerStatus);
+  }, [workerStatus]);
+
+  // Ticks "Last run"/"Next expected" every second — pure client-side
+  // recompute against whatever timestamps are already known, independent of
+  // whether new data has actually arrived.
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  // Actually refreshes the underlying data — a real cron run updates these
+  // timestamps on its own schedule, with nothing else on the page prompting
+  // a refresh, so this is what lets a landed run show up without the user
+  // reloading the tab.
+  useEffect(() => {
+    let cancelled = false;
+    async function poll() {
+      try {
+        const response = await fetch("/api/job-search/worker-status");
+        if (!response.ok) return;
+        const data = await response.json().catch(() => null);
+        if (!cancelled && Array.isArray(data?.workerStatus)) setLiveWorkerStatus(data.workerStatus);
+      } catch {
+        // Best-effort — a missed poll just means the next one catches up;
+        // never surface a transient network hiccup as a UI error here.
+      }
+    }
+    const interval = setInterval(poll, WORKER_STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  const pollWorker = liveWorkerStatus?.find((w) => w.workerName === "poll") || { workerName: "poll", enabled: true };
+  const submitWorker = liveWorkerStatus?.find((w) => w.workerName === "submit") || { workerName: "submit", enabled: true };
 
   // Read-only — these are the conditions that already silently gate what
   // each worker actually does today (see jobSearchDiscovery.js/
@@ -179,8 +236,8 @@ export default function OverviewPanel({
           <h2>Workers</h2>
         </header>
         <div className="job-search-worker-grid">
-          <WorkerCard worker={pollWorker} rules={pollRules} saving={saving} onToggle={onToggleWorker} />
-          <WorkerCard worker={submitWorker} rules={submitRules} saving={saving} onToggle={onToggleWorker} />
+          <WorkerCard worker={pollWorker} rules={pollRules} saving={saving} now={now} onToggle={onToggleWorker} />
+          <WorkerCard worker={submitWorker} rules={submitRules} saving={saving} now={now} onToggle={onToggleWorker} />
         </div>
       </section>
 
@@ -234,37 +291,54 @@ export default function OverviewPanel({
 
       <section className="job-search-panel">
         <header className="job-search-panel-header">
-          <h2>Recent Activity</h2>
+          <h2>Recent Discovery Runs</h2>
         </header>
-        {(!recentActivity || recentActivity.length === 0) ? (
-          <p className="job-search-empty">No postings collected yet.</p>
+        {(!discoveryRuns || discoveryRuns.length === 0) ? (
+          <p className="job-search-empty">No discovery/poll runs recorded yet.</p>
         ) : (
           <div className="job-search-table-scroll">
             <table className="job-search-table">
               <thead>
                 <tr>
-                  <th>Job</th>
+                  <th>Ran</th>
+                  <th>Jobs processed</th>
+                  <th>Discovery (Adzuna)</th>
+                  <th>Companies</th>
+                  <th>Direct-poll</th>
+                  <th>By ATS</th>
                   <th>Status</th>
-                  <th>Score</th>
-                  <th>Updated</th>
-                  <th>Link</th>
                 </tr>
               </thead>
               <tbody>
-                {recentActivity.map((posting) => (
-                  <tr key={posting.id}>
-                    <td>
-                      <strong>{posting.title}</strong>
-                      <div className="job-search-cell-note">{posting.companyName}</div>
-                    </td>
-                    <td><Badge text={posting.status.replace(/_/g, " ")} tone={statusTone(posting.status)} /></td>
-                    <td>{posting.llmOverallScore != null ? posting.llmOverallScore.toFixed(1) : "—"}</td>
-                    <td>{timeAgo(posting.updatedAt)}</td>
-                    <td className="job-search-row-actions">
-                      {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(posting.atsType)}</a> : "—"}
-                    </td>
-                  </tr>
-                ))}
+                {discoveryRuns.map((run) => {
+                  const byAtsEntries = Object.entries(run.jobsFoundByAts || {}).filter(([, count]) => count > 0);
+                  const totalJobsSeen = run.jobsFound + byAtsEntries.reduce((sum, [, count]) => sum + count, 0);
+
+                  return (
+                    <tr key={run.id}>
+                      <td>{timeAgo(run.ranAt)}</td>
+                      <td>{totalJobsSeen}</td>
+                      <td>
+                        {run.discoveryRan
+                          ? <>{run.jobsFound} found, {run.jobsCreated} new</>
+                          : <span className="job-search-cell-note">Skipped ({run.discoverySkipReason || "not due yet"})</span>}
+                      </td>
+                      <td>{run.companiesProbed} probed, {run.companiesFound} matched</td>
+                      <td>
+                        {run.directPollCompaniesPolled}/{run.directPollCompaniesTotal} companies, {run.directPollCreated} new
+                        <div className="job-search-cell-note">{run.directPollSkipped} filtered out{run.directPollErrors > 0 ? `, ${run.directPollErrors} error(s)` : ""}</div>
+                      </td>
+                      <td>
+                        {byAtsEntries.length > 0
+                          ? byAtsEntries.map(([atsType, count]) => (
+                              <span key={atsType} className="job-search-ats-count">{atsTypeLabel(atsType)}: {count}</span>
+                            ))
+                          : "—"}
+                      </td>
+                      <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
-import { getApplicationById, updateApplicationNote } from "../../../lib/jobSearchApplicationStore";
+import { deleteApplication, getApplicationById, updateApplicationNote } from "../../../lib/jobSearchApplicationStore";
 import { updatePostingScore } from "../../../lib/jobSearchPostingsStore";
 
 export const runtime = "nodejs";
@@ -18,6 +18,8 @@ export async function POST(request) {
     switch (action) {
       case "updateApplicationNote":
         return NextResponse.json({ ok: true, result: await updateApplicationNote(data.id, data.note) });
+      case "deleteApplication":
+        return NextResponse.json({ ok: true, result: await deleteApplication(data.id) });
       case "retrySubmission": {
         // Requeues by flipping the posting back to 'approved' so the next
         // submit-worker cron run picks it up — running Playwright synchronously

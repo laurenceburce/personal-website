@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
 import { runDiscoveryPass } from "../../../lib/jobSearchDiscovery";
+import { recordDiscoveryRun } from "../../../lib/jobSearchDiscoveryRunStore";
 import { runDirectPollPass } from "../../../lib/jobSearchDirectPoll";
 import { requeuePostingsForRescoring } from "../../../lib/jobSearchPostingsStore";
 import { scoreNewPostings } from "../../../lib/jobSearchScoringPipeline";
@@ -30,6 +31,26 @@ export async function POST(request) {
         // every company already known to be on a supported ATS, not just
         // Adzuna's own results for this one run.
         const directPollResult = await runDirectPollPass();
+
+        // Same history table the cron worker writes to — a manually-triggered
+        // run should show up in "Recent Discovery Runs" too, not just the
+        // scheduled ones.
+        await recordDiscoveryRun({
+          discoveryRan: discoveryResult.ok,
+          discoverySkipReason: discoveryResult.ok ? "" : discoveryResult.reason,
+          jobsFound: discoveryResult.found || 0,
+          jobsCreated: discoveryResult.created || 0,
+          companiesProbed: discoveryResult.companiesProbed || 0,
+          companiesFound: discoveryResult.companiesFound || 0,
+          directPollCompaniesTotal: directPollResult.companiesTotal,
+          directPollCompaniesPolled: directPollResult.companiesPolled,
+          directPollCreated: directPollResult.created,
+          directPollSkipped: directPollResult.skipped,
+          directPollErrors: directPollResult.errors,
+          jobsFoundByAts: directPollResult.jobsFoundByAts,
+          ok: true
+        }).catch(() => {});
+
         return NextResponse.json({ ok: discoveryResult.ok, result: { ...discoveryResult, directPoll: directPollResult } });
       }
       case "scoreNow": {

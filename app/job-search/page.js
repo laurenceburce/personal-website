@@ -5,7 +5,8 @@ import { getJobSearchAccess } from "../lib/jobSearchAuth";
 import { getCompanyDirectoryStats } from "../lib/jobSearchCompanyDirectory";
 import { getDatabaseSizeMb } from "../lib/jobSearchDb";
 import { isAdzunaConfigured } from "../lib/jobSearchDiscovery";
-import { countPostingsByStatus, listPostingsByStatus, listRecentPostings } from "../lib/jobSearchPostingsStore";
+import { listRecentDiscoveryRuns } from "../lib/jobSearchDiscoveryRunStore";
+import { countPostingsByStatus, listPostingsByStatus } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
 import { getTodayLlmUsage } from "../lib/jobSearchUsageStore";
 import { getAllWorkerStatus } from "../lib/jobSearchWorkerStatusStore";
@@ -31,7 +32,7 @@ async function getDashboardSnapshot() {
     autoApplySkipped,
     applications,
     statusCounts,
-    recentActivity,
+    discoveryRuns,
     llmUsage,
     dbSizeMb,
     companyDirectoryStats,
@@ -46,7 +47,7 @@ async function getDashboardSnapshot() {
     listPostingsByStatus("skipped_auto_apply", { limit: 200 }),
     listApplications({ limit: 200 }),
     countPostingsByStatus(),
-    listRecentPostings({ limit: 25 }),
+    listRecentDiscoveryRuns({ limit: 20 }),
     getTodayLlmUsage(),
     getDatabaseSizeMb(),
     getCompanyDirectoryStats(),
@@ -55,7 +56,7 @@ async function getDashboardSnapshot() {
 
   return {
     profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, applications,
-    statusCounts, recentActivity, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
+    statusCounts, discoveryRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
     adzunaConfigured: isAdzunaConfigured()
   };
 }
