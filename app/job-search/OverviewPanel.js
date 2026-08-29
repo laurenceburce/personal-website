@@ -17,7 +17,8 @@ const STATUS_ORDER = [
   { key: "failed", label: "Failed" },
   { key: "needs_manual_review", label: "Needs manual review" },
   { key: "unsupported_ats", label: "Unsupported ATS" },
-  { key: "closed", label: "Closed / delisted" }
+  { key: "closed", label: "Closed / delisted" },
+  { key: "duplicate", label: "Duplicate (merged)" }
 ];
 
 function statusTone(status) {
@@ -39,6 +40,88 @@ function timeAgo(value) {
   return `${days}d ago`;
 }
 
+// A worker is only judged stale once there are at least two heartbeats to
+// derive a real cadence from — a brand-new install (or a worker just
+// re-enabled) hasn't had the chance to establish one yet, and that's not the
+// same failure as "Railway's cron used to fire and stopped". The 3x
+// multiplier is deliberately generous — real cron cadences jitter by a
+// minute or two around their nominal schedule and that should never read as
+// "broken".
+function isWorkerStale(worker) {
+  if (!worker.enabled || !worker.lastCheckedAt || !worker.observedIntervalMinutes) return false;
+  const minutesSinceCheckIn = (Date.now() - new Date(worker.lastCheckedAt).getTime()) / 60000;
+  return minutesSinceCheckIn > worker.observedIntervalMinutes * 3;
+}
+
+function workerStatusLabel(worker) {
+  if (!worker.enabled) return "Disabled";
+  if (isWorkerStale(worker)) return "Stale — hasn't checked in recently";
+  if (!worker.lastRunAt) return "Waiting for first run";
+  if (worker.lastRunOk === false) return "Last run failed";
+  return "Healthy";
+}
+
+function workerStatusTone(worker) {
+  if (!worker.enabled) return "warn";
+  if (isWorkerStale(worker) || worker.lastRunOk === false) return "danger";
+  if (!worker.lastRunAt) return "warn";
+  return "success";
+}
+
+// Estimated, not authoritative — derived purely from the gap between this
+// worker's own last two check-ins (see jobSearchWorkerStatusStore.js), so it
+// self-calibrates to whatever cadence Railway's cron is actually running on
+// instead of requiring that schedule to be duplicated into app config by hand.
+function nextRunEstimate(worker) {
+  if (!worker.enabled) return "—";
+  if (!worker.lastCheckedAt || !worker.observedIntervalMinutes) return "Estimating (needs a second run)...";
+  const nextMs = new Date(worker.lastCheckedAt).getTime() + worker.observedIntervalMinutes * 60000;
+  const diffMinutes = Math.round((nextMs - Date.now()) / 60000);
+  const cadence = `every ~${Math.max(1, Math.round(worker.observedIntervalMinutes))}m observed`;
+  if (diffMinutes <= 0) return `Any moment now (${cadence})`;
+  return `~${diffMinutes}m (${cadence})`;
+}
+
+function WorkerCard({ worker, rules, saving, onToggle }) {
+  const isBusy = Boolean(saving);
+  const label = worker.workerName === "poll" ? "Poll worker" : "Submit worker";
+  const description = worker.workerName === "poll"
+    ? "Discovery, direct ATS polling, and scoring."
+    : "Playwright submissions and auto-apply.";
+
+  return (
+    <div className="job-search-worker-card">
+      <div className="job-search-worker-card-header">
+        <div>
+          <strong>{label}</strong>
+          <div className="job-search-cell-note">{description}</div>
+        </div>
+        <button type="button" disabled={isBusy} onClick={() => onToggle(worker.workerName, !worker.enabled)}>
+          {worker.enabled ? "Turn off" : "Turn on"}
+        </button>
+      </div>
+
+      <div className="job-search-field-grid">
+        <Metric label="Status" value={workerStatusLabel(worker)} tone={workerStatusTone(worker)} />
+        <Metric label="Last run" value={worker.lastRunAt ? timeAgo(worker.lastRunAt) : "Never"} detail={worker.lastRunSummary || null} />
+        <Metric label="Next expected" value={nextRunEstimate(worker)} />
+      </div>
+
+      {worker.lastError ? <p className="job-search-alert job-search-alert-error">{worker.lastError}</p> : null}
+
+      {rules?.length > 0 ? (
+        <ul className="job-search-worker-rules">
+          {rules.map((rule, i) => (
+            <li key={i}>
+              {rule.ok == null ? null : <Badge text={rule.ok ? "OK" : "Blocked"} tone={rule.ok ? "success" : "warn"} />} {rule.label}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export default function OverviewPanel({
   findSettings,
   statusCounts,
@@ -47,18 +130,60 @@ export default function OverviewPanel({
   maxLlmCallsPerDay,
   dbSizeMb,
   companyDirectoryStats,
+  workerStatus,
+  adzunaConfigured,
+  defaultResume,
   saving,
   onRunDiscovery,
-  onScoreNow
+  onScoreNow,
+  onToggleWorker
 }) {
   const totalPostings = Object.values(statusCounts || {}).reduce((sum, n) => sum + n, 0);
   const usagePct = llmUsage?.totalCalls != null ? llmUsage.totalCalls : 0;
   const nothingHasRunYet = totalPostings === 0;
   const discoveryEnabled = Boolean(findSettings?.discoveryEnabled);
+  const autoApplyEnabled = Boolean(findSettings?.autoApplyEnabled);
   const isBusy = Boolean(saving);
+
+  const pollWorker = workerStatus?.find((w) => w.workerName === "poll") || { workerName: "poll", enabled: true };
+  const submitWorker = workerStatus?.find((w) => w.workerName === "submit") || { workerName: "submit", enabled: true };
+
+  // Read-only — these are the conditions that already silently gate what
+  // each worker actually does today (see jobSearchDiscovery.js/
+  // jobSearchAutoApply.js); surfaced here so "why didn't it do anything"
+  // never requires reading the source.
+  const pollRules = [
+    { label: "Adzuna API keys configured", ok: adzunaConfigured },
+    { label: `Discovery ${discoveryEnabled ? "enabled" : "disabled"} in Job Find Settings`, ok: discoveryEnabled },
+    { label: `Last discovery run: ${findSettings?.discoveryLastRunAt ? timeAgo(findSettings.discoveryLastRunAt) : "never"}`, ok: null },
+    { label: `Gemini calls today: ${usagePct}/${maxLlmCallsPerDay ?? "—"}`, ok: maxLlmCallsPerDay ? usagePct < maxLlmCallsPerDay : null },
+    { label: `Job-search DB size: ${dbSizeMb} MB`, ok: null }
+  ];
+
+  const approvedCount = statusCounts?.approved || 0;
+  const pendingReviewCount = statusCounts?.pending_review || 0;
+  const submitRules = [
+    {
+      label: defaultResume ? `Default resume set (${defaultResume.label || defaultResume.fileName})` : "No default resume uploaded — submissions can't attach one",
+      ok: Boolean(defaultResume)
+    },
+    { label: `${approvedCount} posting(s) approved and waiting to submit`, ok: null },
+    { label: `Auto-apply ${autoApplyEnabled ? "enabled" : "disabled"} in Job Find Settings`, ok: autoApplyEnabled ? true : null },
+    autoApplyEnabled ? { label: `${pendingReviewCount} pending-review posting(s) eligible for auto-apply evaluation`, ok: null } : null
+  ].filter(Boolean);
 
   return (
     <>
+      <section className="job-search-panel">
+        <header className="job-search-panel-header">
+          <h2>Workers</h2>
+        </header>
+        <div className="job-search-worker-grid">
+          <WorkerCard worker={pollWorker} rules={pollRules} saving={saving} onToggle={onToggleWorker} />
+          <WorkerCard worker={submitWorker} rules={submitRules} saving={saving} onToggle={onToggleWorker} />
+        </div>
+      </section>
+
       <section className="job-search-panel">
         <header className="job-search-panel-header">
           <h2>System Status</h2>
@@ -81,16 +206,6 @@ export default function OverviewPanel({
         ) : null}
 
         <div className="job-search-field-grid">
-          <Metric
-            label="Discovery"
-            value={discoveryEnabled ? "Enabled" : "Disabled"}
-            tone={discoveryEnabled ? null : "warn"}
-            detail={discoveryEnabled ? null : "Enable it in Job Find Settings"}
-          />
-          <Metric
-            label="Last discovery run"
-            value={findSettings?.discoveryLastRunAt ? timeAgo(findSettings.discoveryLastRunAt) : "Never"}
-          />
           <Metric label="Total postings tracked" value={totalPostings} />
           <Metric
             label="Gemini calls today"

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
 import { updateFindSettings, updateProfile } from "../../../lib/jobSearchSettingsStore";
+import { setWorkerEnabled } from "../../../lib/jobSearchWorkerStatusStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export async function POST(request) {
         return NextResponse.json({ ok: true, result: await updateProfile(data) });
       case "updateFindSettings":
         return NextResponse.json({ ok: true, result: await updateFindSettings(data) });
+      case "setWorkerEnabled":
+        return NextResponse.json({ ok: true, result: await setWorkerEnabled(data?.workerName, Boolean(data?.enabled)) });
       default:
         return NextResponse.json({ error: "Unknown settings action." }, { status: 400 });
     }

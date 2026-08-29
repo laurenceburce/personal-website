@@ -102,9 +102,18 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             maxLlmCallsPerDay={snapshot.findSettings.maxLlmCallsPerDay}
             dbSizeMb={snapshot.dbSizeMb}
             companyDirectoryStats={snapshot.companyDirectoryStats}
+            workerStatus={snapshot.workerStatus}
+            adzunaConfigured={snapshot.adzunaConfigured}
+            defaultResume={snapshot.defaultResume}
             saving={saving}
             onRunDiscovery={() => runAction("/api/job-search/run", "discoveryNow", {}, "Discovery run complete.")}
             onScoreNow={() => runAction("/api/job-search/run", "scoreNow", {}, "Scoring run complete.")}
+            onToggleWorker={(workerName, enabled) => runAction(
+              "/api/job-search/settings",
+              "setWorkerEnabled",
+              { workerName, enabled },
+              `${workerName === "poll" ? "Poll" : "Submit"} worker ${enabled ? "enabled" : "disabled"}.`
+            )}
           />
         )}
 

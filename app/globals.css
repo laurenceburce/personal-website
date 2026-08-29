@@ -7695,6 +7695,51 @@ html[data-theme="light"] .auth-feature-gate {
 .job-search-metric-success { border-color: rgba(52, 211, 153, 0.35); }
 .job-search-metric-success strong { color: #6ee7b7; }
 
+/* ── Workers ── */
+
+.job-search-worker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.job-search-worker-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.job-search-worker-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.job-search-worker-card-header strong {
+  font-size: 0.95rem;
+}
+
+.job-search-worker-rules {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 0 0;
+  list-style: none;
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.job-search-worker-rules li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .job-search-description summary {
   cursor: pointer;
   color: var(--accent);

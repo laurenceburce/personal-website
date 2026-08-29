@@ -4,9 +4,11 @@ import { listApplications } from "../lib/jobSearchApplicationStore";
 import { getJobSearchAccess } from "../lib/jobSearchAuth";
 import { getCompanyDirectoryStats } from "../lib/jobSearchCompanyDirectory";
 import { getDatabaseSizeMb } from "../lib/jobSearchDb";
+import { isAdzunaConfigured } from "../lib/jobSearchDiscovery";
 import { countPostingsByStatus, listPostingsByStatus, listRecentPostings } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
 import { getTodayLlmUsage } from "../lib/jobSearchUsageStore";
+import { getAllWorkerStatus } from "../lib/jobSearchWorkerStatusStore";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +34,8 @@ async function getDashboardSnapshot() {
     recentActivity,
     llmUsage,
     dbSizeMb,
-    companyDirectoryStats
+    companyDirectoryStats,
+    workerStatus
   ] = await Promise.all([
     getProfile(),
     getFindSettings(),
@@ -46,12 +49,14 @@ async function getDashboardSnapshot() {
     listRecentPostings({ limit: 25 }),
     getTodayLlmUsage(),
     getDatabaseSizeMb(),
-    getCompanyDirectoryStats()
+    getCompanyDirectoryStats(),
+    getAllWorkerStatus()
   ]);
 
   return {
     profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, applications,
-    statusCounts, recentActivity, llmUsage, dbSizeMb, companyDirectoryStats
+    statusCounts, recentActivity, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
+    adzunaConfigured: isAdzunaConfigured()
   };
 }
 

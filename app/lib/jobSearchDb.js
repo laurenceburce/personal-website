@@ -330,6 +330,30 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // Tracks the two Railway cron services (see scripts/job-search-worker.mjs
+      // and scripts/job-search-submit-worker.mjs) so the dashboard can show a
+      // real status instead of just hoping the cron is still firing.
+      // last_checked_at is written unconditionally, first thing every run —
+      // even when the worker is disabled — so "next expected run" can be
+      // estimated from actual observed cadence and a stalled/removed Railway
+      // cron shows up as staleness regardless of the enabled flag. last_run_at
+      // and friends only update when the worker actually did its real work
+      // (i.e. wasn't skipped for being disabled), so "last successful run"
+      // means what it says.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_worker_status (
+          worker_name VARCHAR(32) PRIMARY KEY,
+          enabled TINYINT(1) NOT NULL DEFAULT 1,
+          last_checked_at DATETIME(3) NULL,
+          observed_interval_minutes FLOAT NULL,
+          last_run_at DATETIME(3) NULL,
+          last_run_ok TINYINT(1) NULL,
+          last_run_summary VARCHAR(500) NOT NULL DEFAULT '',
+          last_error VARCHAR(500) NOT NULL DEFAULT '',
+          updated_at DATETIME(3) NOT NULL
+        )
+      `);
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();
@@ -340,6 +364,10 @@ export const ensureJobSearchSchema = async () => {
       await pool.query(
         "INSERT IGNORE INTO job_search_find_settings (id, updated_at) VALUES (1, ?)",
         [now]
+      );
+      await pool.query(
+        "INSERT IGNORE INTO job_search_worker_status (worker_name, updated_at) VALUES ('poll', ?), ('submit', ?)",
+        [now, now]
       );
     })();
   }

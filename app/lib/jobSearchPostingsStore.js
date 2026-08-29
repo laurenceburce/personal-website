@@ -17,7 +17,30 @@ const PRE_DECISION_STATUSES = new Set(["new", "filtered_out", "below_threshold",
 // window. Deliberately excludes anything still relevant: pending_review,
 // approved, submitted, needs_manual_review, and failed (kept in case of retry)
 // are never touched here.
-const PRUNABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "rejected", "closed", "skipped_auto_apply"];
+const PRUNABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "rejected", "closed", "skipped_auto_apply", "duplicate"];
+
+// Adzuna and a direct ATS poll can both discover the exact same real-world
+// job — Adzuna under its own numeric id, the ATS under its own real id — so
+// the natural key below never collides between them even though it's one
+// posting. mergeCrossSourceDuplicate() closes the redundant side as
+// 'duplicate' the moment the second one is created. Eligible-for-merge is
+// intentionally narrower than PRE_DECISION_STATUSES: pending_review is
+// included too (nothing a human has acted on yet), but approved/submitted/
+// needs_manual_review/failed/unsupported_ats are not — those mean either a
+// human decision or in-flight/completed automation that must never be
+// silently discarded.
+const DEDUPE_ELIGIBLE_STATUSES = [...PRE_DECISION_STATUSES, "pending_review"];
+
+// Deliberately plain (ASCII lowercase + alphanumeric collapse), not fuzzy —
+// matches this codebase's existing "exact match, not loose substring"
+// posture for cross-source identity (see the company-name matching in
+// jobSearchCompanyProbe.js). A looser match risks merging two genuinely
+// different roles at the same company ("Software Engineer" vs "Senior
+// Software Engineer"); this only catches the same title rendered with
+// different casing/punctuation across sources.
+function normalizeForMatch(text) {
+  return String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
 
 export function mapPostingRow(row) {
   return {
@@ -148,7 +171,82 @@ export async function upsertPosting(normalized) {
   // not just the isNew flag.
   const isNew = result.affectedRows === 1;
   const id = (isNew && result.insertId) ? Number(result.insertId) : await lookupPostingId(pool, normalized);
+
+  // Only ever checked the moment a row is first created — a duplicate
+  // relationship only needs deciding once, and re-running this on every
+  // re-upsert of an already-known row would mean an extra table scan per
+  // posting per poll run for no benefit.
+  if (isNew) {
+    await mergeCrossSourceDuplicate(pool, { id, normalized }).catch((error) => {
+      // Best-effort: a dedupe-check hiccup should never fail the upsert that
+      // already succeeded — worst case, both rows just survive independently,
+      // exactly like before this existed.
+      console.error("[jobSearchPostingsStore] Cross-source dedupe check failed:", error?.message || error);
+    });
+  }
+
   return { id, isNew };
+}
+
+// Company-name match is done in SQL (indexed, and MySQL's default collation
+// is already case-insensitive) as a coarse pre-filter; the exact-after-
+// normalization title comparison happens in JS across that (typically tiny,
+// since it's already scoped to one company) candidate set.
+async function findCrossSourceDuplicate(pool, { companyName, title, wantExternal, eligibleStatuses }) {
+  const normalizedTitle = normalizeForMatch(title);
+  if (!normalizedTitle) return null;
+
+  const [rows] = await pool.query(
+    `SELECT id, title, status FROM job_search_postings
+     WHERE LOWER(company_name) = LOWER(?) AND ats_type ${wantExternal ? "=" : "!="} 'external'`,
+    [companyName]
+  );
+
+  return rows.find((row) => {
+    if (eligibleStatuses && !eligibleStatuses.includes(row.status)) return false;
+    return normalizeForMatch(row.title) === normalizedTitle;
+  }) || null;
+}
+
+async function markDuplicate(pool, id, note) {
+  await pool.query(
+    `UPDATE job_search_postings
+     SET status = 'duplicate', decided_at = ?, decided_by = 'dedupe', decision_note = ?, updated_at = ?
+     WHERE id = ?`,
+    [new Date(), note.slice(0, 500), new Date(), id]
+  );
+}
+
+async function mergeCrossSourceDuplicate(pool, { id, normalized }) {
+  if (normalized.atsType === "external") {
+    // Fresh Adzuna row — if a real-ATS posting for the same company+title
+    // already exists (direct-poll got there first, or resolved earlier), this
+    // one is a redundant stub. Close it immediately rather than let it get
+    // independently scored/reviewed/possibly submitted alongside the real one.
+    const existing = await findCrossSourceDuplicate(pool, {
+      companyName: normalized.companyName,
+      title: normalized.title,
+      wantExternal: false
+    });
+    if (existing) {
+      await markDuplicate(pool, id, `Duplicate of posting #${existing.id} (already known via direct ATS poll).`);
+    }
+  } else {
+    // Fresh direct-ATS row — if an older Adzuna stub for the same
+    // company+title is still sitting in a purely automatic state (see
+    // DEDUPE_ELIGIBLE_STATUSES), close that one in favor of this one: this
+    // row has strictly better data (real apply URL, no Playwright resolution
+    // ever needed).
+    const existing = await findCrossSourceDuplicate(pool, {
+      companyName: normalized.companyName,
+      title: normalized.title,
+      wantExternal: true,
+      eligibleStatuses: DEDUPE_ELIGIBLE_STATUSES
+    });
+    if (existing) {
+      await markDuplicate(pool, existing.id, `Superseded by direct ATS posting #${id} (${normalized.atsType}).`);
+    }
+  }
 }
 
 async function lookupPostingId(pool, normalized) {
