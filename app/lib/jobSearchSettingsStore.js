@@ -122,8 +122,14 @@ function mapFindSettingsRow(row) {
     remotePreference: row.remote_preference,
     seniorityLevels: parseJsonColumn(row.seniority_levels, []),
     salaryFloorUsd: row.salary_floor_usd == null ? null : Number(row.salary_floor_usd),
+    maxPostingAgeHours: row.max_posting_age_hours == null ? null : Number(row.max_posting_age_hours),
     resumeMatchThreshold: Number(row.resume_match_threshold),
     minLlmScore: Number(row.min_llm_score),
+    // Defaulted here (not just at the DB level) so every consumer gets a sane
+    // number without null-checking — these are safety-net values, not
+    // user-facing filter criteria, so "unset" should mean "use a safe default".
+    maxLlmCallsPerDay: row.max_llm_calls_per_day == null ? 500 : Number(row.max_llm_calls_per_day),
+    retentionDays: row.retention_days == null ? 30 : Number(row.retention_days),
     excludedCompanies: parseJsonColumn(row.excluded_companies, []),
     profileEmbedding: parseJsonColumn(row.profile_embedding),
     profileEmbeddingModel: row.profile_embedding_model,
@@ -145,7 +151,8 @@ export async function updateFindSettings(data) {
   await pool.query(
     `UPDATE job_search_find_settings
      SET title_keywords = ?, exclude_keywords = ?, locations = ?, remote_preference = ?,
-         seniority_levels = ?, salary_floor_usd = ?, resume_match_threshold = ?, min_llm_score = ?,
+         seniority_levels = ?, salary_floor_usd = ?, max_posting_age_hours = ?,
+         resume_match_threshold = ?, min_llm_score = ?, max_llm_calls_per_day = ?, retention_days = ?,
          excluded_companies = ?, profile_embedding = NULL, profile_embedding_model = NULL,
          profile_embedding_updated_at = NULL, updated_at = ?
      WHERE id = 1`,
@@ -156,8 +163,11 @@ export async function updateFindSettings(data) {
       cleanRemotePreference(data?.remotePreference),
       toJsonParam(cleanStringArray(data?.seniorityLevels, 20, 20)),
       cleanIntOrNull(data?.salaryFloorUsd),
+      cleanIntOrNull(data?.maxPostingAgeHours),
       cleanFloat(data?.resumeMatchThreshold, 0.55, { min: 0, max: 1 }),
       cleanFloat(data?.minLlmScore, 65, { min: 0, max: 100 }),
+      Math.round(cleanFloat(data?.maxLlmCallsPerDay, 500, { min: 1, max: 100000 })),
+      Math.round(cleanFloat(data?.retentionDays, 30, { min: 1, max: 3650 })),
       toJsonParam(cleanStringArray(data?.excludedCompanies, 200, 160)),
       now
     ]

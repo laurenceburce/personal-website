@@ -4,6 +4,7 @@ import { listPostingsByStatus, updatePostingScore } from "./jobSearchPostingsSto
 import { assessScamRisk } from "./jobSearchScamDetection.js";
 import { SCORE_DIMENSIONS, SCORE_WEIGHTS } from "./jobSearchScoringConfig.js";
 import { getDefaultResume, getFindSettings, getProfile, saveProfileEmbeddingCache } from "./jobSearchSettingsStore.js";
+import { getTodayLlmUsage, incrementLlmUsage } from "./jobSearchUsageStore.js";
 
 const POSTING_EMBEDDING_CHARS = 8000;
 
@@ -40,7 +41,10 @@ async function getOrBuildProfileQueryEmbedding(findSettings) {
   if (!queryText.trim()) return null;
 
   const embedding = await embedText({ text: queryText, taskType: "RETRIEVAL_QUERY" });
-  if (embedding) await saveProfileEmbeddingCache({ embedding, model: currentModel });
+  if (embedding) {
+    await saveProfileEmbeddingCache({ embedding, model: currentModel });
+    await incrementLlmUsage("embed");
+  }
   return embedding;
 }
 
@@ -64,6 +68,17 @@ export async function scorePosting(posting, context = {}) {
     return { status: posting.status, reasons: ["LLM not configured"] };
   }
 
+  // Daily LLM-call budget — a hard, code-enforced ceiling independent of
+  // whatever quota the provider allows, checked fresh per posting (not cached
+  // across a run) so a bulk run stops the moment the cap is actually hit
+  // rather than overshooting by however many postings were already in flight.
+  // Applies to every entry point (worker script, manual "Re-score"), not just
+  // the batch loop below, since this check lives in scorePosting() itself.
+  const usage = await getTodayLlmUsage();
+  if (usage.totalCalls >= findSettings.maxLlmCallsPerDay) {
+    return { status: posting.status, reasons: ["Daily LLM call budget reached"], budgetExceeded: true };
+  }
+
   const embeddingModel = getEmbeddingModel();
   let embedding = null;
   let similarity = null;
@@ -74,7 +89,10 @@ export async function scorePosting(posting, context = {}) {
         text: `${posting.title}\n\n${(posting.descriptionText || "").slice(0, POSTING_EMBEDDING_CHARS)}`,
         taskType: "RETRIEVAL_DOCUMENT"
       });
-      if (embedding) similarity = cosineSimilarity(profileEmbedding, embedding);
+      if (embedding) {
+        await incrementLlmUsage("embed");
+        similarity = cosineSimilarity(profileEmbedding, embedding);
+      }
     }
   } catch (error) {
     // Embedding is a pre-filter, not a requirement — fall through to LLM scoring
@@ -89,6 +107,7 @@ export async function scorePosting(posting, context = {}) {
 
   const resume = await getDefaultResume();
   const scoreResult = await scoreJob({ posting, findSettings, resumeText: resume?.parsedText });
+  await incrementLlmUsage("score");
   const overall = computeOverallScore(scoreResult.dimensionScores);
   const nextStatus = overall >= findSettings.minLlmScore ? "pending_review" : "scored_low";
 
@@ -128,11 +147,28 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
   const profile = await getProfile();
   const postings = await listPostingsByStatus("new", { limit });
 
-  const tally = { total: postings.length, filteredOut: 0, belowThreshold: 0, pendingReview: 0, scoredLow: 0, errors: 0 };
+  const tally = {
+    total: postings.length,
+    filteredOut: 0,
+    belowThreshold: 0,
+    pendingReview: 0,
+    scoredLow: 0,
+    errors: 0,
+    budgetExceeded: 0
+  };
 
   for (const posting of postings) {
     try {
       const outcome = await scorePosting(posting, { findSettings, profile });
+      if (outcome.budgetExceeded) {
+        // Every remaining posting this run would hit the same cap — stop
+        // iterating rather than re-checking (and logging) it postings.length
+        // more times. They stay at 'new' and get picked up on the next run,
+        // once tomorrow's budget resets or the cap is raised.
+        tally.budgetExceeded = postings.length - (tally.filteredOut + tally.belowThreshold + tally.pendingReview + tally.scoredLow + tally.errors);
+        console.warn(`[jobSearchScoringPipeline] Daily LLM call budget (${findSettings.maxLlmCallsPerDay}) reached — stopping early, ${tally.budgetExceeded} posting(s) deferred to the next run.`);
+        break;
+      }
       if (outcome.status === "filtered_out") tally.filteredOut += 1;
       else if (outcome.status === "below_threshold") tally.belowThreshold += 1;
       else if (outcome.status === "pending_review") tally.pendingReview += 1;

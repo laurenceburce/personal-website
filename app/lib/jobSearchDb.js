@@ -74,11 +74,14 @@ export function parseJsonColumn(value, fallback = null) {
   }
 }
 
+// 1060/1061/1062 = duplicate column/key (idempotent ADD COLUMN/INDEX re-runs).
+// 1091 = "can't DROP; check that it exists" (idempotent DROP COLUMN re-runs,
+// e.g. against a table freshly created without the column in the first place).
 export const runMigration = async (pool, sql) => {
   try {
     await pool.query(sql);
   } catch (err) {
-    if (![1060, 1061, 1062].includes(err?.errno)) throw err;
+    if (![1060, 1061, 1062, 1091].includes(err?.errno)) throw err;
   }
 };
 
@@ -123,11 +126,9 @@ export const ensureJobSearchSchema = async () => {
           salary_min INT NULL,
           salary_max INT NULL,
           salary_currency CHAR(3) NULL,
-          description_html LONGTEXT NULL,
           description_text LONGTEXT NULL,
           apply_url VARCHAR(600) NOT NULL DEFAULT '',
           posted_at DATETIME(3) NULL,
-          raw_json JSON NULL,
           content_hash CHAR(64) NOT NULL DEFAULT '',
           status VARCHAR(24) NOT NULL DEFAULT 'new',
           filter_reasons JSON NULL,
@@ -245,6 +246,18 @@ export const ensureJobSearchSchema = async () => {
       `);
 
       await runMigration(pool, "ALTER TABLE job_search_applications ADD COLUMN user_note VARCHAR(500) NOT NULL DEFAULT ''");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN max_posting_age_hours INT NULL");
+      // description_html was never actually read anywhere (scoring/embedding/display
+      // all use description_text) and stored the full raw HTML of every job listing —
+      // this alone grew one table to 200MB across ~4,500 postings. Dropped for good.
+      await runMigration(pool, "ALTER TABLE job_search_postings DROP COLUMN description_html");
+      // raw_json stored the entire unprocessed ATS API object per posting (which,
+      // for Greenhouse/Lever, redundantly re-embeds the full HTML description a
+      // second time via JSON escaping) and was never read anywhere — every field
+      // worth keeping is already extracted into its own column. At 9.4KB/row
+      // average, larger than description_text itself, this was the single
+      // biggest contributor to the storage incident.
+      await runMigration(pool, "ALTER TABLE job_search_postings DROP COLUMN raw_json");
 
       await pool.query(`
         CREATE TABLE IF NOT EXISTS job_search_domain_cache (
@@ -254,6 +267,21 @@ export const ensureJobSearchSchema = async () => {
           checked_at DATETIME(3) NOT NULL
         )
       `);
+
+      // One row per calendar day — a hard, code-enforced ceiling on Gemini spend
+      // that's independent of whatever quota Google's dashboard allows, so a
+      // runaway backlog or bug can't silently rack up cost even at a generous quota.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_llm_usage (
+          usage_date DATE PRIMARY KEY,
+          embed_calls INT NOT NULL DEFAULT 0,
+          score_calls INT NOT NULL DEFAULT 0,
+          updated_at DATETIME(3) NOT NULL
+        )
+      `);
+
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN max_llm_calls_per_day INT NULL");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN retention_days INT NULL");
 
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
@@ -272,3 +300,15 @@ export const ensureJobSearchSchema = async () => {
   await schemaReadyPromise;
   return pool;
 };
+
+// Storage circuit breaker: total size across every job_search_* table (and
+// everything else sharing this database, e.g. finance) so the worker can check
+// real headroom before inserting more data, rather than finding out via a
+// mid-insert "table is full" error like the incident that motivated this.
+export async function getDatabaseSizeMb() {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const [rows] = await pool.query(
+    "SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS mb FROM information_schema.tables WHERE table_schema = DATABASE()"
+  );
+  return Number(rows[0]?.mb || 0);
+}

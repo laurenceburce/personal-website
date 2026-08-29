@@ -5,6 +5,17 @@ import { Field, Panel } from "./JobSearchUi";
 
 const SENIORITY_OPTIONS = ["intern", "junior", "mid", "senior", "staff", "lead", "principal", "director"];
 
+// "engineer"/"developer"/"programmer"/"swe"/"sde" as bare words already subsume
+// every more specific phrase ("software engineer", "backend engineer", "staff
+// engineer", ...) via the hard filter's word-boundary match — this is the
+// broadest net a title-keyword filter can cast without turning it off
+// entirely. The LLM rubric stage still down-scores anything irrelevant that
+// gets through (e.g. "Sales Engineer"), so over-including here is cheap.
+const TITLE_KEYWORD_PRESETS = {
+  "Software Engineering (broad)": "engineer, developer, programmer, swe, sde",
+  "Everything (no title filter)": ""
+};
+
 function toCsv(list) {
   return (list || []).join(", ");
 }
@@ -24,8 +35,11 @@ function toFormState(findSettings) {
     remotePreference: findSettings.remotePreference || "remote_friendly",
     seniorityLevels: findSettings.seniorityLevels || [],
     salaryFloorUsd: findSettings.salaryFloorUsd ?? "",
+    maxPostingAgeHours: findSettings.maxPostingAgeHours ?? "",
     resumeMatchThreshold: findSettings.resumeMatchThreshold ?? 0.55,
     minLlmScore: findSettings.minLlmScore ?? 65,
+    maxLlmCallsPerDay: findSettings.maxLlmCallsPerDay ?? 500,
+    retentionDays: findSettings.retentionDays ?? 30,
     excludedCompanies: toCsv(findSettings.excludedCompanies)
   };
 }
@@ -52,8 +66,11 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
       remotePreference: form.remotePreference,
       seniorityLevels: form.seniorityLevels,
       salaryFloorUsd: form.salaryFloorUsd === "" ? null : Number(form.salaryFloorUsd),
+      maxPostingAgeHours: form.maxPostingAgeHours === "" ? null : Number(form.maxPostingAgeHours),
       resumeMatchThreshold: Number(form.resumeMatchThreshold),
       minLlmScore: Number(form.minLlmScore),
+      maxLlmCallsPerDay: Number(form.maxLlmCallsPerDay),
+      retentionDays: Number(form.retentionDays),
       excludedCompanies: fromCsv(form.excludedCompanies, 160)
     });
   }
@@ -68,6 +85,18 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
 
       <form onSubmit={handleSubmit} className="job-search-form">
         <Field label="Title keywords (comma-separated, matched against title/department)">
+          <div className="job-search-preset-row">
+            <span>Presets:</span>
+            {Object.entries(TITLE_KEYWORD_PRESETS).map(([label, value]) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, titleKeywords: value }))}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <input
             value={form.titleKeywords}
             onChange={(e) => setForm((f) => ({ ...f, titleKeywords: e.target.value }))}
@@ -127,6 +156,16 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
           />
         </Field>
 
+        <Field label="Max posting age in hours (only rejects postings with a known post date; leave blank for no limit)">
+          <input
+            type="number"
+            min="1"
+            value={form.maxPostingAgeHours}
+            onChange={(e) => setForm((f) => ({ ...f, maxPostingAgeHours: e.target.value }))}
+            placeholder="e.g. 24"
+          />
+        </Field>
+
         <Field label={`Resume match threshold: ${Number(form.resumeMatchThreshold).toFixed(2)} (embedding cosine similarity, 0-1)`}>
           <input
             type="range"
@@ -155,6 +194,33 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
             onChange={(e) => setForm((f) => ({ ...f, excludedCompanies: e.target.value }))}
           />
         </Field>
+
+        <fieldset className="job-search-fieldset">
+          <legend>Safety nets</legend>
+          <p className="job-search-panel-hint">
+            Hard, code-enforced ceilings — independent of whatever quota/plan your Gemini key or MySQL
+            volume actually has. These exist so a big watchlist or an unexpected backlog can&apos;t
+            silently run up cost or fill your database again.
+          </p>
+
+          <Field label="Max Gemini calls per day (embedding + scoring combined)">
+            <input
+              type="number"
+              min="1"
+              value={form.maxLlmCallsPerDay}
+              onChange={(e) => setForm((f) => ({ ...f, maxLlmCallsPerDay: e.target.value }))}
+            />
+          </Field>
+
+          <Field label="Delete filtered-out / rejected / closed / scored-low postings after this many days">
+            <input
+              type="number"
+              min="1"
+              value={form.retentionDays}
+              onChange={(e) => setForm((f) => ({ ...f, retentionDays: e.target.value }))}
+            />
+          </Field>
+        </fieldset>
 
         <div className="job-search-form-actions">
           <button type="submit" disabled={isBusy}>Save find settings</button>

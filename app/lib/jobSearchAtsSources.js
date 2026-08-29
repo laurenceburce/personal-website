@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 
 const FETCH_TIMEOUT_MS = 20000;
+// Plenty for the LLM/embedding truncation windows (6-8K chars) plus full
+// transparency in the review-queue UI, while bounding worst-case storage — a
+// full-HTML approach here once grew one table to 200MB across ~4,500 postings.
+const MAX_DESCRIPTION_TEXT_CHARS = 20000;
 
 async function fetchJson(url) {
   const controller = new AbortController();
@@ -65,8 +69,7 @@ export async function fetchGreenhouseJobs({ boardToken, companyName }) {
   const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return jobs.map((job) => {
-    const descriptionHtml = job.content || "";
-    const descriptionText = stripHtml(descriptionHtml);
+    const descriptionText = stripHtml(job.content || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS);
     const locationText = job.location?.name || "";
     const title = job.title || "";
 
@@ -83,12 +86,10 @@ export async function fetchGreenhouseJobs({ boardToken, companyName }) {
       salaryMin: null,
       salaryMax: null,
       salaryCurrency: null,
-      descriptionHtml,
       descriptionText,
       applyUrl: job.absolute_url || "",
       postedAt: job.updated_at ? new Date(job.updated_at) : null,
-      contentHash: computeContentHash(title, descriptionText),
-      rawJson: job
+      contentHash: computeContentHash(title, descriptionText)
     };
   });
 }
@@ -99,8 +100,8 @@ export async function fetchLeverJobs({ boardToken, companyName }) {
   const postings = Array.isArray(data) ? data : [];
 
   return postings.map((posting) => {
-    const descriptionHtml = posting.description || posting.descriptionBodyHtml || "";
-    const descriptionText = posting.descriptionPlain || stripHtml(descriptionHtml);
+    const descriptionText = (posting.descriptionPlain || stripHtml(posting.description || posting.descriptionBodyHtml || ""))
+      .slice(0, MAX_DESCRIPTION_TEXT_CHARS);
     const locationText = posting.categories?.location || "";
     const title = posting.text || "";
     const workplaceType = String(posting.categories?.workplaceType || "").toLowerCase();
@@ -125,12 +126,10 @@ export async function fetchLeverJobs({ boardToken, companyName }) {
       salaryMin: null,
       salaryMax: null,
       salaryCurrency: null,
-      descriptionHtml,
       descriptionText,
       applyUrl: posting.applyUrl || posting.hostedUrl || "",
       postedAt: posting.createdAt ? new Date(Number(posting.createdAt)) : null,
-      contentHash: computeContentHash(title, descriptionText),
-      rawJson: posting
+      contentHash: computeContentHash(title, descriptionText)
     };
   });
 }
@@ -141,8 +140,7 @@ export async function fetchAshbyJobs({ boardToken, companyName }) {
   const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
 
   return jobs.map((job) => {
-    const descriptionHtml = job.descriptionHtml || "";
-    const descriptionText = stripHtml(descriptionHtml);
+    const descriptionText = stripHtml(job.descriptionHtml || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS);
     const locationText = job.location || "";
     const title = job.title || "";
     const comp = job.compensation?.summaryComponents?.[0] || null;
@@ -160,12 +158,10 @@ export async function fetchAshbyJobs({ boardToken, companyName }) {
       salaryMin: comp?.minValue != null ? Math.round(Number(comp.minValue)) : null,
       salaryMax: comp?.maxValue != null ? Math.round(Number(comp.maxValue)) : null,
       salaryCurrency: comp?.currencyCode || null,
-      descriptionHtml,
       descriptionText,
       applyUrl: job.jobUrl || job.applyUrl || "",
       postedAt: job.publishedAt ? new Date(job.publishedAt) : null,
-      contentHash: computeContentHash(title, descriptionText),
-      rawJson: job
+      contentHash: computeContentHash(title, descriptionText)
     };
   });
 }

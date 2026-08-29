@@ -13,6 +13,12 @@ import {
 // silently reset out from under them.
 const PRE_DECISION_STATUSES = new Set(["new", "filtered_out", "below_threshold", "scored_low", "scored"]);
 
+// Terminal, no-longer-actionable statuses — safe to prune after a retention
+// window. Deliberately excludes anything still relevant: pending_review,
+// approved, submitted, needs_manual_review, and failed (kept in case of retry)
+// are never touched here.
+const PRUNABLE_STATUSES = ["filtered_out", "below_threshold", "scored_low", "rejected", "closed"];
+
 export function mapPostingRow(row) {
   return {
     id: Number(row.id),
@@ -29,11 +35,9 @@ export function mapPostingRow(row) {
     salaryMin: row.salary_min == null ? null : Number(row.salary_min),
     salaryMax: row.salary_max == null ? null : Number(row.salary_max),
     salaryCurrency: row.salary_currency,
-    descriptionHtml: row.description_html,
     descriptionText: row.description_text,
     applyUrl: row.apply_url,
     postedAt: row.posted_at,
-    rawJson: parseJsonColumn(row.raw_json),
     contentHash: row.content_hash,
     status: row.status,
     filterReasons: parseJsonColumn(row.filter_reasons, []),
@@ -84,11 +88,9 @@ export async function upsertPosting(watchlistId, normalized) {
     normalized.salaryMin ?? null,
     normalized.salaryMax ?? null,
     normalized.salaryCurrency ?? null,
-    normalized.descriptionHtml || null,
     normalized.descriptionText || null,
     normalized.applyUrl || "",
     normalized.postedAt || null,
-    toJsonParam(normalized.rawJson),
     normalized.contentHash
   ];
 
@@ -97,9 +99,9 @@ export async function upsertPosting(watchlistId, normalized) {
       `INSERT INTO job_search_postings
          (watchlist_id, ats_type, board_token, external_job_id, company_name, title, department,
           location_text, remote_type, seniority_guess, salary_min, salary_max, salary_currency,
-          description_html, description_text, apply_url, posted_at, raw_json, content_hash,
+          description_text, apply_url, posted_at, content_hash,
           status, is_active, first_seen_at, last_seen_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?)`,
       [
         watchlistId, normalized.atsType, normalized.boardToken, normalized.externalJobId,
         ...commonFields, now, now, now, now
@@ -117,7 +119,7 @@ export async function upsertPosting(watchlistId, normalized) {
     `UPDATE job_search_postings
      SET watchlist_id = ?, company_name = ?, title = ?, department = ?, location_text = ?,
          remote_type = ?, seniority_guess = ?, salary_min = ?, salary_max = ?, salary_currency = ?,
-         description_html = ?, description_text = ?, apply_url = ?, posted_at = ?, raw_json = ?,
+         description_text = ?, apply_url = ?, posted_at = ?,
          content_hash = ?, status = ?, is_active = 1, last_seen_at = ?, updated_at = ?
      WHERE id = ?`,
     [watchlistId, ...commonFields, nextStatus, now, now, existing.id]
@@ -225,4 +227,26 @@ export async function countPostingsByStatus() {
     "SELECT status, COUNT(*) AS total FROM job_search_postings GROUP BY status"
   );
   return Object.fromEntries(rows.map((row) => [row.status, Number(row.total)]));
+}
+
+// Storage safety net #1: deletes postings that are no longer actionable (see
+// PRUNABLE_STATUSES) and haven't changed in `retentionDays`. Called on every
+// poll run (see job-search-worker.mjs) so storage stays bounded continuously
+// rather than only reactively — the incident that motivated this happened
+// because nothing ever pruned old data regardless of watchlist size.
+export async function cleanupOldPostings(retentionDays) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const days = Number(retentionDays) > 0 ? Number(retentionDays) : 30;
+  // Computed in Node rather than SQL NOW() — this Railway MySQL server's system
+  // clock runs several hours off true UTC (found during the storage incident
+  // investigation), which matters little at day-granularity retention, but
+  // every other timestamp in this codebase is Node-computed for consistency.
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const [result] = await pool.query(
+    "DELETE FROM job_search_postings WHERE status IN (?) AND updated_at < ?",
+    [PRUNABLE_STATUSES, cutoff]
+  );
+
+  return { deletedCount: result.affectedRows, retentionDays: days };
 }

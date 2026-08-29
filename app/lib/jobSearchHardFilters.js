@@ -52,6 +52,16 @@ export function runHardFilters(posting, findSettings) {
     reasons.push(`Salary min ${posting.salaryMin} is below floor ${findSettings.salaryFloorUsd}`);
   }
 
+  // Only reject when we actually have a posted date — Greenhouse's list API only
+  // exposes `updated_at` (bumped by edits, not just new listings), so this is a
+  // best-effort signal, not a guarantee. Never reject on a missing date.
+  if (findSettings.maxPostingAgeHours && posting.postedAt) {
+    const ageHours = (Date.now() - new Date(posting.postedAt).getTime()) / (60 * 60 * 1000);
+    if (ageHours > findSettings.maxPostingAgeHours) {
+      reasons.push(`Posted ${Math.round(ageHours)}h ago, older than the ${findSettings.maxPostingAgeHours}h limit`);
+    }
+  }
+
   const excludedCompanies = (findSettings.excludedCompanies || []).filter(Boolean);
   if (excludedCompanies.length) {
     const normalizedCompany = normalizeKeyword(posting.companyName);

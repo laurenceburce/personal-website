@@ -7442,6 +7442,28 @@ html[data-theme="light"] .auth-feature-gate {
   align-items: center;
 }
 
+.job-search-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.job-search-preset-row span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.job-search-preset-row button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
 .job-search-checkbox-grid {
   display: flex;
   flex-wrap: wrap;
