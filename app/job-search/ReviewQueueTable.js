@@ -120,12 +120,16 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   );
 }
 
-export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped, approvedWaiting, saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied }) {
+export default function ReviewQueueTable({
+  postings, scoredLow, autoApplySkipped, approvedWaiting, autoApplyQueue, autoApplyEnabled,
+  saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied
+}) {
   const [selected, setSelected] = useState(new Set());
   const [view, setView] = useState("pending");
   const list = view === "scoredLow" ? scoredLow
     : view === "autoSkipped" ? (autoApplySkipped || [])
     : view === "approved" ? (approvedWaiting || [])
+    : view === "autoApplyQueue" ? (autoApplyQueue || [])
     : postings;
   const isBusy = Boolean(saving);
 
@@ -174,8 +178,19 @@ export default function ReviewQueueTable({ postings, scoredLow, autoApplySkipped
           <button type="button" className={view === "approved" ? "job-search-toggle-active" : ""} onClick={() => switchList("approved")}>
             Waiting for worker ({(approvedWaiting || []).length})
           </button>
+          <button type="button" className={view === "autoApplyQueue" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoApplyQueue")}>
+            Auto-Apply Queue ({(autoApplyQueue || []).length})
+          </button>
         </div>
       </header>
+
+      {view === "autoApplyQueue" ? (
+        <p className="job-search-panel-hint">
+          {autoApplyEnabled
+            ? "Pending-review postings that already clear every free auto-apply threshold (score, resume match, scam risk, freshness) — these are what the submit worker will actually attempt next, ranked highest score first. A posting can still land in \"Skipped auto-apply\" afterward for a reason only discoverable by actually trying it (unsupported ATS, CAPTCHA, an unanswerable required field) — this list is a preview, not a guarantee."
+            : "Auto-apply is currently disabled in Job Find Settings, so nothing here gets submitted automatically — approve postings by hand instead, or enable auto-apply to have qualifying postings like these submitted on their own."}
+        </p>
+      ) : null}
 
       {selected.size > 0 && (
         <div className="job-search-batch-toolbar">

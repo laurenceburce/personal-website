@@ -5,62 +5,15 @@
 import { submitApplication } from "./jobSearchAdapters/index.js";
 import { resolvePostingForSubmission, SUBMITTABLE_ATS_TYPES } from "./jobSearchAdapters/atsResolver.js";
 import { insertApplicationAttempt } from "./jobSearchApplicationStore.js";
+// The cheap, Playwright-free gate checks live in their own module — see its
+// own doc-comment for why this split exists (short version: this file also
+// imports submitApplication above, which transitively imports playwright,
+// and the gate logic needs to be importable from the main web app without
+// dragging that in too).
+import { adapterStatusToSkipReason, AUTO_APPLY_SKIP_REASONS, evaluateCheapGates } from "./jobSearchAutoApplyGates.js";
 import { getDefaultResume, getResumeById } from "./jobSearchSettingsStore.js";
 
-export const AUTO_APPLY_SKIP_REASONS = {
-  UNSUPPORTED_ATS: "unsupported_ats",
-  REQUIRED_FIELD_UNKNOWN: "required_field_unknown",
-  CAPTCHA_OR_LOGIN_REQUIRED: "captcha_or_login_required",
-  SCAM_RISK_TOO_HIGH: "scam_risk_too_high",
-  SCORE_TOO_LOW: "score_too_low"
-};
-
-function hoursSince(date) {
-  if (!date) return Infinity;
-  return (Date.now() - new Date(date).getTime()) / (1000 * 60 * 60);
-}
-
-// Cheap gates first (no browser launch, no network) — Playwright/ATS
-// resolution is only reached once a posting has already cleared every free
-// check. "Minimum embedding match" and "fresh posting only" both fold into
-// SCORE_TOO_LOW rather than inventing extra reason codes beyond the fixed
-// five this system tracks — the decisionNote spells out which one actually
-// applied.
-function evaluateCheapGates(posting, findSettings) {
-  if ((posting.llmOverallScore ?? 0) < findSettings.autoApplyMinScore) {
-    return {
-      reason: AUTO_APPLY_SKIP_REASONS.SCORE_TOO_LOW,
-      detail: `LLM score ${posting.llmOverallScore ?? 0} is below the auto-apply minimum of ${findSettings.autoApplyMinScore}.`
-    };
-  }
-  if (posting.embeddingSimilarity != null && posting.embeddingSimilarity < findSettings.autoApplyMinMatch) {
-    return {
-      reason: AUTO_APPLY_SKIP_REASONS.SCORE_TOO_LOW,
-      detail: `Resume match ${posting.embeddingSimilarity.toFixed(2)} is below the auto-apply minimum of ${findSettings.autoApplyMinMatch}.`
-    };
-  }
-  if ((posting.scamRiskScore ?? 0) > findSettings.autoApplyMaxScamRisk) {
-    return {
-      reason: AUTO_APPLY_SKIP_REASONS.SCAM_RISK_TOO_HIGH,
-      detail: `Scam-risk score ${posting.scamRiskScore} exceeds the auto-apply maximum of ${findSettings.autoApplyMaxScamRisk}.`
-    };
-  }
-  const ageHours = hoursSince(posting.postedAt);
-  if (ageHours > findSettings.autoApplyMaxAgeHours) {
-    return {
-      reason: AUTO_APPLY_SKIP_REASONS.SCORE_TOO_LOW,
-      detail: `Posted ${Math.round(ageHours)}h ago, older than auto-apply's ${findSettings.autoApplyMaxAgeHours}h freshness limit.`
-    };
-  }
-  return null;
-}
-
-function adapterStatusToSkipReason(status) {
-  if (status === "blocked") return AUTO_APPLY_SKIP_REASONS.CAPTCHA_OR_LOGIN_REQUIRED;
-  if (status === "needs_manual_review") return AUTO_APPLY_SKIP_REASONS.REQUIRED_FIELD_UNKNOWN;
-  if (status === "unsupported_ats") return AUTO_APPLY_SKIP_REASONS.UNSUPPORTED_ATS;
-  return null; // 'submitted' / 'failed' / 'dry_run_ok' handled by the caller directly
-}
+export { AUTO_APPLY_SKIP_REASONS };
 
 // Returns { status, skipReason?, skipDetail? } where status is one of
 // 'submitted' | 'failed' | 'skipped_auto_apply'. Writes an applications-table

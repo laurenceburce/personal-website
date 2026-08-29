@@ -107,15 +107,41 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
   );
 }
 
+const APPLIED_VIEWS = [
+  { key: "all", label: "All", match: () => true },
+  { key: "submitted", label: "Successfully submitted", match: (a) => a.submissionStatus === "submitted" },
+  { key: "needs_manual_review", label: "Needs manual review", match: (a) => a.submissionStatus === "needs_manual_review" },
+  { key: "failed", label: "Failed", match: (a) => a.submissionStatus === "failed" },
+  { key: "unsupported_ats", label: "Unsupported ATS", match: (a) => a.submissionStatus === "unsupported_ats" }
+];
+
 export default function AppliedJobsTable({ applications, saving, onUpdateNote, onRetry, onDelete }) {
+  const [view, setView] = useState("all");
+  const activeView = APPLIED_VIEWS.find((v) => v.key === view) || APPLIED_VIEWS[0];
+  const list = applications.filter(activeView.match);
+
   return (
     <section className="job-search-panel job-search-applied-panel">
       <header className="job-search-panel-header">
         <h2>Applied Jobs</h2>
+        <div className="job-search-toggle-group">
+          {APPLIED_VIEWS.map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              className={view === v.key ? "job-search-toggle-active" : ""}
+              onClick={() => setView(v.key)}
+            >
+              {v.label} ({applications.filter(v.match).length})
+            </button>
+          ))}
+        </div>
       </header>
 
       {applications.length === 0 ? (
         <p className="job-search-empty">No applications submitted yet — approved jobs in the review queue get submitted automatically once the Playwright adapters are wired up.</p>
+      ) : list.length === 0 ? (
+        <p className="job-search-empty">Nothing here right now.</p>
       ) : (
         <div className="job-search-table-scroll">
           <table className="job-search-table">
@@ -129,7 +155,7 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
               </tr>
             </thead>
             <tbody>
-              {applications.map((application) => (
+              {list.map((application) => (
                 <AppliedJobRow key={application.id} application={application} saving={saving} onUpdateNote={onUpdateNote} onRetry={onRetry} onDelete={onDelete} />
               ))}
             </tbody>

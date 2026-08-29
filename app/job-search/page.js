@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import JobSearchAppClient from "./JobSearchAppClient";
 import { listApplications } from "../lib/jobSearchApplicationStore";
+import { evaluateCheapGates } from "../lib/jobSearchAutoApplyGates";
 import { getJobSearchAccess } from "../lib/jobSearchAuth";
 import { getCompanyDirectoryStats } from "../lib/jobSearchCompanyDirectory";
 import { getDatabaseSizeMb } from "../lib/jobSearchDb";
@@ -60,8 +61,25 @@ async function getDashboardSnapshot() {
     getAllWorkerStatus()
   ]);
 
+  // Postings that would actually be attempted on the NEXT submit-worker run
+  // — a preview, not a guarantee: it only re-runs the free, Playwright-free
+  // checks (score/match/scam-risk/age thresholds — see
+  // jobSearchAutoApplyGates.js), the same ones evaluateAutoApply() itself
+  // checks first before ever resolving the real ATS or launching a browser.
+  // A posting can still pass this preview and later get skipped for a
+  // reason only discoverable by actually attempting it (unsupported ATS,
+  // CAPTCHA, an unanswerable required field) — those only show up in the
+  // "Skipped auto-apply" tab once a real run has actually tried. Sorted by
+  // score, matching the submit-worker's own processing order.
+  const autoApplyQueue = findSettings.autoApplyEnabled
+    ? reviewQueue
+        .filter((posting) => evaluateCheapGates(posting, findSettings) === null)
+        .sort((a, b) => (b.llmOverallScore ?? 0) - (a.llmOverallScore ?? 0))
+    : [];
+
   return {
-    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting, applications,
+    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
+    autoApplyQueue, applications,
     statusCounts, discoveryRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
     adzunaConfigured: isAdzunaConfigured()
   };
