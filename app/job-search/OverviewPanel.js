@@ -105,7 +105,7 @@ function nextRunEstimate(worker, now) {
   return `${formatCountdown(remainingMs)} (${cadence})`;
 }
 
-function WorkerCard({ worker, rules, saving, now, onToggle }) {
+function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory }) {
   const isBusy = Boolean(saving);
   const label = worker.workerName === "poll" ? "Poll worker" : "Submit worker";
   const description = worker.workerName === "poll"
@@ -119,9 +119,12 @@ function WorkerCard({ worker, rules, saving, now, onToggle }) {
           <strong>{label}</strong>
           <div className="job-search-cell-note">{description}</div>
         </div>
-        <button type="button" disabled={isBusy} onClick={() => onToggle(worker.workerName, !worker.enabled)}>
-          {worker.enabled ? "Turn off" : "Turn on"}
-        </button>
+        <div className="job-search-form-actions">
+          <button type="button" onClick={onViewHistory}>View Activity History</button>
+          <button type="button" disabled={isBusy} onClick={() => onToggle(worker.workerName, !worker.enabled)}>
+            {worker.enabled ? "Turn off" : "Turn on"}
+          </button>
+        </div>
       </div>
 
       <div className="job-search-field-grid">
@@ -145,10 +148,126 @@ function WorkerCard({ worker, rules, saving, now, onToggle }) {
   );
 }
 
+// Extracted out of the old standalone "Recent Discovery Runs" section so it
+// can live inside the Poll Worker card's history popup instead.
+function DiscoveryRunsTable({ runs }) {
+  if (!runs || runs.length === 0) {
+    return <p className="job-search-empty">No discovery/poll runs recorded yet.</p>;
+  }
+
+  return (
+    <div className="job-search-table-scroll">
+      <table className="job-search-table">
+        <thead>
+          <tr>
+            <th>Ran</th>
+            <th>Jobs processed</th>
+            <th>Discovery (Adzuna)</th>
+            <th>Companies</th>
+            <th>Direct-poll</th>
+            <th>By ATS</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => {
+            const byAtsEntries = Object.entries(run.jobsFoundByAts || {}).filter(([, count]) => count > 0);
+            const totalJobsSeen = run.jobsFound + byAtsEntries.reduce((sum, [, count]) => sum + count, 0);
+
+            return (
+              <tr key={run.id}>
+                <td>{timeAgo(run.ranAt)}</td>
+                <td>{totalJobsSeen}</td>
+                <td>
+                  {run.discoveryRan
+                    ? <>{run.jobsFound} found, {run.jobsCreated} new</>
+                    : <span className="job-search-cell-note">Skipped ({run.discoverySkipReason || "not due yet"})</span>}
+                </td>
+                <td>{run.companiesProbed} probed, {run.companiesFound} matched</td>
+                <td>
+                  {run.directPollCompaniesPolled}/{run.directPollCompaniesTotal} companies, {run.directPollCreated} new
+                  <div className="job-search-cell-note">{run.directPollSkipped} filtered out{run.directPollErrors > 0 ? `, ${run.directPollErrors} error(s)` : ""}</div>
+                </td>
+                <td>
+                  {byAtsEntries.length > 0
+                    ? byAtsEntries.map(([atsType, count]) => (
+                        <span key={atsType} className="job-search-ats-count">{atsTypeLabel(atsType)}: {count}</span>
+                      ))
+                    : "—"}
+                </td>
+                <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// The submit-worker's own equivalent history — one row per cycle: postings
+// actually processed (approved -> submitted/failed/needs review) and, if
+// enabled, auto-apply's own evaluation of pending-review postings.
+function SubmitRunsTable({ runs }) {
+  if (!runs || runs.length === 0) {
+    return <p className="job-search-empty">No submit-worker runs recorded yet.</p>;
+  }
+
+  return (
+    <div className="job-search-table-scroll">
+      <table className="job-search-table">
+        <thead>
+          <tr>
+            <th>Ran</th>
+            <th>Approved processed</th>
+            <th>Outcome</th>
+            <th>Auto-apply</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.map((run) => (
+            <tr key={run.id}>
+              <td>{timeAgo(run.ranAt)}</td>
+              <td>{run.approvedTotal}</td>
+              <td>
+                {run.submittedCount} submitted, {run.manualReviewCount} manual review
+                {run.failedCount > 0 ? <div className="job-search-cell-note">{run.failedCount} failed</div> : null}
+              </td>
+              <td>
+                {run.autoApplyEnabled
+                  ? <>{run.autoApplyEvaluated} evaluated, {run.autoAppliedCount} applied, {run.autoSkippedCount} skipped</>
+                  : <span className="job-search-cell-note">Disabled</span>}
+              </td>
+              <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function HistoryModal({ title, hint, onClose, children }) {
+  return (
+    <div className="job-search-modal-backdrop" onClick={onClose}>
+      <div className="job-search-modal job-search-modal-wide" onClick={(e) => e.stopPropagation()}>
+        <div className="job-search-modal-header">
+          <h2>{title}</h2>
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+        {hint ? <p className="job-search-panel-hint">{hint}</p> : null}
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function OverviewPanel({
   findSettings,
   statusCounts,
   discoveryRuns,
+  submitRuns,
   llmUsage,
   maxLlmCallsPerDay,
   dbSizeMb,
@@ -161,6 +280,7 @@ export default function OverviewPanel({
   onScoreNow,
   onToggleWorker
 }) {
+  const [historyModal, setHistoryModal] = useState(null); // null | "poll" | "submit"
   const totalPostings = Object.values(statusCounts || {}).reduce((sum, n) => sum + n, 0);
   const usagePct = llmUsage?.totalCalls != null ? llmUsage.totalCalls : 0;
   const nothingHasRunYet = totalPostings === 0;
@@ -259,23 +379,6 @@ export default function OverviewPanel({
       <section className="job-search-panel">
         <header className="job-search-panel-header">
           <h2>Workers</h2>
-        </header>
-        <p className="job-search-panel-hint">
-          The poll worker runs two distinct things on every cron tick, at two different cadences:
-          Discovery searches Adzuna by keyword for new postings and new companies (throttled — Adzuna's
-          free tier has a real rate limit), while Direct-poll re-checks every company already known from
-          past discovery straight against its own ATS board (no throttle — runs on every tick). The submit
-          worker is separate again: it only submits postings you've approved and evaluates auto-apply.
-        </p>
-        <div className="job-search-worker-grid">
-          <WorkerCard worker={pollWorker} rules={pollRules} saving={saving} now={now} onToggle={onToggleWorker} />
-          <WorkerCard worker={submitWorker} rules={submitRules} saving={saving} now={now} onToggle={onToggleWorker} />
-        </div>
-      </section>
-
-      <section className="job-search-panel">
-        <header className="job-search-panel-header">
-          <h2>System Status</h2>
           <div className="job-search-form-actions">
             <button type="button" disabled={isBusy} onClick={onRunDiscovery}>
               {saving === "discoveryNow" ? "Running discovery..." : "Run Discovery Now"}
@@ -284,6 +387,31 @@ export default function OverviewPanel({
               {saving === "scoreNow" ? "Scoring..." : "Score New Postings Now"}
             </button>
           </div>
+        </header>
+        <p className="job-search-panel-hint">
+          The poll worker runs two distinct things on every cron tick, at two different cadences:
+          Discovery searches Adzuna by keyword for new postings and new companies (throttled — Adzuna's
+          free tier has a real rate limit), while Direct-poll re-checks every company already known from
+          past discovery straight against its own ATS board (no throttle — runs on every tick). The submit
+          worker is separate again: it only submits postings you've approved and evaluates auto-apply. The
+          two buttons above manually trigger a poll-worker-style pass right now, without waiting for its
+          own cron.
+        </p>
+        <div className="job-search-worker-grid">
+          <WorkerCard
+            worker={pollWorker} rules={pollRules} saving={saving} now={now}
+            onToggle={onToggleWorker} onViewHistory={() => setHistoryModal("poll")}
+          />
+          <WorkerCard
+            worker={submitWorker} rules={submitRules} saving={saving} now={now}
+            onToggle={onToggleWorker} onViewHistory={() => setHistoryModal("submit")}
+          />
+        </div>
+      </section>
+
+      <section className="job-search-panel">
+        <header className="job-search-panel-header">
+          <h2>System Status</h2>
         </header>
 
         {nothingHasRunYet ? (
@@ -321,66 +449,29 @@ export default function OverviewPanel({
         </div>
       </section>
 
-      <section className="job-search-panel">
-        <header className="job-search-panel-header">
-          <h2>Recent Discovery Runs</h2>
-        </header>
-        <p className="job-search-panel-hint">
-          One row per poll-worker run. "Discovery (Adzuna)" is the keyword search for new postings/companies
-          — often shows "Skipped" since it only actually runs once per hour by default. "Direct-poll" and
-          "By ATS" are the companies already on the roster, checked fresh every run regardless.
-        </p>
-        {(!discoveryRuns || discoveryRuns.length === 0) ? (
-          <p className="job-search-empty">No discovery/poll runs recorded yet.</p>
-        ) : (
-          <div className="job-search-table-scroll">
-            <table className="job-search-table">
-              <thead>
-                <tr>
-                  <th>Ran</th>
-                  <th>Jobs processed</th>
-                  <th>Discovery (Adzuna)</th>
-                  <th>Companies</th>
-                  <th>Direct-poll</th>
-                  <th>By ATS</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {discoveryRuns.map((run) => {
-                  const byAtsEntries = Object.entries(run.jobsFoundByAts || {}).filter(([, count]) => count > 0);
-                  const totalJobsSeen = run.jobsFound + byAtsEntries.reduce((sum, [, count]) => sum + count, 0);
+      {historyModal === "poll" ? (
+        <HistoryModal
+          title="Poll Worker — Recent Runs"
+          hint={"One row per poll-worker run. \"Discovery (Adzuna)\" is the keyword search for new postings/companies "
+            + "— often shows \"Skipped\" since it only actually runs once per hour by default. \"Direct-poll\" and "
+            + "\"By ATS\" are the companies already on the roster, checked fresh every run regardless."}
+          onClose={() => setHistoryModal(null)}
+        >
+          <DiscoveryRunsTable runs={discoveryRuns} />
+        </HistoryModal>
+      ) : null}
 
-                  return (
-                    <tr key={run.id}>
-                      <td>{timeAgo(run.ranAt)}</td>
-                      <td>{totalJobsSeen}</td>
-                      <td>
-                        {run.discoveryRan
-                          ? <>{run.jobsFound} found, {run.jobsCreated} new</>
-                          : <span className="job-search-cell-note">Skipped ({run.discoverySkipReason || "not due yet"})</span>}
-                      </td>
-                      <td>{run.companiesProbed} probed, {run.companiesFound} matched</td>
-                      <td>
-                        {run.directPollCompaniesPolled}/{run.directPollCompaniesTotal} companies, {run.directPollCreated} new
-                        <div className="job-search-cell-note">{run.directPollSkipped} filtered out{run.directPollErrors > 0 ? `, ${run.directPollErrors} error(s)` : ""}</div>
-                      </td>
-                      <td>
-                        {byAtsEntries.length > 0
-                          ? byAtsEntries.map(([atsType, count]) => (
-                              <span key={atsType} className="job-search-ats-count">{atsTypeLabel(atsType)}: {count}</span>
-                            ))
-                          : "—"}
-                      </td>
-                      <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      {historyModal === "submit" ? (
+        <HistoryModal
+          title="Submit Worker — Recent Runs"
+          hint={"One row per submit-worker run: postings approved by hand and actually processed (submitted/failed/"
+            + "needs manual review), plus — when auto-apply is enabled — how many pending-review postings it "
+            + "evaluated on its own and what it decided for each."}
+          onClose={() => setHistoryModal(null)}
+        >
+          <SubmitRunsTable runs={submitRuns} />
+        </HistoryModal>
+      ) : null}
     </>
   );
 }

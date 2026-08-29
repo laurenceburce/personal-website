@@ -7828,6 +7828,12 @@ html[data-theme="light"] .auth-feature-gate {
   box-shadow: var(--shadow-card-hover);
 }
 
+/* Wide variant for content that needs real table room (e.g. worker run
+   history) rather than a simple form. */
+.job-search-modal-wide {
+  width: min(960px, 100%);
+}
+
 .job-search-modal-header {
   display: flex;
   align-items: center;

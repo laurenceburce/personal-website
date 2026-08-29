@@ -383,6 +383,30 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // One row per submit-worker cycle — the same append-only history
+      // pattern as job_search_discovery_runs above, just for the other
+      // cron service (see scripts/job-search-submit-worker.mjs). Only
+      // written when the worker is actually enabled and runs its real work,
+      // matching that table's own convention.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_submit_runs (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          ran_at DATETIME(3) NOT NULL,
+          approved_total INT NOT NULL DEFAULT 0,
+          submitted_count INT NOT NULL DEFAULT 0,
+          manual_review_count INT NOT NULL DEFAULT 0,
+          failed_count INT NOT NULL DEFAULT 0,
+          auto_apply_enabled TINYINT(1) NOT NULL DEFAULT 0,
+          auto_apply_evaluated INT NOT NULL DEFAULT 0,
+          auto_applied_count INT NOT NULL DEFAULT 0,
+          auto_skipped_count INT NOT NULL DEFAULT 0,
+          ok TINYINT(1) NOT NULL DEFAULT 1,
+          error VARCHAR(500) NOT NULL DEFAULT '',
+          created_at DATETIME(3) NOT NULL,
+          INDEX job_search_submit_runs_ran_at_idx (ran_at)
+        )
+      `);
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();

@@ -98,6 +98,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             findSettings={snapshot.findSettings}
             statusCounts={snapshot.statusCounts}
             discoveryRuns={snapshot.discoveryRuns}
+            submitRuns={snapshot.submitRuns}
             llmUsage={snapshot.llmUsage}
             maxLlmCallsPerDay={snapshot.findSettings.maxLlmCallsPerDay}
             dbSizeMb={snapshot.dbSizeMb}

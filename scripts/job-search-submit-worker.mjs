@@ -12,6 +12,7 @@ import { insertApplicationAttempt } from "../app/lib/jobSearchApplicationStore.j
 import { getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
 import { listPostingsByStatus, updatePostingScore } from "../app/lib/jobSearchPostingsStore.js";
 import { getDefaultResume, getFindSettings, getProfile, getResumeById } from "../app/lib/jobSearchSettingsStore.js";
+import { recordSubmitRun } from "../app/lib/jobSearchSubmitRunStore.js";
 import { isWorkerEnabled, recordHeartbeat, recordWorkerRunResult } from "../app/lib/jobSearchWorkerStatusStore.js";
 
 if (!isJobSearchDbConfigured()) {
@@ -45,7 +46,9 @@ try {
   } else {
     let submittedCount = 0;
     let manualReviewCount = 0;
+    let failedCount = 0;
     let autoAppliedCount = 0;
+    let autoSkippedCount = 0;
 
     // Highest-match jobs get submitted first when there's a backlog bigger than
     // one run's limit.
@@ -85,6 +88,7 @@ try {
           const applicationStatus = toApplicationStatus(result.status);
           if (applicationStatus === "submitted") submittedCount += 1;
           else if (applicationStatus === "needs_manual_review") manualReviewCount += 1;
+          else failedCount += 1;
 
           await insertApplicationAttempt({
             postingId: posting.id,
@@ -122,8 +126,10 @@ try {
     // match/scam fields persisted from scoring, so no extra context needs to
     // be attached before handing it to evaluateAutoApply().
     const findSettings = await getFindSettings();
+    let pendingReviewCount = 0;
     if (findSettings.autoApplyEnabled) {
       const pendingReview = await listPostingsByStatus("pending_review", { limit: 20, orderBy: "score" });
+      pendingReviewCount = pendingReview.length;
       console.log(`Auto-apply enabled — evaluating ${pendingReview.length} pending-review posting(s).`);
 
       if (pendingReview.length > 0) {
@@ -132,6 +138,7 @@ try {
           try {
             const result = await evaluateAutoApply({ posting, findSettings, profile });
             if (result.status === "submitted") autoAppliedCount += 1;
+            else if (result.status === "skipped_auto_apply") autoSkippedCount += 1;
             await updatePostingScore(posting.id, {
               status: result.status,
               autoApplySkipReason: result.skipReason || null,
@@ -147,6 +154,12 @@ try {
         }
       }
     }
+
+    await recordSubmitRun({
+      approvedTotal: approved.length, submittedCount, manualReviewCount, failedCount,
+      autoApplyEnabled: findSettings.autoApplyEnabled, autoApplyEvaluated: pendingReviewCount,
+      autoAppliedCount, autoSkippedCount, ok: true
+    }).catch((error) => console.error("[submit-run] Failed to record run history:", error?.message || error));
 
     await recordWorkerRunResult("submit", {
       ok: true,

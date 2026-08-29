@@ -9,6 +9,7 @@ import { isAdzunaConfigured } from "../lib/jobSearchDiscovery";
 import { listRecentDiscoveryRuns } from "../lib/jobSearchDiscoveryRunStore";
 import { countPostingsByStatus, listPostingsByStatus } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
+import { listRecentSubmitRuns } from "../lib/jobSearchSubmitRunStore";
 import { getTodayLlmUsage } from "../lib/jobSearchUsageStore";
 import { getAllWorkerStatus } from "../lib/jobSearchWorkerStatusStore";
 
@@ -35,6 +36,7 @@ async function getDashboardSnapshot() {
     applications,
     statusCounts,
     discoveryRuns,
+    submitRuns,
     llmUsage,
     dbSizeMb,
     companyDirectoryStats,
@@ -55,6 +57,7 @@ async function getDashboardSnapshot() {
     listApplications({ limit: 200 }),
     countPostingsByStatus(),
     listRecentDiscoveryRuns({ limit: 20 }),
+    listRecentSubmitRuns({ limit: 20 }),
     getTodayLlmUsage(),
     getDatabaseSizeMb(),
     getCompanyDirectoryStats(),
@@ -80,7 +83,7 @@ async function getDashboardSnapshot() {
   return {
     profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
     autoApplyQueue, applications,
-    statusCounts, discoveryRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
+    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
     adzunaConfigured: isAdzunaConfigured()
   };
 }
