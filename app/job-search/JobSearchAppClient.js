@@ -5,11 +5,13 @@ import { useState } from "react";
 import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
+import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
 import ReviewQueueTable from "./ReviewQueueTable";
 import WatchlistPanel from "./WatchlistPanel";
 
 const TABS = [
+  { id: "overview", label: "Overview" },
   { id: "review", label: "Review Queue" },
   { id: "applied", label: "Applied Jobs" },
   { id: "settings", label: "User Settings" },
@@ -19,7 +21,7 @@ const TABS = [
 
 export default function JobSearchAppClient({ snapshot, initialTab }) {
   const router = useRouter();
-  const [tab, setTab] = useState(initialTab || "review");
+  const [tab, setTab] = useState(initialTab || "overview");
   const [saving, setSaving] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -93,6 +95,17 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
       {notice && !error ? <div className="job-search-alert">{notice}</div> : null}
 
       <main className="job-search-main">
+        {tab === "overview" && (
+          <OverviewPanel
+            watchlist={snapshot.watchlist}
+            statusCounts={snapshot.statusCounts}
+            recentActivity={snapshot.recentActivity}
+            llmUsage={snapshot.llmUsage}
+            maxLlmCallsPerDay={snapshot.findSettings.maxLlmCallsPerDay}
+            dbSizeMb={snapshot.dbSizeMb}
+          />
+        )}
+
         {tab === "review" && (
           <ReviewQueueTable
             postings={snapshot.reviewQueue}

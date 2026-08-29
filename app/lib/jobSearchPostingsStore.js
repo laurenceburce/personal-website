@@ -148,11 +148,26 @@ export async function getPostingById(id) {
   return rows[0] ? mapPostingRow(rows[0]) : null;
 }
 
-export async function listPostingsByStatus(status, { limit = 200 } = {}) {
+// Whitelisted, never interpolated from caller input directly — orderBy only
+// ever selects one of these three fixed clauses. NULLs sort last under MySQL's
+// default DESC ordering in both cases, which is exactly right: a posting with
+// an unknown post date or no score yet shouldn't jump the queue over ones that
+// actually have the data being prioritized on.
+const ORDER_BY_CLAUSES = {
+  updated_at: "updated_at DESC",
+  // Scoring priority: newest-posted jobs get processed first when there's a
+  // backlog larger than one run's limit — freshness is the whole point.
+  posted_at: "posted_at DESC",
+  // Submission priority: highest-match jobs get applied to first.
+  score: "llm_overall_score DESC"
+};
+
+export async function listPostingsByStatus(status, { limit = 200, orderBy = "updated_at" } = {}) {
   const pool = requirePool(await ensureJobSearchSchema());
   const statuses = Array.isArray(status) ? status : [status];
+  const orderClause = ORDER_BY_CLAUSES[orderBy] || ORDER_BY_CLAUSES.updated_at;
   const [rows] = await pool.query(
-    `SELECT * FROM job_search_postings WHERE status IN (?) ORDER BY updated_at DESC LIMIT ?`,
+    `SELECT * FROM job_search_postings WHERE status IN (?) ORDER BY ${orderClause} LIMIT ?`,
     [statuses, Number(limit) || 200]
   );
   return rows.map(mapPostingRow);
@@ -219,6 +234,18 @@ export async function decidePosting(id, { status, decidedBy, decisionNote = "" }
   );
 
   return { id: postingId };
+}
+
+// Recent activity feed for the Overview tab — every posting regardless of
+// status, newest-updated first, so the dashboard can show "what just happened"
+// rather than only what's currently pending review.
+export async function listRecentPostings({ limit = 20 } = {}) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const [rows] = await pool.query(
+    "SELECT * FROM job_search_postings ORDER BY updated_at DESC LIMIT ?",
+    [Number(limit) || 20]
+  );
+  return rows.map(mapPostingRow);
 }
 
 export async function countPostingsByStatus() {

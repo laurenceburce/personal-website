@@ -2,8 +2,10 @@ import { redirect } from "next/navigation";
 import JobSearchAppClient from "./JobSearchAppClient";
 import { listApplications } from "../lib/jobSearchApplicationStore";
 import { getJobSearchAccess } from "../lib/jobSearchAuth";
-import { countPostingsByStatus, listPostingsByStatus } from "../lib/jobSearchPostingsStore";
+import { getDatabaseSizeMb } from "../lib/jobSearchDb";
+import { countPostingsByStatus, listPostingsByStatus, listRecentPostings } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
+import { getTodayLlmUsage } from "../lib/jobSearchUsageStore";
 import { listWatchlist } from "../lib/jobSearchWatchlistStore";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +28,10 @@ async function getDashboardSnapshot() {
     reviewQueue,
     scoredLow,
     applications,
-    statusCounts
+    statusCounts,
+    recentActivity,
+    llmUsage,
+    dbSizeMb
   ] = await Promise.all([
     getProfile(),
     getFindSettings(),
@@ -36,15 +41,21 @@ async function getDashboardSnapshot() {
     listPostingsByStatus("pending_review", { limit: 200 }),
     listPostingsByStatus("scored_low", { limit: 200 }),
     listApplications({ limit: 200 }),
-    countPostingsByStatus()
+    countPostingsByStatus(),
+    listRecentPostings({ limit: 25 }),
+    getTodayLlmUsage(),
+    getDatabaseSizeMb()
   ]);
 
-  return { profile, findSettings, resumes, defaultResume, watchlist, reviewQueue, scoredLow, applications, statusCounts };
+  return {
+    profile, findSettings, resumes, defaultResume, watchlist, reviewQueue, scoredLow, applications,
+    statusCounts, recentActivity, llmUsage, dbSizeMb
+  };
 }
 
 export default async function JobSearchPage({ searchParams }) {
   const params = await searchParams;
-  const tab = typeof params?.tab === "string" ? params.tab : "review";
+  const tab = typeof params?.tab === "string" ? params.tab : "overview";
   const access = await getJobSearchAccess();
 
   if (!access.session) {

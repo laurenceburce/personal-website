@@ -7661,6 +7661,40 @@ html[data-theme="light"] .auth-feature-gate {
   line-height: 1.4;
 }
 
+.job-search-metric {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: var(--radius-md);
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.job-search-metric span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.job-search-metric strong {
+  font-size: 1.3rem;
+  color: var(--ink);
+}
+
+.job-search-metric small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.job-search-metric-warn { border-color: rgba(251, 191, 36, 0.35); }
+.job-search-metric-warn strong { color: #fbbf24; }
+.job-search-metric-danger { border-color: rgba(251, 113, 133, 0.35); }
+.job-search-metric-danger strong { color: #fca5a5; }
+.job-search-metric-success { border-color: rgba(52, 211, 153, 0.35); }
+.job-search-metric-success strong { color: #6ee7b7; }
+
 .job-search-description summary {
   cursor: pointer;
   color: var(--accent);

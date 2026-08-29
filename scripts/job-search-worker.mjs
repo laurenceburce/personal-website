@@ -4,9 +4,10 @@
 // recommended `*/15 * * * *` cadence) rather than looping internally.
 import { fetchAtsJobs } from "../app/lib/jobSearchAtsSources.js";
 import { getDatabaseSizeMb, getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
+import { fetchAdzunaJobs, isAdzunaConfigured, shouldRunDiscovery } from "../app/lib/jobSearchDiscovery.js";
 import { cleanupOldPostings, markStalePostingsClosed, upsertPosting } from "../app/lib/jobSearchPostingsStore.js";
 import { scoreNewPostings } from "../app/lib/jobSearchScoringPipeline.js";
-import { getFindSettings } from "../app/lib/jobSearchSettingsStore.js";
+import { getFindSettings, markDiscoveryRun } from "../app/lib/jobSearchSettingsStore.js";
 import { listWatchlist, recordPollResult } from "../app/lib/jobSearchWatchlistStore.js";
 
 // Storage circuit breaker: this is a hard stop on inserting MORE data, checked
@@ -51,6 +52,32 @@ async function pollWatchlistEntry(entry) {
   }
 }
 
+async function runDiscovery(findSettings) {
+  if (!isAdzunaConfigured()) {
+    console.warn("Discovery is enabled in Job Find Settings but ADZUNA_APP_ID/ADZUNA_APP_KEY are not set — skipping.");
+    return;
+  }
+
+  try {
+    const jobs = await fetchAdzunaJobs({
+      keywords: findSettings.titleKeywords,
+      location: findSettings.discoveryLocation,
+      country: findSettings.discoveryCountry
+    });
+
+    let created = 0;
+    for (const job of jobs) {
+      const result = await upsertPosting(null, job);
+      if (result.isNew) created += 1;
+    }
+
+    await markDiscoveryRun();
+    console.log(`[discovery] Adzuna (${findSettings.discoveryCountry}): ${jobs.length} found, ${created} new.`);
+  } catch (error) {
+    console.error(`[discovery] Adzuna search failed: ${error?.message || error}`);
+  }
+}
+
 try {
   // Safety net #1: routine retention cleanup, every run, regardless of current
   // size — cheap when there's nothing to prune, and keeps storage bounded
@@ -80,6 +107,13 @@ try {
 
   for (const entry of watchlist) {
     await pollWatchlistEntry(entry);
+  }
+
+  // Discovery is throttled independently of this cron's own cadence (see
+  // shouldRunDiscovery) since Adzuna's free tier is far more limited than the
+  // watchlist's ATS APIs — safe to check on every run regardless.
+  if (shouldRunDiscovery(findSettings)) {
+    await runDiscovery(findSettings);
   }
 
   console.log("Scoring new postings (hard filters -> embedding rank -> LLM rubric)...");

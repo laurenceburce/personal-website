@@ -25,7 +25,9 @@ function toApplicationStatus(adapterStatus) {
 }
 
 try {
-  const approved = await listPostingsByStatus("approved", { limit: 20 });
+  // Highest-match jobs get submitted first when there's a backlog bigger than
+  // one run's limit.
+  const approved = await listPostingsByStatus("approved", { limit: 20, orderBy: "score" });
   console.log(`Found ${approved.length} approved posting(s) to submit.`);
 
   if (approved.length > 0) {

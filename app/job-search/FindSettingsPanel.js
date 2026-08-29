@@ -35,11 +35,15 @@ function toFormState(findSettings) {
     remotePreference: findSettings.remotePreference || "remote_friendly",
     seniorityLevels: findSettings.seniorityLevels || [],
     salaryFloorUsd: findSettings.salaryFloorUsd ?? "",
-    maxPostingAgeHours: findSettings.maxPostingAgeHours ?? "",
+    maxPostingAgeHours: findSettings.maxPostingAgeHours ?? 168,
     resumeMatchThreshold: findSettings.resumeMatchThreshold ?? 0.55,
     minLlmScore: findSettings.minLlmScore ?? 65,
     maxLlmCallsPerDay: findSettings.maxLlmCallsPerDay ?? 500,
     retentionDays: findSettings.retentionDays ?? 30,
+    discoveryEnabled: findSettings.discoveryEnabled ?? false,
+    discoveryLocation: findSettings.discoveryLocation ?? "",
+    discoveryCountry: findSettings.discoveryCountry ?? "us",
+    discoveryIntervalMinutes: findSettings.discoveryIntervalMinutes ?? 60,
     excludedCompanies: toCsv(findSettings.excludedCompanies)
   };
 }
@@ -66,11 +70,15 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
       remotePreference: form.remotePreference,
       seniorityLevels: form.seniorityLevels,
       salaryFloorUsd: form.salaryFloorUsd === "" ? null : Number(form.salaryFloorUsd),
-      maxPostingAgeHours: form.maxPostingAgeHours === "" ? null : Number(form.maxPostingAgeHours),
+      maxPostingAgeHours: Number(form.maxPostingAgeHours) || 168,
       resumeMatchThreshold: Number(form.resumeMatchThreshold),
       minLlmScore: Number(form.minLlmScore),
       maxLlmCallsPerDay: Number(form.maxLlmCallsPerDay),
       retentionDays: Number(form.retentionDays),
+      discoveryEnabled: form.discoveryEnabled,
+      discoveryLocation: form.discoveryLocation,
+      discoveryCountry: form.discoveryCountry,
+      discoveryIntervalMinutes: Number(form.discoveryIntervalMinutes),
       excludedCompanies: fromCsv(form.excludedCompanies, 160)
     });
   }
@@ -156,13 +164,14 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
           />
         </Field>
 
-        <Field label="Max posting age in hours (only rejects postings with a known post date; leave blank for no limit)">
+        <Field label="Max posting age in hours (default 168 = 7 days; only rejects postings with a known post date)">
           <input
             type="number"
             min="1"
+            max="8760"
             value={form.maxPostingAgeHours}
             onChange={(e) => setForm((f) => ({ ...f, maxPostingAgeHours: e.target.value }))}
-            placeholder="e.g. 24"
+            placeholder="168"
           />
         </Field>
 
@@ -194,6 +203,53 @@ export default function FindSettingsPanel({ findSettings, saving, onSave }) {
             onChange={(e) => setForm((f) => ({ ...f, excludedCompanies: e.target.value }))}
           />
         </Field>
+
+        <fieldset className="job-search-fieldset">
+          <legend>Discovery (find jobs without a watchlist)</legend>
+          <p className="job-search-panel-hint">
+            Searches by your title keywords above across the web via Adzuna, instead of only checking
+            companies you&apos;ve explicitly added. Results that don&apos;t link to a supported ATS still
+            get scored and show up in your review queue, just require a manual click to apply. Runs on
+            its own schedule below, independent of how often the poller itself runs, since Adzuna&apos;s
+            free tier is far more limited than the direct ATS APIs.
+          </p>
+
+          <Field label="Enable discovery">
+            <input
+              type="checkbox"
+              checked={form.discoveryEnabled}
+              onChange={(e) => setForm((f) => ({ ...f, discoveryEnabled: e.target.checked }))}
+            />
+          </Field>
+
+          <Field label="Location (optional, e.g. a city or 'remote')">
+            <input
+              value={form.discoveryLocation}
+              onChange={(e) => setForm((f) => ({ ...f, discoveryLocation: e.target.value }))}
+              placeholder="e.g. San Diego"
+            />
+          </Field>
+
+          <Field label="Country code">
+            <select
+              value={form.discoveryCountry}
+              onChange={(e) => setForm((f) => ({ ...f, discoveryCountry: e.target.value }))}
+            >
+              {["us", "gb", "ca", "au", "de", "fr", "nl", "in", "sg", "nz", "za", "mx", "br"].map((code) => (
+                <option key={code} value={code}>{code.toUpperCase()}</option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Minutes between discovery searches (independent of the poll schedule)">
+            <input
+              type="number"
+              min="15"
+              value={form.discoveryIntervalMinutes}
+              onChange={(e) => setForm((f) => ({ ...f, discoveryIntervalMinutes: e.target.value }))}
+            />
+          </Field>
+        </fieldset>
 
         <fieldset className="job-search-fieldset">
           <legend>Safety nets</legend>

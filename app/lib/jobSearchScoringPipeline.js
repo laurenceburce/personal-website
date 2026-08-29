@@ -141,11 +141,13 @@ export async function scorePosting(posting, context = {}) {
 
 // Batch entry point for the worker script: scores every posting still sitting at
 // 'new' (hard-filter-passing edits reset a posting back to 'new' too — see
-// jobSearchPostingsStore.upsertPosting).
+// jobSearchPostingsStore.upsertPosting). Ordered newest-posted-first so a
+// backlog bigger than `limit` processes the freshest postings first, not
+// whichever rows happen to have been touched most recently.
 export async function scoreNewPostings({ limit = 100 } = {}) {
   const findSettings = await getFindSettings();
   const profile = await getProfile();
-  const postings = await listPostingsByStatus("new", { limit });
+  const postings = await listPostingsByStatus("new", { limit, orderBy: "posted_at" });
 
   const tally = {
     total: postings.length,

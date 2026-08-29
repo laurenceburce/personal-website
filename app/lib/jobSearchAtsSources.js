@@ -4,7 +4,7 @@ const FETCH_TIMEOUT_MS = 20000;
 // Plenty for the LLM/embedding truncation windows (6-8K chars) plus full
 // transparency in the review-queue UI, while bounding worst-case storage — a
 // full-HTML approach here once grew one table to 200MB across ~4,500 postings.
-const MAX_DESCRIPTION_TEXT_CHARS = 20000;
+export const MAX_DESCRIPTION_TEXT_CHARS = 20000;
 
 async function fetchJson(url) {
   const controller = new AbortController();

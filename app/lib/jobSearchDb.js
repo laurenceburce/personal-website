@@ -283,6 +283,16 @@ export const ensureJobSearchSchema = async () => {
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN max_llm_calls_per_day INT NULL");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN retention_days INT NULL");
 
+      // Keyword-based discovery (Adzuna) — an alternative to the watchlist for
+      // finding postings without specifying any company up front. Throttled
+      // independently of the poll cron's own cadence via discovery_last_run_at,
+      // since the aggregator's free tier is far more limited than the ATS APIs.
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_enabled TINYINT(1) NOT NULL DEFAULT 0");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_location VARCHAR(160) NOT NULL DEFAULT ''");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_country VARCHAR(4) NOT NULL DEFAULT 'us'");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_interval_minutes INT NULL");
+      await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN discovery_last_run_at DATETIME(3) NULL");
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();

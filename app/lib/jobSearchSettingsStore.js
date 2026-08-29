@@ -122,7 +122,11 @@ function mapFindSettingsRow(row) {
     remotePreference: row.remote_preference,
     seniorityLevels: parseJsonColumn(row.seniority_levels, []),
     salaryFloorUsd: row.salary_floor_usd == null ? null : Number(row.salary_floor_usd),
-    maxPostingAgeHours: row.max_posting_age_hours == null ? null : Number(row.max_posting_age_hours),
+    // Freshness is core to the whole system's value proposition (beating
+    // LinkedIn's lagging index), so "unset" defaults to a 7-day cap rather than
+    // no limit at all — matches the safety-net defaults below (maxLlmCallsPerDay,
+    // retentionDays), where "unconfigured" means "use a sane default", not "off".
+    maxPostingAgeHours: row.max_posting_age_hours == null ? 168 : Number(row.max_posting_age_hours),
     resumeMatchThreshold: Number(row.resume_match_threshold),
     minLlmScore: Number(row.min_llm_score),
     // Defaulted here (not just at the DB level) so every consumer gets a sane
@@ -130,6 +134,11 @@ function mapFindSettingsRow(row) {
     // user-facing filter criteria, so "unset" should mean "use a safe default".
     maxLlmCallsPerDay: row.max_llm_calls_per_day == null ? 500 : Number(row.max_llm_calls_per_day),
     retentionDays: row.retention_days == null ? 30 : Number(row.retention_days),
+    discoveryEnabled: Boolean(row.discovery_enabled),
+    discoveryLocation: row.discovery_location || "",
+    discoveryCountry: row.discovery_country || "us",
+    discoveryIntervalMinutes: row.discovery_interval_minutes == null ? 60 : Number(row.discovery_interval_minutes),
+    discoveryLastRunAt: row.discovery_last_run_at,
     excludedCompanies: parseJsonColumn(row.excluded_companies, []),
     profileEmbedding: parseJsonColumn(row.profile_embedding),
     profileEmbeddingModel: row.profile_embedding_model,
@@ -153,6 +162,7 @@ export async function updateFindSettings(data) {
      SET title_keywords = ?, exclude_keywords = ?, locations = ?, remote_preference = ?,
          seniority_levels = ?, salary_floor_usd = ?, max_posting_age_hours = ?,
          resume_match_threshold = ?, min_llm_score = ?, max_llm_calls_per_day = ?, retention_days = ?,
+         discovery_enabled = ?, discovery_location = ?, discovery_country = ?, discovery_interval_minutes = ?,
          excluded_companies = ?, profile_embedding = NULL, profile_embedding_model = NULL,
          profile_embedding_updated_at = NULL, updated_at = ?
      WHERE id = 1`,
@@ -163,17 +173,31 @@ export async function updateFindSettings(data) {
       cleanRemotePreference(data?.remotePreference),
       toJsonParam(cleanStringArray(data?.seniorityLevels, 20, 20)),
       cleanIntOrNull(data?.salaryFloorUsd),
-      cleanIntOrNull(data?.maxPostingAgeHours),
+      // Blank/unset writes 168h (7 days), not NULL/unlimited — matches the
+      // read-side default in mapFindSettingsRow, so the two can't disagree.
+      Math.round(cleanFloat(data?.maxPostingAgeHours, 168, { min: 1, max: 8760 })),
       cleanFloat(data?.resumeMatchThreshold, 0.55, { min: 0, max: 1 }),
       cleanFloat(data?.minLlmScore, 65, { min: 0, max: 100 }),
       Math.round(cleanFloat(data?.maxLlmCallsPerDay, 500, { min: 1, max: 100000 })),
       Math.round(cleanFloat(data?.retentionDays, 30, { min: 1, max: 3650 })),
+      data?.discoveryEnabled ? 1 : 0,
+      cleanText(data?.discoveryLocation, 160),
+      cleanText(data?.discoveryCountry, 4, "us").toLowerCase(),
+      Math.round(cleanFloat(data?.discoveryIntervalMinutes, 60, { min: 15, max: 1440 })),
       toJsonParam(cleanStringArray(data?.excludedCompanies, 200, 160)),
       now
     ]
   );
 
   return { ok: true };
+}
+
+// Separate from updateFindSettings — this must NOT reset on every settings
+// edit (unlike profile_embedding, which intentionally does), or the discovery
+// throttle would break every time the user tweaks an unrelated field.
+export async function markDiscoveryRun() {
+  const pool = requirePool(await ensureJobSearchSchema());
+  await pool.query("UPDATE job_search_find_settings SET discovery_last_run_at = ? WHERE id = 1", [new Date()]);
 }
 
 // Called by the scoring pipeline once it computes a fresh profile-query embedding.
