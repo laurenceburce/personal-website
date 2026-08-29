@@ -11,7 +11,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
-  resolveStandardField,
+  resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
 import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
@@ -228,11 +228,24 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         continue;
       }
 
-      // Known profile field (name/email/phone/links/etc).
-      const standardValue = resolveStandardField(field.normalizedLabel, profile);
-      if (standardValue) {
-        if (await fillByWidget(scope, field.locator, widget, standardValue)) {
-          submittedAnswers[field.label] = standardValue;
+      // Known profile field (name/email/phone/links/etc). Some fields have
+      // more than one acceptable value (country name spelled out vs.
+      // abbreviated, phone with/without its country code) —
+      // resolveStandardFieldCandidates() returns them in priority order;
+      // fillByWidget() already dispatches correctly per widget type, so
+      // retrying candidates here is what actually lets a select succeed
+      // instead of landing in manual review over a spelling mismatch.
+      const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.label);
+      if (standardCandidates.length > 0) {
+        let filledValue = null;
+        for (const candidate of standardCandidates) {
+          if (await fillByWidget(scope, field.locator, widget, candidate)) {
+            filledValue = candidate;
+            break;
+          }
+        }
+        if (filledValue != null) {
+          submittedAnswers[field.label] = filledValue;
         } else if (field.required) {
           manualReviewFields.push(field.label);
         }

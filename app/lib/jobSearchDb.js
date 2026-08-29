@@ -407,6 +407,26 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // A single free-text "Full Name" field can't be reliably split back
+      // into first/middle/last for forms that ask for them separately —
+      // confirmed live as a real, unfixable-by-heuristic problem: for one
+      // real name, "Laurence Alec" is a two-word first name, "Moran"
+      // (initial "M") is the middle name, and "Burce" is the last — no
+      // "first word is first name, last word is last name" rule can ever
+      // recover that boundary from the combined string alone, since a
+      // parser has no way to know "Alec" belongs with "Laurence" rather
+      // than with "Moran". Explicit fields, entered once, remove the
+      // guessing entirely — see profileMapping.js. full_name is now a
+      // DERIVED column (recomputed from these on every save, see
+      // jobSearchSettingsStore.js's updateProfile()), kept so every
+      // existing "Full Name" consumer (the LLM prompt, Lever's single
+      // "name" field, etc.) still works unchanged.
+      await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN prefix VARCHAR(20) NOT NULL DEFAULT ''");
+      await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN first_name VARCHAR(120) NOT NULL DEFAULT ''");
+      await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN middle_name VARCHAR(120) NOT NULL DEFAULT ''");
+      await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN last_name VARCHAR(120) NOT NULL DEFAULT ''");
+      await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN suffix VARCHAR(20) NOT NULL DEFAULT ''");
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();

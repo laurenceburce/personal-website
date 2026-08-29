@@ -20,6 +20,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveStandardField,
   resolveWorkAuthValue
 } from "./profileMapping.js";
 import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
@@ -173,6 +174,27 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
         if (field.type === "multiple-select" || field.type === "dropdown") {
           if (required) manualReviewFields.push(field.text);
           continue;
+        }
+
+        // A custom card question can still happen to be an ordinary profile
+        // field (a company adding its own "LinkedIn"/"Country"/"Middle
+        // Name" question outside Lever's own fixed standard schema) — check
+        // real profile data before ever falling to the LLM's best guess.
+        // Always a plain text/textarea target here, so a single best-guess
+        // value is enough (unlike the select-capable adapters, retrying
+        // alternate spellings wouldn't change whether a .fill() succeeds).
+        if (field.type === "text" || field.type === "textarea") {
+          const standardValue = resolveStandardField(normalizedLabel, profile, field.text);
+          if (standardValue) {
+            const locator = page.locator(`[name="${fieldName.replace(/"/g, '\\"')}"]`).first();
+            const filled = await locator.fill(standardValue).then(() => true).catch(() => false);
+            if (filled) {
+              submittedAnswers[field.text] = standardValue;
+              continue;
+            }
+            if (required) manualReviewFields.push(field.text);
+            continue;
+          }
         }
 
         // Free-text (text/textarea) — LLM-assisted, capped, and metered

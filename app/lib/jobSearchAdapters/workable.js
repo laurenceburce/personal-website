@@ -20,7 +20,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
-  resolveStandardField,
+  resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
 import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
@@ -34,8 +34,14 @@ const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
 
 const STANDARD_NAME_RESOLVERS = {
-  firstname: (p) => p.fullName?.split(/\s+/)[0],
-  lastname: (p) => p.fullName?.split(/\s+/).slice(1).join(" "),
+  // Read straight off the profile's own structured first/last name fields —
+  // not derived by splitting a combined string. Splitting can't be made
+  // reliable in general (a two-word first name is indistinguishable from a
+  // first name plus a middle name once joined into one string), so the
+  // profile captures First/Middle/Last as separate inputs to begin with —
+  // see profileMapping.js and ProfileSettingsPanel.js.
+  firstname: (p) => p.firstName || null,
+  lastname: (p) => p.lastName || null,
   email: (p) => p.email,
   phone: (p) => p.phone,
   headline: (p) => p.workHistory?.[0]?.title
@@ -43,6 +49,25 @@ const STANDARD_NAME_RESOLVERS = {
 
 async function dismissCookieBanner(page) {
   await page.locator('button:has-text("Accept all")').first().click({ timeout: 3000 }).catch(() => {});
+}
+
+// Standard/label-matched "field" questions were always filled with a plain
+// .fill() regardless of q.tag — Playwright's .fill() throws on a real
+// <select> (it isn't a text input), so a Country (or any other enum-like)
+// field rendered as a native select could never be filled here at all, even
+// when the profile had perfectly good data for it; it just silently failed
+// and fell to manual review every time. Tries each candidate in turn (see
+// resolveStandardFieldCandidates in profileMapping.js) since a select also
+// needs its option label to actually match the form's own wording.
+async function fillWorkableFieldValue(page, q, candidates) {
+  const locator = page.locator(`[name="${q.name}"]`).first();
+  for (const candidate of candidates) {
+    const ok = q.tag === "select"
+      ? await locator.selectOption({ label: String(candidate) }).then(() => true).catch(() => false)
+      : await locator.fill(String(candidate)).then(() => true).catch(() => false);
+    if (ok) return candidate;
+  }
+  return null;
 }
 
 async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
@@ -167,13 +192,15 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       const normalizedLabel = normalizeLabel(q.label);
 
       if (q.kind === "field") {
-        // Standard field, keyed by its stable `name` attribute.
+        // Standard field, keyed by its stable `name` attribute. These are
+        // confirmed always plain text inputs on Workable (never a select),
+        // so a single candidate is enough here.
         if (STANDARD_NAME_RESOLVERS[q.name]) {
           const value = STANDARD_NAME_RESOLVERS[q.name](profile);
           if (value) {
-            const filled = await page.locator(`[name="${q.name}"]`).first().fill(String(value)).then(() => true).catch(() => false);
-            if (filled) {
-              submittedAnswers[q.label || q.name] = value;
+            const filledValue = await fillWorkableFieldValue(page, q, [value]);
+            if (filledValue != null) {
+              submittedAnswers[q.label || q.name] = filledValue;
               continue;
             }
             if (q.required) manualReviewFields.push(q.label || q.name);
@@ -189,11 +216,16 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           continue;
         }
 
-        const standardValue = resolveStandardField(normalizedLabel, profile);
-        if (standardValue) {
-          const filled = await page.locator(`[name="${q.name}"]`).first().fill(String(standardValue)).then(() => true).catch(() => false);
-          if (filled) {
-            submittedAnswers[q.label] = standardValue;
+        // Unlike the standard fields above, a custom field matched by label
+        // text (country, phone, etc.) genuinely can be a native <select> —
+        // fillWorkableFieldValue() handles that, and candidates covers
+        // fields with more than one acceptable value (country name spelled
+        // out vs. abbreviated, phone with/without its country code).
+        const standardCandidates = resolveStandardFieldCandidates(normalizedLabel, profile, q.label);
+        if (standardCandidates.length > 0) {
+          const filledValue = await fillWorkableFieldValue(page, q, standardCandidates);
+          if (filledValue != null) {
+            submittedAnswers[q.label] = filledValue;
             continue;
           }
           if (q.required) manualReviewFields.push(q.label);

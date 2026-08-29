@@ -39,7 +39,11 @@ function emptyLinkEntry() {
 
 function toFormState(profile) {
   return {
-    fullName: profile.fullName || "",
+    prefix: profile.prefix || "",
+    firstName: profile.firstName || "",
+    middleName: profile.middleName || "",
+    lastName: profile.lastName || "",
+    suffix: profile.suffix || "",
     email: profile.email || "",
     phone: profile.phone || "",
     addressLine1: profile.addressLine1 || "",
@@ -160,8 +164,17 @@ export default function ProfileSettingsPanel({ profile, resumes, saving, onSaveP
 
       <Panel title="Profile / Autofill Fields" className="job-search-profile-panel">
         <form onSubmit={handleSubmit} className="job-search-form">
+          <p className="job-search-panel-hint">
+            Entered as separate fields (not one "Full name" box) so forms that ask for First/Middle/Last
+            separately can be filled correctly — splitting a single typed name back into parts isn't
+            reliable in general (e.g. a two-word first name looks identical to a first + middle name).
+          </p>
           <div className="job-search-field-grid">
-            <Field label="Full name"><input value={form.fullName} onChange={(e) => set("fullName", e.target.value)} /></Field>
+            <Field label="Prefix (optional)"><input placeholder="Mr., Dr., …" value={form.prefix} onChange={(e) => set("prefix", e.target.value)} /></Field>
+            <Field label="First name"><input value={form.firstName} onChange={(e) => set("firstName", e.target.value)} /></Field>
+            <Field label="Middle name"><input placeholder="Full middle name, not just the initial" value={form.middleName} onChange={(e) => set("middleName", e.target.value)} /></Field>
+            <Field label="Last name"><input value={form.lastName} onChange={(e) => set("lastName", e.target.value)} /></Field>
+            <Field label="Suffix (optional)"><input placeholder="Jr., III, …" value={form.suffix} onChange={(e) => set("suffix", e.target.value)} /></Field>
             <Field label="Email"><input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} /></Field>
             <Field label="Phone"><input value={form.phone} onChange={(e) => set("phone", e.target.value)} /></Field>
             <Field label="Address"><input value={form.addressLine1} onChange={(e) => set("addressLine1", e.target.value)} /></Field>

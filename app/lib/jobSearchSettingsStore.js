@@ -42,8 +42,26 @@ async function clearProfileEmbeddingCache(pool) {
 
 // ---------- Profile ----------
 
+// full_name is DERIVED, never entered directly — see jobSearchDb.js's schema
+// migration comment for why splitting a single typed string back into parts
+// can't be made reliable. Every existing consumer that just wants "the name
+// as one string" (the LLM prompt, Lever's single "name" field) still reads
+// profile.fullName; it's just computed from the structured parts on every
+// save instead of being its own free-text input.
+function computeFullName({ prefix, firstName, middleName, lastName, suffix }) {
+  return [prefix, firstName, middleName, lastName, suffix]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 function mapProfileRow(row) {
   return {
+    prefix: row.prefix || "",
+    firstName: row.first_name || "",
+    middleName: row.middle_name || "",
+    lastName: row.last_name || "",
+    suffix: row.suffix || "",
     fullName: row.full_name,
     email: row.email,
     phone: row.phone,
@@ -76,15 +94,27 @@ export async function updateProfile(data) {
   const pool = requirePool(await ensureJobSearchSchema());
   const now = new Date();
 
+  const prefix = cleanText(data?.prefix, 20);
+  const firstName = cleanText(data?.firstName, 120);
+  const middleName = cleanText(data?.middleName, 120);
+  const lastName = cleanText(data?.lastName, 120);
+  const suffix = cleanText(data?.suffix, 20);
+
   await pool.query(
     `UPDATE job_search_profile
-     SET full_name = ?, email = ?, phone = ?, address_line1 = ?, city = ?, state_region = ?,
+     SET prefix = ?, first_name = ?, middle_name = ?, last_name = ?, suffix = ?, full_name = ?,
+         email = ?, phone = ?, address_line1 = ?, city = ?, state_region = ?,
          postal_code = ?, country = ?, linkedin_url = ?, github_url = ?, portfolio_url = ?,
          other_links = ?, work_history = ?, education = ?, work_authorization = ?, eeo_answers = ?,
          cover_letter_template = ?, updated_at = ?
      WHERE id = 1`,
     [
-      cleanText(data?.fullName, 160),
+      prefix,
+      firstName,
+      middleName,
+      lastName,
+      suffix,
+      computeFullName({ prefix, firstName, middleName, lastName, suffix }),
       cleanText(data?.email, 160),
       cleanText(data?.phone, 40),
       cleanText(data?.addressLine1, 200),
