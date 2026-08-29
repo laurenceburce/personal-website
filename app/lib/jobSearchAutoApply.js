@@ -95,5 +95,14 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
     };
   }
 
-  return { status: result.status === "submitted" ? "submitted" : "failed" };
+  // A genuine adapter failure (not a skip, not a success) still needs its
+  // reason recorded somewhere a human can see it — the caller writes
+  // skipDetail into the posting's decision_note regardless of which status
+  // this returns (see scripts/job-search-submit-worker.mjs), so without this
+  // the posting row carried zero information about why it failed, same gap
+  // the human-approval submission path had until this same fix.
+  return {
+    status: result.status === "submitted" ? "submitted" : "failed",
+    skipDetail: result.status === "submitted" ? undefined : (result.errorMessage || "Submission failed.").slice(0, 500)
+  };
 }

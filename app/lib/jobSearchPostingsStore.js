@@ -356,6 +356,20 @@ export async function updatePostingScore(id, patch) {
     assign("decided_by", "auto-apply");
   }
 
+  // The human-approval submission path's own outcome (failed/needs_manual_
+  // review/unsupported_ats) — separate from the autoApplySkipReason case
+  // above (different decided_by, no reason code to badge on). Confirmed
+  // live this was a real gap: the submit-worker only ever wrote `status`
+  // here, so a manually-approved posting that failed or needed manual review
+  // carried zero information on the posting row about why — the only trace
+  // was on the application row (Applied Jobs), with no path back to the
+  // posting for a human to act on it again from the Review Queue.
+  if ("submissionNote" in patch) {
+    assign("decision_note", String(patch.submissionNote || "").slice(0, 500));
+    assign("decided_at", now);
+    assign("decided_by", "submit-worker");
+  }
+
   values.push(postingId);
   await pool.query(`UPDATE job_search_postings SET ${setClauses.join(", ")} WHERE id = ?`, values);
   return { id: postingId };

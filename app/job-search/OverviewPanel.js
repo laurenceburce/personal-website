@@ -105,7 +105,7 @@ function nextRunEstimate(worker, now) {
   return `${formatCountdown(remainingMs)} (${cadence})`;
 }
 
-function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory }) {
+function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue }) {
   const isBusy = Boolean(saving);
   const label = worker.workerName === "poll" ? "Poll worker" : "Submit worker";
   const description = worker.workerName === "poll"
@@ -120,6 +120,7 @@ function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory }) {
           <div className="job-search-cell-note">{description}</div>
         </div>
         <div className="job-search-form-actions">
+          {onViewQueue ? <button type="button" onClick={onViewQueue}>View Queue</button> : null}
           <button type="button" onClick={onViewHistory}>View Activity History</button>
           <button type="button" disabled={isBusy} onClick={() => onToggle(worker.workerName, !worker.enabled)}>
             {worker.enabled ? "Turn off" : "Turn on"}
@@ -248,6 +249,58 @@ function SubmitRunsTable({ runs }) {
   );
 }
 
+function QueuePostingsTable({ postings }) {
+  if (!postings || postings.length === 0) {
+    return <p className="job-search-empty">None right now.</p>;
+  }
+  return (
+    <div className="job-search-table-scroll">
+      <table className="job-search-table">
+        <thead>
+          <tr>
+            <th>Job</th>
+            <th>Score</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody>
+          {postings.map((p) => (
+            <tr key={p.id}>
+              <td>
+                <strong>{p.title}</strong>
+                <div className="job-search-cell-note">{p.companyName}</div>
+              </td>
+              <td>{p.llmOverallScore != null ? p.llmOverallScore.toFixed(1) : "—"}</td>
+              <td>{p.applyUrl ? <a href={p.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(p.atsType)}</a> : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Everything the submit worker will actually look at on its next run —
+// approved postings waiting their turn, plus (if auto-apply is on)
+// pending-review postings that already clear its free thresholds. Same
+// underlying data as the Review Queue's own "Waiting for worker"/
+// "Auto-Apply Queue" tabs, surfaced here as a quick-access popup right on
+// the card that's going to process them.
+function SubmitQueueTable({ approvedWaiting, autoApplyQueue }) {
+  const approved = approvedWaiting || [];
+  const autoQueue = autoApplyQueue || [];
+
+  return (
+    <>
+      <h3>Approved, waiting for worker ({approved.length})</h3>
+      <QueuePostingsTable postings={approved} />
+
+      <h3>Auto-apply queue ({autoQueue.length})</h3>
+      <QueuePostingsTable postings={autoQueue} />
+    </>
+  );
+}
+
 function HistoryModal({ title, hint, onClose, children }) {
   return (
     <div className="job-search-modal-backdrop" onClick={onClose}>
@@ -275,12 +328,14 @@ export default function OverviewPanel({
   workerStatus,
   adzunaConfigured,
   defaultResume,
+  approvedWaiting,
+  autoApplyQueue,
   saving,
   onRunDiscovery,
   onScoreNow,
   onToggleWorker
 }) {
-  const [historyModal, setHistoryModal] = useState(null); // null | "poll" | "submit"
+  const [historyModal, setHistoryModal] = useState(null); // null | "poll" | "submit" | "submitQueue"
   const totalPostings = Object.values(statusCounts || {}).reduce((sum, n) => sum + n, 0);
   const usagePct = llmUsage?.totalCalls != null ? llmUsage.totalCalls : 0;
   const nothingHasRunYet = totalPostings === 0;
@@ -405,6 +460,7 @@ export default function OverviewPanel({
           <WorkerCard
             worker={submitWorker} rules={submitRules} saving={saving} now={now}
             onToggle={onToggleWorker} onViewHistory={() => setHistoryModal("submit")}
+            onViewQueue={() => setHistoryModal("submitQueue")}
           />
         </div>
       </section>
@@ -470,6 +526,18 @@ export default function OverviewPanel({
           onClose={() => setHistoryModal(null)}
         >
           <SubmitRunsTable runs={submitRuns} />
+        </HistoryModal>
+      ) : null}
+
+      {historyModal === "submitQueue" ? (
+        <HistoryModal
+          title="Submit Worker — Current Queue"
+          hint={"Same data as the Review Queue's own \"Waiting for worker\"/\"Auto-Apply Queue\" tabs, shown here for "
+            + "quick access. The auto-apply list is a preview, not a guarantee — a posting can still get skipped for "
+            + "a reason only discoverable by actually attempting it."}
+          onClose={() => setHistoryModal(null)}
+        >
+          <SubmitQueueTable approvedWaiting={approvedWaiting} autoApplyQueue={autoApplyQueue} />
         </HistoryModal>
       ) : null}
     </>

@@ -90,6 +90,10 @@ try {
           else if (applicationStatus === "needs_manual_review") manualReviewCount += 1;
           else failedCount += 1;
 
+          const outcomeMessage = result.manualReviewFields?.length
+            ? `Needs manual review: ${result.manualReviewFields.join(", ")}`
+            : result.errorMessage;
+
           await insertApplicationAttempt({
             postingId: posting.id,
             companyName: posting.companyName,
@@ -105,14 +109,19 @@ try {
               scamRiskLevel: posting.scamRiskLevel
             },
             submissionStatus: applicationStatus,
-            errorMessage: result.manualReviewFields?.length
-              ? `Needs manual review: ${result.manualReviewFields.join(", ")}`
-              : result.errorMessage,
+            errorMessage: outcomeMessage,
             atsConfirmationText: result.confirmationText,
             screenshotBuffer: result.screenshotBuffer
           });
 
-          await updatePostingScore(posting.id, { status: applicationStatus });
+          await updatePostingScore(posting.id, {
+            status: applicationStatus,
+            // Carries WHY onto the posting itself (not just the application
+            // row) so it can actually show up somewhere a human would act on
+            // it again — see the Review Queue's Needs Manual Review/Failed
+            // tabs. Only worth setting when it's not a plain success.
+            ...(applicationStatus !== "submitted" ? { submissionNote: outcomeMessage } : {})
+          });
           console.log(`  -> ${applicationStatus}`);
         } catch (error) {
           console.error(`  -> failed to process "${posting.title}" at ${posting.companyName}:`, error?.message || error);

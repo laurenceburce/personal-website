@@ -33,6 +33,8 @@ async function getDashboardSnapshot() {
     scoredLow,
     autoApplySkipped,
     approvedWaiting,
+    needsManualReview,
+    failedPostings,
     applications,
     statusCounts,
     discoveryRuns,
@@ -54,6 +56,14 @@ async function getDashboardSnapshot() {
     // approving one had no way to see it again until it either succeeded or
     // failed. Shown as its own Review Queue view, tagged "Waiting for worker".
     listPostingsByStatus("approved", { limit: 200, orderBy: "score" }),
+    // Same gap, worse: a posting whose submission attempt (manual approval OR
+    // auto-apply) actually failed or needed manual review had NO Review
+    // Queue view at all until now — the only trace was on the application
+    // row in Applied Jobs, with no path back to act on the posting itself
+    // (re-approve, reject, mark applied by hand). See jobSearchPostingsStore
+    // .js's new submissionNote handling for how the reason gets here.
+    listPostingsByStatus("needs_manual_review", { limit: 200 }),
+    listPostingsByStatus(["failed", "unsupported_ats"], { limit: 200 }),
     listApplications({ limit: 200 }),
     countPostingsByStatus(),
     listRecentDiscoveryRuns({ limit: 20 }),
@@ -82,7 +92,7 @@ async function getDashboardSnapshot() {
 
   return {
     profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
-    autoApplyQueue, applications,
+    needsManualReview, failedPostings, autoApplyQueue, applications,
     statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
     adzunaConfigured: isAdzunaConfigured()
   };

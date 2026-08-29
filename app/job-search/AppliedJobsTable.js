@@ -9,30 +9,17 @@ function formatDate(value) {
   return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-function statusTone(status) {
-  if (status === "submitted") return "success";
-  if (status === "failed") return "danger";
-  if (status === "needs_manual_review") return "warn";
-  return "neutral";
-}
-
-function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete }) {
+// Applied Jobs is now a pure success log — anything that failed, needs
+// manual review, or hit an unsupported ATS shows up in the Review Queue's
+// own tabs instead (where it's actually actionable: retry, reject, mark
+// applied by hand), not buried here alongside real successes. See
+// ReviewQueueTable.js.
+function AppliedJobRow({ application, saving, onUpdateNote, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState(application.userNote || "");
   const isBusy = Boolean(saving);
   const answers = application.submittedAnswers || {};
   const scoreSnapshot = application.scoreSnapshot || {};
-
-  // "Retry submission" resets the underlying posting back to 'approved' so
-  // the submit-worker cron picks it up again — it never touches THIS row
-  // (each attempt is its own permanent history entry). Without checking the
-  // posting's current live status, a retried row just sat there still
-  // showing its old Failed/Needs manual review badge with nothing anywhere
-  // indicating a new attempt was actually queued.
-  const retryQueued = application.isLatestAttemptForPosting && application.postingStatus === "approved";
-  const superseded = application.isLatestAttemptForPosting === false;
-  const canRetry = (application.submissionStatus === "failed" || application.submissionStatus === "needs_manual_review")
-    && !retryQueued && !superseded;
 
   return (
     <>
@@ -42,11 +29,7 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
           <div className="job-search-cell-note">{application.companyName} · {application.atsType}</div>
         </td>
         <td>
-          <Badge text={application.submissionStatus} tone={statusTone(application.submissionStatus)} />
-          {" "}
-          <Badge text={application.autoApplied ? "Auto" : "Manual"} />
-          {retryQueued ? <> <Badge text="Retry queued — waiting for worker" tone="warn" /></> : null}
-          {superseded ? <> <Badge text="Superseded by a newer attempt" tone="neutral" /></> : null}
+          <Badge text={application.autoApplied ? "Auto" : "Manual"} tone={application.autoApplied ? "success" : "neutral"} />
         </td>
         <td>{application.resumeLabel || "—"}</td>
         <td>{formatDate(application.submittedAt || application.attemptedAt)}</td>
@@ -69,7 +52,6 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
                 className="job-search-expanded"
               >
                 <div className="job-search-expanded-inner" onClick={(e) => e.stopPropagation()}>
-                  {application.errorMessage ? <p className="job-search-alert job-search-alert-error">{application.errorMessage}</p> : null}
                   {application.atsConfirmationText ? <p className="job-search-summary">{application.atsConfirmationText}</p> : null}
 
                   {scoreSnapshot.overall != null ? (
@@ -92,9 +74,6 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
                       onChange={(e) => setNote(e.target.value)}
                     />
                     <button type="button" disabled={isBusy} onClick={() => onUpdateNote(application.id, note)}>Save note</button>
-                    {canRetry ? (
-                      <button type="button" disabled={isBusy} onClick={() => onRetry(application.id)}>Retry submission</button>
-                    ) : null}
                     <button type="button" disabled={isBusy} onClick={() => onDelete(application.id)}>Delete</button>
                   </div>
                 </div>
@@ -109,16 +88,15 @@ function AppliedJobRow({ application, saving, onUpdateNote, onRetry, onDelete })
 
 const APPLIED_VIEWS = [
   { key: "all", label: "All", match: () => true },
-  { key: "submitted", label: "Successfully submitted", match: (a) => a.submissionStatus === "submitted" },
-  { key: "needs_manual_review", label: "Needs manual review", match: (a) => a.submissionStatus === "needs_manual_review" },
-  { key: "failed", label: "Failed", match: (a) => a.submissionStatus === "failed" },
-  { key: "unsupported_ats", label: "Unsupported ATS", match: (a) => a.submissionStatus === "unsupported_ats" }
+  { key: "auto", label: "Auto-applied", match: (a) => a.autoApplied },
+  { key: "manual", label: "Manually applied", match: (a) => !a.autoApplied }
 ];
 
-export default function AppliedJobsTable({ applications, saving, onUpdateNote, onRetry, onDelete }) {
+export default function AppliedJobsTable({ applications, saving, onUpdateNote, onDelete }) {
   const [view, setView] = useState("all");
+  const successfulApplications = applications.filter((a) => a.submissionStatus === "submitted");
   const activeView = APPLIED_VIEWS.find((v) => v.key === view) || APPLIED_VIEWS[0];
-  const list = applications.filter(activeView.match);
+  const list = successfulApplications.filter(activeView.match);
 
   return (
     <section className="job-search-panel job-search-applied-panel">
@@ -132,14 +110,21 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
               className={view === v.key ? "job-search-toggle-active" : ""}
               onClick={() => setView(v.key)}
             >
-              {v.label} ({applications.filter(v.match).length})
+              {v.label} ({successfulApplications.filter(v.match).length})
             </button>
           ))}
         </div>
       </header>
 
+      <p className="job-search-panel-hint">
+        Only successfully submitted applications show here. Anything that failed, needs manual review, or hit an
+        unsupported ATS is in the Review Queue's own tabs instead, where it's actually actionable.
+      </p>
+
       {applications.length === 0 ? (
-        <p className="job-search-empty">No applications submitted yet — approved jobs in the review queue get submitted automatically once the Playwright adapters are wired up.</p>
+        <p className="job-search-empty">No applications submitted yet — approve a posting in the Review Queue, or enable auto-apply, to get started.</p>
+      ) : successfulApplications.length === 0 ? (
+        <p className="job-search-empty">No successful submissions yet — check the Review Queue's Needs Manual Review / Failed tabs for anything waiting on you.</p>
       ) : list.length === 0 ? (
         <p className="job-search-empty">Nothing here right now.</p>
       ) : (
@@ -148,7 +133,7 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
             <thead>
               <tr>
                 <th>Job</th>
-                <th>Status</th>
+                <th>Applied</th>
                 <th>Resume used</th>
                 <th>Submitted</th>
                 <th>Links</th>
@@ -156,7 +141,7 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
             </thead>
             <tbody>
               {list.map((application) => (
-                <AppliedJobRow key={application.id} application={application} saving={saving} onUpdateNote={onUpdateNote} onRetry={onRetry} onDelete={onDelete} />
+                <AppliedJobRow key={application.id} application={application} saving={saving} onUpdateNote={onUpdateNote} onDelete={onDelete} />
               ))}
             </tbody>
           </table>

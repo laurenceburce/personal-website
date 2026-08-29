@@ -17,12 +17,31 @@ const SKIP_REASON_LABELS = {
   score_too_low: "Below auto-apply threshold"
 };
 
+// A posting past pending_review that still has a real reason attached —
+// covers all three of skipped_auto_apply/needs_manual_review/failed
+// (unsupported_ats included in "failed" — there's no submission adapter to
+// have tried) with one prefix each, since decision_note is the same column
+// regardless of which path wrote it (auto-apply's own gate vs the
+// submit-worker's own submission outcome — see jobSearchPostingsStore.js).
+const REASON_PREFIXES = {
+  skipped_auto_apply: "Auto-apply skipped this",
+  needs_manual_review: "Needs manual review",
+  failed: "Submission failed",
+  unsupported_ats: "Submission failed"
+};
+
 function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, saving }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState("");
   const isBusy = Boolean(saving);
   const scores = posting.llmDimensionScores?.scores || {};
   const reasoning = posting.llmDimensionScores?.reasoning || {};
+  // "Approve" only makes sense the first time — for anything that already
+  // went through a submission attempt and didn't make it (needs review,
+  // failed, or an ATS with no adapter), the same action (reset to
+  // 'approved' so the submit worker picks it up again) reads as "Retry".
+  const isRetryable = posting.status === "needs_manual_review" || posting.status === "failed" || posting.status === "unsupported_ats";
+  const reasonPrefix = REASON_PREFIXES[posting.status];
 
   return (
     <>
@@ -40,6 +59,12 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
             <Badge text="Waiting for worker" tone="neutral" />
           ) : posting.status === "skipped_auto_apply" ? (
             <Badge text={SKIP_REASON_LABELS[posting.autoApplySkipReason] || "Skipped"} tone="warn" />
+          ) : posting.status === "needs_manual_review" ? (
+            <Badge text="Needs manual review" tone="warn" />
+          ) : posting.status === "unsupported_ats" ? (
+            <Badge text="Unsupported ATS" tone="danger" />
+          ) : posting.status === "failed" ? (
+            <Badge text="Failed" tone="danger" />
           ) : (
             <Badge text={`${posting.scamRiskLevel || "low"}${posting.scamRiskScore ? ` (${posting.scamRiskScore})` : ""}`} tone={scamBadgeTone(posting.scamRiskLevel)} />
           )}
@@ -49,7 +74,7 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
           {posting.applyUrl ? <a href={posting.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(posting.atsType)}</a> : null}
           {posting.status !== "approved" ? (
             <>
-              <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>Approve</button>
+              <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>{isRetryable ? "Retry" : "Approve"}</button>
               <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>
             </>
           ) : null}
@@ -69,8 +94,10 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
                 className="job-search-expanded"
               >
                 <div className="job-search-expanded-inner" onClick={(e) => e.stopPropagation()}>
-                  {posting.status === "skipped_auto_apply" && posting.decisionNote ? (
-                    <p className="job-search-alert">Auto-apply skipped this: {posting.decisionNote}</p>
+                  {reasonPrefix && posting.decisionNote ? (
+                    <p className={(posting.status === "failed" || posting.status === "unsupported_ats") ? "job-search-alert job-search-alert-error" : "job-search-alert"}>
+                      {reasonPrefix}: {posting.decisionNote}
+                    </p>
                   ) : null}
 
                   {posting.llmSummary ? <p className="job-search-summary">{posting.llmSummary}</p> : null}
@@ -122,6 +149,7 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
 
 export default function ReviewQueueTable({
   postings, scoredLow, autoApplySkipped, approvedWaiting, autoApplyQueue, autoApplyEnabled,
+  needsManualReview, failedPostings,
   saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied
 }) {
   const [selected, setSelected] = useState(new Set());
@@ -130,6 +158,8 @@ export default function ReviewQueueTable({
     : view === "autoSkipped" ? (autoApplySkipped || [])
     : view === "approved" ? (approvedWaiting || [])
     : view === "autoApplyQueue" ? (autoApplyQueue || [])
+    : view === "needsManualReview" ? (needsManualReview || [])
+    : view === "failed" ? (failedPostings || [])
     : postings;
   const isBusy = Boolean(saving);
 
@@ -181,6 +211,12 @@ export default function ReviewQueueTable({
           <button type="button" className={view === "autoApplyQueue" ? "job-search-toggle-active" : ""} onClick={() => switchList("autoApplyQueue")}>
             Auto-Apply Queue ({(autoApplyQueue || []).length})
           </button>
+          <button type="button" className={view === "needsManualReview" ? "job-search-toggle-active" : ""} onClick={() => switchList("needsManualReview")}>
+            Needs Manual Review ({(needsManualReview || []).length})
+          </button>
+          <button type="button" className={view === "failed" ? "job-search-toggle-active" : ""} onClick={() => switchList("failed")}>
+            Failed ({(failedPostings || []).length})
+          </button>
         </div>
       </header>
 
@@ -189,6 +225,22 @@ export default function ReviewQueueTable({
           {autoApplyEnabled
             ? "Pending-review postings that already clear every free auto-apply threshold (score, resume match, scam risk, freshness) — these are what the submit worker will actually attempt next, ranked highest score first. A posting can still land in \"Skipped auto-apply\" afterward for a reason only discoverable by actually trying it (unsupported ATS, CAPTCHA, an unanswerable required field) — this list is a preview, not a guarantee."
             : "Auto-apply is currently disabled in Job Find Settings, so nothing here gets submitted automatically — approve postings by hand instead, or enable auto-apply to have qualifying postings like these submitted on their own."}
+        </p>
+      ) : null}
+
+      {view === "needsManualReview" ? (
+        <p className="job-search-panel-hint">
+          A submission attempt (approved by hand, or auto-applied) hit at least one required field it couldn't
+          confidently fill on its own — expand a row to see exactly which ones. Fill in the missing info in your
+          Profile Settings if it's something reusable, then click "Retry" to have the submit worker try again.
+        </p>
+      ) : null}
+
+      {view === "failed" ? (
+        <p className="job-search-panel-hint">
+          A submission attempt genuinely failed (a real error, a timeout) or resolved to an ATS platform with no
+          submission adapter — expand a row to see the specific error. "Retry" re-queues it for the submit worker;
+          if it's the same error every time, it likely needs a code-level fix rather than another attempt.
         </p>
       ) : null}
 

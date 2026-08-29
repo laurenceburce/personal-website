@@ -1,11 +1,16 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
-import { deleteApplication, getApplicationById, updateApplicationNote } from "../../../lib/jobSearchApplicationStore";
-import { updatePostingScore } from "../../../lib/jobSearchPostingsStore";
+import { deleteApplication, updateApplicationNote } from "../../../lib/jobSearchApplicationStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Retrying a failed/needs-manual-review submission used to live here
+// (flipping the posting back to 'approved'), keyed off an application id —
+// removed once Applied Jobs became a pure success log (see
+// AppliedJobsTable.js) and that same action moved to the Review Queue's own
+// "Retry" button instead, keyed off the posting id directly via the
+// review-queue route's existing "approve" action (identical effect).
 export async function POST(request) {
   const { unauthorizedResponse } = await requireAccessOrRespond();
   if (unauthorizedResponse) return unauthorizedResponse;
@@ -20,15 +25,6 @@ export async function POST(request) {
         return NextResponse.json({ ok: true, result: await updateApplicationNote(data.id, data.note) });
       case "deleteApplication":
         return NextResponse.json({ ok: true, result: await deleteApplication(data.id) });
-      case "retrySubmission": {
-        // Requeues by flipping the posting back to 'approved' so the next
-        // submit-worker cron run picks it up — running Playwright synchronously
-        // inside this HTTP request would be slow and outside its request budget.
-        const application = await getApplicationById(data.id);
-        if (!application) return NextResponse.json({ error: "Application not found." }, { status: 404 });
-        await updatePostingScore(application.postingId, { status: "approved" });
-        return NextResponse.json({ ok: true, result: { requeued: true } });
-      }
       default:
         return NextResponse.json({ error: "Unknown applications action." }, { status: 400 });
     }

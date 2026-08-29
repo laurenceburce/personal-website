@@ -82,8 +82,14 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             onClick={() => setTabAndUrl(t.id)}
           >
             {t.label}
-            {t.id === "review" && snapshot.reviewQueue.length > 0 && (
-              <span className="job-search-tab-badge">{snapshot.reviewQueue.length}</span>
+            {/* Pending review + Needs Manual Review + Failed are the three
+                tabs something is actually waiting on a human decision in —
+                Scored Low/Skipped/Waiting-for-worker/Auto-Apply Queue are
+                informational, not "needs your attention right now". */}
+            {t.id === "review" && (snapshot.reviewQueue.length + (snapshot.needsManualReview?.length || 0) + (snapshot.failedPostings?.length || 0)) > 0 && (
+              <span className="job-search-tab-badge">
+                {snapshot.reviewQueue.length + (snapshot.needsManualReview?.length || 0) + (snapshot.failedPostings?.length || 0)}
+              </span>
             )}
           </button>
         ))}
@@ -106,6 +112,8 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             workerStatus={snapshot.workerStatus}
             adzunaConfigured={snapshot.adzunaConfigured}
             defaultResume={snapshot.defaultResume}
+            approvedWaiting={snapshot.approvedWaiting}
+            autoApplyQueue={snapshot.autoApplyQueue}
             saving={saving}
             onRunDiscovery={() => runAction("/api/job-search/run", "discoveryNow", {}, "Discovery run complete.")}
             onScoreNow={() => runAction("/api/job-search/run", "scoreNow", {}, "Scoring run complete.")}
@@ -126,6 +134,8 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             approvedWaiting={snapshot.approvedWaiting}
             autoApplyQueue={snapshot.autoApplyQueue}
             autoApplyEnabled={snapshot.findSettings.autoApplyEnabled}
+            needsManualReview={snapshot.needsManualReview}
+            failedPostings={snapshot.failedPostings}
             saving={saving}
             onApprove={(id) => runAction("/api/job-search/review-queue", "approve", { id }, "Approved.")}
             onReject={(id, note) => runAction("/api/job-search/review-queue", "reject", { id, note }, "Rejected.")}
@@ -141,7 +151,6 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             applications={snapshot.applications}
             saving={saving}
             onUpdateNote={(id, note) => runAction("/api/job-search/applications", "updateApplicationNote", { id, note }, "Note saved.")}
-            onRetry={(id) => runAction("/api/job-search/applications", "retrySubmission", { id }, "Re-queued for the next submit run.")}
             onDelete={(id) => runAction("/api/job-search/applications", "deleteApplication", { id }, "Application deleted.")}
           />
         )}
