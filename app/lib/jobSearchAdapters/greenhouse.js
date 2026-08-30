@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
+import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
@@ -307,7 +308,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       status = "dry_run_ok";
     } else {
       const submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
-      await submitButton.click();
+      await clickWithBrowserMouse(page, submitButton);
 
       // Greenhouse either navigates to a confirmation page/state or re-renders
       // the same form with inline validation errors — wait for the network to

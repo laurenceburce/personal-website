@@ -14,6 +14,7 @@ import { chromium } from "playwright";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
+import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
@@ -361,7 +362,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       status = "dry_run_ok";
     } else {
       const submitButton = page.locator('button:has-text("Submit application")').first();
-      await submitButton.click();
+      await clickWithBrowserMouse(page, submitButton);
 
       await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
       await page.waitForTimeout(500);
