@@ -427,12 +427,31 @@ export const ensureJobSearchSchema = async () => {
       await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN last_name VARCHAR(120) NOT NULL DEFAULT ''");
       await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN suffix VARCHAR(20) NOT NULL DEFAULT ''");
 
-      // Oracle Recruiting Cloud adapter/session table, added and then
-      // removed in the same day — never reached real use. DROP TABLE IF
-      // EXISTS is natively idempotent, same pattern as the watchlist
-      // removal above; needed here only in case this ran once against the
-      // live DB before the revert.
-      await pool.query("DROP TABLE IF EXISTS job_search_oracle_sessions");
+      // Oracle Recruiting Cloud (Fusion — oracle_fusion, NOT legacy Taleo)
+      // submission adapter (see jobSearchAdapters/oracleFusion.js) — a
+      // candidate's verified session, one row per tenant (unique on
+      // tenant_host: e.g. "eeho.fa.us2.oraclecloud.com"), since a session on
+      // one company's Oracle instance grants no access to another's.
+      // Captured by a human via scripts/job-search-oracle-connect.mjs (a
+      // real emailed verification code — never guessed/scripted), then
+      // uploaded through the Job Search dashboard's User Settings tab.
+      // storage_state is a real session credential, same sensitivity as a
+      // password — never returned to the browser after upload (see
+      // jobSearchOracleSessionStore.js's listOracleSessions(), which
+      // deliberately omits it).
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_oracle_sessions (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          tenant_host VARCHAR(255) NOT NULL,
+          label VARCHAR(160) NOT NULL DEFAULT '',
+          file_name VARCHAR(255) NOT NULL DEFAULT '',
+          storage_state JSON NOT NULL,
+          captured_at DATETIME(3) NULL,
+          created_at DATETIME(3) NOT NULL,
+          updated_at DATETIME(3) NOT NULL,
+          UNIQUE KEY job_search_oracle_sessions_host_idx (tenant_host)
+        )
+      `);
 
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.

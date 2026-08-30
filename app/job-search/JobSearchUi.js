@@ -56,7 +56,8 @@ const ATS_TYPE_LABELS = {
   smartrecruiters: "SmartRecruiters",
   workday: "Workday",
   icims: "iCIMS",
-  oracle_taleo: "Oracle/Taleo",
+  oracle_fusion: "Oracle Recruiting Cloud",
+  oracle_taleo: "Oracle/Taleo (legacy)",
   // Adzuna-sourced postings are stored with ats_type='external' until
   // something actually resolves the real platform (auto-apply, or a human
   // approving it) — labeled "Adzuna" (not the generic "External" fallback

@@ -13,15 +13,18 @@
 // atsTypes.js) gets probed for that reason, submission adapter or not —
 // SmartRecruiters' own apply-form bot-wall has nothing to do with its
 // read-only postings API, which is confirmed live to work fine unauthenticated.
-// Workday is also in POLLABLE_ATS_TYPES but deliberately NOT probed here —
-// it has no guessable public API (needs 3 pieces — tenant/datacenter/site —
-// none derivable from a company name), so it only ever gets added via
-// atsResolver.js registering an already-resolved real Workday URL, never via
-// slug-guessing. iCIMS/Oracle-Taleo are skipped here entirely and NOT in
-// POLLABLE_ATS_TYPES at all — neither exposes a guessable public API the way
-// the rest do (confirmed live: iCIMS has no working public feed at all, a
-// real hosted tenant's would-be JSON endpoints just returned an unrelated CMS
-// shell; Oracle Taleo/Fusion's REST surface is customer/OAuth-gated).
+// Workday and oracle_fusion are also in POLLABLE_ATS_TYPES but deliberately
+// NOT probed here — neither has a guessable public API (Workday needs 3
+// pieces — tenant/datacenter/site; oracle_fusion needs its own 3 —
+// hostname/siteName/siteNumber), none derivable from a company name, so
+// both only ever get added via atsResolver.js registering an already-
+// resolved real URL, never via slug-guessing. iCIMS/legacy-Taleo
+// (oracle_taleo, the taleo.net domain — a different, older product than
+// Fusion) are skipped here entirely and NOT in POLLABLE_ATS_TYPES at all —
+// neither exposes a confirmed guessable public API (iCIMS: confirmed live,
+// a real hosted tenant's would-be JSON endpoints just returned an unrelated
+// CMS shell; legacy Taleo: never live-tested for an equivalent path the way
+// oracle_fusion now has been).
 const FETCH_TIMEOUT_MS = 10000;
 
 const COMPANY_SUFFIXES = /\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|group|holdings|technologies|technology|plc)\b\.?/gi;

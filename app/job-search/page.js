@@ -7,6 +7,7 @@ import { getCompanyDirectoryStats } from "../lib/jobSearchCompanyDirectory";
 import { getDatabaseSizeMb } from "../lib/jobSearchDb";
 import { isAdzunaConfigured } from "../lib/jobSearchDiscovery";
 import { listRecentDiscoveryRuns } from "../lib/jobSearchDiscoveryRunStore";
+import { listOracleSessions } from "../lib/jobSearchOracleSessionStore";
 import { countPostingsByStatus, listPostingsByStatus } from "../lib/jobSearchPostingsStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
 import { listRecentSubmitRuns } from "../lib/jobSearchSubmitRunStore";
@@ -29,6 +30,7 @@ async function getDashboardSnapshot() {
     findSettings,
     resumes,
     defaultResume,
+    oracleSessions,
     reviewQueue,
     scoredLow,
     autoApplySkipped,
@@ -48,6 +50,7 @@ async function getDashboardSnapshot() {
     getFindSettings(),
     listResumes(),
     getDefaultResume(),
+    listOracleSessions(),
     listPostingsByStatus("pending_review", { limit: 200 }),
     listPostingsByStatus("scored_low", { limit: 200 }),
     listPostingsByStatus("skipped_auto_apply", { limit: 200 }),
@@ -91,7 +94,7 @@ async function getDashboardSnapshot() {
     : [];
 
   return {
-    profile, findSettings, resumes, defaultResume, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
+    profile, findSettings, resumes, defaultResume, oracleSessions, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
     needsManualReview, failedPostings, autoApplyQueue, applications,
     statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
     adzunaConfigured: isAdzunaConfigured()

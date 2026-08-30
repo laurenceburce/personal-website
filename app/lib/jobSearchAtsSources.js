@@ -637,6 +637,115 @@ export async function fetchWorkdayJobs({ boardToken, companyName }) {
   return jobs;
 }
 
+// oracle_fusion has no guessable public API the way Greenhouse/Lever/etc.
+// do — a board is identified by THREE pieces (hostname, siteName,
+// siteNumber), none of which is derivable from a company's display name
+// (confirmed live: "eeho.fa.us2.oraclecloud.com"/"jobsearch"/"CX_45001" for
+// Oracle's own board bears no obvious relationship to "Oracle" or each
+// other). So this is never reached via jobSearchCompanyProbe.js's slug-
+// guessing — a company only ever gets an "oracle_fusion" boardToken via
+// atsResolver.js parsing an ALREADY-RESOLVED real Fusion URL (from an
+// Adzuna-discovered posting) into its 3 parts once, after which direct-poll
+// can fetch the REST of that company's board the normal way. boardToken
+// encodes all 3 pieces as "hostname::siteName::siteNumber" — see
+// atsResolver.js's parseOracleFusionBoardUrl().
+//
+// The underlying endpoint is Oracle Fusion Recruiting Cloud's own
+// "Candidate Experience" REST API — the exact same calls the public career
+// site's own search page makes, confirmed live against Oracle's real site
+// (careers.oracle.com, 2173 open postings) with a plain unauthenticated
+// fetch — genuinely public, unlike the back-office HCM Recruiting Cloud API.
+// `expand=requisitionList` is required for the list endpoint to actually
+// return items (confirmed live: omitting it returns TotalJobsCount correctly
+// but an empty requisitionList); `limit` is honored up to 200 (confirmed
+// live: requesting 250 silently capped at 200), well above Workday's hard
+// 20-cap, so pagination needs far fewer round trips. Same N+1 detail-fetch
+// shape as Workday/SmartRecruiters for the full description text, since the
+// list endpoint's own ShortDescriptionStr is a blurb, not the real JD
+// (confirmed live: the detail endpoint's ExternalDescriptionStr is the full
+// HTML body, the list endpoint doesn't carry it at all).
+const ORACLE_FUSION_PAGE_SIZE = 200;
+const ORACLE_FUSION_MAX_POSTINGS = 400;
+const ORACLE_FUSION_DETAIL_CONCURRENCY = 8;
+
+function oracleFusionJobUrl(hostname, siteName, id) {
+  return `https://${hostname}/hcmUI/CandidateExperience/en/sites/${encodeURIComponent(siteName)}/job/${encodeURIComponent(id)}/`;
+}
+
+async function fetchOracleFusionDetail(hostname, siteNumber, id) {
+  const url = `https://${hostname}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails`
+    + `?expand=all&onlyData=true&finder=ById;Id=%22${encodeURIComponent(id)}%22,siteNumber=${encodeURIComponent(siteNumber)}`;
+  const data = await fetchJson(url);
+  const detail = data?.items?.[0] || {};
+  return {
+    // ExternalDescriptionStr is the actual job description; CorporateDescriptionStr
+    // is Oracle's own boilerplate EEO/accessibility footer, repeated on every
+    // posting — deliberately excluded, same reasoning as every other adapter
+    // here keeping descriptionText to the posting's own real content.
+    descriptionText: stripHtml(detail.ExternalDescriptionStr || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS)
+  };
+}
+
+export async function fetchOracleFusionJobs({ boardToken, companyName }) {
+  const [hostname, siteName, siteNumber] = String(boardToken || "").split("::");
+  if (!hostname || !siteName || !siteNumber) return [];
+
+  const postings = [];
+  for (let offset = 0; offset < ORACLE_FUSION_MAX_POSTINGS; offset += ORACLE_FUSION_PAGE_SIZE) {
+    const url = `https://${hostname}/hcmRestApi/resources/latest/recruitingCEJobRequisitions`
+      + `?onlyData=true&expand=requisitionList&finder=findReqs;siteNumber=${encodeURIComponent(siteNumber)}`
+      + `,facetsList=NONE,limit=${ORACLE_FUSION_PAGE_SIZE},offset=${offset},sortBy=POSTING_DATES_DESC`;
+    const data = await fetchJson(url);
+    const page = data?.items?.[0]?.requisitionList;
+    const pageItems = Array.isArray(page) ? page : [];
+    postings.push(...pageItems);
+    if (pageItems.length < ORACLE_FUSION_PAGE_SIZE) break; // fewer than a full page = no more postings
+  }
+
+  const jobs = [];
+  for (let i = 0; i < postings.length; i += ORACLE_FUSION_DETAIL_CONCURRENCY) {
+    const batch = postings.slice(i, i + ORACLE_FUSION_DETAIL_CONCURRENCY);
+    const details = await Promise.all(
+      batch.map((p) => fetchOracleFusionDetail(hostname, siteNumber, p.Id).catch(() => ({ descriptionText: "" })))
+    );
+    batch.forEach((posting, idx) => {
+      const { descriptionText } = details[idx];
+      const title = posting.Title || "";
+      const locationText = posting.PrimaryLocation || "";
+      const structuredRemote = String(posting.WorkplaceType || "").toLowerCase() === "remote"
+        ? true
+        : String(posting.WorkplaceType || "").toLowerCase() === "on-site"
+          ? false
+          : null;
+
+      jobs.push({
+        atsType: "oracle_fusion",
+        boardToken,
+        externalJobId: String(posting.Id),
+        companyName,
+        title,
+        department: posting.Organization || posting.JobFamily || "",
+        locationText,
+        remoteType: String(posting.WorkplaceType || "").toLowerCase() === "hybrid"
+          ? "hybrid"
+          : guessRemoteType(locationText, descriptionText, structuredRemote),
+        seniorityGuess: guessSeniority(title),
+        // No compensation field anywhere in this API's response (confirmed
+        // live, list AND detail) — same gap as SmartRecruiters/Workday.
+        salaryMin: null,
+        salaryMax: null,
+        salaryCurrency: null,
+        descriptionText,
+        applyUrl: oracleFusionJobUrl(hostname, siteName, posting.Id),
+        postedAt: posting.PostedDate ? new Date(posting.PostedDate) : null,
+        contentHash: computeContentHash(title, descriptionText)
+      });
+    });
+  }
+
+  return jobs;
+}
+
 export async function fetchAtsJobs({ atsType, boardToken, companyName }) {
   switch (atsType) {
     case "greenhouse": return fetchGreenhouseJobs({ boardToken, companyName });
@@ -648,6 +757,7 @@ export async function fetchAtsJobs({ atsType, boardToken, companyName }) {
     case "breezy": return fetchBreezyJobs({ boardToken, companyName });
     case "smartrecruiters": return fetchSmartRecruitersJobs({ boardToken, companyName });
     case "workday": return fetchWorkdayJobs({ boardToken, companyName });
+    case "oracle_fusion": return fetchOracleFusionJobs({ boardToken, companyName });
     default: throw new Error(`Unsupported ATS type: ${atsType}`);
   }
 }

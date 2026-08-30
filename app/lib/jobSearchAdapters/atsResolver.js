@@ -70,6 +70,28 @@ function parseWorkdayBoardUrl(url) {
   }
 }
 
+// oracle_fusion needs its own 3-piece extraction too, same shape of problem
+// as Workday: a board is {hostname, siteName, siteNumber}, and siteNumber
+// (e.g. "CX_45001") isn't anywhere in the URL itself — confirmed live it IS
+// embedded in the page's own raw server-rendered HTML (a plain `curl`, no JS
+// execution needed, already contains it), so `html` is the already-loaded
+// page's content rather than a second network round trip. siteName is the
+// URL path segment right after "/sites/" (confirmed live: every real job/
+// jobs-listing URL follows ".../CandidateExperience/en/sites/{siteName}/...").
+function parseOracleFusionBoardUrl(url, html) {
+  try {
+    const parsed = new URL(url);
+    if (!/(^|\.)oraclecloud\.com$/i.test(parsed.hostname)) return null;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const sitesIndex = segments.indexOf("sites");
+    const siteName = sitesIndex >= 0 ? segments[sitesIndex + 1] : null;
+    const siteNumber = String(html || "").match(/\bCX_\d+\b/)?.[0] || null;
+    return siteName && siteNumber ? { hostname: parsed.hostname, siteName, siteNumber } : null;
+  } catch {
+    return null;
+  }
+}
+
 // Navigates to a discovery-sourced apply link and inspects wherever it
 // actually lands. Some aggregator pages (confirmed live for Adzuna's own
 // /details/ page) don't hard-redirect — the real employer link is a further
@@ -112,14 +134,29 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
     }
 
     if (!atsType) return null;
-    // Workday's boardToken is "tenant::dc::site" (see parseWorkdayBoardUrl),
-    // not the generic first-path-segment slug everything else uses.
+    // Workday's boardToken is "tenant::dc::site" (see parseWorkdayBoardUrl);
+    // oracle_fusion's is "hostname::siteName::siteNumber" (see
+    // parseOracleFusionBoardUrl) — neither is the generic first-path-segment
+    // slug everything else uses.
     const boardToken = atsType === "workday"
       ? (() => {
           const workday = parseWorkdayBoardUrl(finalUrl);
           return workday ? `${workday.tenant}::${workday.dc}::${workday.site}` : null;
         })()
-      : extractBoardToken(finalUrl);
+      : atsType === "oracle_fusion"
+        ? await (async () => {
+            // finalUrl may be a same-host link found on the page (the applyHref
+            // fallback above) rather than the page actually navigated to —
+            // page.content() is only guaranteed to match the URL that was
+            // actually loaded, so re-fetch when they differ. The plain oracle
+            // detail/listing pages need no auth for this (confirmed live).
+            const html = finalUrl === page.url()
+              ? await page.content().catch(() => "")
+              : await fetch(finalUrl).then((r) => r.text()).catch(() => "");
+            const oracle = parseOracleFusionBoardUrl(finalUrl, html);
+            return oracle ? `${oracle.hostname}::${oracle.siteName}::${oracle.siteNumber}` : null;
+          })()
+        : extractBoardToken(finalUrl);
     if (!boardToken) return null;
 
     return { atsType, applyUrl: finalUrl, boardToken };
@@ -156,11 +193,11 @@ export async function resolvePostingForSubmission(posting) {
 
   await updatePostingAtsResolution(posting.id, resolved).catch(() => {});
 
-  // Workday only ever enters the company directory this way (see
-  // atsTypes.js's POLLABLE_ATS_TYPES comment) — the moment one posting
-  // resolves to a real Workday URL, register the company so direct-poll
+  // Workday and oracle_fusion only ever enter the company directory this way
+  // (see atsTypes.js's POLLABLE_ATS_TYPES comment) — the moment one posting
+  // resolves to a real board on either, register the company so direct-poll
   // starts fetching the REST of its board too, not just this one posting.
-  if (resolved.atsType === "workday") {
+  if (resolved.atsType === "workday" || resolved.atsType === "oracle_fusion") {
     await registerDiscoveredCompany({
       companyName: posting.companyName,
       atsType: resolved.atsType,
