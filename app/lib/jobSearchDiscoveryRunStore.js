@@ -1,4 +1,5 @@
-import { ensureJobSearchSchema, parseJsonColumn, requirePool, toJsonParam } from "./jobSearchDb.js";
+import { cleanId, ensureJobSearchSchema, parseJsonColumn, requirePool, toJsonParam } from "./jobSearchDb.js";
+import { mapPostingRow } from "./jobSearchPostingsStore.js";
 
 // Append-only history, unlike everything else in this system that gets
 // pruned by content-relevance (retention days, terminal statuses) — a run
@@ -83,4 +84,73 @@ export async function listRecentDiscoveryRuns({ limit = 20 } = {}) {
     [Number(limit) || 20]
   );
   return rows.map(mapRow);
+}
+
+// Powers the Overview tab's per-run "Details" popup. This table only ever
+// stores aggregate counts (see recordDiscoveryRun above) — there's no
+// per-run job/company list actually stored anywhere, so this reconstructs
+// one entirely from existing timestamped tables instead of adding new
+// storage.
+//
+// Bounded by the PREVIOUS run's ran_at (exclusive) through THIS run's own
+// ran_at (inclusive) — NOT this run's ran_at through the next one's. Every
+// row's ran_at is written by recordDiscoveryRun() only once runDiscoveryPass
+// /runDirectPollPass have both already finished (see scripts/job-search-
+// worker.mjs and the run/route.js "discoveryNow" action) — so all of a run's
+// actual company/posting writes happen chronologically BEFORE its own
+// ran_at, not after. Falls back to 24h before this run when there's no
+// earlier row (the oldest run in the 200-row retention window).
+//
+// "New postings" (not "every posting found") — direct-poll alone re-
+// touches every already-known posting on every company's board on every
+// run (upsertPosting bumps last_seen_at regardless of whether it's new),
+// so listing everything FOUND this run would mean thousands of unchanged
+// rows on an ordinary run. created_at only advances the moment a posting
+// is genuinely new, which is what's actually worth looking back at.
+//
+// "Companies checked" DOES mean every company actually polled this run
+// (last_polled_at, not created_at) — direct-poll's own roster is small
+// enough (currently ~80) that the full list is still reasonable to show,
+// unlike postings.
+export async function getDiscoveryRunDetails(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const runId = cleanId(id, "Discovery run");
+
+  const [runRows] = await pool.query("SELECT * FROM job_search_discovery_runs WHERE id = ? LIMIT 1", [runId]);
+  if (!runRows[0]) return null;
+  const run = mapRow(runRows[0]);
+
+  const [prevRunRows] = await pool.query(
+    "SELECT ran_at FROM job_search_discovery_runs WHERE ran_at < ? ORDER BY ran_at DESC LIMIT 1",
+    [run.ranAt]
+  );
+  const windowStart = prevRunRows[0]?.ran_at || new Date(new Date(run.ranAt).getTime() - 24 * 60 * 60 * 1000);
+  const windowEnd = run.ranAt;
+
+  // Safety caps (not a pacing mechanism) matching this codebase's existing
+  // posture elsewhere (e.g. discovery's own 500-result ceiling) — a normal
+  // run's new-postings/companies-checked counts are nowhere near this, so
+  // it only ever bites a pathological case.
+  const [postingRows] = await pool.query(
+    `SELECT * FROM job_search_postings WHERE created_at > ? AND created_at <= ? ORDER BY created_at DESC LIMIT 500`,
+    [windowStart, windowEnd]
+  );
+  const [companyRows] = await pool.query(
+    `SELECT company_name, ats_type, board_token, jobs_found_last_poll, last_poll_status, last_poll_error
+     FROM job_search_known_companies WHERE last_polled_at > ? AND last_polled_at <= ? ORDER BY company_name ASC LIMIT 500`,
+    [windowStart, windowEnd]
+  );
+
+  return {
+    run,
+    newPostings: postingRows.map(mapPostingRow),
+    companiesPolled: companyRows.map((row) => ({
+      companyName: row.company_name,
+      atsType: row.ats_type,
+      boardToken: row.board_token,
+      jobsFoundLastPoll: Number(row.jobs_found_last_poll),
+      lastPollStatus: row.last_poll_status,
+      lastPollError: row.last_poll_error
+    }))
+  };
 }

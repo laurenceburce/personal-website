@@ -160,8 +160,13 @@ function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onVie
 }
 
 // Extracted out of the old standalone "Recent Discovery Runs" section so it
-// can live inside the Poll Worker card's history popup instead.
-function DiscoveryRunsTable({ runs }) {
+// can live inside the Poll Worker card's history popup instead. Kept to a
+// glance-able 4 columns on purpose — everything else that used to be spread
+// across "Discovery (Adzuna)"/"Companies"/"Direct-poll"/"By ATS" columns
+// moved into the per-row "Details" popup (see DiscoveryRunDetail below),
+// which can show the actual lists those columns only ever summarized as
+// counts.
+function DiscoveryRunsTable({ runs, onViewDetails }) {
   if (!runs || runs.length === 0) {
     return <p className="job-search-empty">No discovery/poll runs recorded yet.</p>;
   }
@@ -172,46 +177,115 @@ function DiscoveryRunsTable({ runs }) {
         <thead>
           <tr>
             <th>Ran</th>
-            <th>Jobs processed</th>
-            <th>Discovery (Adzuna)</th>
-            <th>Companies</th>
-            <th>Direct-poll</th>
-            <th>By ATS</th>
+            <th>New postings</th>
+            <th>Companies checked</th>
             <th>Status</th>
+            <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
-          {runs.map((run) => {
-            const byAtsEntries = Object.entries(run.jobsFoundByAts || {}).filter(([, count]) => count > 0);
-            const totalJobsSeen = run.jobsFound + byAtsEntries.reduce((sum, [, count]) => sum + count, 0);
-
-            return (
-              <tr key={run.id}>
-                <td>{timeAgo(run.ranAt)}</td>
-                <td>{totalJobsSeen}</td>
-                <td>
-                  {run.discoveryRan
-                    ? <>{run.jobsFound} found, {run.jobsCreated} new</>
-                    : <span className="job-search-cell-note">Skipped ({run.discoverySkipReason || "not due yet"})</span>}
-                </td>
-                <td>{run.companiesProbed} probed, {run.companiesFound} matched</td>
-                <td>
-                  {run.directPollCompaniesPolled}/{run.directPollCompaniesTotal} companies, {run.directPollCreated} new
-                  <div className="job-search-cell-note">{run.directPollSkipped} filtered out{run.directPollErrors > 0 ? `, ${run.directPollErrors} error(s)` : ""}</div>
-                </td>
-                <td>
-                  {byAtsEntries.length > 0
-                    ? byAtsEntries.map(([atsType, count]) => (
-                        <span key={atsType} className="job-search-ats-count">{atsTypeLabel(atsType)}: {count}</span>
-                      ))
-                    : "—"}
-                </td>
-                <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
-              </tr>
-            );
-          })}
+          {runs.map((run) => (
+            <tr key={run.id}>
+              <td>{timeAgo(run.ranAt)}</td>
+              <td>{run.jobsCreated + run.directPollCreated}</td>
+              <td>{run.directPollCompaniesPolled}/{run.directPollCompaniesTotal}</td>
+              <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
+              <td><button type="button" onClick={() => onViewDetails(run.id)}>Details</button></td>
+            </tr>
+          ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// The full breakdown a single run's row used to cram into its own columns,
+// plus the two lists a count alone can't show: which postings were actually
+// new, and which companies direct-poll actually checked. Fetched on demand
+// (see viewRunDetails in OverviewPanel) rather than carried on every run in
+// the list above — reconstructed server-side from timestamped tables, not
+// stored per-run (see getDiscoveryRunDetails' own comment).
+function DiscoveryRunDetail({ state, onBack }) {
+  if (state.loading) return <p className="job-search-empty">Loading...</p>;
+  if (state.error) return <p className="job-search-alert job-search-alert-error">{state.error}</p>;
+
+  const { run, newPostings, companiesPolled } = state.data;
+  const byAtsEntries = Object.entries(run.jobsFoundByAts || {}).filter(([, count]) => count > 0);
+
+  return (
+    <div>
+      <button type="button" onClick={onBack}>&larr; Back to all runs</button>
+
+      <div className="job-search-field-grid" style={{ marginTop: 12 }}>
+        <Metric label="Ran" value={timeAgo(run.ranAt)} />
+        <Metric
+          label="Discovery (Adzuna)"
+          value={run.discoveryRan ? `${run.jobsFound} found, ${run.jobsCreated} new` : "Skipped"}
+          detail={!run.discoveryRan ? (run.discoverySkipReason || "not due yet") : null}
+        />
+        <Metric
+          label="Direct-poll"
+          value={`${run.directPollCompaniesPolled}/${run.directPollCompaniesTotal} companies`}
+          detail={`${run.directPollCreated} new, ${run.directPollSkipped} filtered out${run.directPollErrors > 0 ? `, ${run.directPollErrors} error(s)` : ""}`}
+        />
+        <Metric label="Status" value={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} />
+      </div>
+
+      {run.error ? <p className="job-search-alert job-search-alert-error">{run.error}</p> : null}
+
+      <h3>Posts per ATS platform</h3>
+      {byAtsEntries.length > 0 ? (
+        <div className="job-search-form-actions">
+          {byAtsEntries.map(([atsType, count]) => (
+            <span key={atsType} className="job-search-ats-count">{atsTypeLabel(atsType)}: {count}</span>
+          ))}
+        </div>
+      ) : <p className="job-search-empty">No postings found on any ATS this run.</p>}
+
+      <h3>New postings this run ({newPostings.length})</h3>
+      {newPostings.length === 0 ? (
+        <p className="job-search-empty">None — every posting seen this run already existed.</p>
+      ) : (
+        <div className="job-search-table-scroll">
+          <table className="job-search-table">
+            <thead><tr><th>Job</th><th>ATS</th><th>Link</th></tr></thead>
+            <tbody>
+              {newPostings.map((p) => (
+                <tr key={p.id}>
+                  <td><strong>{p.title}</strong><div className="job-search-cell-note">{p.companyName}</div></td>
+                  <td>{atsTypeLabel(p.atsType)}</td>
+                  <td>{p.applyUrl ? <a href={p.applyUrl} target="_blank" rel="noreferrer">View</a> : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h3>Companies checked this run ({companiesPolled.length})</h3>
+      {companiesPolled.length === 0 ? (
+        <p className="job-search-empty">None — direct-poll had nothing to check, or this run predates it.</p>
+      ) : (
+        <div className="job-search-table-scroll">
+          <table className="job-search-table">
+            <thead><tr><th>Company</th><th>ATS</th><th>Jobs found</th><th>Status</th></tr></thead>
+            <tbody>
+              {companiesPolled.map((c) => (
+                <tr key={`${c.companyName}-${c.atsType}`}>
+                  <td>{c.companyName}</td>
+                  <td>{atsTypeLabel(c.atsType)}</td>
+                  <td>{c.jobsFoundLastPoll}</td>
+                  <td>
+                    {c.lastPollStatus === "ok"
+                      ? <Badge text="OK" tone="success" />
+                      : <Badge text="Error" tone="danger" />}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -345,6 +419,10 @@ export default function OverviewPanel({
   onToggleWorker
 }) {
   const [historyModal, setHistoryModal] = useState(null); // null | "poll" | "submit" | "submitQueue"
+  // null | { runId, loading, data, error } — which discovery run's Details
+  // popup is open, if any. Separate from historyModal itself so it's just a
+  // nested view within the same "poll" modal, not a second overlay.
+  const [runDetails, setRunDetails] = useState(null);
   const totalPostings = Object.values(statusCounts || {}).reduce((sum, n) => sum + n, 0);
   const usagePct = llmUsage?.totalCalls != null ? llmUsage.totalCalls : 0;
   const nothingHasRunYet = totalPostings === 0;
@@ -397,6 +475,21 @@ export default function OverviewPanel({
       clearInterval(interval);
     };
   }, []);
+
+  // On demand only (no polling) — a run's details are static once recorded,
+  // unlike worker status above. Reconstructed server-side, not carried on
+  // the run list itself (see getDiscoveryRunDetails' own comment).
+  async function viewRunDetails(runId) {
+    setRunDetails({ runId, loading: true, data: null, error: "" });
+    try {
+      const response = await fetch(`/api/job-search/discovery-runs/${runId}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Failed to load run details.");
+      setRunDetails({ runId, loading: false, data: payload, error: "" });
+    } catch (err) {
+      setRunDetails({ runId, loading: false, data: null, error: err?.message || "Failed to load run details." });
+    }
+  }
 
   const pollWorker = liveWorkerStatus?.find((w) => w.workerName === "poll") || { workerName: "poll", enabled: true };
   const submitWorker = liveWorkerStatus?.find((w) => w.workerName === "submit") || { workerName: "submit", enabled: true };
@@ -516,13 +609,16 @@ export default function OverviewPanel({
 
       {historyModal === "poll" ? (
         <HistoryModal
-          title="Poll Worker — Recent Runs"
-          hint={"One row per poll-worker run. \"Discovery (Adzuna)\" is the keyword search for new postings/companies "
-            + "— often shows \"Skipped\" since it only actually runs once per hour by default. \"Direct-poll\" and "
-            + "\"By ATS\" are the companies already on the roster, checked fresh every run regardless."}
-          onClose={() => setHistoryModal(null)}
+          title={runDetails ? "Poll Worker — Run Details" : "Poll Worker — Recent Runs"}
+          hint={runDetails
+            ? null
+            : "One row per poll-worker run. Click \"Details\" on any row for the full breakdown — postings found "
+              + "per ATS platform, every newly-created posting, and every company direct-poll actually checked."}
+          onClose={() => { setHistoryModal(null); setRunDetails(null); }}
         >
-          <DiscoveryRunsTable runs={discoveryRuns} />
+          {runDetails
+            ? <DiscoveryRunDetail state={runDetails} onBack={() => setRunDetails(null)} />
+            : <DiscoveryRunsTable runs={discoveryRuns} onViewDetails={viewRunDetails} />}
         </HistoryModal>
       ) : null}
 
