@@ -427,6 +427,13 @@ export const ensureJobSearchSchema = async () => {
       await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN last_name VARCHAR(120) NOT NULL DEFAULT ''");
       await runMigration(pool, "ALTER TABLE job_search_profile ADD COLUMN suffix VARCHAR(20) NOT NULL DEFAULT ''");
 
+      // Oracle Recruiting Cloud adapter/session table, added and then
+      // removed in the same day — never reached real use. DROP TABLE IF
+      // EXISTS is natively idempotent, same pattern as the watchlist
+      // removal above; needed here only in case this ran once against the
+      // live DB before the revert.
+      await pool.query("DROP TABLE IF EXISTS job_search_oracle_sessions");
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();
