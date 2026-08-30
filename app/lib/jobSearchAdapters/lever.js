@@ -7,15 +7,12 @@
 // <input name="cards[<id>][baseTemplate]">. Reading that JSON directly is far
 // more reliable than scraping visible label text, so that's the approach here
 // instead of Greenhouse's label[for]-based collectLabeledFields().
-import { writeFile, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
+import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
@@ -24,6 +21,7 @@ import {
   resolveStandardField,
   resolveWorkAuthValue
 } from "./profileMapping.js";
+import { resumeFilePayload } from "./resumeFilePayload.js";
 import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
@@ -52,21 +50,14 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
   const fileInput = page.locator('input[type="file"][name="resume"]');
   if (await fileInput.count().catch(() => 0) === 0) return false;
 
-  const tempPath = join(tmpdir(), `job-search-resume-${Date.now()}-${resumeFileName || "resume.pdf"}`);
-  await writeFile(tempPath, resumeBuffer);
-  try {
-    // Lever's real file input is visually hidden behind a styled "Attach
-    // Resume/CV" button — setInputFiles targets the element directly and
-    // doesn't require it to be visible, confirmed live.
-    await fileInput.setInputFiles(tempPath);
-    // setInputFiles() only attaches the file to the DOM input — it says
-    // nothing about whether Lever's own JS then actually uploaded it. See
-    // resumeUploadCheck.js.
-    if (await resumeUploadLikelyFailed(page)) return false;
-    return true;
-  } finally {
-    await unlink(tempPath).catch(() => {});
-  }
+  // Lever's real file input is visually hidden behind a styled "Attach
+  // Resume/CV" button — setInputFiles targets the element directly and
+  // doesn't require it to be visible, confirmed live.
+  await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName));
+  // setInputFiles() only attaches the file to the DOM input — it says
+  // nothing about whether Lever's own JS then actually uploaded it. See
+  // resumeUploadCheck.js.
+  return !(await resumeUploadLikelyFailed(page));
 }
 
 // Reads every card's hidden baseTemplate JSON via the page's own DOM (not
@@ -92,7 +83,7 @@ async function collectCards(page) {
 }
 
 export async function submitLeverApplication({ posting, profile, resumeBuffer, resumeFileName, dryRun = false, headless = true }) {
-  const browser = await chromium.launch({ headless });
+  const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
   let llmAnsweredCount = 0;
@@ -103,7 +94,7 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
   const findSettings = await getFindSettings();
 
   try {
-    const page = await browser.newPage();
+    const page = await newPage();
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
     await page.locator('input[name="name"]').first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
 

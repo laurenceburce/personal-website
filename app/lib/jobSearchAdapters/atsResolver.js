@@ -6,10 +6,10 @@
 // lands on a Greenhouse/Lever/Ashby-hosted application page, so the right
 // adapter can be dispatched instead of automatically falling through to
 // "unsupported ATS". Read-only — never fills or submits anything.
-import { chromium } from "playwright";
 import { registerDiscoveredCompany } from "../jobSearchCompanyDirectory.js";
 import { updatePostingAtsResolution } from "../jobSearchPostingsStore.js";
 import { ATS_DOMAIN_PATTERNS, KNOWN_ATS_TYPES, SUBMITTABLE_ATS_TYPES } from "./atsTypes.js";
+import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 
 // Re-exported so existing importers (jobSearchAutoApply.js) don't need to
 // change — but anything that only needs the constant, not the actual
@@ -82,8 +82,9 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
 
   let browser;
   try {
-    browser = await chromium.launch({ headless });
-    const page = await browser.newPage({ userAgent: REAL_BROWSER_USER_AGENT });
+    const browserSession = await launchJobSearchBrowser({ headless });
+    browser = browserSession.browser;
+    const page = await browserSession.newPage({ userAgent: REAL_BROWSER_USER_AGENT });
     await page.goto(applyUrl, { waitUntil: "domcontentloaded", timeout: RESOLVE_TIMEOUT_MS });
     await page.waitForTimeout(1000);
 

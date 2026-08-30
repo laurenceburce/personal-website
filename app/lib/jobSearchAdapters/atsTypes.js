@@ -5,10 +5,11 @@
 // jobSearchCompanyDirectory.js only ever needed the SUBMITTABLE_ATS_TYPES set,
 // but importing it from atsResolver.js pulled Playwright into the main web
 // app's build: page.js -> jobSearchCompanyDirectory.js -> atsResolver.js ->
-// `import { chromium } from "playwright"`, which broke the standalone
-// production build ("Cannot find module .../playwright-core/browsers.json")
-// since the main app was never set up to bundle Playwright at all — only the
-// separate worker services have it, via their own Docker image. Confirmed
+// jobSearchBrowser.js -> `import { chromium } from "playwright"`, which broke
+// the standalone production build ("Cannot find module
+// .../playwright-core/browsers.json") since the main app was never set up to
+// bundle Playwright at all — only the separate worker services have it, via
+// their own Docker image. Confirmed
 // live in production logs. Anything that only needs these constants (not the
 // actual browser-driven resolution) must import from here, never from
 // atsResolver.js.

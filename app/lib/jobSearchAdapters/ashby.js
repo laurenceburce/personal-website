@@ -13,15 +13,12 @@
 // (`g-recaptcha-response`) AND a separate "decode this and prove you're not a
 // bot" text puzzle in the ordinary question flow — see blockerDetection.js,
 // checked before any field is touched.
-import { writeFile, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
+import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
@@ -30,6 +27,7 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
+import { resumeFilePayload } from "./resumeFilePayload.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
@@ -165,7 +163,7 @@ const RESUME_UPLOAD_ERROR_TEXT = /failed to upload/i;
 // is a positive, verifiable success signal, checked in a race against the
 // error toast so whichever actually happens wins rather than always waiting
 // out the full timeout.
-async function uploadResumeAndVerify(page, filePath) {
+async function uploadResumeAndVerify(page, resumeBuffer, resumeFileName) {
   const fileInput = page.locator("#_systemfield_resume, input[type=\"file\"][name=\"resume\"]").first();
   if (await fileInput.count().catch(() => 0) === 0) return { ok: false, reason: "no file input found" };
 
@@ -173,7 +171,7 @@ async function uploadResumeAndVerify(page, filePath) {
   const errorToast = page.getByText(RESUME_UPLOAD_ERROR_TEXT);
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    await fileInput.setInputFiles(filePath);
+    await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName));
 
     const outcome = await Promise.race([
       replaceButton.waitFor({ state: "visible", timeout: RESUME_UPLOAD_CONFIRM_TIMEOUT_MS }).then(() => "success").catch(() => "timeout"),
@@ -192,7 +190,7 @@ async function uploadResumeAndVerify(page, filePath) {
 }
 
 export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const browser = await chromium.launch({ headless });
+  const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
   let llmAnsweredCount = 0;
@@ -203,7 +201,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
   const findSettings = await getFindSettings();
 
   try {
-    const page = await browser.newPage();
+    const page = await newPage();
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
     await page.locator("label[for]").first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
 
@@ -214,17 +212,11 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     }
 
     if (resumeBuffer) {
-      const tempPath = join(tmpdir(), `job-search-resume-${Date.now()}-${resumeFileName || "resume.pdf"}`);
-      await writeFile(tempPath, resumeBuffer);
-      try {
-        const uploadResult = await uploadResumeAndVerify(page, tempPath);
-        if (uploadResult.ok) {
-          submittedAnswers["Resume"] = resumeFileName || "resume.pdf";
-        } else {
-          manualReviewFields.push(`Resume upload (${uploadResult.reason})`);
-        }
-      } finally {
-        await unlink(tempPath).catch(() => {});
+      const uploadResult = await uploadResumeAndVerify(page, resumeBuffer, resumeFileName);
+      if (uploadResult.ok) {
+        submittedAnswers["Resume"] = resumeFileName || "resume.pdf";
+      } else {
+        manualReviewFields.push(`Resume upload (${uploadResult.reason})`);
       }
     }
 

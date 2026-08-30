@@ -7,15 +7,12 @@
 // a checkbox (multi-select) question wraps its options in
 // div[role="group"][aria-labelledby="<groupId>_label"]; a radio (single-select)
 // question wraps its options in fieldset[role="radiogroup"][aria-labelledby].
-import { writeFile, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium } from "playwright";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
+import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
@@ -24,6 +21,7 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
+import { resumeFilePayload } from "./resumeFilePayload.js";
 import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
@@ -100,18 +98,11 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
   const fileInput = page.locator('input[type="file"]').first();
   if (await fileInput.count().catch(() => 0) === 0) return false;
 
-  const tempPath = join(tmpdir(), `job-search-resume-${Date.now()}-${resumeFileName || "resume.pdf"}`);
-  await writeFile(tempPath, resumeBuffer);
-  try {
-    await fileInput.setInputFiles(tempPath);
-    // setInputFiles() only attaches the file to the DOM input — it says
-    // nothing about whether Workable's own JS then actually uploaded it. See
-    // resumeUploadCheck.js.
-    if (await resumeUploadLikelyFailed(page)) return false;
-    return true;
-  } finally {
-    await unlink(tempPath).catch(() => {});
-  }
+  await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName));
+  // setInputFiles() only attaches the file to the DOM input — it says
+  // nothing about whether Workable's own JS then actually uploaded it. See
+  // resumeUploadCheck.js.
+  return !(await resumeUploadLikelyFailed(page));
 }
 
 // Reads the whole question structure via the page's own DOM rather than
@@ -201,7 +192,7 @@ async function collectQuestions(page) {
 }
 
 export async function submitWorkableApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const browser = await chromium.launch({ headless });
+  const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
   let llmAnsweredCount = 0;
@@ -212,7 +203,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   const findSettings = await getFindSettings();
 
   try {
-    const page = await browser.newPage();
+    const page = await newPage();
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
     await page.locator('input[name="firstname"]').first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
     await dismissCookieBanner(page);
