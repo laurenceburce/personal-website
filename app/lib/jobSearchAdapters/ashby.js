@@ -20,7 +20,6 @@ import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
-import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
@@ -329,7 +328,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       status = "dry_run_ok";
     } else {
       const submitButton = page.locator('button[type="submit"]').first();
-      await clickWithBrowserMouse(page, submitButton);
+      await submitButton.click();
 
       await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
       await page.waitForTimeout(500);
