@@ -1,14 +1,10 @@
-// The submit-worker's actual work, extracted out of scripts/job-search-
-// submit-worker.mjs so it can be called two ways: once-and-exit (the
-// original CLI script, still used for local/manual/dry-run testing and as a
-// Railway Cron Schedule fallback) and repeatedly-from-a-live-process (the
-// event-driven server in scripts/job-search-submit-worker-server.mjs). This
+// The submit-worker's actual work — one pass, called repeatedly by the
+// event-driven server in scripts/job-search-submit-worker-server.mjs. This
 // file deliberately does NOT manage the DB pool's lifecycle (no
-// `pool.end()`) — a one-shot caller closes it after this returns; a
-// long-running server keeps it open across many calls. It also does NOT
-// catch its own top-level error — it re-throws so each caller decides what
-// "a run failed" should mean for it (a CLI script exits non-zero; a
-// long-running server logs it and stays up for the next trigger).
+// `pool.end()`) — the long-running server keeps the pool open across many
+// calls, closing it only on its own shutdown. It also does NOT catch its own
+// top-level error — it re-throws so the server can log it and stay up for
+// the next trigger rather than this file deciding that for its caller.
 //
 // Picks up every posting at status='approved', runs it through the matching
 // ATS adapter, and records the result. Also runs auto-apply (see below) —

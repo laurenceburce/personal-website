@@ -103,7 +103,7 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
   // A genuine adapter failure (not a skip, not a success) still needs its
   // reason recorded somewhere a human can see it — the caller writes
   // skipDetail into the posting's decision_note regardless of which status
-  // this returns (see scripts/job-search-submit-worker.mjs), so without this
+  // this returns (see app/lib/jobSearchSubmitWorkerRun.js), so without this
   // the posting row carried zero information about why it failed, same gap
   // the human-approval submission path had until this same fix.
   return {

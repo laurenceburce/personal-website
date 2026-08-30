@@ -1,8 +1,7 @@
-// Best-effort "wake up" call to the submit-worker's event-driven server
+// "Wake up" call to the submit-worker's event-driven server
 // (scripts/job-search-submit-worker-server.mjs) — used wherever the main app
 // creates new submittable work (approving a posting, a scoring pass that
-// might make one auto-apply-eligible) so it gets picked up in seconds rather
-// than waiting for that service's own internal fallback timer.
+// might make one auto-apply-eligible) so it gets picked up in seconds.
 //
 // Deliberately Playwright-free: this file must be safely importable from the
 // main web app (page.js's own request path, API routes) without pulling
@@ -10,13 +9,15 @@
 // Railway service, the same class of thing jobSearchCompanyProbe.js already
 // does to third-party APIs.
 //
-// Deliberately best-effort, never load-bearing for correctness: if
-// JOB_SEARCH_SUBMIT_WORKER_URL isn't configured (local dev, or a deployment
-// that only ever runs the plain one-shot script on a Railway Cron Schedule
-// instead of the server), or the call fails for any reason, this silently
-// no-ops. The submit-worker server's own fallback timer is what actually
-// guarantees an approved posting gets processed eventually — this is purely
-// a latency optimization on top of that guarantee, never a substitute for it.
+// The call itself never throws — if JOB_SEARCH_SUBMIT_WORKER_URL isn't
+// configured (local dev, or the submit-worker service isn't up yet) or the
+// fetch fails for any reason, this silently no-ops rather than surfacing an
+// error to whatever action (approve, scoreNow) triggered it. But this IS
+// load-bearing, not just a latency optimization: the submit-worker server
+// has no periodic fallback timer (see its own header comment), so if every
+// trigger call for a given posting is dropped, nothing else will pick it up
+// until the submit-worker's next restart. Worth keeping in mind if postings
+// ever seem to sit at 'approved' without being picked up.
 const TRIGGER_TIMEOUT_MS = 3000;
 
 export async function triggerSubmitWorker(reason) {
@@ -39,8 +40,10 @@ export async function triggerSubmitWorker(reason) {
     });
   } catch (error) {
     // Never throw — a human clicking "Approve" should never see an error
-    // because the OPTIONAL speed-up couldn't reach the other service. The
-    // fallback timer covers this posting regardless.
+    // because this side-call couldn't reach the other service. Logged loudly
+    // rather than swallowed, though: per the header comment above, there's no
+    // fallback timer to fall back on, so this failing silently is the actual
+    // failure mode worth being able to spot in the logs.
     console.error(`[submit-trigger] Failed to notify submit-worker (reason: ${reason}):`, error?.message || error);
   } finally {
     clearTimeout(timeout);

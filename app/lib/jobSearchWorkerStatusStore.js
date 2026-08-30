@@ -1,7 +1,9 @@
 import { ensureJobSearchSchema, requirePool } from "./jobSearchDb.js";
 
-// The two Railway cron services this system runs as (see
-// scripts/job-search-worker.mjs and scripts/job-search-submit-worker.mjs).
+// The two Railway services this system runs as: "poll" is a Railway Cron
+// Schedule (see scripts/job-search-worker.mjs); "submit" is the always-on
+// event-driven server (see scripts/job-search-submit-worker-server.mjs,
+// which calls into app/lib/jobSearchSubmitWorkerRun.js for the real work).
 // Kept as a fixed pair, not an open-ended registry — a third worker would be
 // a deliberate addition to this file, not user-configurable.
 export const WORKER_NAMES = ["poll", "submit"];

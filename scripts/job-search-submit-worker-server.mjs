@@ -1,19 +1,23 @@
-// Event-driven alternative to running scripts/job-search-submit-worker.mjs
-// on a Railway Cron Schedule. Instead of only ever checking for approved
-// postings every N minutes, this stays running and exposes an HTTP endpoint
-// the main web app calls the moment something actually becomes submittable
-// (an approve/batchApprove/retry in the Review Queue, or a scoring pass that
-// might have made a posting auto-apply-eligible — see
-// app/lib/jobSearchSubmitTrigger.js and its callers). A periodic internal
-// timer still runs underneath as a fallback — for a missed/failed trigger
-// call, for auto-apply eligibility that doesn't always come with an explicit
-// "new work" event, and generally because a single signal path is never
-// trustworthy enough to be the ONLY thing standing between an approved
-// posting and it actually getting submitted.
+// Event-driven submit-worker server: stays running and exposes an HTTP
+// endpoint the main web app calls the moment something actually becomes
+// submittable (an approve/batchApprove/retry in the Review Queue, or a
+// scoring pass that might have made a posting auto-apply-eligible — see
+// app/lib/jobSearchSubmitTrigger.js and its callers). Also runs once
+// immediately on startup, so a deploy/restart doesn't sit idle until the
+// next trigger before picking up anything already approved.
 //
-// Deploy this as the submit-worker Railway service's Start Command instead
-// of the one-shot script, with NO Railway Cron Schedule attached (the
-// internal timer below replaces it) — the service just stays up.
+// Deliberately no periodic fallback timer: the trigger call (or startup) is
+// the only thing that wakes this up. A dropped/failed trigger
+// (JOB_SEARCH_SUBMIT_WORKER_URL misconfigured, a network blip, this service
+// being mid-restart at the exact moment) leaves an approved posting
+// untouched until either another trigger-worthy event fires — any pass
+// processes ALL approved postings, not just the one that triggered it — or
+// this service restarts. If that gap turns out to matter in practice, bring
+// back a periodic check here.
+//
+// Deploy this as the submit-worker Railway service's Start Command, with NO
+// Railway Cron Schedule attached — the service just stays up and waits for
+// trigger calls.
 //
 // Concurrency: "account for multiple events" specifically means never
 // running two passes at once (two concurrent Playwright launches racing over
@@ -39,9 +43,6 @@ const PORT = Number(process.env.JOB_SEARCH_SUBMIT_WORKER_PORT || 8080);
 // project has already had a real incident class where something meant to
 // stay internal-only ended up reachable a different way than intended.
 const TRIGGER_SECRET = process.env.JOB_SEARCH_SUBMIT_TRIGGER_SECRET || "";
-// Fallback cadence — the same role the old Railway Cron Schedule played,
-// just run from inside this process instead of by Railway's scheduler.
-const FALLBACK_INTERVAL_MINUTES = Number(process.env.JOB_SEARCH_SUBMIT_FALLBACK_INTERVAL_MINUTES || 10);
 
 if (!TRIGGER_SECRET) {
   console.warn("[startup] JOB_SEARCH_SUBMIT_TRIGGER_SECRET is not set — /run will accept unauthenticated requests from anything that can reach this service.");
@@ -161,22 +162,17 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[startup] Submit-worker server listening on :${PORT} (fallback every ${FALLBACK_INTERVAL_MINUTES}m).`);
-  // Run once immediately on startup rather than waiting a full fallback
-  // interval after every deploy/restart before the first check.
+  console.log(`[startup] Submit-worker server listening on :${PORT}.`);
+  // Run once immediately on startup rather than waiting for the first
+  // trigger call after every deploy/restart before checking at all.
   triggerRun("startup").catch((error) => console.error("[startup] initial trigger failed:", error?.message || error));
 });
-
-const fallbackTimer = setInterval(() => {
-  triggerRun("fallback-timer").catch((error) => console.error("[fallback-timer] trigger failed:", error?.message || error));
-}, FALLBACK_INTERVAL_MINUTES * 60 * 1000);
 
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[shutdown] Received ${signal}, shutting down...`);
-  clearInterval(fallbackTimer);
   server.close();
 
   // Not waiting for an in-flight PASS to finish (that could be minutes) —

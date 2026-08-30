@@ -23,8 +23,8 @@ function mapRow(row) {
   };
 }
 
-// Called once per submit-worker cycle, only when the worker is actually
-// enabled and runs its real work (see scripts/job-search-submit-worker.mjs)
+// Called once per submit-worker pass, only when the worker is actually
+// enabled and runs its real work (see app/lib/jobSearchSubmitWorkerRun.js)
 // — a disabled run only touches job_search_worker_status's heartbeat, same
 // convention as the poll worker's own discovery-run recording.
 export async function recordSubmitRun({

@@ -37,10 +37,8 @@ ENV JOB_SEARCH_PLAYWRIGHT_HEADLESS=true
 ENV JOB_SEARCH_SUBMIT_WORKER_PORT=8080
 EXPOSE 8080
 
-# The event-driven persistent server (see its own header comment) — replaces
-# the old one-shot script as this service's Start Command. No Railway Cron
-# Schedule needed anymore: the server's own internal fallback timer
-# (JOB_SEARCH_SUBMIT_FALLBACK_INTERVAL_MINUTES, default 10) replaces it.
-# scripts/job-search-submit-worker.mjs (the one-shot script) still exists for
-# local/manual dry-run testing — it's just no longer what this container runs.
+# The event-driven persistent server (see its own header comment) as this
+# service's Start Command. No Railway Cron Schedule needed: the main app
+# wakes this up over HTTP whenever there's new work (see
+# app/lib/jobSearchSubmitTrigger.js), plus it runs once on startup.
 CMD ["node", "scripts/job-search-submit-worker-server.mjs"]

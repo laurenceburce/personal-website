@@ -69,9 +69,9 @@ export async function POST(request) {
         const result = await approveOne(data.id, access.email);
         // Fire-and-forget: never blocks the response beyond its own short
         // internal timeout, and never throws — see jobSearchSubmitTrigger.js.
-        // Its only job is shaving minutes off the wait; the submit-worker's
-        // own fallback timer is what actually guarantees this gets picked up
-        // even if this call never lands.
+        // There's no fallback timer on the submit-worker side, so this call
+        // landing is actually what gets this posting picked up promptly; see
+        // that file's header comment for the failure mode if it doesn't.
         await triggerSubmitWorker("approve");
         return NextResponse.json({ ok: true, result });
       }

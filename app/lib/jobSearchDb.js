@@ -330,9 +330,10 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
-      // Tracks the two Railway cron services (see scripts/job-search-worker.mjs
-      // and scripts/job-search-submit-worker.mjs) so the dashboard can show a
-      // real status instead of just hoping the cron is still firing.
+      // Tracks the two workers (see scripts/job-search-worker.mjs — a Railway
+      // Cron Schedule — and scripts/job-search-submit-worker-server.mjs — an
+      // always-on event-driven server) so the dashboard can show a real
+      // status instead of just hoping each is still alive.
       // last_checked_at is written unconditionally, first thing every run —
       // even when the worker is disabled — so "next expected run" can be
       // estimated from actual observed cadence and a stalled/removed Railway
@@ -383,11 +384,11 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
-      // One row per submit-worker cycle — the same append-only history
+      // One row per submit-worker pass — the same append-only history
       // pattern as job_search_discovery_runs above, just for the other
-      // cron service (see scripts/job-search-submit-worker.mjs). Only
-      // written when the worker is actually enabled and runs its real work,
-      // matching that table's own convention.
+      // worker (see app/lib/jobSearchSubmitWorkerRun.js). Only written when
+      // the worker is actually enabled and runs its real work, matching that
+      // table's own convention.
       await pool.query(`
         CREATE TABLE IF NOT EXISTS job_search_submit_runs (
           id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

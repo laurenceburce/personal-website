@@ -161,7 +161,7 @@ export async function scorePosting(posting, context = {}) {
   // app's production build outright ("Cannot find module .../playwright-
   // core/browsers.json"), not just failed at the point of actually launching
   // a browser. Auto-apply now runs as its own pass inside
-  // scripts/job-search-submit-worker.mjs, over postings already sitting at
+  // app/lib/jobSearchSubmitWorkerRun.js, over postings already sitting at
   // pending_review — same outcome, just from the one place that can
   // actually do it.
   return { status: nextStatus, overall, scamRisk };

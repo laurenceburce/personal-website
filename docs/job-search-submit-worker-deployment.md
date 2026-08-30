@@ -1,24 +1,25 @@
 # Job Search: submit-worker deployment (event-driven)
 
-The submit-worker moved from a one-shot script on a Railway Cron Schedule to
-an always-running server that the main app wakes up immediately when there's
-new work (an approval, or a scoring pass with auto-apply on), with a periodic
-internal check underneath as a fallback. This is what needs to change on
-Railway to actually run it that way. Nothing here is required to keep the
-old cron-only behavior — `scripts/job-search-submit-worker.mjs` (the one-shot
-script) still works exactly as before if you'd rather leave it as-is.
+The submit-worker is an always-running server that the main app wakes up
+immediately when there's new work (an approval, or a scoring pass with
+auto-apply on) — purely event-driven, no periodic fallback check. This is
+what needs to change on Railway to run it that way.
 
-## What changed in the repo
+## What's in the repo
 
-- `scripts/job-search-submit-worker-server.mjs` — new. The persistent server:
+- `scripts/job-search-submit-worker-server.mjs` — the persistent server:
   `POST /run` (secret-protected) triggers a pass immediately, `GET /health`
-  for liveness, plus an internal fallback timer.
-- `Dockerfile.job-search-submit-worker` — `CMD` now points at the server
-  script instead of the one-shot script.
+  for liveness. Also runs one pass on startup.
+- `Dockerfile.job-search-submit-worker` — `CMD` points at the server script.
 - `app/lib/jobSearchSubmitTrigger.js` — the main app's side of this: a
   best-effort, fire-and-forget call to the submit-worker's `/run` endpoint.
   Wired into approve/batchApprove (Review Queue) and scoreNow (when
   auto-apply is on).
+
+There's no fallback timer: if a trigger call is dropped or fails (misconfig,
+network blip, this service mid-restart), an approved posting sits untouched
+until the next trigger-worthy event (any pass sweeps up ALL approved
+postings, not just the one that triggered it) or the next service restart.
 
 ## Submit-worker service — Railway dashboard changes
 
@@ -41,10 +42,8 @@ script) still works exactly as before if you'd rather leave it as-is.
    - `JOB_SEARCH_SUBMIT_WORKER_PORT` — optional, defaults to `8080` (already
      set in the Dockerfile). Only change this if `8080` conflicts with
      something else on the service.
-   - `JOB_SEARCH_SUBMIT_FALLBACK_INTERVAL_MINUTES` — optional, defaults to
-     `10`. How often the internal timer checks even with no trigger call.
-   - Everything already required for the one-shot script (DB connection vars,
-     `JOB_SEARCH_PLAYWRIGHT_HEADLESS=true`, etc.) stays the same.
+   - Everything else the worker needs regardless of shape (DB connection
+     vars, `JOB_SEARCH_PLAYWRIGHT_HEADLESS=true`, etc.) stays the same.
 
 ## Main app — new environment variables
 
@@ -56,10 +55,12 @@ script) still works exactly as before if you'd rather leave it as-is.
   submit-worker service above.
 
 If either of these is left unset, `triggerSubmitWorker()` just silently
-no-ops (see its own comment) — approving still works, it just waits for the
-submit-worker's fallback timer instead of being woken immediately. Nothing
-breaks if you deploy the main app before the submit-worker service is ready,
-or vice versa.
+no-ops (see its own comment) — approving still works, but nothing will pick
+the posting up until the submit-worker's next startup (there's no fallback
+timer). Nothing breaks if you deploy the main app before the submit-worker
+service is ready, or vice versa, but check the submit-worker's `/health` and
+logs after a deploy of either service to make sure the trigger path is
+actually wired up — see "Verifying it worked" below.
 
 ## Verifying it worked
 

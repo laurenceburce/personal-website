@@ -171,7 +171,7 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
 }
 
 // Shared by both submission paths — auto-apply (jobSearchAutoApply.js) and
-// the manual submit-worker (scripts/job-search-submit-worker.mjs) — so a
+// the manual submit-worker (app/lib/jobSearchSubmitWorkerRun.js) — so a
 // human-approved posting gets exactly the same ATS resolution auto-apply
 // already got, instead of only ever resolving for the (off by default)
 // auto-apply path and always reporting "unsupported ATS" for everything a
