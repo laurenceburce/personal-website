@@ -7,6 +7,7 @@
 // adapter can be dispatched instead of automatically falling through to
 // "unsupported ATS". Read-only — never fills or submits anything.
 import { chromium } from "playwright";
+import { registerDiscoveredCompany } from "../jobSearchCompanyDirectory.js";
 import { updatePostingAtsResolution } from "../jobSearchPostingsStore.js";
 import { ATS_DOMAIN_PATTERNS, KNOWN_ATS_TYPES, SUBMITTABLE_ATS_TYPES } from "./atsTypes.js";
 
@@ -45,6 +46,30 @@ function extractBoardToken(url) {
   }
 }
 
+// Workday needs its own extraction: a board is 3 pieces (tenant/datacenter/
+// site), not the single first-path-segment slug every other platform uses —
+// confirmed live against real boards that the site segment isn't reliably
+// "first" or "last" either (some tenants put a locale segment first, e.g.
+// "/en-US/{site}/job/...", some don't, e.g. "/{site}/job/..."). The one fixed
+// marker every real job URL has is "/job/" itself, so site is found relative
+// to that. No locale handling needed beyond that — Workday's own "CXS" API
+// (jobSearchAtsSources.js's fetchWorkdayJobs) never needs the locale, only
+// {tenant, dc, site}.
+function parseWorkdayBoardUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const hostMatch = parsed.hostname.match(/^([^.]+)\.(wd\d+)\.myworkdayjobs\.com$/i);
+    if (!hostMatch) return null;
+    const [, tenant, dc] = hostMatch;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    const jobIndex = segments.indexOf("job");
+    const site = jobIndex > 0 ? segments[jobIndex - 1] : segments[0];
+    return site ? { tenant, dc: dc.toLowerCase(), site } : null;
+  } catch {
+    return null;
+  }
+}
+
 // Navigates to a discovery-sourced apply link and inspects wherever it
 // actually lands. Some aggregator pages (confirmed live for Adzuna's own
 // /details/ page) don't hard-redirect — the real employer link is a further
@@ -69,6 +94,7 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
       const applyHref = await page
         .locator(
           'a[href*="greenhouse.io"], a[href*="lever.co"], a[href*="ashbyhq.com"], a[href*="workable.com"], ' +
+          'a[href*="recruitee.com"], a[href*="jobs.personio.de"], a[href*="jobs.personio.com"], a[href*="breezy.hr"], ' +
           'a[href*="smartrecruiters.com"], a[href*="myworkdayjobs.com"], a[href*="icims.com"], ' +
           'a[href*="taleo.net"], a[href*="oraclecloud.com"], a:has-text("Apply")'
         )
@@ -85,7 +111,14 @@ export async function resolveAtsDestination(applyUrl, { headless = true } = {}) 
     }
 
     if (!atsType) return null;
-    const boardToken = extractBoardToken(finalUrl);
+    // Workday's boardToken is "tenant::dc::site" (see parseWorkdayBoardUrl),
+    // not the generic first-path-segment slug everything else uses.
+    const boardToken = atsType === "workday"
+      ? (() => {
+          const workday = parseWorkdayBoardUrl(finalUrl);
+          return workday ? `${workday.tenant}::${workday.dc}::${workday.site}` : null;
+        })()
+      : extractBoardToken(finalUrl);
     if (!boardToken) return null;
 
     return { atsType, applyUrl: finalUrl, boardToken };
@@ -121,5 +154,18 @@ export async function resolvePostingForSubmission(posting) {
   }
 
   await updatePostingAtsResolution(posting.id, resolved).catch(() => {});
+
+  // Workday only ever enters the company directory this way (see
+  // atsTypes.js's POLLABLE_ATS_TYPES comment) — the moment one posting
+  // resolves to a real Workday URL, register the company so direct-poll
+  // starts fetching the REST of its board too, not just this one posting.
+  if (resolved.atsType === "workday") {
+    await registerDiscoveredCompany({
+      companyName: posting.companyName,
+      atsType: resolved.atsType,
+      boardToken: resolved.boardToken
+    }).catch(() => {});
+  }
+
   return { atsType: resolved.atsType, applyUrl: resolved.applyUrl, resolved: true };
 }

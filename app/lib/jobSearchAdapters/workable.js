@@ -11,9 +11,10 @@ import { writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright";
-import { answerFreeText } from "../jobSearchLlm.js";
+import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
+import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
@@ -28,10 +29,35 @@ import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
 const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
-const MAX_LLM_ANSWERED_FIELDS = 5;
+// Raised from 5 after an audit pass — see greenhouse.js's identical constant
+// for the reasoning (daily LLM usage has plenty of headroom; 5 was an
+// arbitrary early-caution number, not a real cost/rate-limit ceiling). This
+// is the one that was actually observed hitting the old ceiling live: a real
+// Codurance posting had exactly 5 genuinely-answerable custom questions.
+const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
+
+// Confirmed live as a real, common form pattern: "years of experience with
+// X" rendered as a RADIO group with numeric-range choices ("0-1", "1-3",
+// "3-5", "5+", or a phrase like "Menos de 1 ano"/"1 a 3 anos") rather than a
+// free-text box (a real Codurance posting had exactly this for both its
+// ".NET/.NET Core" and "React/Next.js" experience questions — its own
+// options were opaque internal IDs like "6427962", never usable directly,
+// only their rendered option TEXT is meaningful). Detected generically by
+// option shape, not by matching English/Portuguese/etc. question wording:
+// experience-duration options are reliably number-heavy ("0-1 years", "1 a 3
+// anos", "5+"), while a preference/logistics question's options (yes/no,
+// agree/disagree, salary bands with currency symbols but no plain digit
+// count) essentially never are. Deliberately conservative (half the options
+// must contain a digit) so a mixed or ambiguous option set falls through to
+// manual review rather than being guessed at.
+function looksLikeExperienceDurationQuestion(options) {
+  if (!Array.isArray(options) || options.length < 2) return false;
+  const withDigits = options.filter((o) => /\d/.test(o.text || "")).length;
+  return withDigits >= Math.ceil(options.length / 2);
+}
 
 const STANDARD_NAME_RESOLVERS = {
   // Read straight off the profile's own structured first/last name fields —
@@ -121,6 +147,22 @@ async function collectQuestions(page) {
       });
     }
 
+    // Each option's own wrapper carries a TWO-id aria-labelledby (confirmed
+    // live: "<groupLabelId> <optionLabelId>") — the group's shared question
+    // label first, then the option's own answer text second. Taking the
+    // FIRST id (as this used to) means every option's "text" collapsed to
+    // the group's own question label, identical across every option in the
+    // group — silently breaking any exact-text match against it (EEO/
+    // work-auth radio answers below, and the new experience-duration
+    // handling), always falling through to manual review. The LAST id is
+    // the option-specific one; for a wrapper with only a single id (no
+    // separate option label), .pop() still returns that same one id, so
+    // this doesn't regress a form shaped the old way.
+    function optionLabelId(labelledBy) {
+      const ids = (labelledBy || "").trim().split(/\s+/).filter(Boolean);
+      return ids[ids.length - 1] || "";
+    }
+
     // Checkbox (multi-select) groups: shared ancestor div[role=group].
     for (const group of document.querySelectorAll('div[role="group"][aria-labelledby]')) {
       const groupLabelId = group.getAttribute("aria-labelledby");
@@ -132,7 +174,7 @@ async function collectQuestions(page) {
         required: checkboxes.some((c) => c.required),
         options: checkboxes.map((c) => ({
           name: c.name,
-          text: labelText((c.closest('[role="checkbox"]')?.getAttribute("aria-labelledby") || "").split(" ")[0])
+          text: labelText(optionLabelId(c.closest('[role="checkbox"]')?.getAttribute("aria-labelledby")))
         }))
       });
     }
@@ -149,7 +191,7 @@ async function collectQuestions(page) {
         required: radios.some((r) => r.required),
         options: radios.map((r) => ({
           value: r.value,
-          text: labelText((r.closest('[role="radio"]')?.getAttribute("aria-labelledby") || "").split(" ")[0])
+          text: labelText(optionLabelId(r.closest('[role="radio"]')?.getAttribute("aria-labelledby")))
         }))
       });
     }
@@ -158,7 +200,7 @@ async function collectQuestions(page) {
   }, Object.keys(STANDARD_NAME_RESOLVERS));
 }
 
-export async function submitWorkableApplication({ posting, profile, resumeBuffer, resumeFileName, dryRun = false, headless = true }) {
+export async function submitWorkableApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
   const browser = await chromium.launch({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
@@ -238,7 +280,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             if (q.required) manualReviewFields.push(q.label);
             continue;
           }
-          const answer = await answerFreeText({ question: q.label, posting, profile }).catch(() => null);
+          const answer = await answerFreeText({ question: q.label, posting, profile, resumeText }).catch(() => null);
           await incrementLlmUsage("score");
           if (answer) {
             const filled = await page.locator(`[name="${q.name}"]`).first().fill(answer).then(() => true).catch(() => false);
@@ -277,8 +319,30 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             }
           }
         }
-        // Any other radio group is a fixed option set with no principled way
-        // to choose — never guessed, same rule as every other adapter.
+        // A years-of-experience-shaped question IS something the resume can
+        // genuinely answer, unlike an arbitrary radio group — see
+        // looksLikeExperienceDurationQuestion()'s own comment. Everything
+        // else stays "never guessed": a preference/logistics question
+        // (salary band, notice period, on-site-days willingness) has no
+        // profile data backing an honest answer, and guessing one commits
+        // the candidate to something they never actually agreed to.
+        if (looksLikeExperienceDurationQuestion(q.options) && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+          const usage = await getTodayLlmUsage();
+          if (usage.totalCalls < findSettings.maxLlmCallsPerDay) {
+            const optionTexts = q.options.map((o) => o.text).filter(Boolean);
+            const chosenText = await chooseFromOptions({ question: q.label, options: optionTexts, posting, profile, resumeText }).catch(() => null);
+            await incrementLlmUsage("score");
+            const match = chosenText && q.options.find((o) => o.text === chosenText);
+            if (match) {
+              const checked = await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().then(() => true).catch(() => false);
+              if (checked) {
+                submittedAnswers[q.label] = match.text;
+                llmAnsweredCount += 1;
+                continue;
+              }
+            }
+          }
+        }
         if (q.required) manualReviewFields.push(q.label);
         continue;
       }
@@ -298,7 +362,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       status = "dry_run_ok";
     } else {
       const submitButton = page.locator('button:has-text("Submit application")').first();
-      await submitButton.click();
+      await clickWithBrowserMouse(page, submitButton);
 
       await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
       await page.waitForTimeout(500);

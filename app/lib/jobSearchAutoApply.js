@@ -55,6 +55,11 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
     profile,
     resumeBuffer: resumeWithBlob?.fileBlob || null,
     resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
+    // Already fetched above for the blob — parsedText comes along for free,
+    // just wasn't threaded through before. Lets the LLM free-text fallback
+    // see the resume's own skills/summary text, not just structured
+    // work-history entries (see answerFreeText's own comment).
+    resumeText: resumeWithBlob?.parsedText || "",
     headless: process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false"
   });
 

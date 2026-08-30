@@ -82,6 +82,7 @@ try {
             profile,
             resumeBuffer: resumeWithBlob?.fileBlob || null,
             resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
+            resumeText: resumeWithBlob?.parsedText || "",
             headless
           });
 

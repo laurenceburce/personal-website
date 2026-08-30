@@ -1,12 +1,50 @@
 import { createHash } from "node:crypto";
 
 const FETCH_TIMEOUT_MS = 20000;
+
+// Confirmed live during the company-directory backfill: an unclaimed/trial
+// Recruitee account ("google.recruitee.com") served a real, structurally
+// valid offer titled "Senior Marketer (Sample)" — Recruitee's own onboarding
+// convention seeds every new account with a placeholder posting before the
+// account's real user has published anything, and it stays live indefinitely
+// on unused trial subdomains. Left unfiltered, that one posting was enough to
+// make probeCompanyAts() (jobCount>=1) confidently mislabel a random trial
+// signup as the actual real company sharing that name. Filtered out at
+// BOTH the probe and the actual polling fetch below, not just the probe —
+// a real company could in principle leave a stray sample posting alongside
+// genuine ones too.
+const SAMPLE_POSTING_TITLE = /\(sample\)/i;
 // Plenty for the LLM/embedding truncation windows (6-8K chars) plus full
 // transparency in the review-queue UI, while bounding worst-case storage — a
 // full-HTML approach here once grew one table to 200MB across ~4,500 postings.
 export const MAX_DESCRIPTION_TEXT_CHARS = 20000;
 
-async function fetchJson(url) {
+// Every existing caller is a plain GET with no body — only Workday's own
+// "CXS" API (fetchWorkdayJobs below) needs a POST with a JSON body, since a
+// GET against that endpoint returns nothing useful (confirmed live).
+async function fetchJson(url, { method = "GET", body } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      method,
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "job-search-bot/1.0 (personal use, owner-only tool)",
+        ...(body ? { "Content-Type": "application/json" } : {})
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    if (!response.ok) throw new Error(`${url} responded with ${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Personio's board is an XML feed, not JSON — everything else here still
+// only ever needs fetchJson.
+async function fetchText(url) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -15,10 +53,47 @@ async function fetchJson(url) {
       headers: { "User-Agent": "job-search-bot/1.0 (personal use, owner-only tool)" }
     });
     if (!response.ok) throw new Error(`${url} responded with ${response.status}`);
-    return await response.json();
+    return await response.text();
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function xmlUnescape(text) {
+  return String(text || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+// Non-greedy so a tag that also appears nested deeper in the same block (e.g.
+// a position's own <name> vs. the <name> inside each of its <jobDescription>
+// sub-blocks) still resolves to the FIRST, outermost occurrence — confirmed
+// against Personio's real feed shape, where the position's title always
+// closes before any nested section starts.
+function extractXmlTag(block, tag) {
+  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return match ? xmlUnescape(match[1].trim()) : "";
+}
+
+// Personio splits a posting's body into named sections (jobDescriptions>
+// jobDescription>{name,value}) rather than one description field — value is
+// itself HTML wrapped in CDATA. Concatenated here (section heading + its own
+// stripped text) into the same single descriptionText shape every other
+// poller produces.
+function extractPersonioDescription(positionXml) {
+  const blocks = positionXml.match(/<jobDescription>[\s\S]*?<\/jobDescription>/g) || [];
+  return blocks
+    .map((block) => {
+      const name = extractXmlTag(block, "name");
+      const cdataMatch = block.match(/<value>\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*<\/value>/);
+      const text = stripHtml(cdataMatch ? cdataMatch[1] : extractXmlTag(block, "value"));
+      return name ? `${name}\n${text}` : text;
+    })
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function stripHtml(html) {
@@ -34,7 +109,18 @@ export function stripHtml(html) {
     .replace(/&gt;/g, ">")
     .replace(/&#39;/g, "'")
     .replace(/&quot;/g, "\"")
-    .replace(/[ \t]+/g, " ")
+    // Confirmed live: SmartRecruiters' own description HTML leans heavily on
+    // raw numeric character references (`&#xa0;` for a non-breaking space,
+    // dozens per posting) rather than the small set of named entities above —
+    // left undecoded, the visible text was littered with literal "&#xa0;"
+    // wherever a space should be. Handles both hex (&#xNN;) and decimal
+    // (&#NN;) forms generically, not just the one form actually seen.
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    // U+00A0 is the actual non-breaking-space character the entities above
+    // decode to — folded into a plain space here, same as the named &nbsp;
+    // case, so both forms end up looking identical in the final text.
+    .replace(/[ \t\u00A0]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -260,12 +346,308 @@ export async function fetchWorkableJobs({ boardToken, companyName }) {
   });
 }
 
+// Recruitee's own structured booleans — same priority treatment as Ashby's
+// isRemote/Workable's telecommuting above (see guessRemoteType's own comment):
+// trusted in both directions once present, the location text itself still
+// wins over them. `hybrid` has no equivalent on the other platforms, so it's
+// checked first rather than folded into guessRemoteType's remote/onsite
+// two-way signal.
+export async function fetchRecruiteeJobs({ boardToken, companyName }) {
+  const url = `https://${encodeURIComponent(boardToken)}.recruitee.com/api/offers`;
+  const data = await fetchJson(url);
+  const offers = (Array.isArray(data?.offers) ? data.offers : [])
+    .filter((offer) => !SAMPLE_POSTING_TITLE.test(offer.title || ""));
+
+  return offers.map((offer) => {
+    const descriptionText = stripHtml(offer.description || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS);
+    const locationText = [offer.city, offer.state_name, offer.country].filter(Boolean).join(", ");
+    const title = offer.title || "";
+    const salary = offer.salary && typeof offer.salary === "object" ? offer.salary : null;
+    const structuredRemote = offer.remote === true ? true : offer.on_site === true ? false : null;
+
+    return {
+      atsType: "recruitee",
+      boardToken,
+      externalJobId: String(offer.id),
+      companyName,
+      title,
+      department: offer.department || "",
+      locationText,
+      remoteType: offer.hybrid ? "hybrid" : guessRemoteType(locationText, descriptionText, structuredRemote),
+      seniorityGuess: guessSeniority(title),
+      salaryMin: salary?.min != null ? Math.round(Number(salary.min)) : null,
+      salaryMax: salary?.max != null ? Math.round(Number(salary.max)) : null,
+      salaryCurrency: salary?.currency || null,
+      descriptionText,
+      // careers_apply_url lands straight on the application form; careers_url
+      // is the read-only overview page — same apply-vs-overview distinction
+      // already confirmed for Ashby's jobUrl/applyUrl above.
+      applyUrl: offer.careers_apply_url || offer.careers_url || "",
+      postedAt: offer.published_at ? new Date(offer.published_at) : null,
+      contentHash: computeContentHash(title, descriptionText)
+    };
+  });
+}
+
+export async function fetchPersonioJobs({ boardToken, companyName }) {
+  const xml = await fetchText(`https://${encodeURIComponent(boardToken)}.jobs.personio.de/xml?language=en`);
+  const positions = xml.match(/<position>[\s\S]*?<\/position>/g) || [];
+
+  return positions
+    .map((position) => {
+      const id = extractXmlTag(position, "id");
+      const title = extractXmlTag(position, "name");
+      const locationText = extractXmlTag(position, "office");
+      const descriptionText = extractPersonioDescription(position).slice(0, MAX_DESCRIPTION_TEXT_CHARS);
+      const createdAt = extractXmlTag(position, "createdAt");
+
+      return {
+        atsType: "personio",
+        boardToken,
+        externalJobId: id,
+        companyName,
+        title,
+        department: extractXmlTag(position, "department"),
+        locationText,
+        remoteType: guessRemoteType(locationText, descriptionText),
+        seniorityGuess: guessSeniority(title),
+        salaryMin: null,
+        salaryMax: null,
+        salaryCurrency: null,
+        descriptionText,
+        // Personio's XML feed carries no per-posting URL at all (confirmed
+        // live) — every real example found this session followed the same
+        // {subdomain}.jobs.personio.de/job/{id} shape, so it's built here
+        // rather than left blank.
+        applyUrl: `https://${boardToken}.jobs.personio.de/job/${id}?language=en`,
+        postedAt: createdAt ? new Date(createdAt) : null,
+        contentHash: computeContentHash(title, descriptionText)
+      };
+    })
+    .filter((job) => job.externalJobId);
+}
+
+export async function fetchBreezyJobs({ boardToken, companyName }) {
+  const url = `https://${encodeURIComponent(boardToken)}.breezy.hr/json?verbose=true`;
+  const data = await fetchJson(url);
+  const jobs = Array.isArray(data) ? data : [];
+
+  return jobs.map((job) => {
+    const descriptionText = stripHtml(job.description || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS);
+    const locationText = job.location?.name || [job.location?.city, job.location?.country?.name].filter(Boolean).join(", ");
+    const title = job.name || "";
+
+    return {
+      atsType: "breezy",
+      boardToken,
+      externalJobId: String(job.id),
+      companyName,
+      title,
+      department: job.department || "",
+      locationText,
+      // No structured remote flag anywhere on Breezy's own feed (confirmed
+      // live) — falls straight to the shared location/description heuristic.
+      remoteType: guessRemoteType(locationText, descriptionText),
+      seniorityGuess: guessSeniority(title),
+      salaryMin: null,
+      salaryMax: null,
+      salaryCurrency: null,
+      descriptionText,
+      applyUrl: job.url || "",
+      postedAt: job.published_date ? new Date(job.published_date) : null,
+      contentHash: computeContentHash(title, descriptionText)
+    };
+  });
+}
+
+// Unlike Greenhouse's `?content=true`, no param on SmartRecruiters' LIST
+// endpoint includes a description (confirmed live: neither `content=true` nor
+// `fields=jobAd` changes the returned shape) — a real description requires a
+// SEPARATE per-posting detail request. A large multi-location chain can have
+// hundreds of open postings (confirmed live: Equinox alone had 727, almost
+// all individual gym-staff roles), which would otherwise mean hundreds of
+// detail requests EVERY poll run for one company. The list is already
+// sorted most-recent-first by default (confirmed live) with no extra sort
+// param needed, so capping here just means "only the freshest postings get a
+// real description this run" — not a permanent miss, since a still-open
+// posting stays near the front of this same list on the next poll too.
+const SMARTRECRUITERS_MAX_POSTINGS = 60;
+const SMARTRECRUITERS_DETAIL_CONCURRENCY = 8;
+
+async function fetchSmartRecruitersDetail(boardToken, id) {
+  const detail = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(boardToken)}/postings/${encodeURIComponent(id)}`);
+  const sections = detail?.jobAd?.sections || {};
+  const descriptionHtml = [sections.jobDescription?.text, sections.qualifications?.text, sections.additionalInformation?.text]
+    .filter(Boolean)
+    .join("\n\n");
+  return {
+    descriptionText: stripHtml(descriptionHtml).slice(0, MAX_DESCRIPTION_TEXT_CHARS),
+    applyUrl: detail?.applyUrl || detail?.postingUrl || ""
+  };
+}
+
+export async function fetchSmartRecruitersJobs({ boardToken, companyName }) {
+  const data = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(boardToken)}/postings?limit=${SMARTRECRUITERS_MAX_POSTINGS}`);
+  const postings = Array.isArray(data?.content) ? data.content : [];
+
+  const jobs = [];
+  for (let i = 0; i < postings.length; i += SMARTRECRUITERS_DETAIL_CONCURRENCY) {
+    const batch = postings.slice(i, i + SMARTRECRUITERS_DETAIL_CONCURRENCY);
+    const details = await Promise.all(
+      batch.map((p) => fetchSmartRecruitersDetail(boardToken, p.id).catch(() => ({ descriptionText: "", applyUrl: "" })))
+    );
+    batch.forEach((posting, idx) => {
+      const { descriptionText, applyUrl } = details[idx];
+      const title = posting.name || "";
+      const location = posting.location || {};
+      const locationText = location.fullLocation || [location.city, location.region, location.country].filter(Boolean).join(", ");
+      // SmartRecruiters' own structured flags — same priority treatment as
+      // Ashby's isRemote/Workable's telecommuting above (see
+      // guessRemoteType's own comment): trusted in both directions once
+      // present, the location text itself still wins over them.
+      const structuredRemote = location.remote === true ? true : location.remote === false && !location.hybrid ? false : null;
+
+      jobs.push({
+        atsType: "smartrecruiters",
+        boardToken,
+        externalJobId: String(posting.id),
+        companyName,
+        title,
+        department: posting.department?.label || "",
+        locationText,
+        remoteType: location.hybrid ? "hybrid" : guessRemoteType(locationText, descriptionText, structuredRemote),
+        seniorityGuess: guessSeniority(title),
+        // No compensation field anywhere in SmartRecruiters' own response
+        // (confirmed live, list AND detail) — some accounts surface a comp
+        // range via a company-configured customField, but its fieldId/label
+        // isn't standardized across companies the way Ashby's compensation
+        // object is, so there's nothing reliable to parse here.
+        salaryMin: null,
+        salaryMax: null,
+        salaryCurrency: null,
+        descriptionText,
+        // NOT posting.ref — confirmed live that's the raw API self-link
+        // (https://api.smartrecruiters.com/...), not a human-facing apply
+        // page; applyUrl only ever comes from the detail fetch above.
+        applyUrl,
+        postedAt: posting.releasedDate ? new Date(posting.releasedDate) : null,
+        contentHash: computeContentHash(title, descriptionText)
+      });
+    });
+  }
+
+  return jobs;
+}
+
+// Workday has no guessable public API the way Greenhouse/Lever/etc. do — a
+// board is identified by THREE pieces (tenant, datacenter, site), none of
+// which is derivable from a company's display name the way a single slug is
+// for the others (confirmed live: "workday"/"wd5"/"Workday" for Workday's
+// own board bears no obvious relationship to each other). So this is never
+// reached via jobSearchCompanyProbe.js's slug-guessing — a company only ever
+// gets a "workday" boardToken via atsResolver.js parsing an ALREADY-RESOLVED
+// real Workday URL (from an Adzuna-discovered posting) into its 3 parts once,
+// after which direct-poll can fetch the REST of that company's board the
+// normal way. boardToken encodes all 3 pieces as "tenant::dc::site" — see
+// atsResolver.js's parseWorkdayBoardUrl().
+//
+// The underlying endpoint is Workday's own "CXS" (Candidate Experience
+// System) API — undocumented but confirmed live and stable against two real
+// boards (Workday's own site, 365 postings; Walmart's, 2000) — the exact
+// same calls the career site's own search box makes, not a private/internal
+// API. Same N+1 detail-fetch shape and cap rationale as SmartRecruiters
+// above: Walmart alone had 2000 open postings. Unlike SmartRecruiters', this
+// list endpoint hard-rejects (400) any `limit` over 20 (confirmed live: 20
+// succeeds, 21 doesn't) — WORKDAY_MAX_POSTINGS is paged out in
+// WORKDAY_PAGE_SIZE-sized requests rather than requested in one shot.
+const WORKDAY_PAGE_SIZE = 20;
+const WORKDAY_MAX_POSTINGS = 60;
+const WORKDAY_DETAIL_CONCURRENCY = 8;
+
+// externalPath already starts with "/job/..." (confirmed live) — appended
+// directly, not joined with another literal "/job" segment.
+async function fetchWorkdayDetail(tenant, dc, site, externalPath) {
+  const url = `https://${tenant}.${dc}.myworkdayjobs.com/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}${externalPath}`;
+  const detail = await fetchJson(url);
+  const info = detail?.jobPostingInfo || {};
+  return {
+    descriptionText: stripHtml(info.jobDescription || "").slice(0, MAX_DESCRIPTION_TEXT_CHARS),
+    applyUrl: info.externalUrl || `https://${tenant}.${dc}.myworkdayjobs.com/${encodeURIComponent(site)}${externalPath}`
+  };
+}
+
+export async function fetchWorkdayJobs({ boardToken, companyName }) {
+  const [tenant, dc, site] = String(boardToken || "").split("::");
+  if (!tenant || !dc || !site) return [];
+
+  const jobsUrl = `https://${tenant}.${dc}.myworkdayjobs.com/wday/cxs/${encodeURIComponent(tenant)}/${encodeURIComponent(site)}/jobs`;
+  const postings = [];
+  for (let offset = 0; offset < WORKDAY_MAX_POSTINGS; offset += WORKDAY_PAGE_SIZE) {
+    const data = await fetchJson(jobsUrl, {
+      method: "POST",
+      body: { appliedFacets: {}, limit: WORKDAY_PAGE_SIZE, offset, searchText: "" }
+    });
+    const page = Array.isArray(data?.jobPostings) ? data.jobPostings : [];
+    postings.push(...page);
+    if (page.length < WORKDAY_PAGE_SIZE) break; // fewer than a full page = no more postings
+  }
+
+  const jobs = [];
+  for (let i = 0; i < postings.length; i += WORKDAY_DETAIL_CONCURRENCY) {
+    const batch = postings.slice(i, i + WORKDAY_DETAIL_CONCURRENCY);
+    const details = await Promise.all(
+      batch.map((p) => fetchWorkdayDetail(tenant, dc, site, p.externalPath).catch(() => ({ descriptionText: "", applyUrl: "" })))
+    );
+    batch.forEach((posting, idx) => {
+      const { descriptionText, applyUrl } = details[idx];
+      const title = posting.title || "";
+      const locationText = posting.locationsText || "";
+      // Workday's own field ("Remote", "Flex"/"Hybrid", "On-Site" — exact
+      // labels are company-configurable free text, not a fixed enum, so this
+      // is matched loosely rather than against a strict value list).
+      const remoteText = String(posting.remoteType || "").toLowerCase();
+      const structuredRemote = remoteText.includes("remote") ? true : remoteText.includes("site") ? false : null;
+
+      jobs.push({
+        atsType: "workday",
+        boardToken,
+        externalJobId: posting.externalPath || `${site}:${idx}:${i}`,
+        companyName,
+        title,
+        department: "",
+        locationText,
+        remoteType: remoteText.includes("hybrid") || remoteText.includes("flex") ? "hybrid" : guessRemoteType(locationText, descriptionText, structuredRemote),
+        seniorityGuess: guessSeniority(title),
+        salaryMin: null,
+        salaryMax: null,
+        salaryCurrency: null,
+        descriptionText,
+        applyUrl,
+        // Workday's list only ever gives a relative phrase ("Posted Yesterday",
+        // "Posted 30+ Days Ago"), not a real timestamp — confirmed live, both
+        // the list AND detail endpoints. Left null rather than guessed: a
+        // wrong absolute date is worse than none for maxPostingAgeHours
+        // filtering.
+        postedAt: null,
+        contentHash: computeContentHash(title, descriptionText)
+      });
+    });
+  }
+
+  return jobs;
+}
+
 export async function fetchAtsJobs({ atsType, boardToken, companyName }) {
   switch (atsType) {
     case "greenhouse": return fetchGreenhouseJobs({ boardToken, companyName });
     case "lever": return fetchLeverJobs({ boardToken, companyName });
     case "ashby": return fetchAshbyJobs({ boardToken, companyName });
     case "workable": return fetchWorkableJobs({ boardToken, companyName });
+    case "recruitee": return fetchRecruiteeJobs({ boardToken, companyName });
+    case "personio": return fetchPersonioJobs({ boardToken, companyName });
+    case "breezy": return fetchBreezyJobs({ boardToken, companyName });
+    case "smartrecruiters": return fetchSmartRecruitersJobs({ boardToken, companyName });
+    case "workday": return fetchWorkdayJobs({ boardToken, companyName });
     default: throw new Error(`Unsupported ATS type: ${atsType}`);
   }
 }

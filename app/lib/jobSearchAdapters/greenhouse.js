@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
+import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
@@ -19,7 +20,13 @@ import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
 const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
-const MAX_LLM_ANSWERED_FIELDS = 5;
+// Raised from 5 after an audit pass: daily LLM usage sits at ~120 calls
+// against a 5000/day cap (jobSearchUsageStore.js), so 5 was an arbitrary
+// early-caution number, not a cost/rate-limit necessity — and a form with
+// more than 5 genuinely-answerable custom questions (confirmed live: a real
+// Codurance/Workable posting had exactly 5) was hitting this ceiling and
+// deferring the rest to manual review for no reason beyond the count.
+const MAX_LLM_ANSWERED_FIELDS = 15;
 
 // Confirmed against Greenhouse's own confirmation-page/inline-validation
 // copy. Deliberately conservative — an unmatched confirmation page falls
@@ -75,9 +82,22 @@ async function fillReactSelect(scope, input, value) {
   }
 
   // Only accept an exact (case-insensitive) match — never click the first
-  // fuzzy suggestion for a field we were asked to fill precisely.
+  // fuzzy suggestion for a field we were asked to fill precisely. Confirmed
+  // live as a real miss, not theoretical: a "Country*" field built on
+  // Greenhouse's own phone-style country-picker component renders its
+  // options as "United States +1", not bare "United States" — a plain exact
+  // match against every candidate ("United States", "USA", "US", ...) never
+  // matched ANY of them, sending a resolvable field to manual review every
+  // time. Stripping a trailing " +<digits>" (the calling code) before
+  // re-checking catches that shape specifically — it does NOT loosen this
+  // into a substring/fuzzy match (still rejects "United States Minor
+  // Outlying Islands" for a "United States" candidate), it only strips one
+  // specific, known suffix pattern.
+  const target = String(value).trim().toLowerCase();
   const texts = await options.allInnerTexts().catch(() => []);
-  const exactIndex = texts.findIndex((t) => t.trim().toLowerCase() === String(value).trim().toLowerCase());
+  const stripTrailingCallingCode = (t) => t.replace(/\s*\+\d+\s*$/, "").trim().toLowerCase();
+  let exactIndex = texts.findIndex((t) => t.trim().toLowerCase() === target);
+  if (exactIndex < 0) exactIndex = texts.findIndex((t) => stripTrailingCallingCode(t) === target);
   if (exactIndex < 0) {
     await input.press("Escape").catch(() => {});
     return false;
@@ -161,7 +181,7 @@ function isEeoConsentCheckboxLabel(label) {
   return /consent/.test(label) && /(demographic|eeo|equal employment)/.test(label);
 }
 
-export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, dryRun = false, headless = true }) {
+export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
   const browser = await chromium.launch({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
@@ -267,7 +287,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           continue;
         }
 
-        const answer = await answerFreeText({ question: field.label, posting, profile }).catch(() => null);
+        const answer = await answerFreeText({ question: field.label, posting, profile, resumeText }).catch(() => null);
         await incrementLlmUsage("score");
         if (answer) {
           await field.locator.fill(answer);
@@ -288,7 +308,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       status = "dry_run_ok";
     } else {
       const submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
-      await submitButton.click();
+      await clickWithBrowserMouse(page, submitButton);
 
       // Greenhouse either navigates to a confirmation page/state or re-renders
       // the same form with inline validation errors — wait for the network to

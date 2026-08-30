@@ -5,7 +5,7 @@ import { normalizeCompanyName, probeCompanyAts } from "./jobSearchCompanyProbe.j
 // atsResolver.js imports `playwright` at module scope. That import chain
 // once reached the main web app's server bundle this way and broke its
 // production build — see atsTypes.js for the full story.
-import { SUBMITTABLE_ATS_TYPES } from "./jobSearchAdapters/atsTypes.js";
+import { POLLABLE_ATS_TYPES } from "./jobSearchAdapters/atsTypes.js";
 
 function mapCompanyRow(row) {
   return {
@@ -35,14 +35,57 @@ export async function getKnownCompany(companyName) {
   return rows[0] ? mapCompanyRow(rows[0]) : null;
 }
 
-// Every company on a submittable ATS — jobSearchDirectPoll.js polls exactly
-// this list every worker run. smartrecruiters is deliberately excluded here
-// (recognized but never polled/submitted to — see atsResolver.js).
+// Separate from discoverNewCompanies()'s bulk slug-guessing flow below —
+// this is for a company reached the OPPOSITE way: atsResolver.js already
+// resolved one of its postings to a real Workday URL (a platform with no
+// guessable public API, so probeCompanyAts() can never find it on its own —
+// see atsTypes.js's POLLABLE_ATS_TYPES comment) and parsed out the exact
+// tenant/datacenter/site boardToken from that real URL. Registering it here
+// means jobSearchDirectPoll.js starts fetching the REST of that company's
+// board on every poll after, not just the one posting that happened to come
+// through Adzuna.
+//
+// Only ever fills an ats_type='unknown' gap, never overwrites an already-
+// confirmed different platform — a same-named-but-different company (the
+// exact false-positive shape already confirmed live for Workable/
+// SmartRecruiters/Personio elsewhere in this codebase) could otherwise
+// silently reassign a genuinely-probed Greenhouse/Lever/etc. company to
+// Workday just because Adzuna happened to also surface an unrelated posting
+// from a different company sharing that same display name.
+export async function registerDiscoveredCompany({ companyName, atsType, boardToken }) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const normalized = normalizeCompanyName(companyName);
+  if (!normalized || !atsType || !boardToken) return;
+  const now = new Date();
+  await pool.query(
+    `INSERT INTO job_search_known_companies
+       (company_name, normalized_name, ats_type, board_token, last_probed_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       ats_type = IF(ats_type = 'unknown', VALUES(ats_type), ats_type),
+       board_token = IF(ats_type = 'unknown', VALUES(board_token), board_token),
+       last_probed_at = IF(ats_type = 'unknown', VALUES(last_probed_at), last_probed_at),
+       updated_at = IF(ats_type = 'unknown', VALUES(updated_at), updated_at)`,
+    [cleanText(companyName, 160), normalized, atsType, cleanText(boardToken, 160), now, now, now]
+  );
+}
+
+// Every company on a POLLABLE ats — jobSearchDirectPoll.js polls exactly this
+// list every worker run. This is deliberately broader than "submittable":
+// Recruitee/Personio/Breezy HR/SmartRecruiters all have a confirmed public
+// polling API but no submission adapter (see atsTypes.js — SmartRecruiters'
+// bot-wall is specific to its apply FORM, unrelated to this read-only API),
+// so their postings still flow into scoring/review for the human to apply to
+// by hand. Workday is here too, reached only via atsResolver.js registering
+// an already-resolved tenant, never via slug-guessing (see atsTypes.js's own
+// POLLABLE_ATS_TYPES comment for the full explanation). iCIMS/Oracle Taleo
+// are excluded — recognized but never polled/submitted to (see atsResolver.js
+// and atsTypes.js for why no equivalent path exists for either).
 export async function listPollableCompanies() {
   const pool = requirePool(await ensureJobSearchSchema());
   const [rows] = await pool.query(
     "SELECT * FROM job_search_known_companies WHERE ats_type IN (?) ORDER BY company_name ASC",
-    [[...SUBMITTABLE_ATS_TYPES]]
+    [[...POLLABLE_ATS_TYPES]]
   );
   return rows.map(mapCompanyRow);
 }
@@ -55,7 +98,7 @@ export async function getCompanyDirectoryStats() {
   const [totalRows] = await pool.query("SELECT COUNT(*) AS total FROM job_search_known_companies");
   const [pollableRows] = await pool.query(
     "SELECT COUNT(*) AS total FROM job_search_known_companies WHERE ats_type IN (?)",
-    [[...SUBMITTABLE_ATS_TYPES]]
+    [[...POLLABLE_ATS_TYPES]]
   );
   return {
     totalProbed: Number(totalRows[0].total),

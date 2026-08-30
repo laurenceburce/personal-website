@@ -20,6 +20,7 @@ import { chromium } from "playwright";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
+import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import {
   isEeoLabel,
@@ -33,7 +34,10 @@ import {
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
 const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
-const MAX_LLM_ANSWERED_FIELDS = 5;
+// Raised from 5 after an audit pass — see greenhouse.js's identical constant
+// for the reasoning (daily LLM usage has plenty of headroom; 5 was an
+// arbitrary early-caution number, not a real cost/rate-limit ceiling).
+const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
@@ -187,7 +191,7 @@ async function uploadResumeAndVerify(page, filePath) {
   return { ok: false, reason: "upload did not confirm after 2 attempts" };
 }
 
-export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, dryRun = false, headless = true }) {
+export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
   const browser = await chromium.launch({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
@@ -302,7 +306,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           continue;
         }
 
-        const answer = await answerFreeText({ question: field.label, posting, profile }).catch(() => null);
+        const answer = await answerFreeText({ question: field.label, posting, profile, resumeText }).catch(() => null);
         await incrementLlmUsage("score");
         if (answer) {
           const filled = await field.locator.fill(answer).then(() => true).catch(() => false);
@@ -325,7 +329,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       status = "dry_run_ok";
     } else {
       const submitButton = page.locator('button[type="submit"]').first();
-      await submitButton.click();
+      await clickWithBrowserMouse(page, submitButton);
 
       await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
       await page.waitForTimeout(500);

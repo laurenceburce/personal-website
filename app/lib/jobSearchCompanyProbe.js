@@ -1,18 +1,27 @@
 // Auto-discovers a company's ATS board by guessing its slug against each
 // platform's free, unauthenticated public API — the same manual process used
 // to find every real test company this session (Palantir on Lever, Ramp on
-// Ashby, Codurance on Workable, Equinox on SmartRecruiters), just automated.
+// Ashby, Codurance on Workable, Equinox on SmartRecruiters, Vinted on
+// Recruitee, Attentive on Breezy HR, Prenode on Personio), just automated.
 // This is the mechanism behind direct polling: once a company is confirmed
 // here, jobSearchDirectPoll.js can fetch its postings straight from the ATS
 // instead of relying solely on Adzuna ever surfacing them, and any posting
 // found this way is tagged with its real ats_type from the start — no lazy
-// per-posting resolution needed later. Only greenhouse/lever/ashby/workable
-// probes matter for that (the only platforms with a submission adapter — see
-// jobSearchAdapters/atsResolver.js's SUBMITTABLE_ATS_TYPES); smartrecruiters
-// is still probed for accurate labeling even though nothing can ever submit
-// to it. Workday/iCIMS/Oracle-Taleo are skipped here entirely — none of them
-// expose a guessable public API the way the other four do (confirmed live:
-// each requires already knowing a company's exact tenant/site or slug).
+// per-posting resolution needed later. Every platform in POLLABLE_ATS_TYPES
+// that's actually guessable this way (greenhouse/lever/ashby/workable/
+// recruitee/personio/breezy/smartrecruiters — see jobSearchAdapters/
+// atsTypes.js) gets probed for that reason, submission adapter or not —
+// SmartRecruiters' own apply-form bot-wall has nothing to do with its
+// read-only postings API, which is confirmed live to work fine unauthenticated.
+// Workday is also in POLLABLE_ATS_TYPES but deliberately NOT probed here —
+// it has no guessable public API (needs 3 pieces — tenant/datacenter/site —
+// none derivable from a company name), so it only ever gets added via
+// atsResolver.js registering an already-resolved real Workday URL, never via
+// slug-guessing. iCIMS/Oracle-Taleo are skipped here entirely and NOT in
+// POLLABLE_ATS_TYPES at all — neither exposes a guessable public API the way
+// the rest do (confirmed live: iCIMS has no working public feed at all, a
+// real hosted tenant's would-be JSON endpoints just returned an unrelated CMS
+// shell; Oracle Taleo/Fusion's REST surface is customer/OAuth-gated).
 const FETCH_TIMEOUT_MS = 10000;
 
 const COMPANY_SUFFIXES = /\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|group|holdings|technologies|technology|plc)\b\.?/gi;
@@ -53,6 +62,26 @@ async function fetchJson(url) {
     const response = await fetch(url, { signal: controller.signal, headers: { "User-Agent": "job-search-bot/1.0 (personal use, owner-only tool)" } });
     if (!response.ok) return null;
     return await response.json().catch(() => null);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Personio's board is an XML feed, not JSON — a nonexistent subdomain
+// redirects (307) to a generic not-found/checkpoint page rather than
+// responding 404 directly (confirmed live), which `fetch`'s default
+// redirect:"follow" would otherwise quietly turn into a 200 of unrelated
+// HTML; `redirect: "manual"` surfaces that as its real, non-200 status
+// instead so a nonexistent slug reads as "no hit", not a false positive.
+async function fetchTextManualRedirect(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal, redirect: "manual", headers: { "User-Agent": "job-search-bot/1.0 (personal use, owner-only tool)" } });
+    if (!response.ok) return null;
+    return await response.text();
   } catch {
     return null;
   } finally {
@@ -116,6 +145,61 @@ async function probeWorkable(slug, companyName) {
   return { atsType: "workable", boardToken: slug, jobCount: data.jobs.length };
 }
 
+// Confirmed live: an unclaimed/trial Recruitee account for the exact slug
+// "google" served a real, structurally valid, exact-name-matching (its own
+// company_name field literally said "Google") offer titled "Senior Marketer
+// (Sample)" — Recruitee seeds every new signup with this placeholder before
+// the account's real user publishes anything, and it survives indefinitely
+// on an unused trial subdomain. That one posting alone was otherwise enough
+// to pass every check below (real board, name match, jobCount>=1) and
+// mislabel a random trial signup as the genuine company sharing that name —
+// confirmed as a real false positive via the company-directory backfill, not
+// theoretical. Filtered out before any of the other checks even run.
+const SAMPLE_POSTING_TITLE = /\(sample\)/i;
+
+async function probeRecruitee(slug, companyName) {
+  const data = await fetchJson(`https://${encodeURIComponent(slug)}.recruitee.com/api/offers`);
+  const offers = (Array.isArray(data?.offers) ? data.offers : [])
+    .filter((offer) => !SAMPLE_POSTING_TITLE.test(offer.title || ""));
+  if (offers.length === 0) return null;
+  const returnedName = offers[0]?.company_name;
+  if (!returnedName || !namesPlausiblyMatch(companyName, returnedName)) return null;
+  return { atsType: "recruitee", boardToken: slug, jobCount: offers.length };
+}
+
+async function probeBreezy(slug, companyName) {
+  const data = await fetchJson(`https://${encodeURIComponent(slug)}.breezy.hr/json`);
+  if (!Array.isArray(data) || data.length === 0) return null;
+  const returnedName = data[0]?.company?.name;
+  if (!returnedName || !namesPlausiblyMatch(companyName, returnedName)) return null;
+  return { atsType: "breezy", boardToken: slug, jobCount: data.length };
+}
+
+// No company-name field exists anywhere in Personio's XML feed to cross-check
+// against — a hit here is trusted on the jobCount signal alone, the same
+// posture Greenhouse/Lever/Ashby already have above. That gap is CONFIRMED
+// live to produce real false positives, unlike Greenhouse/Lever/Ashby's own
+// (still theoretical) version of the same gap: the company-directory
+// backfill run found "amazon", "salesforce", and "safetykleen" all
+// resolving here to byte-identical placeholder content (a "General
+// Application" + a "SEO Marketing Manager" listing, the latter appearing
+// verbatim across all three unrelated slugs) — some non-famous account
+// (real HQ traced to Madrid, nothing like the real Safety-Kleen's Georgia
+// HQ) squatting on famous single-word brand names, not the real companies.
+// Those three rows were manually reverted; no code-level fix landed for
+// this specific one, since there's no equivalently clean, low-risk signal
+// to filter on the way Recruitee's own "(Sample)" convention gave above —
+// a hit on an exact, famous, single-word brand-name slug from this probe
+// specifically deserves a manual sanity check before being trusted, until a
+// better signal is found.
+async function probePersonio(slug) {
+  const xml = await fetchTextManualRedirect(`https://${encodeURIComponent(slug)}.jobs.personio.de/xml?language=en`);
+  if (!xml) return null;
+  const jobCount = (xml.match(/<position>/g) || []).length;
+  if (jobCount === 0) return null;
+  return { atsType: "personio", boardToken: slug, jobCount };
+}
+
 async function probeSmartRecruiters(slug, companyName) {
   const data = await fetchJson(`https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings?limit=1`);
   // Confirmed live: unlike Greenhouse/Lever/Ashby/Workable, this endpoint
@@ -147,7 +231,10 @@ async function probeAllPlatforms(slug, companyName) {
     probeLever(slug),
     probeAshby(slug),
     probeWorkable(slug, companyName),
-    probeSmartRecruiters(slug, companyName)
+    probeSmartRecruiters(slug, companyName),
+    probeRecruitee(slug, companyName),
+    probeBreezy(slug, companyName),
+    probePersonio(slug)
   ]);
 
   const hits = results.filter(Boolean);
