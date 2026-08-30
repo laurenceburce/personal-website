@@ -1,7 +1,6 @@
 import { submitAshbyApplication } from "./ashby.js";
 import { submitBreezyApplication } from "./breezy.js";
 import { submitGreenhouseApplication } from "./greenhouse.js";
-import { submitOracleRecruitingApplication } from "./oracleRecruiting.js";
 import { submitPersonioApplication } from "./personio.js";
 import { submitWorkableApplication } from "./workable.js";
 // Lever remains polling-only. Its public postings API works, but the apply
@@ -12,8 +11,7 @@ const ADAPTERS = {
   ashby: submitAshbyApplication,
   workable: submitWorkableApplication,
   personio: submitPersonioApplication,
-  breezy: submitBreezyApplication,
-  oracle_taleo: submitOracleRecruitingApplication
+  breezy: submitBreezyApplication
 };
 
 export async function submitApplication(atsType, params) {
