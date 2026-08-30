@@ -27,5 +27,20 @@ RUN npx playwright install --with-deps chromium
 COPY . .
 
 ENV JOB_SEARCH_PLAYWRIGHT_HEADLESS=true
+# Matches the server's own default (scripts/job-search-submit-worker-server.mjs)
+# — set explicitly here so it's visible/discoverable from the Dockerfile
+# without having to go read the script. Only reachable over Railway's private
+# network (<service>.railway.internal:8080) — never attach a public domain to
+# this service. JOB_SEARCH_SUBMIT_TRIGGER_SECRET is required too (set as a
+# Railway service variable, not baked into the image) — see the deployment
+# instructions for the full env var list.
+ENV JOB_SEARCH_SUBMIT_WORKER_PORT=8080
+EXPOSE 8080
 
-CMD ["node", "scripts/job-search-submit-worker.mjs"]
+# The event-driven persistent server (see its own header comment) — replaces
+# the old one-shot script as this service's Start Command. No Railway Cron
+# Schedule needed anymore: the server's own internal fallback timer
+# (JOB_SEARCH_SUBMIT_FALLBACK_INTERVAL_MINUTES, default 10) replaces it.
+# scripts/job-search-submit-worker.mjs (the one-shot script) still exists for
+# local/manual dry-run testing — it's just no longer what this container runs.
+CMD ["node", "scripts/job-search-submit-worker-server.mjs"]

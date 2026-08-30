@@ -6,6 +6,7 @@ import { runDirectPollPass } from "../../../lib/jobSearchDirectPoll";
 import { requeuePostingsForRescoring } from "../../../lib/jobSearchPostingsStore";
 import { scoreNewPostings } from "../../../lib/jobSearchScoringPipeline";
 import { getFindSettings } from "../../../lib/jobSearchSettingsStore";
+import { triggerSubmitWorker } from "../../../lib/jobSearchSubmitTrigger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,6 +56,14 @@ export async function POST(request) {
       }
       case "scoreNow": {
         const result = await scoreNewPostings({ limit: 200 });
+        // A fresh scoring pass can put a posting straight into pending_review
+        // at auto-apply-eligible thresholds — unlike an "approve", that never
+        // goes through a route this file controls, so scoring completing is
+        // its own separate "there might be new work" event. Only worth the
+        // call when auto-apply is actually on; otherwise the submit-worker
+        // would just wake up, find nothing eligible, and go back to sleep.
+        const findSettings = await getFindSettings();
+        if (findSettings.autoApplyEnabled) await triggerSubmitWorker("scoreNow");
         return NextResponse.json({ ok: true, result });
       }
       case "requeueForRescoring": {

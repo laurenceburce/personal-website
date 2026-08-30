@@ -108,9 +108,15 @@ function nextRunEstimate(worker, now) {
 function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue }) {
   const isBusy = Boolean(saving);
   const label = worker.workerName === "poll" ? "Poll worker" : "Submit worker";
+  // The submit worker is event-driven (approving a posting, or a scoring
+  // pass with auto-apply on, wakes it immediately — see
+  // jobSearchSubmitTrigger.js) with a periodic fallback check underneath in
+  // case a trigger call is ever missed — not purely interval-based like the
+  // poll worker, so it gets its own description saying so rather than the
+  // generic "runs on a schedule" framing the metrics below still imply.
   const description = worker.workerName === "poll"
     ? "Discovery, direct ATS polling, and scoring."
-    : "Playwright submissions and auto-apply.";
+    : "Playwright submissions and auto-apply — runs immediately when something's approved, plus a periodic fallback check.";
 
   return (
     <div className="job-search-worker-card">
@@ -131,7 +137,11 @@ function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onVie
       <div className="job-search-field-grid">
         <Metric label="Status" value={workerStatusLabel(worker, now)} tone={workerStatusTone(worker, now)} />
         <Metric label="Last run" value={worker.lastRunAt ? timeAgo(worker.lastRunAt) : "Never"} detail={worker.lastRunSummary || null} />
-        <Metric label="Next expected" value={nextRunEstimate(worker, now)} />
+        <Metric
+          label={worker.workerName === "submit" ? "Next fallback check" : "Next expected"}
+          value={nextRunEstimate(worker, now)}
+          detail={worker.workerName === "submit" ? "Could run sooner — approving anything wakes it immediately." : null}
+        />
       </div>
 
       {worker.lastError ? <p className="job-search-alert job-search-alert-error">{worker.lastError}</p> : null}

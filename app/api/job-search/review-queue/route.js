@@ -4,10 +4,14 @@ import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelp
 import { decidePosting, getPostingById } from "../../../lib/jobSearchPostingsStore";
 import { scorePosting } from "../../../lib/jobSearchScoringPipeline";
 import { getDefaultResume } from "../../../lib/jobSearchSettingsStore";
+import { triggerSubmitWorker } from "../../../lib/jobSearchSubmitTrigger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Retry reuses this same function (see applications/route.js's own comment)
+// so a retried submission also gets this same immediate wake-up, not just a
+// fresh "approve".
 async function approveOne(id, email) {
   return decidePosting(id, { status: "approved", decidedBy: email });
 }
@@ -61,8 +65,16 @@ export async function POST(request) {
     const data = body?.data || {};
 
     switch (action) {
-      case "approve":
-        return NextResponse.json({ ok: true, result: await approveOne(data.id, access.email) });
+      case "approve": {
+        const result = await approveOne(data.id, access.email);
+        // Fire-and-forget: never blocks the response beyond its own short
+        // internal timeout, and never throws — see jobSearchSubmitTrigger.js.
+        // Its only job is shaving minutes off the wait; the submit-worker's
+        // own fallback timer is what actually guarantees this gets picked up
+        // even if this call never lands.
+        await triggerSubmitWorker("approve");
+        return NextResponse.json({ ok: true, result });
+      }
       case "reject":
         return NextResponse.json({ ok: true, result: await rejectOne(data.id, access.email, data.note) });
       case "markAppliedManually":
@@ -85,6 +97,11 @@ export async function POST(request) {
             failed.push({ id, error: error?.message || String(error) });
           }
         }
+        // One trigger call for the whole batch, not one per id — the
+        // submit-worker's own coalescing already handles overlapping
+        // triggers fine, but there's no reason to make N network calls when
+        // one wake-up covers everything this batch just approved.
+        if (succeeded > 0) await triggerSubmitWorker("batchApprove");
         return NextResponse.json({ ok: true, result: { count: succeeded, failed } });
       }
       case "batchReject": {
