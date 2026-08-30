@@ -5,6 +5,7 @@ import { useState } from "react";
 import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
+import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
 import ReviewQueueTable from "./ReviewQueueTable";
@@ -58,6 +59,22 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error || "Upload failed.");
       setNotice("Resume uploaded.");
+      router.refresh();
+    } catch (err) {
+      setError(err?.message || "Upload failed.");
+    } finally {
+      setSaving("");
+    }
+  }
+
+  async function uploadOracleSession(formData) {
+    setSaving("uploadOracleSession");
+    setError("");
+    try {
+      const response = await fetch("/api/job-search/oracle-session", { method: "POST", body: formData });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Upload failed.");
+      setNotice("Oracle session connected.");
       router.refresh();
     } catch (err) {
       setError(err?.message || "Upload failed.");
@@ -156,15 +173,23 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
         )}
 
         {tab === "settings" && (
-          <ProfileSettingsPanel
-            profile={snapshot.profile}
-            resumes={snapshot.resumes}
-            saving={saving}
-            onSaveProfile={(data) => runAction("/api/job-search/settings", "updateProfile", data, "Profile saved.")}
-            onUploadResume={uploadResume}
-            onSetDefaultResume={(id) => runAction("/api/job-search/resumes", "setDefaultResume", { id }, "Default resume updated.")}
-            onDeleteResume={(id) => runAction("/api/job-search/resumes", "deleteResume", { id }, "Resume deleted.")}
-          />
+          <>
+            <ProfileSettingsPanel
+              profile={snapshot.profile}
+              resumes={snapshot.resumes}
+              saving={saving}
+              onSaveProfile={(data) => runAction("/api/job-search/settings", "updateProfile", data, "Profile saved.")}
+              onUploadResume={uploadResume}
+              onSetDefaultResume={(id) => runAction("/api/job-search/resumes", "setDefaultResume", { id }, "Default resume updated.")}
+              onDeleteResume={(id) => runAction("/api/job-search/resumes", "deleteResume", { id }, "Resume deleted.")}
+            />
+            <OracleSessionsPanel
+              sessions={snapshot.oracleSessions}
+              saving={saving}
+              onUploadSession={uploadOracleSession}
+              onDeleteSession={(id) => runAction("/api/job-search/oracle-session", "deleteOracleSession", { id }, "Oracle session removed.")}
+            />
+          </>
         )}
 
         {tab === "find" && (

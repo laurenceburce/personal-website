@@ -14,30 +14,47 @@
 // actual browser-driven resolution) must import from here, never from
 // atsResolver.js.
 
-// Only greenhouse/ashby/workable/personio/breezy have a submission adapter
-// (see jobSearchAdapters/index.js) — everything else here is recognized
-// purely so a posting gets labeled accurately (e.g. "workday") instead of a
-// generic "external" one. Confirmed live that none of the rest are realistically
-// automatable: SmartRecruiters and iCIMS both hard bot-wall their
-// application flow before it renders at all; Workday requires per-tenant
-// account creation and a non-standard component framework; Oracle
-// Recruiting/Taleo shares that same enterprise-account shape (two domain
-// families depending on whether a company is still on legacy Taleo or
-// migrated to Oracle Fusion Recruiting Cloud); Recruitee's own apply form
-// ships an invisible hCaptcha by default (confirmed live: a real
-// `captchaToken` field plus a `"captcha":"invisible"` app-config flag on a
-// real company's live board) — the same bot-wall category as SmartRecruiters/
-// iCIMS, just discovered later. Lever joined that same bucket during a later
-// audit pass: it now ships a real hCaptcha (`id="h-captcha"`, a genuine
-// `data-sitekey`, an actual hcaptcha.com iframe — confirmed live) on its
-// apply form platform-wide, not per-company — tested against 5 unrelated
-// companies (Aeva, Shield AI, Palantir, Filevine, Provectus), all 5 blocked.
-// A later check against the existing Lever adapter still returned
-// `blocked` for a live Palantir posting, so the adapter file was removed and
-// Lever stays pollable-only. Personio and Breezy HR were later live-audited
-// with CDP mouse dispatch against multiple application forms: both rendered
-// direct forms with no CAPTCHA/account wall, so they now have conservative
+// Only greenhouse/ashby/workable/personio/breezy/oracle_taleo have a
+// submission adapter (see jobSearchAdapters/index.js) — everything else
+// here is recognized purely so a posting gets labeled accurately (e.g.
+// "workday") instead of a generic "external" one. Confirmed live that none
+// of the rest are realistically automatable: SmartRecruiters and iCIMS both
+// hard bot-wall their application flow before it renders at all; Workday
+// requires per-tenant account creation and a non-standard component
+// framework; Recruitee's own apply form ships an invisible hCaptcha by
+// default (confirmed live: a real `captchaToken` field plus a
+// `"captcha":"invisible"` app-config flag on a real company's live board) —
+// the same bot-wall category as SmartRecruiters/iCIMS, just discovered
+// later. Lever joined that same bucket during a later audit pass: it now
+// ships a real hCaptcha (`id="h-captcha"`, a genuine `data-sitekey`, an
+// actual hcaptcha.com iframe — confirmed live) on its apply form
+// platform-wide, not per-company — tested against 5 unrelated companies
+// (Aeva, Shield AI, Palantir, Filevine, Provectus), all 5 blocked. A later
+// check against the existing Lever adapter still returned `blocked` for a
+// live Palantir posting, so the adapter file was removed and Lever stays
+// pollable-only. Personio and Breezy HR were later live-audited with CDP
+// mouse dispatch against multiple application forms: both rendered direct
+// forms with no CAPTCHA/account wall, so they now have conservative
 // adapters registered.
+//
+// Oracle Recruiting/Taleo is a different shape from all of the above: its
+// apply flow itself isn't bot-walled, it's account-gated — most tenants
+// require a signed-in candidate before the form even renders (see
+// blockerDetection.js's LOGIN_WALL_SIGNALS). Rather than script a
+// third-party identity provider's own login page (fragile even with
+// correct credentials — Google/Microsoft/LinkedIn all actively challenge
+// automated sign-in with MFA/device verification the same way they'd
+// challenge credential stuffing, regardless of actual intent), the adapter
+// instead reuses a Playwright `storageState` captured from one real,
+// human-completed SSO login (see scripts/job-search-oracle-login.mjs) — the
+// identity provider only ever sees a normal interactive sign-in, never an
+// automated one. If that saved session is missing or has expired, the
+// adapter falls straight into the same `blocked` path a genuine login wall
+// already produces. Unlike the other five, this has NOT been confirmed live
+// against a real Oracle Recruiting Cloud tenant (no test tenant available)
+// — its field-collection and wizard-step handling are written from
+// documented Oracle Redwood/JET UI patterns, so treat it as unverified and
+// dry-run it against a real posting before trusting it unattended.
 export const ATS_DOMAIN_PATTERNS = [
   { atsType: "greenhouse", pattern: /(^|\.)greenhouse\.io$/i },
   { atsType: "lever", pattern: /(^|\.)lever\.co$/i },
@@ -62,7 +79,7 @@ export const KNOWN_ATS_TYPES = new Set(ATS_DOMAIN_PATTERNS.map((p) => p.atsType)
 // Only these have a real submission adapter (jobSearchAdapters/index.js).
 // Lever is deliberately NOT here — see the ATS_DOMAIN_PATTERNS comment above
 // (confirmed-live platform-wide hCaptcha).
-export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable", "personio", "breezy"]);
+export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable", "personio", "breezy", "oracle_taleo"]);
 
 // Companies on any of these get their postings actually fetched by
 // jobSearchDirectPoll.js — a strict superset of SUBMITTABLE_ATS_TYPES.
@@ -99,5 +116,9 @@ export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable",
 //   data; some iCIMS/Jibe sites reportedly expose one, but none could be
 //   confirmed working), and Oracle Taleo/Fusion's REST surface is
 //   customer/OAuth-gated with no equivalent anonymous read path documented
-//   anywhere. Both stay label-only, same as before.
+//   anywhere. iCIMS stays label-only. Oracle Taleo now has a submission
+//   adapter (see the ATS_DOMAIN_PATTERNS comment above) but still isn't
+//   pollable — a candidate's own SSO session grants no access to a
+//   tenant-wide requisition feed, so its postings still only ever reach
+//   this system via Adzuna discovery + atsResolver.js, never direct-poll.
 export const POLLABLE_ATS_TYPES = new Set([...SUBMITTABLE_ATS_TYPES, "lever", "recruitee", "smartrecruiters", "workday"]);

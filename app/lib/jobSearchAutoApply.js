@@ -33,15 +33,14 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
 
   if (!SUBMITTABLE_ATS_TYPES.has(resolvedAtsType)) {
     // Covers both a fully-unresolved posting and a *recognized* but
-    // non-submittable platform (SmartRecruiters, Workday, iCIMS, Oracle
-    // Recruiting/Taleo — see atsResolver.js) identically: nothing was
-    // attempted, so nothing worth an application-table row, just the skip
-    // reason on the posting itself.
+    // non-submittable platform (SmartRecruiters, Workday, iCIMS — see
+    // atsResolver.js) identically: nothing was attempted, so nothing worth
+    // an application-table row, just the skip reason on the posting itself.
     return {
       status: "skipped_auto_apply",
       skipReason: AUTO_APPLY_SKIP_REASONS.UNSUPPORTED_ATS,
       skipDetail: resolvedAtsType === "external"
-        ? "Could not resolve this posting to a supported ATS (Greenhouse, Ashby, Workable, Personio, or Breezy)."
+        ? "Could not resolve this posting to a supported ATS (Greenhouse, Ashby, Workable, Personio, Breezy, or Oracle Recruiting Cloud)."
         : `Resolved to ${resolvedAtsType}, which has no submission adapter.`
     };
   }

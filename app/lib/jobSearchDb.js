@@ -330,6 +330,31 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // Oracle Recruiting Cloud submission adapter (see
+      // jobSearchAdapters/oracleRecruiting.js) — a candidate's signed-in
+      // session, one row per tenant (unique on tenant_host: e.g.
+      // "acme.oraclecloud.com"), since a login on one company's Oracle
+      // instance grants no access to another's. Captured by a human via
+      // scripts/job-search-oracle-login.mjs (a real interactive sign-in —
+      // never scripted), then uploaded through the Job Search dashboard's
+      // User Settings tab. storage_state is a real session credential, same
+      // sensitivity as a password — never returned to the browser after
+      // upload (see jobSearchOracleSessionStore.js's listOracleSessions(),
+      // which deliberately omits it).
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_oracle_sessions (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          tenant_host VARCHAR(255) NOT NULL,
+          label VARCHAR(160) NOT NULL DEFAULT '',
+          file_name VARCHAR(255) NOT NULL DEFAULT '',
+          storage_state JSON NOT NULL,
+          captured_at DATETIME(3) NULL,
+          created_at DATETIME(3) NOT NULL,
+          updated_at DATETIME(3) NOT NULL,
+          UNIQUE KEY job_search_oracle_sessions_host_idx (tenant_host)
+        )
+      `);
+
       // Tracks the two Railway cron services (see scripts/job-search-worker.mjs
       // and scripts/job-search-submit-worker.mjs) so the dashboard can show a
       // real status instead of just hoping the cron is still firing.
