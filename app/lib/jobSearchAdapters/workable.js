@@ -10,7 +10,7 @@
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
-import { clickWithBrowserMouse } from "./browserEngineClick.js";
+import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -72,7 +72,7 @@ const STANDARD_NAME_RESOLVERS = {
 };
 
 async function dismissCookieBanner(page) {
-  await page.locator('button:has-text("Accept all")').first().click({ timeout: 3000 }).catch(() => {});
+  await clickWithBrowserMouse(page, page.locator('button:has-text("Accept all")').first(), { timeout: 3000 }).catch(() => {});
 }
 
 // Standard/label-matched "field" questions were always filled with a plain
@@ -200,7 +200,11 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
-  const findSettings = await getFindSettings();
+  let findSettings = null;
+  const getLlmFindSettings = async () => {
+    if (!findSettings) findSettings = await getFindSettings();
+    return findSettings;
+  };
 
   try {
     const page = await newPage();
@@ -266,8 +270,9 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         }
 
         if (q.tag !== "select" && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+          const llmSettings = await getLlmFindSettings();
           const usage = await getTodayLlmUsage();
-          if (usage.totalCalls >= findSettings.maxLlmCallsPerDay) {
+          if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) {
             if (q.required) manualReviewFields.push(q.label);
             continue;
           }
@@ -292,7 +297,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           const value = resolveWorkAuthValue(normalizedLabel, profile.workAuthorization);
           const match = value && q.options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase());
           if (match) {
-            const checked = await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().then(() => true).catch(() => false);
+            const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
             if (checked) {
               submittedAnswers[q.label] = match.text;
               continue;
@@ -303,7 +308,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           const value = resolveEeoValue(normalizedLabel, profile.eeoAnswers);
           const match = value && q.options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase());
           if (match) {
-            const checked = await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().then(() => true).catch(() => false);
+            const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
             if (checked) {
               submittedAnswers[q.label] = match.text;
               continue;
@@ -318,14 +323,15 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         // profile data backing an honest answer, and guessing one commits
         // the candidate to something they never actually agreed to.
         if (looksLikeExperienceDurationQuestion(q.options) && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+          const llmSettings = await getLlmFindSettings();
           const usage = await getTodayLlmUsage();
-          if (usage.totalCalls < findSettings.maxLlmCallsPerDay) {
+          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
             const optionTexts = q.options.map((o) => o.text).filter(Boolean);
             const chosenText = await chooseFromOptions({ question: q.label, options: optionTexts, posting, profile, resumeText }).catch(() => null);
             await incrementLlmUsage("score");
             const match = chosenText && q.options.find((o) => o.text === chosenText);
             if (match) {
-              const checked = await page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`).check().then(() => true).catch(() => false);
+              const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
               if (checked) {
                 submittedAnswers[q.label] = match.text;
                 llmAnsweredCount += 1;

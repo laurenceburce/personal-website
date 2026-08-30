@@ -1,19 +1,17 @@
 import { submitAshbyApplication } from "./ashby.js";
+import { submitBreezyApplication } from "./breezy.js";
 import { submitGreenhouseApplication } from "./greenhouse.js";
+import { submitPersonioApplication } from "./personio.js";
 import { submitWorkableApplication } from "./workable.js";
-// lever.js's submitLeverApplication is deliberately NOT imported/registered
-// below — confirmed live (audit pass) that Lever now ships a real hCaptcha
-// on its apply form platform-wide (tested across 5 unrelated companies, all
-// 5 blocked), so every real attempt is guaranteed to fail. Same treatment as
-// SmartRecruiters/iCIMS/Recruitee/Oracle Taleo — see atsTypes.js's
-// SUBMITTABLE_ATS_TYPES comment. The file itself is left intact (working,
-// correctly self-detects and reports the CAPTCHA via blockerDetection.js)
-// rather than deleted, in case Lever ever drops it.
+// Lever remains polling-only. Its public postings API works, but the apply
+// form is CAPTCHA-gated, so no submission adapter is registered here.
 
 const ADAPTERS = {
   greenhouse: submitGreenhouseApplication,
   ashby: submitAshbyApplication,
-  workable: submitWorkableApplication
+  workable: submitWorkableApplication,
+  personio: submitPersonioApplication,
+  breezy: submitBreezyApplication
 };
 
 export async function submitApplication(atsType, params) {

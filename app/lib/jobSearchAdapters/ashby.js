@@ -16,7 +16,7 @@
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
-import { clickWithBrowserMouse } from "./browserEngineClick.js";
+import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -84,7 +84,7 @@ async function fillYesNo(page, locator, value) {
   const container = locator.locator("xpath=..");
   const button = container.locator(`button[data-option="${target}"]`);
   if (await button.count().catch(() => 0) === 0) return false;
-  await button.click();
+  await clickWithBrowserMouse(page, button);
   return true;
 }
 
@@ -93,7 +93,7 @@ async function fillYesNo(page, locator, value) {
 // as strict as this widget can support without guessing between genuinely
 // different places. No match at all still means "don't guess", not "closest".
 async function fillAutocomplete(page, locator, value) {
-  await locator.click();
+  await clickWithBrowserMouse(page, locator);
   await locator.fill(String(value));
 
   const options = page.locator('[role="option"]');
@@ -112,7 +112,7 @@ async function fillAutocomplete(page, locator, value) {
     return false;
   }
 
-  await options.nth(matchIndex).click();
+  await clickWithBrowserMouse(page, options.nth(matchIndex));
   return true;
 }
 
@@ -138,7 +138,7 @@ async function fillByWidget(page, locator, widget, value) {
       if (!name) return false;
       const radio = page.locator(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"][value="${String(value).replace(/"/g, '\\"')}"]`);
       if (await radio.count().catch(() => 0) === 0) return false;
-      await radio.check();
+      await setCheckedWithBrowserMouse(page, radio, true);
       return true;
     }
     default:
@@ -182,7 +182,7 @@ async function uploadResumeAndVerify(page, resumeBuffer, resumeFileName) {
     if (attempt === 1) {
       // Best-effort dismiss so a lingering toast from this attempt can't be
       // mistaken for the retry's own outcome, or obscure the file input.
-      await page.getByRole("button", { name: /close|dismiss/i }).first().click({ timeout: 1000 }).catch(() => {});
+      await clickWithBrowserMouse(page, page.getByRole("button", { name: /close|dismiss/i }).first(), { timeout: 1000 }).catch(() => {});
     }
   }
 
@@ -198,7 +198,11 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
   let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
-  const findSettings = await getFindSettings();
+  let findSettings = null;
+  const getLlmFindSettings = async () => {
+    if (!findSettings) findSettings = await getFindSettings();
+    return findSettings;
+  };
 
   try {
     const page = await newPage();
@@ -292,8 +296,9 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       // Novel free-text question — LLM-assisted, capped, and metered against
       // the same daily budget as scoring/embedding.
       if ((widget === "text" || widget === "textarea") && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+        const llmSettings = await getLlmFindSettings();
         const usage = await getTodayLlmUsage();
-        if (usage.totalCalls >= findSettings.maxLlmCallsPerDay) {
+        if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) {
           if (field.required) manualReviewFields.push(field.label);
           continue;
         }

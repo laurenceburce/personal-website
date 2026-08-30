@@ -1,12 +1,12 @@
-// Polls every company in the directory that's confirmed to be on a
-// submittable ATS (greenhouse/lever/ashby/workable — see
-// jobSearchCompanyDirectory.js/atsResolver.js) straight from that platform's
-// own API, the same pattern jobSearchAtsSources.js's fetch*Jobs functions
-// were originally built for (back when a manually-curated watchlist decided
-// what to poll). The difference now: the company list is entirely
-// self-populated by jobSearchCompanyProbe.js as new names show up in Adzuna
-// results, never typed in by hand. Every posting created this way already
-// carries its real ats_type — no lazy per-posting resolution ever needed.
+// Polls every company in the directory that's confirmed to be on a pollable
+// ATS (submittable platforms plus polling-only ones like Lever — see
+// jobSearchCompanyDirectory.js/atsTypes.js) straight from that platform's own
+// API, the same pattern jobSearchAtsSources.js's fetch*Jobs functions were
+// originally built for (back when a manually-curated watchlist decided what
+// to poll). The difference now: the company list is entirely self-populated
+// by jobSearchCompanyProbe.js as new names show up in Adzuna results, never
+// typed in by hand. Every posting created this way already carries its real
+// ats_type — no lazy per-posting resolution ever needed.
 //
 // Unlike Adzuna (which only ever returns keyword-matched results in the
 // first place — the `what_or` query narrows at the source), a company's ATS

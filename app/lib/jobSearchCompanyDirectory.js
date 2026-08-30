@@ -72,15 +72,17 @@ export async function registerDiscoveredCompany({ companyName, atsType, boardTok
 
 // Every company on a POLLABLE ats — jobSearchDirectPoll.js polls exactly this
 // list every worker run. This is deliberately broader than "submittable":
-// Recruitee/Personio/Breezy HR/SmartRecruiters all have a confirmed public
-// polling API but no submission adapter (see atsTypes.js — SmartRecruiters'
-// bot-wall is specific to its apply FORM, unrelated to this read-only API),
-// so their postings still flow into scoring/review for the human to apply to
-// by hand. Workday is here too, reached only via atsResolver.js registering
-// an already-resolved tenant, never via slug-guessing (see atsTypes.js's own
-// POLLABLE_ATS_TYPES comment for the full explanation). iCIMS/Oracle Taleo
-// are excluded — recognized but never polled/submitted to (see atsResolver.js
-// and atsTypes.js for why no equivalent path exists for either).
+// Recruitee/SmartRecruiters still have a confirmed public polling API but no
+// submission adapter (see atsTypes.js — SmartRecruiters' bot-wall is specific
+// to its apply FORM, unrelated to this read-only API), so their postings still
+// flow into scoring/review for the human to apply to by hand. Personio and
+// Breezy HR started in that same polling-only bucket, but now have conservative
+// adapters after a live CDP audit showed direct, non-CAPTCHA forms. Workday is
+// here too, reached only via atsResolver.js registering an already-resolved
+// tenant, never via slug-guessing (see atsTypes.js's own POLLABLE_ATS_TYPES
+// comment for the full explanation). iCIMS/Oracle Taleo are excluded —
+// recognized but never polled/submitted to (see atsResolver.js and atsTypes.js
+// for why no equivalent path exists for either).
 export async function listPollableCompanies() {
   const pool = requirePool(await ensureJobSearchSchema());
   const [rows] = await pool.query(

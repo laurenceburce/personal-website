@@ -69,3 +69,24 @@ export async function clickWithBrowserMouse(page, locator, { timeout = DEFAULT_C
     return "playwright";
   }
 }
+
+export async function setCheckedWithBrowserMouse(page, locator, checked, { timeout = DEFAULT_CLICK_TIMEOUT_MS } = {}) {
+  const target = Boolean(checked);
+  const current = await locator.isChecked().catch(() => null);
+  if (current === target) return "already";
+
+  if (cdpMouseEnabled()) {
+    try {
+      await dispatchCdpMouseClick(page, locator, { timeout });
+      const updated = await locator.isChecked().catch(() => null);
+      if (updated === target) return "cdp";
+    } catch {
+      // Hidden or framework-owned inputs often have no usable click box.
+      // Fall through to Playwright's semantic checked-state helpers.
+    }
+  }
+
+  if (target) await locator.check({ timeout });
+  else await locator.uncheck({ timeout });
+  return "playwright";
+}

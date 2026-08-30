@@ -1,7 +1,7 @@
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
-import { clickWithBrowserMouse } from "./browserEngineClick.js";
+import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker } from "./blockerDetection.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -67,8 +67,8 @@ async function classifyWidget(locator) {
 // react-select renders its option list only while open, scoped near the input
 // that opened it — confirmed live that typing via .fill() correctly triggers
 // its filtered option list (Playwright's fill dispatches a real input event).
-async function fillReactSelect(scope, input, value) {
-  await input.click();
+async function fillReactSelect(page, scope, input, value) {
+  await clickWithBrowserMouse(page, input);
   await input.fill(String(value));
 
   const options = scope.locator(".select__option");
@@ -101,19 +101,18 @@ async function fillReactSelect(scope, input, value) {
     return false;
   }
 
-  await options.nth(exactIndex).click();
+  await clickWithBrowserMouse(page, options.nth(exactIndex));
   return true;
 }
 
-async function fillByWidget(scope, locator, widget, value) {
+async function fillByWidget(page, scope, locator, widget, value) {
   switch (widget) {
     case "text":
     case "textarea":
       await locator.fill(String(value));
       return true;
     case "checkbox":
-      if (value) await locator.check();
-      else await locator.uncheck();
+      await setCheckedWithBrowserMouse(page, locator, Boolean(value));
       return true;
     case "native-select":
       try {
@@ -123,7 +122,7 @@ async function fillByWidget(scope, locator, widget, value) {
         return false;
       }
     case "react-select":
-      return fillReactSelect(scope, locator, value);
+      return fillReactSelect(page, scope, locator, value);
     default:
       return false;
   }
@@ -181,7 +180,11 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
   let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
-  const findSettings = await getFindSettings();
+  let findSettings = null;
+  const getLlmFindSettings = async () => {
+    if (!findSettings) findSettings = await getFindSettings();
+    return findSettings;
+  };
 
   try {
     const page = await newPage();
@@ -210,7 +213,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       if (widget === "checkbox" && isEeoConsentCheckboxLabel(field.normalizedLabel)) {
         const hasEeoData = Object.values(profile.eeoAnswers || {}).some(Boolean);
         if (hasEeoData) {
-          await fillByWidget(scope, field.locator, widget, true);
+          await fillByWidget(page, scope, field.locator, widget, true);
           submittedAnswers[field.label] = true;
         } else if (field.required) {
           manualReviewFields.push(field.label);
@@ -221,7 +224,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       // EEO/work-authorization: hard-mapped by exact stored text, never the LLM.
       if (isEeoLabel(field.normalizedLabel)) {
         const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
-        if (value && await fillByWidget(scope, field.locator, widget, value)) {
+        if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
         } else if (field.required) {
           manualReviewFields.push(field.label);
@@ -231,7 +234,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
 
       if (isWorkAuthLabel(field.normalizedLabel)) {
         const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
-        if (value && await fillByWidget(scope, field.locator, widget, value)) {
+        if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
         } else if (field.required) {
           manualReviewFields.push(field.label);
@@ -250,7 +253,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       if (standardCandidates.length > 0) {
         let filledValue = null;
         for (const candidate of standardCandidates) {
-          if (await fillByWidget(scope, field.locator, widget, candidate)) {
+          if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
             filledValue = candidate;
             break;
           }
@@ -272,8 +275,9 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       // overshoot the cap by more than one in-flight call, matching the same
       // pattern jobSearchScoringPipeline.scorePosting() uses.
       if ((widget === "text" || widget === "textarea") && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+        const llmSettings = await getLlmFindSettings();
         const usage = await getTodayLlmUsage();
-        if (usage.totalCalls >= findSettings.maxLlmCallsPerDay) {
+        if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) {
           manualReviewFields.push(field.label);
           continue;
         }

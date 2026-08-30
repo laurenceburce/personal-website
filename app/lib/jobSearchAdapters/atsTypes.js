@@ -14,10 +14,10 @@
 // actual browser-driven resolution) must import from here, never from
 // atsResolver.js.
 
-// Only greenhouse/ashby/workable have a submission adapter (see
-// jobSearchAdapters/index.js) — everything else here is recognized purely so
-// a posting gets labeled accurately (e.g. "workday") instead of a generic
-// "external" one. Confirmed live that none of the rest are realistically
+// Only greenhouse/ashby/workable/personio/breezy have a submission adapter
+// (see jobSearchAdapters/index.js) — everything else here is recognized
+// purely so a posting gets labeled accurately (e.g. "workday") instead of a
+// generic "external" one. Confirmed live that none of the rest are realistically
 // automatable: SmartRecruiters and iCIMS both hard bot-wall their
 // application flow before it renders at all; Workday requires per-tenant
 // account creation and a non-standard component framework; Oracle
@@ -32,14 +32,12 @@
 // `data-sitekey`, an actual hcaptcha.com iframe — confirmed live) on its
 // apply form platform-wide, not per-company — tested against 5 unrelated
 // companies (Aeva, Shield AI, Palantir, Filevine, Provectus), all 5 blocked.
-// lever.js's adapter code is left in place (unregistered in
-// jobSearchAdapters/index.js, see its own comment) rather than deleted, in
-// case Lever ever drops this. Personio and Breezy HR ARE polled (see
-// POLLABLE_ATS_TYPES below) despite having no submission adapter either —
-// unlike the others on this list, neither has a *confirmed* bot-wall; their
-// apply forms simply haven't been live-verified with headed Playwright yet,
-// so postings from them still surface for manual review/apply rather than
-// being lumped in with the confirmed-unautomatable platforms.
+// A later check against the existing Lever adapter still returned
+// `blocked` for a live Palantir posting, so the adapter file was removed and
+// Lever stays pollable-only. Personio and Breezy HR were later live-audited
+// with CDP mouse dispatch against multiple application forms: both rendered
+// direct forms with no CAPTCHA/account wall, so they now have conservative
+// adapters registered.
 export const ATS_DOMAIN_PATTERNS = [
   { atsType: "greenhouse", pattern: /(^|\.)greenhouse\.io$/i },
   { atsType: "lever", pattern: /(^|\.)lever\.co$/i },
@@ -61,10 +59,10 @@ export const ATS_DOMAIN_PATTERNS = [
 // for the same answer every time.
 export const KNOWN_ATS_TYPES = new Set(ATS_DOMAIN_PATTERNS.map((p) => p.atsType));
 
-// Only these three have a real submission adapter (jobSearchAdapters/index.js).
-// Lever is deliberately NOT here despite having working adapter code — see
-// the ATS_DOMAIN_PATTERNS comment above (confirmed-live platform-wide hCaptcha).
-export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable"]);
+// Only these have a real submission adapter (jobSearchAdapters/index.js).
+// Lever is deliberately NOT here — see the ATS_DOMAIN_PATTERNS comment above
+// (confirmed-live platform-wide hCaptcha).
+export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable", "personio", "breezy"]);
 
 // Companies on any of these get their postings actually fetched by
 // jobSearchDirectPoll.js — a strict superset of SUBMITTABLE_ATS_TYPES.
@@ -78,9 +76,10 @@ export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable"]
 //   flow into scoring/review for the human to apply to by hand, exactly like
 //   SmartRecruiters below.
 // - Recruitee/Personio/Breezy HR/SmartRecruiters all have a confirmed
-//   public, unauthenticated polling API (see jobSearchAtsSources.js) even
-//   though none has a submission adapter, so their postings still flow into
-//   scoring/review for the human to apply to by hand. SmartRecruiters'
+//   public, unauthenticated polling API (see jobSearchAtsSources.js).
+//   Personio and Breezy now also have submission adapters; Recruitee and
+//   SmartRecruiters remain polling/manual-review only because their apply
+//   flows are blocked or fail to expose a direct form. SmartRecruiters'
 //   polling API in particular is unrelated to its bot-walled apply form —
 //   confirmed live to be the same read-only endpoint its own public job
 //   board widget already calls, no auth, no CAPTCHA.
@@ -101,4 +100,4 @@ export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable"]
 //   confirmed working), and Oracle Taleo/Fusion's REST surface is
 //   customer/OAuth-gated with no equivalent anonymous read path documented
 //   anywhere. Both stay label-only, same as before.
-export const POLLABLE_ATS_TYPES = new Set([...SUBMITTABLE_ATS_TYPES, "lever", "recruitee", "personio", "breezy", "smartrecruiters", "workday"]);
+export const POLLABLE_ATS_TYPES = new Set([...SUBMITTABLE_ATS_TYPES, "lever", "recruitee", "smartrecruiters", "workday"]);
