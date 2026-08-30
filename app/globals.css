@@ -7202,6 +7202,12 @@ html[data-theme="light"] .auth-feature-gate {
   background:
     radial-gradient(circle at 18% -10%, rgba(56, 189, 248, 0.1), transparent 28rem),
     var(--bg-bottom);
+  /* Without this, a native checkbox/select renders its OS/browser light-mode
+     chrome regardless of this page's own dark background — confirmed live:
+     an unchecked checkbox showed as a stark white square. This tells the
+     browser to draw native form controls (checkbox box, select dropdown
+     arrow, etc.) in their dark variant instead. */
+  color-scheme: dark;
 }
 
 .job-search-topbar {
@@ -7397,11 +7403,11 @@ html[data-theme="light"] .auth-feature-gate {
   letter-spacing: 0.04em;
 }
 
-.job-search-field input,
+.job-search-field input:not([type="checkbox"]),
 .job-search-field select,
 .job-search-field textarea,
-.job-search-inline-form input,
-.job-search-repeater-row input,
+.job-search-inline-form input:not([type="checkbox"]),
+.job-search-repeater-row input:not([type="checkbox"]),
 .job-search-repeater-block input,
 .job-search-repeater-block textarea {
   min-height: 40px;
@@ -7412,6 +7418,40 @@ html[data-theme="light"] .auth-feature-gate {
   color: var(--ink);
   font: inherit;
   font-size: 0.88rem;
+}
+
+/* A <select> with no explicit width sizes to fit its OWN widest <option>
+   text (unlike <input>, whose intrinsic width doesn't depend on its value) —
+   confirmed live in the EEO field row: Race/Ethnicity's select (shorter
+   options) stayed narrow while Veteran status's select (a much longer
+   option, "I identify as one or more of the classifications of a protected
+   veteran") grew wide enough to overflow its own grid column and overlap
+   the box next to it, so that neighboring select's own right-edge dropdown
+   arrow appeared to render inside Veteran status's box. Selects need an
+   explicit width to respect their grid/flex track instead of their content.
+   min-width: 0 is required alongside it — a grid item's default min-width
+   is auto (effectively its content size), which alone would still let a
+   long option keep forcing the track wider regardless of the 100% above. */
+.job-search-field select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Excluded from the text-field styling above on purpose — a checkbox (a
+   standalone "Enable X" toggle via Field, or "Current Role" in a repeater
+   row) would otherwise inherit that 40px min-height/padding/border and
+   render as a huge, oddly-centered box instead of a normal small checkbox
+   (confirmed live). Sized/colored explicitly here instead, so every
+   checkbox in the app looks the same regardless of which container it's in
+   — this and .job-search-checkbox's own inline-layout styling are
+   deliberately independent (this covers the box itself, that covers
+   label+box spacing for the ones grouped in a checkbox grid). */
+.job-search-app input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .job-search-field textarea,

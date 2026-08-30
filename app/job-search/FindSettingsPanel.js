@@ -275,7 +275,8 @@ export default function FindSettingsPanel({ findSettings, saving, onSave, onRequ
             evaluated against the stricter thresholds below; only if it passes every one of them does the
             system submit it on its own, with nobody in the loop. Anything that doesn&apos;t clear a
             threshold, hits a CAPTCHA or login wall, can&apos;t be resolved to a supported ATS
-            (Greenhouse/Lever/Ashby), or has a required field it can&apos;t confidently answer lands in
+            (Greenhouse/Ashby/Workable/Personio/Breezy/Oracle Recruiting Cloud), or has a required field it
+            can&apos;t confidently answer lands in
             Review &rarr; &quot;Auto-apply Failed&quot; with the specific reason instead — never
             silently dropped, and always still approvable by hand from there.
           </p>

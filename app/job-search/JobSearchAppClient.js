@@ -51,37 +51,32 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
     }
   }
 
-  async function uploadResume(formData) {
-    setSaving("uploadResume");
+  // Multipart file uploads can't go through runAction (that one only ever
+  // sends JSON via callJobSearchAction) but need the identical saving/error/
+  // notice/rethrow shape — shared here so both callers behave the same and a
+  // fix to this pattern (like the rethrow below) only has to happen once.
+  // Rethrowing matters: the caller's own submit handler (ProfileSettingsPanel
+  // .js/OracleSessionsPanel.js) needs to tell success from failure so it only
+  // clears the file input/label after a real save, not after every attempt.
+  async function uploadFile(endpoint, formData, savingKey, successMessage) {
+    setSaving(savingKey);
     setError("");
     try {
-      const response = await fetch("/api/job-search/resumes", { method: "POST", body: formData });
+      const response = await fetch(endpoint, { method: "POST", body: formData });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error || "Upload failed.");
-      setNotice("Resume uploaded.");
+      setNotice(successMessage);
       router.refresh();
     } catch (err) {
       setError(err?.message || "Upload failed.");
+      throw err;
     } finally {
       setSaving("");
     }
   }
 
-  async function uploadOracleSession(formData) {
-    setSaving("uploadOracleSession");
-    setError("");
-    try {
-      const response = await fetch("/api/job-search/oracle-session", { method: "POST", body: formData });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload?.error || "Upload failed.");
-      setNotice("Oracle session connected.");
-      router.refresh();
-    } catch (err) {
-      setError(err?.message || "Upload failed.");
-    } finally {
-      setSaving("");
-    }
-  }
+  const uploadResume = (formData) => uploadFile("/api/job-search/resumes", formData, "uploadResume", "Resume uploaded.");
+  const uploadOracleSession = (formData) => uploadFile("/api/job-search/oracle-session", formData, "uploadOracleSession", "Oracle session connected.");
 
   return (
     <div className="job-search-app">

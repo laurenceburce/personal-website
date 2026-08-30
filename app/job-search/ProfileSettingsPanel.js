@@ -118,7 +118,11 @@ export default function ProfileSettingsPanel({ profile, resumes, saving, onSaveP
     formData.append("label", resumeLabel || file.name);
     formData.append("makeDefault", resumes.length === 0 ? "true" : "false");
 
-    await onUploadResume(formData);
+    try {
+      await onUploadResume(formData);
+    } catch {
+      return; // error already surfaced by the parent — keep the form filled in so it's easy to retry
+    }
     setResumeLabel("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
@@ -280,8 +284,9 @@ export default function ProfileSettingsPanel({ profile, resumes, saving, onSaveP
           <fieldset className="job-search-fieldset">
             <legend>Voluntary self-identification (EEO)</legend>
             <p className="job-search-panel-hint">
-              Standard EEOC-style categories, matched against Greenhouse/Lever/Ashby forms during
-              autofill. Also never LLM-touched. Leave any field blank to skip/decline on forms that allow it.
+              Standard EEOC-style categories, matched against supported ATS forms (Greenhouse, Ashby, Workable,
+              Personio, Breezy, Oracle Recruiting Cloud) during autofill. Also never LLM-touched. Leave any
+              field blank to skip/decline on forms that allow it.
             </p>
             <div className="job-search-field-grid">
               <Field label="Gender">

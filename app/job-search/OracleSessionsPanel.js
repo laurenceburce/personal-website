@@ -38,7 +38,11 @@ export default function OracleSessionsPanel({ sessions, saving, onUploadSession,
     formData.append("file", file);
     if (label) formData.append("label", label);
 
-    await onUploadSession(formData);
+    try {
+      await onUploadSession(formData);
+    } catch {
+      return; // error already surfaced by the parent — keep the form filled in so it's easy to retry
+    }
     setLabel("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
