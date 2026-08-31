@@ -16,8 +16,7 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
-import { resumeFilePayload } from "./resumeFilePayload.js";
-import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
+import { uploadResumeWithRetry } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
@@ -209,10 +208,10 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
   const fileInput = page.locator('input[type="file"][name="cResume"], #main-attachment').first();
   if ((await fileInput.count().catch(() => 0)) === 0) return { ok: false, reason: "no resume file input found" };
 
-  await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName));
-  return (await resumeUploadLikelyFailed(page))
-    ? { ok: false, reason: "could not confirm upload success" }
-    : { ok: true };
+  // One-retry safety net against a platform-side upload race — see
+  // resumeUploadCheck.js.
+  const uploaded = await uploadResumeWithRetry(page, page, fileInput, resumeBuffer, resumeFileName);
+  return uploaded ? { ok: true } : { ok: false, reason: "could not confirm upload success" };
 }
 
 // Captures a field's real available options at the point it's about to be

@@ -25,8 +25,7 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
-import { resumeFilePayload } from "./resumeFilePayload.js";
-import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
+import { uploadResumeWithRetry } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
@@ -119,11 +118,10 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
   const fileInput = page.locator('input[type="file"]').first();
   if (await fileInput.count().catch(() => 0) === 0) return false;
 
-  await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName));
   // setInputFiles() only attaches the file to the DOM input — it says
-  // nothing about whether Workable's own JS then actually uploaded it. See
-  // resumeUploadCheck.js.
-  return !(await resumeUploadLikelyFailed(page));
+  // nothing about whether Workable's own JS then actually uploaded it, and
+  // does so with a one-retry safety net. See resumeUploadCheck.js.
+  return uploadResumeWithRetry(page, page, fileInput, resumeBuffer, resumeFileName);
 }
 
 // Reads the whole question structure via the page's own DOM rather than

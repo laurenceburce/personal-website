@@ -15,12 +15,25 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
-import { resumeFilePayload } from "./resumeFilePayload.js";
-import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
+import { uploadResumeWithRetry } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
 const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
+// Greenhouse renders some fields conditionally — confirmed live on GitLab's
+// own EEO block: "Please identify your race" only enters the DOM AFTER "Are
+// you Hispanic/Latino?" gets an answer. A single collectLabeledFields() scan
+// up front misses anything that only appears as a side effect of an earlier
+// answer, so the field loop below re-scans after each full pass and picks up
+// whatever's newly there. Capped rather than looped until stable, so a form
+// that (for whatever reason) never stops revealing "new" fields can't hang
+// the adapter forever — every Greenhouse EEO cascade observed so far is one
+// level deep, so this is generous headroom, not a tuned minimum.
+const MAX_FIELD_DISCOVERY_PASSES = 5;
+// Gives Greenhouse's own JS a moment to actually render a field it revealed
+// as a side effect of the answer just filled in, before re-scanning for it —
+// scanning immediately risks missing a field that's still mid-render.
+const FIELD_DISCOVERY_SETTLE_MS = 400;
 // Raised from 5 after an audit pass: daily LLM usage sits at ~120 calls
 // against a 5000/day cap (jobSearchUsageStore.js), so 5 was an arbitrary
 // early-caution number, not a cost/rate-limit necessity — and a form with
@@ -203,11 +216,10 @@ async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName) {
   const fileInput = scope.locator("#resume");
   if (await fileInput.count().catch(() => 0) === 0) return false;
 
-  await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName));
   // setInputFiles() only attaches the file to the DOM input — it says
-  // nothing about whether Greenhouse's own JS then actually uploaded it.
-  // See resumeUploadCheck.js.
-  return !(await resumeUploadLikelyFailed(page, scope));
+  // nothing about whether Greenhouse's own JS then actually uploaded it,
+  // and does so with a one-retry safety net. See resumeUploadCheck.js.
+  return uploadResumeWithRetry(page, scope, fileInput, resumeBuffer, resumeFileName);
 }
 
 // Consent-style checkboxes (e.g. "I consent to collecting demographic data for
@@ -255,7 +267,13 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       if (!uploaded) manualReviewFields.push("Resume upload (could not confirm success)");
     }
 
-    const fields = await collectLabeledFields(scope);
+    let fields = await collectLabeledFields(scope);
+    // Every field[for] id already processed in an earlier discovery pass —
+    // see MAX_FIELD_DISCOVERY_PASSES above. A re-scan reruns
+    // collectLabeledFields() over the WHOLE form again (cheap; it's just
+    // label[for] pairs), so this is what keeps a pass from redoing work on
+    // fields that already resolved (or were already flagged) in a prior one.
+    const processedForIds = new Set();
     // Fetched once, reused for every field below — see
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
@@ -267,171 +285,186 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       if (options.length > 0) fieldOptions[label] = options;
     }
 
-    for (const field of fields) {
-      const widget = await classifyWidget(field.locator);
-      if (widget === "file") continue; // resume/cover-letter handled separately
+    let discoveryPass = 0;
+    while (fields.length > 0 && discoveryPass < MAX_FIELD_DISCOVERY_PASSES) {
+      discoveryPass += 1;
+      for (const field of fields) {
+        processedForIds.add(field.forId);
+        const widget = await classifyWidget(field.locator);
+        if (widget === "file") continue; // resume/cover-letter handled separately
 
-      // A human already answered this exact question for this exact posting
-      // (see the Review Queue's "Answer & Retry" popup) — try it before any
-      // auto-resolution strategy below. Falls through to those on failure
-      // (e.g. the form's widget shape changed since the answer was saved),
-      // rather than giving up on the field outright.
-      const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
-      if (manualOverride != null) {
-        let overrideFilled = null;
-        for (const candidate of manualOverrideCandidates(manualOverride)) {
-          if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
-            overrideFilled = candidate;
-            break;
+        // A human already answered this exact question for this exact posting
+        // (see the Review Queue's "Answer & Retry" popup) — try it before any
+        // auto-resolution strategy below. Falls through to those on failure
+        // (e.g. the form's widget shape changed since the answer was saved),
+        // rather than giving up on the field outright.
+        const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
+        if (manualOverride != null) {
+          let overrideFilled = null;
+          for (const candidate of manualOverrideCandidates(manualOverride)) {
+            if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
+              overrideFilled = candidate;
+              break;
+            }
+          }
+          if (overrideFilled != null) {
+            submittedAnswers[field.label] = overrideFilled;
+            continue;
           }
         }
-        if (overrideFilled != null) {
-          submittedAnswers[field.label] = overrideFilled;
+
+        if (widget === "checkbox" && isEeoConsentCheckboxLabel(field.normalizedLabel)) {
+          const hasEeoData = Object.values(profile.eeoAnswers || {}).some(Boolean);
+          if (hasEeoData) {
+            await fillByWidget(page, scope, field.locator, widget, true);
+            submittedAnswers[field.label] = true;
+          } else if (field.required) {
+            manualReviewFields.push(field.label);
+          }
           continue;
         }
-      }
 
-      if (widget === "checkbox" && isEeoConsentCheckboxLabel(field.normalizedLabel)) {
-        const hasEeoData = Object.values(profile.eeoAnswers || {}).some(Boolean);
-        if (hasEeoData) {
-          await fillByWidget(page, scope, field.locator, widget, true);
-          submittedAnswers[field.label] = true;
-        } else if (field.required) {
-          manualReviewFields.push(field.label);
-        }
-        continue;
-      }
-
-      // EEO/work-authorization: hard-mapped by exact stored text, never the LLM.
-      //
-      // Flagged for manual review on any failure to fill — NOT gated behind
-      // field.required. Confirmed live this was a real gap: a "Are you
-      // Hispanic/Latino?" EEO field carried no visible asterisk (EEO
-      // questions are routinely framed as "voluntary"), so when
-      // resolveEeoValue() returned the profile's raceEthnicity value (right
-      // category, wrong shape — this specific field is yes/no, not a race
-      // picklist) and the fill predictably failed, the old `else if
-      // (field.required)` left it silently blank. Greenhouse's own
-      // client-side validation still required SOME selection there before
-      // allowing submit, so the posting fell all the way through to
-      // "Failed: clicking submit did not produce a recognized confirmation"
-      // — a real submission ATTEMPT with no clear reason, instead of a
-      // needs_manual_review outcome naming the actual field. Worst case for
-      // flagging a genuinely-optional field here is one unnecessary manual
-      // review; worst case for not flagging it is exactly what happened.
-      if (isEeoLabel(field.normalizedLabel)) {
-        const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
-        if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
-          submittedAnswers[field.label] = value;
-        } else {
-          await flagForReview(field.label, field.locator, widget);
-        }
-        continue;
-      }
-
-      if (isWorkAuthLabel(field.normalizedLabel)) {
-        const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
-        if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
-          submittedAnswers[field.label] = value;
-        } else {
-          await flagForReview(field.label, field.locator, widget);
-        }
-        continue;
-      }
-
-      // Known profile field (name/email/phone/links/etc). Some fields have
-      // more than one acceptable value (country name spelled out vs.
-      // abbreviated, phone with/without its country code) —
-      // resolveStandardFieldCandidates() returns them in priority order;
-      // fillByWidget() already dispatches correctly per widget type, so
-      // retrying candidates here is what actually lets a select succeed
-      // instead of landing in manual review over a spelling mismatch.
-      const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.label);
-      if (standardCandidates.length > 0) {
-        let filledValue = null;
-        for (const candidate of standardCandidates) {
-          if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
-            filledValue = candidate;
-            break;
+        // EEO/work-authorization: hard-mapped by exact stored text, never the LLM.
+        //
+        // Flagged for manual review on any failure to fill — NOT gated behind
+        // field.required. Confirmed live this was a real gap: a "Are you
+        // Hispanic/Latino?" EEO field carried no visible asterisk (EEO
+        // questions are routinely framed as "voluntary"), so when
+        // resolveEeoValue() returned the profile's raceEthnicity value (right
+        // category, wrong shape — this specific field is yes/no, not a race
+        // picklist) and the fill predictably failed, the old `else if
+        // (field.required)` left it silently blank. Greenhouse's own
+        // client-side validation still required SOME selection there before
+        // allowing submit, so the posting fell all the way through to
+        // "Failed: clicking submit did not produce a recognized confirmation"
+        // — a real submission ATTEMPT with no clear reason, instead of a
+        // needs_manual_review outcome naming the actual field. Worst case for
+        // flagging a genuinely-optional field here is one unnecessary manual
+        // review; worst case for not flagging it is exactly what happened.
+        if (isEeoLabel(field.normalizedLabel)) {
+          const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
+          if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
+            submittedAnswers[field.label] = value;
+          } else {
+            await flagForReview(field.label, field.locator, widget);
           }
+          continue;
         }
-        if (filledValue != null) {
-          submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
-          await flagForReview(field.label, field.locator, widget);
-        }
-        continue;
-      }
 
-      // A similarly-worded question was answered by hand on a DIFFERENT
-      // posting before (see the Review Queue's Memory tab / "Answer & Retry"
-      // popup) — a human-verified past answer beats a fresh LLM guess, so
-      // this is checked before the free-text fallback below, for any widget
-      // type (not just text), reusing the exact same daily LLM-call budget
-      // check the free-text branch already does right after this.
-      if (memoryRows.length > 0) {
-        const llmSettings = await getLlmFindSettings();
-        const usage = await getTodayLlmUsage();
-        if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-          const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-          if (memoryMatch) {
-            let memoryFilled = null;
-            for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
-              if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
-                memoryFilled = candidate;
-                break;
+        if (isWorkAuthLabel(field.normalizedLabel)) {
+          const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
+          if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
+            submittedAnswers[field.label] = value;
+          } else {
+            await flagForReview(field.label, field.locator, widget);
+          }
+          continue;
+        }
+
+        // Known profile field (name/email/phone/links/etc). Some fields have
+        // more than one acceptable value (country name spelled out vs.
+        // abbreviated, phone with/without its country code) —
+        // resolveStandardFieldCandidates() returns them in priority order;
+        // fillByWidget() already dispatches correctly per widget type, so
+        // retrying candidates here is what actually lets a select succeed
+        // instead of landing in manual review over a spelling mismatch.
+        const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.label);
+        if (standardCandidates.length > 0) {
+          let filledValue = null;
+          for (const candidate of standardCandidates) {
+            if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
+              filledValue = candidate;
+              break;
+            }
+          }
+          if (filledValue != null) {
+            submittedAnswers[field.label] = filledValue;
+          } else if (field.required) {
+            await flagForReview(field.label, field.locator, widget);
+          }
+          continue;
+        }
+
+        // A similarly-worded question was answered by hand on a DIFFERENT
+        // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+        // popup) — a human-verified past answer beats a fresh LLM guess, so
+        // this is checked before the free-text fallback below, for any widget
+        // type (not just text), reusing the exact same daily LLM-call budget
+        // check the free-text branch already does right after this.
+        if (memoryRows.length > 0) {
+          const llmSettings = await getLlmFindSettings();
+          const usage = await getTodayLlmUsage();
+          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+            const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+            if (memoryMatch) {
+              let memoryFilled = null;
+              for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
+                if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
+                  memoryFilled = candidate;
+                  break;
+                }
+              }
+              if (memoryFilled != null) {
+                submittedAnswers[field.label] = memoryFilled;
+                await recordMemoryReuse(memoryMatch.id).catch(() => {});
+                continue;
               }
             }
-            if (memoryFilled != null) {
-              submittedAnswers[field.label] = memoryFilled;
-              await recordMemoryReuse(memoryMatch.id).catch(() => {});
-              continue;
-            }
+          }
+        }
+
+        // Novel free-text question — LLM-assisted, capped, and only for plain
+        // text/textarea widgets. Never used for a combobox/select/checkbox,
+        // since guessing a value into a fixed option set risks submitting
+        // something the model invented that doesn't match any real option.
+        // Also metered against the same daily budget as scoring/embedding —
+        // checked fresh per field (not cached across the loop) so it can't
+        // overshoot the cap by more than one in-flight call, matching the same
+        // pattern jobSearchScoringPipeline.scorePosting() uses.
+        if ((widget === "text" || widget === "textarea") && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
+          const llmSettings = await getLlmFindSettings();
+          const usage = await getTodayLlmUsage();
+          if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) {
+            manualReviewFields.push(field.label);
+            continue;
+          }
+
+          const answer = await answerFreeText({ question: field.label, posting, profile, resumeText }).catch(() => null);
+          await incrementLlmUsage("score");
+          if (answer) {
+            await field.locator.fill(answer);
+            submittedAnswers[field.label] = answer;
+            llmAnsweredCount += 1;
+            continue;
+          }
+        }
+
+        if (field.required) {
+          await flagForReview(field.label, field.locator, widget);
+          // Diagnostic for exactly the case that motivated this: a field that
+          // stays stuck in manual review across repeated Answer & Retry
+          // attempts despite a real answer being typed each time. If there WAS
+          // a saved override, the "no options appeared"/"no option matched"
+          // logs above already say why the fill itself failed; if there
+          // wasn't one at all, this shows whether the label simply never
+          // matched what's stored (see profileMapping.js's
+          // resolveManualOverride) rather than guessing blind again.
+          if (manualOverride != null) {
+            console.log(`  [fill-debug] "${field.label}" still unresolved despite a saved override ("${manualOverride}") — see the fill-debug line above for why the fill itself failed.`);
+          } else if ((posting.manualReviewFields || []).length > 0) {
+            console.log(`  [fill-debug] "${field.label}" (normalized: "${field.normalizedLabel}") had no saved override match — saved labels were: ${JSON.stringify((posting.manualReviewFields || []).map((f) => f.label))}`);
           }
         }
       }
 
-      // Novel free-text question — LLM-assisted, capped, and only for plain
-      // text/textarea widgets. Never used for a combobox/select/checkbox,
-      // since guessing a value into a fixed option set risks submitting
-      // something the model invented that doesn't match any real option.
-      // Also metered against the same daily budget as scoring/embedding —
-      // checked fresh per field (not cached across the loop) so it can't
-      // overshoot the cap by more than one in-flight call, matching the same
-      // pattern jobSearchScoringPipeline.scorePosting() uses.
-      if ((widget === "text" || widget === "textarea") && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
-        const llmSettings = await getLlmFindSettings();
-        const usage = await getTodayLlmUsage();
-        if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) {
-          manualReviewFields.push(field.label);
-          continue;
-        }
-
-        const answer = await answerFreeText({ question: field.label, posting, profile, resumeText }).catch(() => null);
-        await incrementLlmUsage("score");
-        if (answer) {
-          await field.locator.fill(answer);
-          submittedAnswers[field.label] = answer;
-          llmAnsweredCount += 1;
-          continue;
-        }
-      }
-
-      if (field.required) {
-        await flagForReview(field.label, field.locator, widget);
-        // Diagnostic for exactly the case that motivated this: a field that
-        // stays stuck in manual review across repeated Answer & Retry
-        // attempts despite a real answer being typed each time. If there WAS
-        // a saved override, the "no options appeared"/"no option matched"
-        // logs above already say why the fill itself failed; if there
-        // wasn't one at all, this shows whether the label simply never
-        // matched what's stored (see profileMapping.js's
-        // resolveManualOverride) rather than guessing blind again.
-        if (manualOverride != null) {
-          console.log(`  [fill-debug] "${field.label}" still unresolved despite a saved override ("${manualOverride}") — see the fill-debug line above for why the fill itself failed.`);
-        } else if ((posting.manualReviewFields || []).length > 0) {
-          console.log(`  [fill-debug] "${field.label}" (normalized: "${field.normalizedLabel}") had no saved override match — saved labels were: ${JSON.stringify((posting.manualReviewFields || []).map((f) => f.label))}`);
-        }
+      // Re-scan for anything that just entered the DOM as a side effect of
+      // a fill above (e.g. the EEO race question after Hispanic/Latino) —
+      // see MAX_FIELD_DISCOVERY_PASSES's own comment.
+      await page.waitForTimeout(FIELD_DISCOVERY_SETTLE_MS);
+      const allFields = await collectLabeledFields(scope);
+      fields = allFields.filter((f) => !processedForIds.has(f.forId));
+      if (fields.length > 0) {
+        console.log(`  [fill-debug] discovery pass ${discoveryPass}: ${fields.length} new field(s) appeared — ${JSON.stringify(fields.map((f) => f.label))}`);
       }
     }
 

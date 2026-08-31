@@ -65,8 +65,7 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
-import { resumeFilePayload } from "./resumeFilePayload.js";
-import { resumeUploadLikelyFailed } from "./resumeUploadCheck.js";
+import { uploadResumeWithRetry } from "./resumeUploadCheck.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const MAX_LLM_ANSWERED_FIELDS = 15;
@@ -604,8 +603,13 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
         if ((await fileInput.count().catch(() => 0)) > 0) {
           resumeAttempted = true;
           if (resumeBuffer) {
-            const uploaded = await fileInput.setInputFiles(resumeFilePayload(resumeBuffer, resumeFileName)).then(() => true).catch(() => false);
-            if (uploaded && !(await resumeUploadLikelyFailed(page))) {
+            // One-retry safety net against a platform-side upload race — see
+            // resumeUploadCheck.js. Kept wrapped in its own catch (matching
+            // this call site's original behavior) so a thrown error here
+            // flags manual review same as an unconfirmed upload, rather than
+            // aborting the whole wizard step.
+            const uploaded = await uploadResumeWithRetry(page, page, fileInput, resumeBuffer, resumeFileName).catch(() => false);
+            if (uploaded) {
               submittedAnswers["Resume/CV"] = resumeFileName || "resume.pdf";
             } else {
               manualReviewFields.push("Resume/CV upload (could not confirm upload success)");
