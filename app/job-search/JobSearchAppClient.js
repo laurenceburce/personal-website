@@ -150,6 +150,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             autoApplyEnabled={snapshot.findSettings.autoApplyEnabled}
             needsManualReview={snapshot.needsManualReview}
             failedPostings={snapshot.failedPostings}
+            applications={snapshot.applications}
             saving={saving}
             onApprove={(id) => runAction("/api/job-search/review-queue", "approve", { id }, "Approved.")}
             onReject={(id, note) => runAction("/api/job-search/review-queue", "reject", { id, note }, "Rejected.")}
