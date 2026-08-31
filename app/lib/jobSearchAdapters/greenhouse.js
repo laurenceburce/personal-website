@@ -70,7 +70,7 @@ async function classifyWidget(locator) {
 // react-select renders its option list only while open, scoped near the input
 // that opened it — confirmed live that typing via .fill() correctly triggers
 // its filtered option list (Playwright's fill dispatches a real input event).
-async function fillReactSelect(page, scope, input, value) {
+async function fillReactSelect(page, scope, input, value, debugLabel = null) {
   await clickWithBrowserMouse(page, input);
   await input.fill(String(value));
 
@@ -79,6 +79,7 @@ async function fillReactSelect(page, scope, input, value) {
     await options.first().waitFor({ state: "visible", timeout: 3000 });
   } catch {
     await input.press("Escape").catch(() => {});
+    if (debugLabel) console.log(`  [fill-debug] react-select "${debugLabel}": no options appeared for "${value}"`);
     return false;
   }
 
@@ -101,6 +102,7 @@ async function fillReactSelect(page, scope, input, value) {
   if (exactIndex < 0) exactIndex = texts.findIndex((t) => stripTrailingCallingCode(t) === target);
   if (exactIndex < 0) {
     await input.press("Escape").catch(() => {});
+    if (debugLabel) console.log(`  [fill-debug] react-select "${debugLabel}": no option matched "${value}" — saw: ${JSON.stringify(texts)}`);
     return false;
   }
 
@@ -108,7 +110,14 @@ async function fillReactSelect(page, scope, input, value) {
   return true;
 }
 
-async function fillByWidget(page, scope, locator, widget, value) {
+// `debugLabel`, when passed, logs exactly why a fill attempt failed —
+// confirmed live this was needed: a field can look identical (same widget,
+// same real "No" option, right next to others that filled fine) and still
+// silently fail with nothing in the stored result to say why. Only ever
+// passed by the manual-override/memory-match call sites below (the ones
+// actually being debugged) — every other caller stays silent, matching
+// this function's original behavior.
+async function fillByWidget(page, scope, locator, widget, value, debugLabel = null) {
   switch (widget) {
     case "text":
     case "textarea":
@@ -121,12 +130,17 @@ async function fillByWidget(page, scope, locator, widget, value) {
       try {
         await locator.selectOption({ label: String(value) });
         return true;
-      } catch {
+      } catch (error) {
+        if (debugLabel) {
+          const optionTexts = await locator.locator("option").allInnerTexts().catch(() => []);
+          console.log(`  [fill-debug] native-select "${debugLabel}": "${value}" didn't match — options: ${JSON.stringify(optionTexts)} (${error?.message || error})`);
+        }
         return false;
       }
     case "react-select":
-      return fillReactSelect(page, scope, locator, value);
+      return fillReactSelect(page, scope, locator, value, debugLabel);
     default:
+      if (debugLabel) console.log(`  [fill-debug] "${debugLabel}": widget "${widget}" has no fill path here`);
       return false;
   }
 }
@@ -226,7 +240,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       if (manualOverride != null) {
         let overrideFilled = null;
         for (const candidate of manualOverrideCandidates(manualOverride)) {
-          if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
+          if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
             overrideFilled = candidate;
             break;
           }
@@ -307,7 +321,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           if (memoryMatch) {
             let memoryFilled = null;
             for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
-              if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
+              if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
                 memoryFilled = candidate;
                 break;
               }
@@ -347,7 +361,22 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         }
       }
 
-      if (field.required) manualReviewFields.push(field.label);
+      if (field.required) {
+        manualReviewFields.push(field.label);
+        // Diagnostic for exactly the case that motivated this: a field that
+        // stays stuck in manual review across repeated Answer & Retry
+        // attempts despite a real answer being typed each time. If there WAS
+        // a saved override, the "no options appeared"/"no option matched"
+        // logs above already say why the fill itself failed; if there
+        // wasn't one at all, this shows whether the label simply never
+        // matched what's stored (see profileMapping.js's
+        // resolveManualOverride) rather than guessing blind again.
+        if (manualOverride != null) {
+          console.log(`  [fill-debug] "${field.label}" still unresolved despite a saved override ("${manualOverride}") — see the fill-debug line above for why the fill itself failed.`);
+        } else if ((posting.manualReviewFields || []).length > 0) {
+          console.log(`  [fill-debug] "${field.label}" (normalized: "${field.normalizedLabel}") had no saved override match — saved labels were: ${JSON.stringify((posting.manualReviewFields || []).map((f) => f.label))}`);
+        }
+      }
     }
 
     screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
