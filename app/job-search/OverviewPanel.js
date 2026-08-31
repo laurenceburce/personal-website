@@ -50,6 +50,13 @@ function timeAgo(value) {
 // minute or two around their nominal schedule and that should never read as
 // "broken".
 function isWorkerStale(worker, now) {
+  // Only meaningful for a worker with a real fixed cadence to be stale
+  // relative to (the poll worker's Railway Cron Schedule). The submit
+  // worker is purely event-driven now (no fallback timer, no cron) — a long
+  // gap since its last heartbeat just as likely means nothing's been
+  // approved in a while, not that anything stopped working, so this
+  // heuristic would misfire "stale" on it constantly.
+  if (worker.workerName !== "poll") return false;
   if (!worker.enabled || !worker.lastCheckedAt || !worker.observedIntervalMinutes) return false;
   const minutesSinceCheckIn = (now - new Date(worker.lastCheckedAt).getTime()) / 60000;
   return minutesSinceCheckIn > worker.observedIntervalMinutes * 3;
@@ -78,12 +85,14 @@ function formatCountdown(ms) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-// Estimated, not authoritative — derived purely from the gap between this
-// worker's own last two check-ins (see jobSearchWorkerStatusStore.js), so it
-// self-calibrates to whatever cadence Railway's cron is actually running on
-// instead of requiring that schedule to be duplicated into app config by hand.
-// Takes `now` as a param (rather than reading Date.now() internally) so it
-// ticks in lockstep with the once-a-second re-render driven by that state.
+// Poll-worker only (see WorkerCard below) — the submit worker has no
+// periodic cadence to estimate a "next run" for. Estimated, not
+// authoritative — derived purely from the gap between this worker's own last
+// two check-ins (see jobSearchWorkerStatusStore.js), so it self-calibrates to
+// whatever cadence Railway's cron is actually running on instead of requiring
+// that schedule to be duplicated into app config by hand. Takes `now` as a
+// param (rather than reading Date.now() internally) so it ticks in lockstep
+// with the once-a-second re-render driven by that state.
 function nextRunEstimate(worker, now) {
   if (!worker.enabled) return "—";
   if (!worker.lastCheckedAt || !worker.observedIntervalMinutes) return "Estimating (needs a second run)...";
@@ -107,16 +116,16 @@ function nextRunEstimate(worker, now) {
 
 function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue }) {
   const isBusy = Boolean(saving);
-  const label = worker.workerName === "poll" ? "Poll worker" : "Submit worker";
-  // The submit worker is event-driven (approving a posting, or a scoring
-  // pass with auto-apply on, wakes it immediately — see
-  // jobSearchSubmitTrigger.js) with a periodic fallback check underneath in
-  // case a trigger call is ever missed — not purely interval-based like the
-  // poll worker, so it gets its own description saying so rather than the
-  // generic "runs on a schedule" framing the metrics below still imply.
-  const description = worker.workerName === "poll"
-    ? "Discovery, direct ATS polling, and scoring."
-    : "Playwright submissions and auto-apply — runs immediately when something's approved, plus a periodic fallback check.";
+  const isSubmit = worker.workerName === "submit";
+  const label = isSubmit ? "Submit worker" : "Poll worker";
+  // The submit worker is purely event-driven (approving a posting, or a
+  // scoring pass with auto-apply on, wakes it immediately — see
+  // jobSearchSubmitTrigger.js) — no periodic cadence at all, unlike the poll
+  // worker's Railway Cron Schedule, so it gets its own description and skips
+  // the "Next expected" metric below entirely (there's nothing to estimate).
+  const description = isSubmit
+    ? "Playwright submissions and auto-apply — runs immediately when something's approved."
+    : "Discovery, direct ATS polling, and scoring.";
 
   return (
     <div className="job-search-worker-card">
@@ -137,11 +146,7 @@ function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onVie
       <div className="job-search-field-grid">
         <Metric label="Status" value={workerStatusLabel(worker, now)} tone={workerStatusTone(worker, now)} />
         <Metric label="Last run" value={worker.lastRunAt ? timeAgo(worker.lastRunAt) : "Never"} detail={worker.lastRunSummary || null} />
-        <Metric
-          label={worker.workerName === "submit" ? "Next fallback check" : "Next expected"}
-          value={nextRunEstimate(worker, now)}
-          detail={worker.workerName === "submit" ? "Could run sooner — approving anything wakes it immediately." : null}
-        />
+        {!isSubmit ? <Metric label="Next expected" value={nextRunEstimate(worker, now)} /> : null}
       </div>
 
       {worker.lastError ? <p className="job-search-alert job-search-alert-error">{worker.lastError}</p> : null}
