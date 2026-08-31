@@ -19,7 +19,7 @@ import { resumeFilePayload } from "./resumeFilePayload.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
-const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
+const SUBMIT_OUTCOME_TIMEOUT_MS = 45000;
 // Greenhouse renders some fields conditionally — confirmed live on GitLab's
 // own EEO block: "Please identify your race" only enters the DOM AFTER "Are
 // you Hispanic/Latino?" gets an answer. A single collectLabeledFields() scan
@@ -57,15 +57,14 @@ const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|i
 // mount and leaves the worker waiting on top-level labels that will never
 // exist, so this helper waits for a scope that actually contains fields.
 async function findFormScope(page) {
-  const iframeSelector = 'iframe[src*="greenhouse"]';
   const deadline = Date.now() + FORM_WAIT_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
     if (await page.locator("label[for]").first().isVisible().catch(() => false)) return page;
 
-    if (await page.locator(iframeSelector).first().count().catch(() => 0) > 0) {
-      const scope = page.frameLocator(iframeSelector).first();
-      if (await scope.locator("label[for]").first().isVisible().catch(() => false)) return scope;
+    for (const frame of page.frames()) {
+      if (frame === page.mainFrame() || !/greenhouse/i.test(frame.url())) continue;
+      if (await frame.locator("label[for]").first().isVisible().catch(() => false)) return frame;
     }
 
     await page.waitForTimeout(250);
@@ -242,8 +241,13 @@ async function collectLabeledFields(scope) {
 // GET presigned_fields then POST the file straight to its S3 bucket — so
 // that's checked directly instead of guessing from the DOM.
 const RESUME_UPLOAD_READY_TIMEOUT_MS = 15000;
+const RESUME_FILE_INPUT_TIMEOUT_MS = 10000;
 const RESUME_UPLOAD_REQUEST_TIMEOUT_MS = 8000;
 const RESUME_UPLOAD_CONFIRM_TIMEOUT_MS = 5000;
+
+function compactErrorMessage(error) {
+  return String(error?.message || error || "unknown error").replace(/\s+/g, " ").slice(0, 240);
+}
 
 function waitForResumeUploadReady(page) {
   return page.waitForResponse(
@@ -277,7 +281,13 @@ async function attemptResumeUpload(page, scope, fileInput, payload) {
     (res) => res.request().method() === "POST" && /amazonaws\.com/i.test(res.url()),
     { timeout: RESUME_UPLOAD_REQUEST_TIMEOUT_MS }
   ).then((res) => res.ok()).catch(() => false);
-  await fileInput.setInputFiles(payload);
+
+  try {
+    await fileInput.setInputFiles(payload, { timeout: RESUME_FILE_INPUT_TIMEOUT_MS });
+  } catch (error) {
+    return { ok: false, reason: `setInputFiles failed: ${compactErrorMessage(error)}` };
+  }
+
   if (!(await uploadOk)) {
     return { ok: false, reason: `no successful upload request seen within ${RESUME_UPLOAD_REQUEST_TIMEOUT_MS}ms` };
   }
@@ -290,13 +300,16 @@ async function attemptResumeUpload(page, scope, fileInput, payload) {
 }
 
 async function clearResumeFileInput(page, fileInput) {
-  await fileInput.setInputFiles([]).catch(() => {});
+  await fileInput.setInputFiles([], { timeout: RESUME_FILE_INPUT_TIMEOUT_MS }).catch(() => {});
   await page.waitForTimeout(250);
 }
 
 async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resumeUploadReady) {
-  const fileInput = scope.locator("#resume").first();
-  if (await fileInput.count().catch(() => 0) === 0) return false;
+  const fileInput = scope.locator('#resume, input[type="file"][accept*=".pdf"], input[type="file"]').first();
+  const hasFileInput = await fileInput.waitFor({ state: "attached", timeout: RESUME_FILE_INPUT_TIMEOUT_MS }).then(() => true).catch(() => false);
+  if (!hasFileInput) {
+    return { ok: false, reason: "resume file input was not found" };
+  }
 
   const uploadReady = resumeUploadReady ? await resumeUploadReady : false;
   if (!uploadReady) {
@@ -305,15 +318,15 @@ async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resum
 
   const payload = resumeFilePayload(resumeBuffer, resumeFileName);
   const firstAttempt = await attemptResumeUpload(page, scope, fileInput, payload);
-  if (firstAttempt.ok) return true;
+  if (firstAttempt.ok) return { ok: true };
 
   console.log(`  [fill-debug] resume upload: ${firstAttempt.reason} — retrying setInputFiles once`);
   await clearResumeFileInput(page, fileInput);
   const secondAttempt = await attemptResumeUpload(page, scope, fileInput, payload);
-  if (secondAttempt.ok) return true;
+  if (secondAttempt.ok) return { ok: true };
 
   console.log(`  [fill-debug] resume upload: retry also failed (${secondAttempt.reason}) — giving up, flagging for manual review`);
-  return false;
+  return { ok: false, reason: secondAttempt.reason };
 }
 
 // Consent-style checkboxes (e.g. "I consent to collecting demographic data for
@@ -322,6 +335,83 @@ async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resum
 // submit; otherwise left alone and flagged for manual review like anything else.
 function isEeoConsentCheckboxLabel(label) {
   return /consent/.test(label) && /(demographic|eeo|equal employment)/.test(label);
+}
+
+async function readSubmissionText(page, scope) {
+  const scopeText = await scope.locator("body").innerText().catch(() => "");
+  if (scope === page) return scopeText;
+
+  const pageText = await page.locator("body").innerText().catch(() => "");
+  return [scopeText, pageText].filter(Boolean).join("\n");
+}
+
+function submissionTextExcerpt(text) {
+  const source = String(text || "");
+  const signalIndexes = [source.search(SUCCESS_TEXT_SIGNALS), source.search(ERROR_TEXT_SIGNALS)].filter((index) => index >= 0);
+  const start = signalIndexes.length > 0 ? Math.max(0, Math.min(...signalIndexes) - 160) : 0;
+  return source.slice(start, start + 500);
+}
+
+async function isSubmitButtonBusy(submitButton) {
+  return submitButton.evaluate((el) => {
+    const text = `${el.innerText || ""} ${el.value || ""}`.trim();
+    return Boolean(
+      el.disabled
+        || el.getAttribute("aria-disabled") === "true"
+        || el.getAttribute("aria-busy") === "true"
+        || /submitting|loading/i.test(text)
+        || el.querySelector('[role="progressbar"], [class*="spinner" i], [class*="loading" i], [aria-label*="loading" i]')
+    );
+  }).catch(() => false);
+}
+
+async function waitForSubmitOutcome(page, scope, submitButton) {
+  const startedAt = Date.now();
+  const deadline = startedAt + SUBMIT_OUTCOME_TIMEOUT_MS;
+  let lastText = await readSubmissionText(page, scope);
+  let sawBusyState = false;
+
+  while (Date.now() < deadline) {
+    if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
+    if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+
+    const stillOnFormPage = await submitButton.isVisible().catch(() => false);
+    if (!stillOnFormPage) return { state: "changed", text: lastText };
+
+    const busy = await isSubmitButtonBusy(submitButton);
+    if (busy) {
+      sawBusyState = true;
+    } else if (sawBusyState || Date.now() - startedAt > 2500) {
+      await page.waitForTimeout(1000);
+      lastText = await readSubmissionText(page, scope);
+      if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
+      if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+      return { state: "settled_on_form", text: lastText };
+    }
+
+    await page.waitForTimeout(500);
+    lastText = await readSubmissionText(page, scope);
+  }
+
+  return { state: "timeout", text: lastText };
+}
+
+async function collectPostSubmitValidationFields(scope) {
+  const fields = await collectLabeledFields(scope).catch(() => []);
+  const invalidFields = [];
+
+  for (const field of fields) {
+    const widget = await classifyWidget(field.locator).catch(() => "");
+    const invalid = await field.locator.evaluate((el) => {
+      const ariaInvalid = el.getAttribute("aria-invalid") === "true";
+      const nativeInvalid = Boolean(el.willValidate && el.validity && !el.validity.valid);
+      return ariaInvalid || nativeInvalid;
+    }).catch(() => false);
+
+    if (invalid) invalidFields.push({ ...field, widget });
+  }
+
+  return invalidFields;
 }
 
 export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
@@ -357,10 +447,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     }
 
     if (resumeBuffer) {
-      const uploaded = await uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resumeUploadReady);
-      if (uploaded) submittedAnswers["Resume/CV"] = resumeFileName || "resume.pdf";
-      else manualReviewFields.push("Resume upload (could not confirm success)");
-    } else if (await scope.locator("#resume").first().count().catch(() => 0) > 0) {
+      const uploadResult = await uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resumeUploadReady);
+      if (uploadResult.ok) submittedAnswers["Resume/CV"] = resumeFileName || "resume.pdf";
+      else manualReviewFields.push(`Resume upload (${uploadResult.reason})`);
+    } else if (await scope.locator('#resume, input[type="file"][accept*=".pdf"], input[type="file"]').first().count().catch(() => 0) > 0) {
       manualReviewFields.push("Resume upload (no default resume available)");
     }
 
@@ -377,7 +467,9 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     async function flagForReview(label, locator, widget) {
-      manualReviewFields.push(label);
+      if (!manualReviewFields.some((existing) => normalizeLabel(existing) === normalizeLabel(label))) {
+        manualReviewFields.push(label);
+      }
       const options = await captureFieldOptions(page, scope, locator, widget).catch(() => []);
       if (options.length > 0) fieldOptions[label] = options;
     }
@@ -575,23 +667,32 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       const submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
       await clickWithBrowserMouse(page, submitButton);
 
-      // Greenhouse either navigates to a confirmation page/state or re-renders
-      // the same form with inline validation errors — wait for the network to
-      // settle rather than assuming a fixed delay is enough, then actually
-      // inspect what happened instead of blindly marking it submitted.
-      await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
-      await page.waitForTimeout(500); // let inline validation errors finish rendering, if any
-
-      // Read from `scope`, not always `page` — when the form is iframe-embedded,
-      // the confirmation message renders inside the iframe, not the parent page.
-      confirmationText = (await scope.locator("body").innerText().catch(() => "")).slice(0, 500);
+      // Greenhouse can leave the submit button in a loading state well after
+      // networkidle would time out (confirmed live by a failed GitLab attempt's
+      // screenshot), so wait on page/form state instead of a fixed short delay.
+      const submitOutcome = await waitForSubmitOutcome(page, scope, submitButton);
+      confirmationText = submissionTextExcerpt(submitOutcome.text);
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
 
       const stillOnFormPage = await submitButton.isVisible().catch(() => false);
-      const hasErrorSignal = ERROR_TEXT_SIGNALS.test(confirmationText);
-      const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(confirmationText);
+      const hasErrorSignal = ERROR_TEXT_SIGNALS.test(submitOutcome.text || "");
+      const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(submitOutcome.text || "");
 
-      if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
+      if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome.state !== "timeout")) {
+        status = "submitted";
+      } else {
+        const invalidFields = await collectPostSubmitValidationFields(scope);
+        for (const field of invalidFields) {
+          await flagForReview(field.label, field.locator, field.widget);
+        }
+      }
+
+      if (manualReviewFields.length > 0) {
+        status = "needs_manual_review";
+      } else if (submitOutcome.state === "timeout") {
+        status = "failed";
+        errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Greenhouse to finish processing the submission. Check the screenshot before retrying.`;
+      } else if (stillOnFormPage && !hasSuccessSignal) {
         status = "failed";
         errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
           + "the submit button or a validation error. Check the screenshot before assuming this was submitted.";
