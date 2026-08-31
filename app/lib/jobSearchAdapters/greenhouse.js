@@ -15,7 +15,7 @@ import {
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
-import { uploadResumeWithRetry } from "./resumeUploadCheck.js";
+import { resumeFilePayload } from "./resumeFilePayload.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
@@ -212,14 +212,48 @@ async function collectLabeledFields(scope) {
   return fields;
 }
 
+// resumeUploadCheck.js's shared check (scan the page for error TEXT) turned
+// out to have a real blind spot specific to this widget, found only by
+// repeatedly reproducing it live against a real posting: Greenhouse's own
+// upload handler sometimes never issues the actual upload request at all —
+// no thrown error, no rendered error text, no DOM change whatsoever, just
+// silence (confirmed by polling the widget's DOM for 12s with zero change,
+// and separately confirming zero requests to its S3 bucket in the network
+// log for the SAME setInputFiles() call that, on other attempts, produced a
+// real upload). There is no text to pattern-match against a failure like
+// that. What IS reliably present on an actual success, and reliably absent
+// on every failure mode seen here (that silent one AND a separately-
+// reproduced "Cannot read properties of undefined (reading 'uploadFile')"
+// crash) is the upload request itself — Greenhouse's own widget always does
+// GET presigned_fields then POST the file straight to its S3 bucket — so
+// that's checked directly instead of guessing from the DOM.
+const RESUME_UPLOAD_REQUEST_TIMEOUT_MS = 8000;
+
+async function attemptResumeUpload(page, fileInput, payload) {
+  // Set up the wait BEFORE the triggering action — Playwright only sees
+  // requests that happen after waitForResponse() is called, so creating the
+  // promise first (not awaiting it until after setInputFiles) is what
+  // avoids missing a very fast request.
+  const uploadOk = page.waitForResponse(
+    (res) => res.request().method() === "POST" && /amazonaws\.com/i.test(res.url()),
+    { timeout: RESUME_UPLOAD_REQUEST_TIMEOUT_MS }
+  ).then((res) => res.ok()).catch(() => false);
+  await fileInput.setInputFiles(payload);
+  return uploadOk;
+}
+
 async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName) {
   const fileInput = scope.locator("#resume");
   if (await fileInput.count().catch(() => 0) === 0) return false;
 
-  // setInputFiles() only attaches the file to the DOM input — it says
-  // nothing about whether Greenhouse's own JS then actually uploaded it,
-  // and does so with a one-retry safety net. See resumeUploadCheck.js.
-  return uploadResumeWithRetry(page, scope, fileInput, resumeBuffer, resumeFileName);
+  const payload = resumeFilePayload(resumeBuffer, resumeFileName);
+  if (await attemptResumeUpload(page, fileInput, payload)) return true;
+
+  console.log(`  [fill-debug] resume upload: no successful upload request seen within ${RESUME_UPLOAD_REQUEST_TIMEOUT_MS}ms — retrying setInputFiles once`);
+  if (await attemptResumeUpload(page, fileInput, payload)) return true;
+
+  console.log("  [fill-debug] resume upload: retry ALSO produced no successful upload request — giving up, flagging for manual review");
+  return false;
 }
 
 // Consent-style checkboxes (e.g. "I consent to collecting demographic data for
