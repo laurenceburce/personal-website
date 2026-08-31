@@ -2,6 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
+import { manualOverrideCandidates, normalizeLabel, resolveStandardFieldCandidates, resolveWorkAuthValue } from "../lib/jobSearchAdapters/profileMapping";
 import { atsTypeLabel, Badge, Field, scamBadgeTone } from "./JobSearchUi";
 
 function formatDate(value) {
@@ -220,6 +221,68 @@ function isResumeUploadFlag(label) {
   return /^(resume(\/cv)?|cv)\s+upload\b/i.test(label || "");
 }
 
+function asAnswerCandidates(value) {
+  if (value === true) return ["Yes", "true"];
+  if (value === false) return ["No", "false"];
+  return manualOverrideCandidates(value);
+}
+
+function pickOptionAnswer(field, candidates) {
+  if (!hasCapturedOptions(field)) return candidates.find((candidate) => String(candidate || "").trim()) || "";
+
+  for (const candidate of candidates) {
+    const target = String(candidate || "").trim().toLowerCase();
+    if (!target) continue;
+    const option = field.options.find((optionText) => String(optionText || "").trim().toLowerCase() === target);
+    if (option) return option;
+  }
+
+  return "";
+}
+
+function pastSubmittedAnswer(field, posting, applications) {
+  const target = normalizeLabel(field.label);
+  for (const application of applications || []) {
+    if (application.postingId !== posting.id) continue;
+    for (const [label, answer] of Object.entries(application.submittedAnswers || {})) {
+      if (normalizeLabel(label) === target && answer != null && answer !== "") return answer;
+    }
+  }
+  return null;
+}
+
+function profileAnswerCandidates(field, profile) {
+  const normalized = normalizeLabel(field.label);
+  const workAuthValue = resolveWorkAuthValue(normalized, profile?.workAuthorization);
+  return [
+    ...resolveStandardFieldCandidates(normalized, profile || {}, field.label),
+    ...(workAuthValue ? [workAuthValue] : [])
+  ];
+}
+
+function memoryAnswer(field, answerMemory) {
+  const target = normalizeLabel(field.label);
+  const match = (answerMemory || []).find((entry) => entry.normalizedLabel === target);
+  return match?.answer || null;
+}
+
+function initialManualAnswer(field, { posting, profile, answerMemory, applications }) {
+  const answerSources = [
+    field.answer,
+    pastSubmittedAnswer(field, posting, applications),
+    profileAnswerCandidates(field, profile),
+    memoryAnswer(field, answerMemory)
+  ];
+
+  for (const source of answerSources) {
+    const candidates = Array.isArray(source) ? source.flatMap(asAnswerCandidates) : asAnswerCandidates(source);
+    const answer = pickOptionAnswer(field, candidates);
+    if (answer) return answer;
+  }
+
+  return "";
+}
+
 // The "Answer & Retry" popup — one field per entry the submit worker
 // couldn't confidently fill on its own (see jobSearchSubmitWorkerRun.js /
 // profileMapping.js's resolveManualOverride), pre-filled with whatever answer
@@ -232,18 +295,15 @@ function isResumeUploadFlag(label) {
 // `.job-search-modal` backdrop/header structure as OverviewPanel.js's own
 // HistoryModal, kept local here rather than shared — this one's body is a
 // form, not a list/table, so there's little to share beyond the outer shell.
-function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry }) {
+function ManualAnswerModal({ posting, profile, answerMemory, applications, saving, onClose, onPolish, onSaveAndRetry }) {
   const fields = posting.manualReviewFields || [];
-  // A select-backed field only pre-fills a saved answer when it's an EXACT
-  // match to one of the widget's real options — a stale free-text draft from
-  // before this field ever got option-capture (e.g. "None" saved against a
-  // Yes/No-only dropdown, the actual bug this feature closes) falls back to
-  // blank rather than silently rendering with an invalid value selected.
+  // A select-backed field only pre-fills when the chosen source exactly
+  // matches one of the widget's real options. Sources are tried from most
+  // posting-specific to most general: the posting's saved answer, prior
+  // same-posting submitted answers (useful after a CAPTCHA/blocker wiped the
+  // structured field list), profile-derived values, then exact answer memory.
   const [answers, setAnswers] = useState(() => Object.fromEntries(
-    fields.map((f) => {
-      if (hasCapturedOptions(f) && !f.options.includes(f.answer)) return [f.label, ""];
-      return [f.label, f.answer || ""];
-    })
+    fields.map((f) => [f.label, initialManualAnswer(f, { posting, profile, answerMemory, applications })])
   ));
   const [polishingAll, setPolishingAll] = useState(false);
   const [polishNotes, setPolishNotes] = useState({});
@@ -404,7 +464,7 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
 
 export default function ReviewQueueTable({
   postings, scoredLow, autoApplySkipped, approvedWaiting, autoApplyQueue, autoApplyEnabled,
-  needsManualReview, failedPostings, applications,
+  needsManualReview, failedPostings, applications, profile, answerMemory,
   saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied,
   onPolishManualAnswer, onSaveManualAnswersAndRetry
 }) {
@@ -581,6 +641,9 @@ export default function ReviewQueueTable({
       {manualAnswerPosting ? (
         <ManualAnswerModal
           posting={manualAnswerPosting}
+          profile={profile}
+          answerMemory={answerMemory}
+          applications={applications}
           saving={saving}
           onClose={() => setManualAnswerPosting(null)}
           onPolish={onPolishManualAnswer}

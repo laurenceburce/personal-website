@@ -97,6 +97,24 @@ function getCallingCodeCandidates(country) {
   return [`+${code}`, code, country ? String(country) : null].filter(Boolean);
 }
 
+function locationCandidates(profile) {
+  const city = String(profile?.city || "").trim();
+  if (!city) return [];
+
+  const state = String(profile?.stateRegion || "").trim();
+  const countryVariants = getCountryVariants(profile?.country);
+  const candidates = [];
+
+  for (const country of countryVariants) {
+    if (state) candidates.push(`${city}, ${state}, ${country}`);
+  }
+  if (state) candidates.push(`${city}, ${state}`);
+  for (const country of countryVariants) candidates.push(`${city}, ${country}`);
+  candidates.push(city);
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 // Builds phone candidates in the requested priority order — both the bare
 // local number and the full "+<code> <local>" form are always included
 // regardless of preference (only their ORDER changes), since a label alone
@@ -146,7 +164,7 @@ export const STANDARD_FIELD_RESOLVERS = [
   { test: (l, raw) => /\bphone\b/.test(l) && wantsCountryCodeInPhone(raw), resolve: (p) => phoneCandidates(p.phone, p.country, { preferWithCode: true }) },
   { test: (l) => /\bphone\b/.test(l), resolve: (p) => phoneCandidates(p.phone, p.country, { preferWithCode: false }) },
   { test: (l) => /\bcountry\b/.test(l) && !/\bcountry\s*code\b/.test(l), resolve: (p) => getCountryVariants(p.country) },
-  { test: (l) => /location city|current location|^location$/.test(l), resolve: (p) => [p.city, p.stateRegion].filter(Boolean).join(", ") },
+  { test: (l) => /location city|current location|^location$/.test(l), resolve: (p) => locationCandidates(p) },
   { test: (l) => l.includes("linkedin"), resolve: (p) => p.linkedinUrl },
   { test: (l) => l.includes("github"), resolve: (p) => p.githubUrl },
   { test: (l) => l.includes("personal website") || l.includes("portfolio"), resolve: (p) => p.portfolioUrl },

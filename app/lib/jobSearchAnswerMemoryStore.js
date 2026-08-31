@@ -74,9 +74,15 @@ export async function listAnswerMemory() {
 export async function listAnswerMemoryForMatching() {
   const pool = requirePool(await ensureJobSearchSchema());
   const [rows] = await pool.query(
-    "SELECT id, answer, embedding FROM job_search_answer_memory WHERE embedding IS NOT NULL"
+    "SELECT id, question_label, normalized_label, answer, embedding FROM job_search_answer_memory"
   );
-  return rows.map((row) => ({ id: Number(row.id), answer: row.answer, embedding: parseJsonColumn(row.embedding) }));
+  return rows.map((row) => ({
+    id: Number(row.id),
+    questionLabel: row.question_label,
+    normalizedLabel: row.normalized_label,
+    answer: row.answer,
+    embedding: parseJsonColumn(row.embedding)
+  }));
 }
 
 // Called once per non-empty answered field from saveManualAnswersAndRetryOne
@@ -139,10 +145,27 @@ export async function upsertAnswerMemory({ label, answer, postingCompanyName, so
 // is now called identically from 6 separate adapter files, and keeping the
 // spend-accounting inside the one shared place it actually happens is more
 // robust than trusting 6 call sites to each remember it consistently.
-export async function findBestMemoryMatch(label, postingCompanyName, memoryRows) {
+export function findExactMemoryMatch(label, postingCompanyName, memoryRows) {
   const rawLabel = cleanText(label, LABEL_MAX_LENGTH);
   if (!rawLabel || !memoryRows?.length) return null;
   if (isCompanySpecific(rawLabel, postingCompanyName)) return null;
+
+  const normalized = normalizeLabel(rawLabel);
+  if (!normalized) return null;
+
+  const exact = memoryRows.find((row) => row.normalizedLabel === normalized);
+  return exact ? { id: exact.id, answer: exact.answer, similarity: 1, matchType: "exact" } : null;
+}
+
+export async function findBestMemoryMatch(label, postingCompanyName, memoryRows, { includeExact = true } = {}) {
+  const rawLabel = cleanText(label, LABEL_MAX_LENGTH);
+  if (!rawLabel || !memoryRows?.length) return null;
+  if (isCompanySpecific(rawLabel, postingCompanyName)) return null;
+
+  if (includeExact) {
+    const exact = findExactMemoryMatch(rawLabel, postingCompanyName, memoryRows);
+    if (exact) return exact;
+  }
 
   const queryEmbedding = await embedText({ text: rawLabel, taskType: "RETRIEVAL_QUERY" }).catch(() => null);
   if (!queryEmbedding) return null;

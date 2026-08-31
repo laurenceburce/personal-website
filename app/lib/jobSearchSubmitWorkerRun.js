@@ -112,9 +112,12 @@ export async function runSubmitWorkerPass() {
         const previousAnswersByLabel = new Map(
           (posting.manualReviewFields || []).map((f) => [normalizeLabel(f.label), f.answer])
         );
+        const submittedAnswersByLabel = new Map(
+          Object.entries(result.submittedAnswers || {}).map(([label, answer]) => [normalizeLabel(label), answer])
+        );
         const structuredManualReviewFields = (result.manualReviewFields || []).map((label) => ({
           label,
-          answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? null,
+          answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? submittedAnswersByLabel.get(normalizeLabel(label)) ?? null,
           // Real options captured off the live widget the moment this field
           // was flagged (select/dropdown/radio-group only — see each
           // adapter's flagForReview/captureFieldOptions). null for anything
@@ -122,6 +125,15 @@ export async function runSubmitWorkerPass() {
           // like before.
           options: result.fieldOptions?.[label] || null
         }));
+        // A CAPTCHA/security/interstitial-style blocked attempt often has no
+        // field list of its own; it should not erase answers the user already
+        // saved for a prior "Answer & Retry" pass. Clearing is only correct
+        // after a real submission succeeds. If the adapter finds a fresh set
+        // of unresolved fields, write that; otherwise preserve what was
+        // already on the posting for the next retry.
+        const manualReviewFieldsForPosting = applicationStatus === "submitted"
+          ? []
+          : (structuredManualReviewFields.length > 0 ? structuredManualReviewFields : (posting.manualReviewFields || []));
 
         await insertApplicationAttempt({
           postingId: posting.id,
@@ -150,7 +162,7 @@ export async function runSubmitWorkerPass() {
           // it again — see the Review Queue's Needs Manual Review/Failed
           // tabs. Only worth setting when it's not a plain success.
           ...(applicationStatus !== "submitted" ? { submissionNote: outcomeMessage } : {}),
-          manualReviewFields: structuredManualReviewFields
+          manualReviewFields: manualReviewFieldsForPosting
         });
         console.log(`  -> ${applicationStatus}`);
       } catch (error) {

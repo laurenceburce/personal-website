@@ -1,4 +1,4 @@
-import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
+import { findBestMemoryMatch, findExactMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
 import {
   createSecurityChallenge,
@@ -679,6 +679,39 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       if (options.length > 0) fieldOptions[label] = options;
     }
 
+    async function tryMemoryAnswer(field, widget) {
+      if (memoryRows.length === 0) return false;
+
+      const fillMemoryMatch = async (memoryMatch) => {
+        if (!memoryMatch) return false;
+
+        for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
+          if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
+            submittedAnswers[field.label] = candidate;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            return true;
+          }
+        }
+
+        return false;
+      };
+
+      const exactMemoryMatch = findExactMemoryMatch(field.label, posting.companyName, memoryRows);
+      if (await fillMemoryMatch(exactMemoryMatch)) return true;
+
+      const llmSettings = await getLlmFindSettings();
+      const usage = await getTodayLlmUsage();
+      if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) return false;
+
+      const memoryMatch = await findBestMemoryMatch(
+        field.label,
+        posting.companyName,
+        memoryRows,
+        { includeExact: !exactMemoryMatch }
+      ).catch(() => null);
+      return fillMemoryMatch(memoryMatch);
+    }
+
     let discoveryPass = 0;
     while (fields.length > 0 && discoveryPass < MAX_FIELD_DISCOVERY_PASSES) {
       discoveryPass += 1;
@@ -739,9 +772,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
           if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
             submittedAnswers[field.label] = value;
-          } else {
-            await flagForReview(field.label, field.locator, widget);
+            continue;
           }
+          if (await tryMemoryAnswer(field, widget)) continue;
+          await flagForReview(field.label, field.locator, widget);
           continue;
         }
 
@@ -749,9 +783,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
           if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
             submittedAnswers[field.label] = value;
-          } else {
-            await flagForReview(field.label, field.locator, widget);
+            continue;
           }
+          if (await tryMemoryAnswer(field, widget)) continue;
+          await flagForReview(field.label, field.locator, widget);
           continue;
         }
 
@@ -773,7 +808,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           }
           if (filledValue != null) {
             submittedAnswers[field.label] = filledValue;
-          } else if (field.required) {
+            continue;
+          }
+          if (await tryMemoryAnswer(field, widget)) continue;
+          if (field.required) {
             await flagForReview(field.label, field.locator, widget);
           }
           continue;
@@ -785,27 +823,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         // this is checked before the free-text fallback below, for any widget
         // type (not just text), reusing the exact same daily LLM-call budget
         // check the free-text branch already does right after this.
-        if (memoryRows.length > 0) {
-          const llmSettings = await getLlmFindSettings();
-          const usage = await getTodayLlmUsage();
-          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-            const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-            if (memoryMatch) {
-              let memoryFilled = null;
-              for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
-                if (await fillByWidget(page, scope, field.locator, widget, candidate, field.label)) {
-                  memoryFilled = candidate;
-                  break;
-                }
-              }
-              if (memoryFilled != null) {
-                submittedAnswers[field.label] = memoryFilled;
-                await recordMemoryReuse(memoryMatch.id).catch(() => {});
-                continue;
-              }
-            }
-          }
-        }
+        if (await tryMemoryAnswer(field, widget)) continue;
 
         // Novel free-text question — LLM-assisted, capped, and only for plain
         // text/textarea widgets. Never used for a combobox/select/checkbox,
