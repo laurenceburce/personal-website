@@ -253,12 +253,20 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
         continue;
       }
 
+      // Flagged for manual review on any failure to fill — not gated behind
+      // field.required. See greenhouse.js's identical comment: an EEO/work-
+      // auth question routinely carries no visible asterisk (framed as
+      // "voluntary") while the ATS's own client-side validation still
+      // requires SOME selection before allowing submit — silently leaving
+      // one blank produces a confusing "Failed: clicking submit did not
+      // produce a recognized confirmation" instead of a needs_manual_review
+      // outcome that actually names the field.
       if (isWorkAuthLabel(field.normalizedLabel)) {
         const value = resolveWorkAuthValue(field.normalizedLabel, profile?.workAuthorization);
         filledValue = value ? await fillCandidates(field, [value]) : null;
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
+        } else {
           manualReviewFields.push(field.label);
         }
         continue;
@@ -269,7 +277,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
         filledValue = value ? await fillCandidates(field, [value]) : null;
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
+        } else {
           manualReviewFields.push(field.label);
         }
         continue;

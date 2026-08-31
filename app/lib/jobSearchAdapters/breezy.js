@@ -301,6 +301,11 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       }
 
       if (field.kind === "radio-group") {
+        // Tracked so the final fallthrough below can flag this regardless
+        // of field.required — see greenhouse.js's identical comment on why
+        // an EEO/work-auth question needs that regardless of its visible
+        // asterisk.
+        const isEeoOrWorkAuth = isWorkAuthLabel(normalizedLabel) || isEeoLabel(normalizedLabel);
         const value = isWorkAuthLabel(normalizedLabel)
           ? resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization)
           : isEeoLabel(normalizedLabel)
@@ -339,7 +344,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
           }
         }
 
-        if (field.required) manualReviewFields.push(cleanLabel(field.label));
+        if (field.required || isEeoOrWorkAuth) manualReviewFields.push(cleanLabel(field.label));
         continue;
       }
 
@@ -354,12 +359,20 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         continue;
       }
 
+      // Flagged for manual review on any failure to fill — not gated behind
+      // field.required. See greenhouse.js's identical comment: an EEO/work-
+      // auth question routinely carries no visible asterisk (framed as
+      // "voluntary") while the ATS's own client-side validation still
+      // requires SOME selection before allowing submit — silently leaving
+      // one blank produces a confusing "Failed: clicking submit did not
+      // produce a recognized confirmation" instead of a needs_manual_review
+      // outcome that actually names the field.
       if (isWorkAuthLabel(normalizedLabel)) {
         const value = resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization);
         filledValue = value ? await fillField(page, field, [value]) : null;
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
+        } else {
           manualReviewFields.push(field.label);
         }
         continue;
@@ -370,7 +383,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         filledValue = value ? await fillField(page, field, [value]) : null;
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
+        } else {
           manualReviewFields.push(field.label);
         }
         continue;

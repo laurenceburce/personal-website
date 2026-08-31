@@ -263,11 +263,27 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       }
 
       // EEO/work-authorization: hard-mapped by exact stored text, never the LLM.
+      //
+      // Flagged for manual review on any failure to fill — NOT gated behind
+      // field.required. Confirmed live this was a real gap: a "Are you
+      // Hispanic/Latino?" EEO field carried no visible asterisk (EEO
+      // questions are routinely framed as "voluntary"), so when
+      // resolveEeoValue() returned the profile's raceEthnicity value (right
+      // category, wrong shape — this specific field is yes/no, not a race
+      // picklist) and the fill predictably failed, the old `else if
+      // (field.required)` left it silently blank. Greenhouse's own
+      // client-side validation still required SOME selection there before
+      // allowing submit, so the posting fell all the way through to
+      // "Failed: clicking submit did not produce a recognized confirmation"
+      // — a real submission ATTEMPT with no clear reason, instead of a
+      // needs_manual_review outcome naming the actual field. Worst case for
+      // flagging a genuinely-optional field here is one unnecessary manual
+      // review; worst case for not flagging it is exactly what happened.
       if (isEeoLabel(field.normalizedLabel)) {
         const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
         if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
-        } else if (field.required) {
+        } else {
           manualReviewFields.push(field.label);
         }
         continue;
@@ -277,7 +293,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
         if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
-        } else if (field.required) {
+        } else {
           manualReviewFields.push(field.label);
         }
         continue;

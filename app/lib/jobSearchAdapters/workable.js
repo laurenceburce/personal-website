@@ -284,7 +284,10 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           // These render as radio/checkbox groups on every real Workable form
           // seen so far, never a plain text field — if one ever did show up
           // here, guessing free text into it would be worse than flagging it.
-          if (q.required) manualReviewFields.push(q.label);
+          // Not gated behind q.required — see greenhouse.js's identical
+          // comment on why an EEO/work-auth question needs that regardless
+          // of its visible asterisk.
+          manualReviewFields.push(q.label);
           continue;
         }
 
@@ -350,6 +353,11 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       }
 
       if (q.kind === "radio-group") {
+        // Tracked so the final fallthrough below can flag this regardless
+        // of q.required — see greenhouse.js's identical comment on why an
+        // EEO/work-auth question needs that regardless of its visible
+        // asterisk.
+        const isEeoOrWorkAuth = isWorkAuthLabel(normalizedLabel) || isEeoLabel(normalizedLabel);
         if (isWorkAuthLabel(normalizedLabel)) {
           const value = resolveWorkAuthValue(normalizedLabel, profile.workAuthorization);
           const match = value && q.options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase());
@@ -417,7 +425,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             }
           }
         }
-        if (q.required) manualReviewFields.push(q.label);
+        if (q.required || isEeoOrWorkAuth) manualReviewFields.push(q.label);
         continue;
       }
 

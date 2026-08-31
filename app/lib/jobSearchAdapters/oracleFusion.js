@@ -359,6 +359,11 @@ async function fillStepFields(page, fields, ctx) {
     }
 
     if (field.kind === "radio-group") {
+      // Tracked so the fallthrough below can flag this regardless of
+      // field.required — see greenhouse.js's identical comment on why an
+      // EEO/work-auth question needs that regardless of its visible
+      // asterisk.
+      const isEeoOrWorkAuth = isWorkAuthLabel(normalizedLabel) || isEeoLabel(normalizedLabel);
       const value = isWorkAuthLabel(normalizedLabel)
         ? resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization)
         : isEeoLabel(normalizedLabel)
@@ -372,7 +377,7 @@ async function fillStepFields(page, fields, ctx) {
           continue;
         }
       }
-      if (field.required) manualReviewFields.push(cleanLabel(field.label));
+      if (field.required || isEeoOrWorkAuth) manualReviewFields.push(cleanLabel(field.label));
       continue;
     }
 
@@ -384,11 +389,16 @@ async function fillStepFields(page, fields, ctx) {
       continue;
     }
 
+    // Flagged for manual review on any failure to fill — not gated behind
+    // field.required. See greenhouse.js's identical comment: an EEO/work-
+    // auth question routinely carries no visible asterisk (framed as
+    // "voluntary") while the ATS's own client-side validation still
+    // requires SOME selection before allowing submit.
     if (isWorkAuthLabel(normalizedLabel)) {
       const value = resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization);
       const filledValue = value ? await fillField(page, field, [value]) : null;
       if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else if (field.required) manualReviewFields.push(field.label);
+      else manualReviewFields.push(field.label);
       continue;
     }
 
@@ -396,7 +406,7 @@ async function fillStepFields(page, fields, ctx) {
       const value = resolveEeoValue(normalizedLabel, profile?.eeoAnswers);
       const filledValue = value ? await fillField(page, field, [value]) : null;
       if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else if (field.required) manualReviewFields.push(field.label);
+      else manualReviewFields.push(field.label);
       continue;
     }
 
