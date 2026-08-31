@@ -193,20 +193,41 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   );
 }
 
-// The "Answer & Retry" popup — one textarea per field the submit worker
+// A field the adapter flagged while looking at a select/dropdown/radio-group
+// widget carries its REAL option text, captured at the moment it was flagged
+// (see each adapter's captureFieldOptions/flagForReview) — rendered below as
+// an actual <select> instead of a textarea, so a saved answer is guaranteed
+// to be one of the widget's real options rather than free text that might
+// not match anything (the "None" typed against a Yes/No-only dropdown that
+// silently never filled — confirmed live via jobSearchSubmitWorkerRun logs).
+function hasCapturedOptions(field) {
+  return Array.isArray(field.options) && field.options.length > 0;
+}
+
+// The "Answer & Retry" popup — one field per entry the submit worker
 // couldn't confidently fill on its own (see jobSearchSubmitWorkerRun.js /
 // profileMapping.js's resolveManualOverride), pre-filled with whatever answer
-// was already saved for it (if any). "Polish with AI" refines just that one
-// field's current draft in place; "Save & Retry" persists every field's
-// current text and re-queues the posting exactly like the plain "Retry"
-// button does. Same `.job-search-modal` backdrop/header structure as
-// OverviewPanel.js's own HistoryModal, kept local here rather than shared —
-// this one's body is a form, not a list/table, so there's little to share
-// beyond the outer shell.
+// was already saved for it (if any). A textarea for free-text fields, a real
+// <select> for anything with captured options (see hasCapturedOptions above).
+// "Polish with AI" refines just that one field's current draft in place —
+// skipped for select-backed fields, there's no wording to polish about a
+// discrete choice; "Save & Retry" persists every field's current text/choice
+// and re-queues the posting exactly like the plain "Retry" button does. Same
+// `.job-search-modal` backdrop/header structure as OverviewPanel.js's own
+// HistoryModal, kept local here rather than shared — this one's body is a
+// form, not a list/table, so there's little to share beyond the outer shell.
 function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry }) {
   const fields = posting.manualReviewFields || [];
+  // A select-backed field only pre-fills a saved answer when it's an EXACT
+  // match to one of the widget's real options — a stale free-text draft from
+  // before this field ever got option-capture (e.g. "None" saved against a
+  // Yes/No-only dropdown, the actual bug this feature closes) falls back to
+  // blank rather than silently rendering with an invalid value selected.
   const [answers, setAnswers] = useState(() => Object.fromEntries(
-    fields.map((f) => [f.label, f.answer || ""])
+    fields.map((f) => {
+      if (hasCapturedOptions(f) && !f.options.includes(f.answer)) return [f.label, ""];
+      return [f.label, f.answer || ""];
+    })
   ));
   const [polishingAll, setPolishingAll] = useState(false);
   const [polishNotes, setPolishNotes] = useState({});
@@ -224,6 +245,11 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
   const blankLabels = fields.map((f) => f.label).filter((label) => !(answers[label] || "").trim());
   const allAnswered = blankLabels.length === 0;
 
+  // Fields with captured options are excluded below — no free-text draft to
+  // polish, and hiding the whole button (further down) when EVERY field is
+  // select-backed relies on this same set.
+  const optionLabels = new Set(fields.filter(hasCapturedOptions).map((f) => f.label));
+
   // One button polishes every field with a draft in it, one request at a
   // time (not concurrently — this shares the same daily LLM-call budget as
   // everything else, and firing them all at once would just race each other
@@ -231,7 +257,9 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
   // front — later iterations' setAnswers calls only ever touch OTHER
   // fields, so there's no stale-state dependency between them.
   async function handlePolishAll() {
-    const labelsWithDrafts = Object.keys(answers).filter((label) => (answers[label] || "").trim());
+    const labelsWithDrafts = Object.keys(answers)
+      .filter((label) => (answers[label] || "").trim())
+      .filter((label) => !optionLabels.has(label));
     if (labelsWithDrafts.length === 0) {
       setPolishNotes({ _all: "Type an answer in at least one field first, then polish." });
       return;
@@ -279,21 +307,38 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
         <p className="job-search-panel-hint">
           {posting.title} at {posting.companyName} — answer whatever the submit worker couldn't confidently fill on
           its own ({fields.length - blankLabels.length}/{fields.length} answered — every one is required, scroll
-          down if that count looks off). "Polish all with AI" refines every draft's wording without inventing
-          anything you didn't say; it's optional. Saving retries the submission using these answers.
+          down if that count looks off). A dropdown was a real widget on the page, so it only offers its actual
+          options — pick one rather than typing. "Polish all with AI" refines every free-text draft's wording
+          without inventing anything you didn't say; it's optional. Saving retries the submission using these
+          answers.
         </p>
 
         {fields.map((field) => {
           const answered = Boolean((answers[field.label] || "").trim());
+          const optioned = hasCapturedOptions(field);
           return (
             <Field key={field.label} label={`${answered ? "✓ " : "○ "}${field.label}`}>
-              <textarea
-                rows={3}
-                value={answers[field.label] || ""}
-                disabled={isBusy}
-                className={answered ? "" : "job-search-field-required-empty"}
-                onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
-              />
+              {optioned ? (
+                <select
+                  value={answers[field.label] || ""}
+                  disabled={isBusy}
+                  className={answered ? "" : "job-search-field-required-empty"}
+                  onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
+                >
+                  <option value="">— select an answer —</option>
+                  {field.options.map((optionText) => (
+                    <option key={optionText} value={optionText}>{optionText}</option>
+                  ))}
+                </select>
+              ) : (
+                <textarea
+                  rows={3}
+                  value={answers[field.label] || ""}
+                  disabled={isBusy}
+                  className={answered ? "" : "job-search-field-required-empty"}
+                  onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
+                />
+              )}
               {polishNotes[field.label] ? <small>{polishNotes[field.label]}</small> : null}
             </Field>
           );
@@ -304,9 +349,11 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
         {polishNotes._all ? <p className="job-search-alert">{polishNotes._all}</p> : null}
 
         <div className="job-search-form-actions">
-          <button type="button" disabled={isBusy} onClick={handlePolishAll}>
-            {polishingAll ? "Polishing..." : "Polish all with AI"}
-          </button>
+          {optionLabels.size < fields.length ? (
+            <button type="button" disabled={isBusy} onClick={handlePolishAll}>
+              {polishingAll ? "Polishing..." : "Polish all with AI"}
+            </button>
+          ) : null}
           <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>Save &amp; Retry</button>
           <button type="button" disabled={isBusy} onClick={onClose}>Cancel</button>
         </div>

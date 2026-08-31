@@ -98,6 +98,23 @@ async function fillWorkableFieldValue(page, q, candidates) {
   return null;
 }
 
+// Captures a question's real available options at the point it's about to
+// be flagged for manual review — see greenhouse.js's identical helper for
+// the full reasoning. radio-group/checkbox-group already carry `.options`
+// from collectQuestions() above (free, no extra interaction); "field" kind
+// only has options when it's a native <select> (e.g. Country) — no existing
+// capture for that shape, so this reads its real <option> list live.
+async function captureFieldOptions(page, q) {
+  if (q.kind === "radio-group" || q.kind === "checkbox-group") {
+    return (q.options || []).map((o) => o.text).filter(Boolean);
+  }
+  if (q.kind === "field" && q.tag === "select") {
+    const texts = await page.locator(`[name="${q.name}"]`).first().locator("option").allInnerTexts().catch(() => []);
+    return texts.map((t) => t.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
   const fileInput = page.locator('input[type="file"]').first();
   if (await fileInput.count().catch(() => 0) === 0) return false;
@@ -199,6 +216,9 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
+  // Real available options for a select/radio-group/checkbox-group question,
+  // keyed by label — see captureFieldOptions()'s own comment.
+  const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
   let screenshotBuffer = null;
@@ -219,7 +239,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
     }
 
     if (resumeBuffer) {
@@ -232,6 +252,12 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
+
+    async function flagForReview(label, q) {
+      manualReviewFields.push(label);
+      const options = await captureFieldOptions(page, q).catch(() => []);
+      if (options.length > 0) fieldOptions[label] = options;
+    }
 
     for (const q of questions) {
       const normalizedLabel = normalizeLabel(q.label);
@@ -275,7 +301,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
               submittedAnswers[q.label || q.name] = filledValue;
               continue;
             }
-            if (q.required) manualReviewFields.push(q.label || q.name);
+            if (q.required) await flagForReview(q.label || q.name, q);
             continue;
           }
         }
@@ -287,7 +313,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           // Not gated behind q.required — see greenhouse.js's identical
           // comment on why an EEO/work-auth question needs that regardless
           // of its visible asterisk.
-          manualReviewFields.push(q.label);
+          await flagForReview(q.label, q);
           continue;
         }
 
@@ -303,7 +329,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             submittedAnswers[q.label] = filledValue;
             continue;
           }
-          if (q.required) manualReviewFields.push(q.label);
+          if (q.required) await flagForReview(q.label, q);
           continue;
         }
 
@@ -333,7 +359,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           const llmSettings = await getLlmFindSettings();
           const usage = await getTodayLlmUsage();
           if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) {
-            if (q.required) manualReviewFields.push(q.label);
+            if (q.required) await flagForReview(q.label, q);
             continue;
           }
           const answer = await answerFreeText({ question: q.label, posting, profile, resumeText }).catch(() => null);
@@ -348,7 +374,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           }
         }
 
-        if (q.required) manualReviewFields.push(q.label);
+        if (q.required) await flagForReview(q.label, q);
         continue;
       }
 
@@ -425,13 +451,13 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             }
           }
         }
-        if (q.required || isEeoOrWorkAuth) manualReviewFields.push(q.label);
+        if (q.required || isEeoOrWorkAuth) await flagForReview(q.label, q);
         continue;
       }
 
       if (q.kind === "checkbox-group") {
         // Multi-select fixed option sets — never guessed into.
-        if (q.required) manualReviewFields.push(q.label);
+        if (q.required) await flagForReview(q.label, q);
         continue;
       }
     }
@@ -479,5 +505,5 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   // confirmationText as its receipt, so it doesn't need one too.
   if (status === "submitted") screenshotBuffer = null;
 
-  return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
 }

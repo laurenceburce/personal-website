@@ -215,6 +215,15 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
     : { ok: true };
 }
 
+// Captures a field's real available options at the point it's about to be
+// flagged for manual review — see greenhouse.js's identical helper for the
+// full reasoning. Breezy's select-tag and radio-group fields already carry
+// `.options` from collectFields() above — just read, no extra interaction.
+function captureFieldOptions(field) {
+  if (!Array.isArray(field.options) || field.options.length === 0) return [];
+  return field.options.map((option) => option.text).filter(Boolean);
+}
+
 async function shouldUseLlm(getLlmFindSettings) {
   const llmSettings = await getLlmFindSettings();
   const usage = await getTodayLlmUsage();
@@ -225,6 +234,9 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
+  // Real available options for a select/radio-group field, keyed by label —
+  // see captureFieldOptions()'s own comment.
+  const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
   let screenshotBuffer = null;
@@ -244,7 +256,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
     }
 
     const resumeRequired = await page.locator('input[type="file"][name="cResume"][required], #resume_required[value="true"]').count().catch(() => 0) > 0;
@@ -262,6 +274,12 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
+
+    function flagForReview(label, field) {
+      manualReviewFields.push(label);
+      const options = captureFieldOptions(field);
+      if (options.length > 0) fieldOptions[label] = options;
+    }
 
     for (const field of fields) {
       const normalizedLabel = normalizeLabel(field.label);
@@ -344,7 +362,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
           }
         }
 
-        if (field.required || isEeoOrWorkAuth) manualReviewFields.push(cleanLabel(field.label));
+        if (field.required || isEeoOrWorkAuth) flagForReview(cleanLabel(field.label), field);
         continue;
       }
 
@@ -373,7 +391,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else {
-          manualReviewFields.push(field.label);
+          flagForReview(field.label, field);
         }
         continue;
       }
@@ -384,7 +402,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else {
-          manualReviewFields.push(field.label);
+          flagForReview(field.label, field);
         }
         continue;
       }
@@ -395,7 +413,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else if (field.required) {
-          manualReviewFields.push(field.label);
+          flagForReview(field.label, field);
         }
         continue;
       }
@@ -424,12 +442,12 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       }
 
       if (field.name === "cSalary" || field.name === "salaryCurrency" || /salary|compensation|notice period|available from|availability/i.test(field.label)) {
-        if (field.required) manualReviewFields.push(field.label);
+        if (field.required) flagForReview(field.label, field);
         continue;
       }
 
       if (field.tag === "select") {
-        if (field.required) manualReviewFields.push(field.label);
+        if (field.required) flagForReview(field.label, field);
         continue;
       }
 
@@ -446,7 +464,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         }
       }
 
-      if (field.required) manualReviewFields.push(field.label);
+      if (field.required) flagForReview(field.label, field);
     }
 
     screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
@@ -485,5 +503,5 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
 
   if (status === "submitted") screenshotBuffer = null;
 
-  return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
 }

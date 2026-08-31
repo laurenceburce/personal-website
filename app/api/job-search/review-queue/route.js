@@ -101,8 +101,12 @@ async function saveManualAnswersAndRetryOne(id, answers, email) {
   if (!posting) throw new Error("Posting not found.");
 
   const submitted = new Map((Array.isArray(answers) ? answers : []).map((a) => [a.label, a.answer]));
+  // Keeps f.options on the merged entry — dropping it here would blank out
+  // the popup's real <select> back to a free-text textarea for the brief
+  // window between this save and the next submit-worker attempt's own
+  // (re-captured) fieldOptions overwriting it.
   const merged = (posting.manualReviewFields || []).map((f) => (
-    submitted.has(f.label) ? { label: f.label, answer: submitted.get(f.label) } : f
+    submitted.has(f.label) ? { label: f.label, answer: submitted.get(f.label), options: f.options || null } : f
   ));
   await updatePostingScore(id, { manualReviewFields: merged });
 

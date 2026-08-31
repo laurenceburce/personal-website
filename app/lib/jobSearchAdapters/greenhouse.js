@@ -110,6 +110,36 @@ async function fillReactSelect(page, scope, input, value, debugLabel = null) {
   return true;
 }
 
+// Captures a select/react-select field's real available options at the
+// point it's about to be flagged for manual review — only ever called
+// there (never proactively for every field), so it adds no overhead to a
+// field that resolves fine. Lets the Review Queue's "Answer & Retry" popup
+// render an actual dropdown of real option text instead of a free-text box
+// a typed answer might not exactly match — confirmed live this was exactly
+// the gap: a saved answer of "None" silently matched nothing against a
+// field whose only real options were "Yes"/"No", with no indication in the
+// popup that it was even a dropdown.
+async function captureFieldOptions(page, scope, locator, widget) {
+  if (widget === "native-select") {
+    const texts = await locator.locator("option").allInnerTexts().catch(() => []);
+    return texts.map((t) => t.trim()).filter(Boolean);
+  }
+  if (widget === "react-select") {
+    await clickWithBrowserMouse(page, locator).catch(() => {});
+    const options = scope.locator(".select__option");
+    try {
+      await options.first().waitFor({ state: "visible", timeout: 2000 });
+      const texts = await options.allInnerTexts();
+      await locator.press("Escape").catch(() => {});
+      return texts.map((t) => t.trim()).filter(Boolean);
+    } catch {
+      await locator.press("Escape").catch(() => {});
+      return [];
+    }
+  }
+  return [];
+}
+
 // `debugLabel`, when passed, logs exactly why a fill attempt failed —
 // confirmed live this was needed: a field can look identical (same widget,
 // same real "No" option, right next to others that filled fine) and still
@@ -192,6 +222,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
+  // Real available options for a select/react-select field, keyed by label
+  // — see captureFieldOptions()'s own comment. Populated by flagForReview()
+  // below, once page/scope exist.
+  const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
   let screenshotBuffer = null;
@@ -213,7 +247,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     const blockerReason = await detectSubmissionBlocker(scope);
     if (blockerReason) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
     }
 
     if (resumeBuffer) {
@@ -226,6 +260,12 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
+
+    async function flagForReview(label, locator, widget) {
+      manualReviewFields.push(label);
+      const options = await captureFieldOptions(page, scope, locator, widget).catch(() => []);
+      if (options.length > 0) fieldOptions[label] = options;
+    }
 
     for (const field of fields) {
       const widget = await classifyWidget(field.locator);
@@ -284,7 +324,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
         } else {
-          manualReviewFields.push(field.label);
+          await flagForReview(field.label, field.locator, widget);
         }
         continue;
       }
@@ -294,7 +334,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
         } else {
-          manualReviewFields.push(field.label);
+          await flagForReview(field.label, field.locator, widget);
         }
         continue;
       }
@@ -318,7 +358,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else if (field.required) {
-          manualReviewFields.push(field.label);
+          await flagForReview(field.label, field.locator, widget);
         }
         continue;
       }
@@ -378,7 +418,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       }
 
       if (field.required) {
-        manualReviewFields.push(field.label);
+        await flagForReview(field.label, field.locator, widget);
         // Diagnostic for exactly the case that motivated this: a field that
         // stays stuck in manual review across repeated Answer & Retry
         // attempts despite a real answer being typed each time. If there WAS
@@ -444,5 +484,5 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
   // confirmationText as its receipt, so it doesn't need one too.
   if (status === "submitted") screenshotBuffer = null;
 
-  return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
 }

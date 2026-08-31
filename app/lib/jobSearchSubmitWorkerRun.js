@@ -114,7 +114,13 @@ export async function runSubmitWorkerPass() {
         );
         const structuredManualReviewFields = (result.manualReviewFields || []).map((label) => ({
           label,
-          answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? null
+          answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? null,
+          // Real options captured off the live widget the moment this field
+          // was flagged (select/dropdown/radio-group only — see each
+          // adapter's flagForReview/captureFieldOptions). null for anything
+          // not option-shaped, which the popup renders as a free-text box
+          // like before.
+          options: result.fieldOptions?.[label] || null
         }));
 
         await insertApplicationAttempt({

@@ -131,6 +131,30 @@ async function fillAutocomplete(page, locator, value) {
   return true;
 }
 
+// Captures a field's real available options at the point it's about to be
+// flagged for manual review — see greenhouse.js's identical helper for the
+// full reasoning. "autocomplete" is deliberately excluded: its result list
+// depends on what's typed (a live location search), there's no fixed set to
+// enumerate up front. Reads whatever string would actually succeed against
+// this SAME widget's own fillByWidget branch below — for "radio" that's the
+// raw `value` attribute (what the fill case matches on), not necessarily
+// prettified label text.
+async function captureFieldOptions(locator, widget, page) {
+  if (widget === "native-select") {
+    const texts = await locator.locator("option").allInnerTexts().catch(() => []);
+    return texts.map((t) => t.trim()).filter(Boolean);
+  }
+  if (widget === "yesno") return ["Yes", "No"];
+  if (widget === "radio") {
+    const name = await locator.getAttribute("name").catch(() => null);
+    if (!name) return [];
+    const radios = page.locator(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`);
+    const values = await radios.evaluateAll((els) => els.map((el) => el.value)).catch(() => []);
+    return values.filter(Boolean);
+  }
+  return [];
+}
+
 async function fillByWidget(page, locator, widget, value) {
   switch (widget) {
     case "text":
@@ -208,6 +232,10 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
+  // Real available options for a select/yesno/radio field, keyed by label —
+  // see captureFieldOptions()'s own comment. Populated by flagForReview()
+  // below, once `page` exists.
+  const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
   let screenshotBuffer = null;
@@ -227,7 +255,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
     }
 
     if (resumeBuffer) {
@@ -244,6 +272,12 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
+
+    async function flagForReview(label, locator, widget) {
+      manualReviewFields.push(label);
+      const options = await captureFieldOptions(locator, widget, page).catch(() => []);
+      if (options.length > 0) fieldOptions[label] = options;
+    }
 
     for (const field of fields) {
       if (field.forId === "_systemfield_resume") continue; // handled above
@@ -282,7 +316,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         if (value && await fillByWidget(page, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
         } else {
-          manualReviewFields.push(field.label);
+          await flagForReview(field.label, field.locator, widget);
         }
         continue;
       }
@@ -292,7 +326,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         if (value && await fillByWidget(page, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
         } else {
-          manualReviewFields.push(field.label);
+          await flagForReview(field.label, field.locator, widget);
         }
         continue;
       }
@@ -316,7 +350,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else if (field.required) {
-          manualReviewFields.push(field.label);
+          await flagForReview(field.label, field.locator, widget);
         }
         continue;
       }
@@ -356,14 +390,14 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       // LLM-guessed applies here too, so these always go to manual review
       // rather than being answered by the LLM's best guess.
       if (widget === "yesno") {
-        if (field.required) manualReviewFields.push(field.label);
+        if (field.required) await flagForReview(field.label, field.locator, widget);
         continue;
       }
 
       // Fixed option sets (dropdowns, autocompletes) with no known mapping —
       // never guessed into, same rule as Greenhouse's combobox/select handling.
       if (widget === "native-select" || widget === "autocomplete" || widget === "radio") {
-        if (field.required) manualReviewFields.push(field.label);
+        if (field.required) await flagForReview(field.label, field.locator, widget);
         continue;
       }
 
@@ -389,7 +423,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         }
       }
 
-      if (field.required) manualReviewFields.push(field.label);
+      if (field.required) await flagForReview(field.label, field.locator, widget);
     }
 
     screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
@@ -435,5 +469,5 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
   // confirmationText as its receipt, so it doesn't need one too.
   if (status === "submitted") screenshotBuffer = null;
 
-  return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
 }

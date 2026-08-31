@@ -109,11 +109,12 @@ async function resolveOracleSession(applyUrl) {
   return getOracleSessionForHost(host);
 }
 
-function blockedResult({ blockerReason, hasSession, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer }) {
+function blockedResult({ blockerReason, hasSession, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer }) {
   return {
     status: "blocked",
     submittedAnswers,
     manualReviewFields,
+    fieldOptions,
     confirmationText,
     screenshotBuffer,
     errorMessage: hasSession
@@ -313,8 +314,23 @@ async function shouldUseLlm(getLlmFindSettings) {
   return usage.totalCalls < llmSettings.maxLlmCallsPerDay;
 }
 
+// Captures a field's real available options at the point it's about to be
+// flagged for manual review — see greenhouse.js's identical helper for the
+// full reasoning. Oracle Fusion's radio-group and select-tag fields already
+// carry `.options` from collectFields() — just read, no extra interaction.
+function captureFieldOptions(field) {
+  if (!Array.isArray(field.options) || field.options.length === 0) return [];
+  return field.options.map((option) => option.text).filter(Boolean);
+}
+
 async function fillStepFields(page, fields, ctx) {
-  const { profile, posting, resumeText, submittedAnswers, manualReviewFields, llmState, getLlmFindSettings, memoryRows } = ctx;
+  const { profile, posting, resumeText, submittedAnswers, manualReviewFields, fieldOptions, llmState, getLlmFindSettings, memoryRows } = ctx;
+
+  function flagForReview(label, field) {
+    manualReviewFields.push(label);
+    const options = captureFieldOptions(field);
+    if (options.length > 0) fieldOptions[label] = options;
+  }
 
   for (const field of fields) {
     const normalizedLabel = normalizeLabel(field.label);
@@ -377,7 +393,7 @@ async function fillStepFields(page, fields, ctx) {
           continue;
         }
       }
-      if (field.required || isEeoOrWorkAuth) manualReviewFields.push(cleanLabel(field.label));
+      if (field.required || isEeoOrWorkAuth) flagForReview(cleanLabel(field.label), field);
       continue;
     }
 
@@ -385,7 +401,7 @@ async function fillStepFields(page, fields, ctx) {
     if (standardCandidates.length > 0) {
       const filledValue = await fillField(page, field, standardCandidates);
       if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else if (field.required) manualReviewFields.push(field.label);
+      else if (field.required) flagForReview(field.label, field);
       continue;
     }
 
@@ -398,7 +414,7 @@ async function fillStepFields(page, fields, ctx) {
       const value = resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization);
       const filledValue = value ? await fillField(page, field, [value]) : null;
       if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else manualReviewFields.push(field.label);
+      else flagForReview(field.label, field);
       continue;
     }
 
@@ -406,7 +422,7 @@ async function fillStepFields(page, fields, ctx) {
       const value = resolveEeoValue(normalizedLabel, profile?.eeoAnswers);
       const filledValue = value ? await fillField(page, field, [value]) : null;
       if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else manualReviewFields.push(field.label);
+      else flagForReview(field.label, field);
       continue;
     }
 
@@ -439,7 +455,7 @@ async function fillStepFields(page, fields, ctx) {
     }
 
     if (isCandidateLogisticsLabel(normalizedLabel)) {
-      if (field.required) manualReviewFields.push(field.label);
+      if (field.required) flagForReview(field.label, field);
       continue;
     }
 
@@ -460,7 +476,7 @@ async function fillStepFields(page, fields, ctx) {
           continue;
         }
       }
-      if (field.required) manualReviewFields.push(field.label);
+      if (field.required) flagForReview(field.label, field);
       continue;
     }
 
@@ -477,7 +493,7 @@ async function fillStepFields(page, fields, ctx) {
       }
     }
 
-    if (field.required) manualReviewFields.push(field.label);
+    if (field.required) flagForReview(field.label, field);
   }
 }
 
@@ -527,6 +543,9 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
+  // Real available options for a select/radio-group field, keyed by label —
+  // see captureFieldOptions()'s own comment near fillStepFields().
+  const fieldOptions = {};
   const llmState = { count: 0 };
   let confirmationText = "";
   let screenshotBuffer = null;
@@ -562,14 +581,14 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
       return blockedResult({
         blockerReason: "This posting's tenant requires a one-time emailed verification code before applying.",
         hasSession: Boolean(session),
-        submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer
+        submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer
       });
     }
 
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return blockedResult({ blockerReason, hasSession: Boolean(session), submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer });
+      return blockedResult({ blockerReason, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
     }
 
     let submitButton = null;
@@ -598,7 +617,7 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
       }
 
       const fields = await collectFields(page);
-      await fillStepFields(page, fields, { profile, posting, resumeText, submittedAnswers, manualReviewFields, llmState, getLlmFindSettings, memoryRows });
+      await fillStepFields(page, fields, { profile, posting, resumeText, submittedAnswers, manualReviewFields, fieldOptions, llmState, getLlmFindSettings, memoryRows });
 
       const action = await findPrimaryActionButton(page);
       if (!action) break;
@@ -614,7 +633,7 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
       const blockerAfterStep = await detectSubmissionBlocker(page);
       if (blockerAfterStep) {
         screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return blockedResult({ blockerReason: blockerAfterStep, hasSession: Boolean(session), submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer });
+        return blockedResult({ blockerReason: blockerAfterStep, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
       }
     }
 
@@ -655,5 +674,5 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
 
   if (status === "submitted") screenshotBuffer = null;
 
-  return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
 }

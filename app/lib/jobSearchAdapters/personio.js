@@ -187,6 +187,16 @@ async function uploadResumeFile(page, resumeBuffer, resumeFileName) {
     : { ok: true };
 }
 
+// Captures a field's real available options at the point it's about to be
+// flagged for manual review — see greenhouse.js's identical helper for the
+// full reasoning. Personio's only fixed-option widget shape is a native
+// <select>, and getSelectOptions() above already reads it — reused as-is.
+async function captureFieldOptions(field) {
+  if (field.tag !== "select") return [];
+  const options = await getSelectOptions(field.locator);
+  return options.map((option) => option.text).filter(Boolean);
+}
+
 async function shouldUseLlm(getLlmFindSettings) {
   const llmSettings = await getLlmFindSettings();
   const usage = await getTodayLlmUsage();
@@ -197,6 +207,9 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
   const manualReviewFields = [];
+  // Real available options for a select field, keyed by label — see
+  // captureFieldOptions()'s own comment.
+  const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
   let screenshotBuffer = null;
@@ -216,7 +229,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
     }
 
     const cvInputExists = (await page.locator('input[type="file"][name="documents.cv"], #doc-input-cv').count().catch(() => 0)) > 0;
@@ -233,6 +246,12 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
+
+    async function flagForReview(field) {
+      manualReviewFields.push(field.label);
+      const options = await captureFieldOptions(field).catch(() => []);
+      if (options.length > 0) fieldOptions[field.label] = options;
+    }
 
     for (const field of fields) {
       // A human already answered this exact question for this exact posting
@@ -267,7 +286,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else {
-          manualReviewFields.push(field.label);
+          await flagForReview(field);
         }
         continue;
       }
@@ -278,7 +297,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else {
-          manualReviewFields.push(field.label);
+          await flagForReview(field);
         }
         continue;
       }
@@ -289,7 +308,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
         } else if (field.required) {
-          manualReviewFields.push(field.label);
+          await flagForReview(field);
         }
         continue;
       }
@@ -313,7 +332,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
       }
 
       if (isCandidateLogisticsLabel(field.normalizedLabel, field.name)) {
-        if (field.required) manualReviewFields.push(field.label);
+        if (field.required) await flagForReview(field);
         continue;
       }
 
@@ -335,7 +354,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
             continue;
           }
         }
-        if (field.required) manualReviewFields.push(field.label);
+        if (field.required) await flagForReview(field);
         continue;
       }
 
@@ -352,7 +371,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
         }
       }
 
-      if (field.required) manualReviewFields.push(field.label);
+      if (field.required) await flagForReview(field);
     }
 
     screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
@@ -391,5 +410,5 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
 
   if (status === "submitted") screenshotBuffer = null;
 
-  return { status, submittedAnswers, manualReviewFields, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
 }
