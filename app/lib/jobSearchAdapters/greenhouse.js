@@ -51,14 +51,27 @@ const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|i
 // Real Greenhouse forms are embedded two ways: inline on boards.greenhouse.io /
 // job-boards.greenhouse.io, or via <iframe src="...greenhouse.io/embed/job_app...">
 // on a company's own branded careers domain (confirmed live against Asana's
-// board) — frameLocator and Page expose the same .locator() API, so nothing
-// downstream needs to branch on which one it got.
+// board). CareerPuck-backed postings add a third wrinkle: the page redirects
+// away from Greenhouse first, then mounts the Greenhouse iframe a few seconds
+// later. Deciding "page scope" immediately after domcontentloaded races that
+// mount and leaves the worker waiting on top-level labels that will never
+// exist, so this helper waits for a scope that actually contains fields.
 async function findFormScope(page) {
-  const iframe = page.locator('iframe[src*="greenhouse"]').first();
-  if (await iframe.count().catch(() => 0) > 0) {
-    return page.frameLocator('iframe[src*="greenhouse"]').first();
+  const iframeSelector = 'iframe[src*="greenhouse"]';
+  const deadline = Date.now() + FORM_WAIT_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    if (await page.locator("label[for]").first().isVisible().catch(() => false)) return page;
+
+    if (await page.locator(iframeSelector).first().count().catch(() => 0) > 0) {
+      const scope = page.frameLocator(iframeSelector).first();
+      if (await scope.locator("label[for]").first().isVisible().catch(() => false)) return scope;
+    }
+
+    await page.waitForTimeout(250);
   }
-  return page;
+
+  throw new Error(`Greenhouse application form did not render within ${FORM_WAIT_TIMEOUT_MS}ms: no visible label[for] found in the page or Greenhouse iframe.`);
 }
 
 // Confirmed live: standard fields (name/email/phone) are plain <input>, but
@@ -199,12 +212,13 @@ async function collectLabeledFields(scope) {
     const forId = await label.getAttribute("for").catch(() => null);
     if (!forId) continue;
     const text = (await label.innerText().catch(() => "")) || "";
-    const required = text.includes("*");
     // Attribute selector rather than `#id` — this code runs in the Node/Playwright
     // context, not the browser, so the DOM's CSS.escape() isn't available here,
     // and an attribute-value selector sidesteps CSS id-escaping entirely.
     const locator = scope.locator(`[id="${forId.replace(/"/g, '\\"')}"]`);
     if (await locator.count().catch(() => 0) === 0) continue;
+    const required = text.includes("*")
+      || await locator.evaluate((el) => Boolean(el.required || el.getAttribute("aria-required") === "true")).catch(() => false);
 
     fields.push({ label: text, normalizedLabel: normalizeLabel(text), locator, forId, required });
   }
@@ -227,9 +241,34 @@ async function collectLabeledFields(scope) {
 // crash) is the upload request itself — Greenhouse's own widget always does
 // GET presigned_fields then POST the file straight to its S3 bucket — so
 // that's checked directly instead of guessing from the DOM.
+const RESUME_UPLOAD_READY_TIMEOUT_MS = 15000;
 const RESUME_UPLOAD_REQUEST_TIMEOUT_MS = 8000;
+const RESUME_UPLOAD_CONFIRM_TIMEOUT_MS = 5000;
 
-async function attemptResumeUpload(page, fileInput, payload) {
+function waitForResumeUploadReady(page) {
+  return page.waitForResponse(
+    (res) => res.request().method() === "GET"
+      && /\/uncacheable_attributes\/presigned_fields(?:\?|$)/i.test(res.url())
+      && res.ok(),
+    { timeout: RESUME_UPLOAD_READY_TIMEOUT_MS }
+  ).then(() => true).catch(() => false);
+}
+
+async function waitForResumeUploadConfirmation(page, scope, fileName) {
+  const target = String(fileName || "").trim();
+  if (!target) return false;
+  const deadline = Date.now() + RESUME_UPLOAD_CONFIRM_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const text = await scope.locator("body").innerText().catch(() => "");
+    if (text.includes(target)) return true;
+    await page.waitForTimeout(250);
+  }
+
+  return false;
+}
+
+async function attemptResumeUpload(page, scope, fileInput, payload) {
   // Set up the wait BEFORE the triggering action — Playwright only sees
   // requests that happen after waitForResponse() is called, so creating the
   // promise first (not awaiting it until after setInputFiles) is what
@@ -239,20 +278,41 @@ async function attemptResumeUpload(page, fileInput, payload) {
     { timeout: RESUME_UPLOAD_REQUEST_TIMEOUT_MS }
   ).then((res) => res.ok()).catch(() => false);
   await fileInput.setInputFiles(payload);
-  return uploadOk;
+  if (!(await uploadOk)) {
+    return { ok: false, reason: `no successful upload request seen within ${RESUME_UPLOAD_REQUEST_TIMEOUT_MS}ms` };
+  }
+
+  if (!(await waitForResumeUploadConfirmation(page, scope, payload.name))) {
+    return { ok: false, reason: `upload request succeeded, but "${payload.name}" never appeared in the resume widget` };
+  }
+
+  return { ok: true };
 }
 
-async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName) {
-  const fileInput = scope.locator("#resume");
+async function clearResumeFileInput(page, fileInput) {
+  await fileInput.setInputFiles([]).catch(() => {});
+  await page.waitForTimeout(250);
+}
+
+async function uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resumeUploadReady) {
+  const fileInput = scope.locator("#resume").first();
   if (await fileInput.count().catch(() => 0) === 0) return false;
 
+  const uploadReady = resumeUploadReady ? await resumeUploadReady : false;
+  if (!uploadReady) {
+    console.log(`  [fill-debug] resume upload: Greenhouse presigned-fields setup was not observed within ${RESUME_UPLOAD_READY_TIMEOUT_MS}ms — attempting upload anyway`);
+  }
+
   const payload = resumeFilePayload(resumeBuffer, resumeFileName);
-  if (await attemptResumeUpload(page, fileInput, payload)) return true;
+  const firstAttempt = await attemptResumeUpload(page, scope, fileInput, payload);
+  if (firstAttempt.ok) return true;
 
-  console.log(`  [fill-debug] resume upload: no successful upload request seen within ${RESUME_UPLOAD_REQUEST_TIMEOUT_MS}ms — retrying setInputFiles once`);
-  if (await attemptResumeUpload(page, fileInput, payload)) return true;
+  console.log(`  [fill-debug] resume upload: ${firstAttempt.reason} — retrying setInputFiles once`);
+  await clearResumeFileInput(page, fileInput);
+  const secondAttempt = await attemptResumeUpload(page, scope, fileInput, payload);
+  if (secondAttempt.ok) return true;
 
-  console.log("  [fill-debug] resume upload: retry ALSO produced no successful upload request — giving up, flagging for manual review");
+  console.log(`  [fill-debug] resume upload: retry also failed (${secondAttempt.reason}) — giving up, flagging for manual review`);
   return false;
 }
 
@@ -285,10 +345,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
 
   try {
     const page = await newPage();
+    const resumeUploadReady = waitForResumeUploadReady(page);
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
 
     const scope = await findFormScope(page);
-    await scope.locator("label[for]").first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
 
     const blockerReason = await detectSubmissionBlocker(scope);
     if (blockerReason) {
@@ -297,8 +357,11 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     }
 
     if (resumeBuffer) {
-      const uploaded = await uploadResumeFile(page, scope, resumeBuffer, resumeFileName);
-      if (!uploaded) manualReviewFields.push("Resume upload (could not confirm success)");
+      const uploaded = await uploadResumeFile(page, scope, resumeBuffer, resumeFileName, resumeUploadReady);
+      if (uploaded) submittedAnswers["Resume/CV"] = resumeFileName || "resume.pdf";
+      else manualReviewFields.push("Resume upload (could not confirm success)");
+    } else if (await scope.locator("#resume").first().count().catch(() => 0) > 0) {
+      manualReviewFields.push("Resume upload (no default resume available)");
     }
 
     let fields = await collectLabeledFields(scope);
