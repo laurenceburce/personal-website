@@ -8,6 +8,7 @@ import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
+  manualOverrideCandidates,
   normalizeLabel,
   resolveEeoValue,
   resolveManualOverride,
@@ -239,7 +240,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
       // auto-resolution strategy below. Falls through to those on failure.
       const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
       if (manualOverride != null) {
-        const overrideFilled = await fillCandidates(field, [manualOverride]);
+        const overrideFilled = await fillCandidates(field, manualOverrideCandidates(manualOverride));
         if (overrideFilled != null) {
           submittedAnswers[field.label] = overrideFilled;
           continue;
@@ -294,7 +295,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
       if (memoryRows.length > 0 && await shouldUseLlm(getLlmFindSettings)) {
         const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
         if (memoryMatch) {
-          filledValue = await fillCandidates(field, [memoryMatch.answer]);
+          filledValue = await fillCandidates(field, manualOverrideCandidates(memoryMatch.answer));
           if (filledValue != null) {
             submittedAnswers[field.label] = filledValue;
             await recordMemoryReuse(memoryMatch.id).catch(() => {});

@@ -173,30 +173,38 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
   const [answers, setAnswers] = useState(() => Object.fromEntries(
     (posting.manualReviewFields || []).map((f) => [f.label, f.answer || ""])
   ));
-  const [polishingLabel, setPolishingLabel] = useState(null);
+  const [polishingAll, setPolishingAll] = useState(false);
   const [polishNotes, setPolishNotes] = useState({});
-  const isBusy = Boolean(saving) || polishingLabel != null;
+  const isBusy = Boolean(saving) || polishingAll;
 
-  async function handlePolish(label) {
-    const draft = (answers[label] || "").trim();
-    if (!draft) {
-      setPolishNotes((prev) => ({ ...prev, [label]: "Type an answer first, then polish it." }));
+  // One button polishes every field with a draft in it, one request at a
+  // time (not concurrently — this shares the same daily LLM-call budget as
+  // everything else, and firing them all at once would just race each other
+  // against it). Each field's own draft is read from this closure once, up
+  // front — later iterations' setAnswers calls only ever touch OTHER
+  // fields, so there's no stale-state dependency between them.
+  async function handlePolishAll() {
+    const labelsWithDrafts = Object.keys(answers).filter((label) => (answers[label] || "").trim());
+    if (labelsWithDrafts.length === 0) {
+      setPolishNotes({ _all: "Type an answer in at least one field first, then polish." });
       return;
     }
-    setPolishingLabel(label);
-    setPolishNotes((prev) => ({ ...prev, [label]: "" }));
-    try {
-      const result = await onPolish(posting.id, label, draft);
-      if (result?.polished) {
-        setAnswers((prev) => ({ ...prev, [label]: result.polished }));
-      } else {
-        setPolishNotes((prev) => ({ ...prev, [label]: "AI couldn't improve this — your answer is unchanged." }));
+    setPolishingAll(true);
+    setPolishNotes({});
+    for (const label of labelsWithDrafts) {
+      const draft = answers[label].trim();
+      try {
+        const result = await onPolish(posting.id, label, draft);
+        if (result?.polished) {
+          setAnswers((prev) => ({ ...prev, [label]: result.polished }));
+        } else {
+          setPolishNotes((prev) => ({ ...prev, [label]: "AI couldn't improve this — unchanged." }));
+        }
+      } catch (err) {
+        setPolishNotes((prev) => ({ ...prev, [label]: err?.message || "Polish failed." }));
       }
-    } catch (err) {
-      setPolishNotes((prev) => ({ ...prev, [label]: err?.message || "Polish failed." }));
-    } finally {
-      setPolishingLabel(null);
     }
+    setPolishingAll(false);
   }
 
   async function handleSaveAndRetry() {
@@ -214,8 +222,8 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
         </div>
         <p className="job-search-panel-hint">
           {posting.title} at {posting.companyName} — answer whatever the submit worker couldn't confidently fill on
-          its own. "Polish with AI" refines your draft's wording without inventing anything you didn't say; it's
-          optional. Saving retries the submission using these answers.
+          its own. "Polish all with AI" refines every draft's wording without inventing anything you didn't say;
+          it's optional. Saving retries the submission using these answers.
         </p>
 
         {(posting.manualReviewFields || []).map((field) => (
@@ -226,16 +234,16 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
               disabled={isBusy}
               onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
             />
-            <div className="job-search-form-actions">
-              <button type="button" disabled={isBusy} onClick={() => handlePolish(field.label)}>
-                {polishingLabel === field.label ? "Polishing..." : "Polish with AI"}
-              </button>
-              {polishNotes[field.label] ? <small>{polishNotes[field.label]}</small> : null}
-            </div>
+            {polishNotes[field.label] ? <small>{polishNotes[field.label]}</small> : null}
           </Field>
         ))}
 
+        {polishNotes._all ? <p className="job-search-alert">{polishNotes._all}</p> : null}
+
         <div className="job-search-form-actions">
+          <button type="button" disabled={isBusy} onClick={handlePolishAll}>
+            {polishingAll ? "Polishing..." : "Polish all with AI"}
+          </button>
           <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>Save &amp; Retry</button>
           <button type="button" disabled={isBusy} onClick={onClose}>Cancel</button>
         </div>

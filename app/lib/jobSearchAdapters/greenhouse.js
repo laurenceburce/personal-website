@@ -8,6 +8,7 @@ import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
+  manualOverrideCandidates,
   normalizeLabel,
   resolveEeoValue,
   resolveManualOverride,
@@ -223,8 +224,15 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       // rather than giving up on the field outright.
       const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
       if (manualOverride != null) {
-        if (await fillByWidget(page, scope, field.locator, widget, manualOverride)) {
-          submittedAnswers[field.label] = manualOverride;
+        let overrideFilled = null;
+        for (const candidate of manualOverrideCandidates(manualOverride)) {
+          if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
+            overrideFilled = candidate;
+            break;
+          }
+        }
+        if (overrideFilled != null) {
+          submittedAnswers[field.label] = overrideFilled;
           continue;
         }
       }
@@ -296,10 +304,19 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         const usage = await getTodayLlmUsage();
         if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
           const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-          if (memoryMatch && await fillByWidget(page, scope, field.locator, widget, memoryMatch.answer)) {
-            submittedAnswers[field.label] = memoryMatch.answer;
-            await recordMemoryReuse(memoryMatch.id).catch(() => {});
-            continue;
+          if (memoryMatch) {
+            let memoryFilled = null;
+            for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
+              if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
+                memoryFilled = candidate;
+                break;
+              }
+            }
+            if (memoryFilled != null) {
+              submittedAnswers[field.label] = memoryFilled;
+              await recordMemoryReuse(memoryMatch.id).catch(() => {});
+              continue;
+            }
           }
         }
       }

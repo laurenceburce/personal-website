@@ -8,6 +8,8 @@ import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
+  manualOverrideCandidates,
+  matchOptionByCandidates,
   normalizeLabel,
   resolveEeoValue,
   resolveManualOverride,
@@ -274,7 +276,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
       if (manualOverride != null && field.kind !== "checkbox") {
         if (field.kind === "radio-group") {
-          const match = field.options.find((option) => option.text.trim().toLowerCase() === manualOverride.toLowerCase());
+          const match = matchOptionByCandidates(field.options, manualOverrideCandidates(manualOverride));
           if (match) {
             const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(match.value)}"]`).first();
             const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
@@ -284,7 +286,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
             }
           }
         } else {
-          const overrideFilled = await fillField(page, field, [manualOverride]);
+          const overrideFilled = await fillField(page, field, manualOverrideCandidates(manualOverride));
           if (overrideFilled != null) {
             submittedAnswers[field.label] = overrideFilled;
             continue;
@@ -324,7 +326,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
           const usage = await getTodayLlmUsage();
           if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
             const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-            const memoryOption = memoryMatch && field.options.find((option) => option.text.trim().toLowerCase() === memoryMatch.answer.toLowerCase());
+            const memoryOption = memoryMatch && matchOptionByCandidates(field.options, manualOverrideCandidates(memoryMatch.answer));
             if (memoryOption) {
               const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(memoryOption.value)}"]`).first();
               const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
@@ -398,7 +400,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
           const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
           if (memoryMatch) {
-            const memoryFilled = await fillField(page, field, [memoryMatch.answer]);
+            const memoryFilled = await fillField(page, field, manualOverrideCandidates(memoryMatch.answer));
             if (memoryFilled != null) {
               submittedAnswers[field.label] = memoryFilled;
               await recordMemoryReuse(memoryMatch.id).catch(() => {});

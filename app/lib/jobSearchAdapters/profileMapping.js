@@ -235,3 +235,49 @@ export function resolveManualOverride(normalizedLabel, manualReviewFields) {
   );
   return match ? match.answer : null;
 }
+
+// A saved answer (from either resolveManualOverride above or a memory-bank
+// match) is free-form text a human typed — great for a plain text/textarea
+// widget, but an EXACT match against it will often miss a fixed-option
+// widget entirely: a location override like "San Diego, CA 92071" rarely
+// matches an autocomplete's own canonical option text ("San Diego,
+// California, United States"), and a qualification question rendered as a
+// Yes/No dropdown rarely has an option matching a full sentence like "Yes, I
+// have strong proficiency in...". Confirmed live: this is exactly why a
+// saved answer can silently fail to apply and land the posting right back in
+// manual review with the same fields, even though the answer was genuinely
+// right. Returned in priority order — try the answer as typed first, same
+// "try multiple candidates until one actually fills" pattern
+// resolveStandardFieldCandidates() already uses for profile fields — so a
+// plain text/textarea widget still gets the full, unmodified answer.
+export function manualOverrideCandidates(answer) {
+  const raw = String(answer || "").trim();
+  if (!raw) return [];
+  const candidates = [raw];
+
+  const beforeComma = raw.split(",")[0].trim();
+  if (beforeComma && beforeComma !== raw) candidates.push(beforeComma);
+
+  if (/^yes\b/i.test(raw)) candidates.push("Yes");
+  else if (/^no\b/i.test(raw)) candidates.push("No");
+
+  return [...new Set(candidates)];
+}
+
+// The radio-group counterpart to fillByWidget/fillField/fillCandidates
+// looping over manualOverrideCandidates() above — every adapter's own
+// radio-group option-matching (EEO/work-auth today, a saved override/memory
+// match now too) needs the exact same "try each candidate in turn against
+// the option list" shape, so it lives here once rather than once per
+// adapter. `options` is each adapter's own `{ text, value }` shape (or
+// similar — only `.text` is read here); returns the first option whose text
+// exactly matches (case-insensitively) any candidate, or null.
+export function matchOptionByCandidates(options, candidates) {
+  for (const candidate of candidates || []) {
+    const target = String(candidate || "").trim().toLowerCase();
+    if (!target) continue;
+    const match = (options || []).find((option) => String(option.text || "").trim().toLowerCase() === target);
+    if (match) return match;
+  }
+  return null;
+}

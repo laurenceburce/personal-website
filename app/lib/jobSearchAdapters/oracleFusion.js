@@ -57,6 +57,8 @@ import { getOracleSessionForHost } from "../jobSearchOracleSessionStore.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
+  manualOverrideCandidates,
+  matchOptionByCandidates,
   normalizeLabel,
   resolveEeoValue,
   resolveManualOverride,
@@ -326,13 +328,13 @@ async function fillStepFields(page, fields, ctx) {
     const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
     if (manualOverride != null && field.kind !== "checkbox") {
       if (field.kind === "radio-group") {
-        const match = field.options.find((option) => option.text.trim().toLowerCase() === manualOverride.toLowerCase());
+        const match = matchOptionByCandidates(field.options, manualOverrideCandidates(manualOverride));
         if (match && await checkOracleControl(page, match)) {
           submittedAnswers[field.label] = match.text;
           continue;
         }
       } else {
-        const filledValue = await fillField(page, field, [manualOverride]);
+        const filledValue = await fillField(page, field, manualOverrideCandidates(manualOverride));
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
           continue;
@@ -409,14 +411,14 @@ async function fillStepFields(page, fields, ctx) {
       const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
       if (memoryMatch) {
         if (field.kind === "radio-group") {
-          const match = field.options.find((option) => option.text.trim().toLowerCase() === memoryMatch.answer.toLowerCase());
+          const match = matchOptionByCandidates(field.options, manualOverrideCandidates(memoryMatch.answer));
           if (match && await checkOracleControl(page, match)) {
             submittedAnswers[field.label] = match.text;
             await recordMemoryReuse(memoryMatch.id).catch(() => {});
             continue;
           }
         } else {
-          const filledValue = await fillField(page, field, [memoryMatch.answer]);
+          const filledValue = await fillField(page, field, manualOverrideCandidates(memoryMatch.answer));
           if (filledValue != null) {
             submittedAnswers[field.label] = filledValue;
             await recordMemoryReuse(memoryMatch.id).catch(() => {});

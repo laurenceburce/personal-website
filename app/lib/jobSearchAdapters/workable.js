@@ -17,6 +17,8 @@ import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
+  manualOverrideCandidates,
+  matchOptionByCandidates,
   normalizeLabel,
   resolveEeoValue,
   resolveManualOverride,
@@ -244,13 +246,13 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
       if (manualOverride != null && q.kind !== "checkbox-group") {
         if (q.kind === "field") {
-          const filledValue = await fillWorkableFieldValue(page, q, [manualOverride]);
+          const filledValue = await fillWorkableFieldValue(page, q, manualOverrideCandidates(manualOverride));
           if (filledValue != null) {
             submittedAnswers[q.label || q.name] = filledValue;
             continue;
           }
         } else if (q.kind === "radio-group") {
-          const match = q.options.find((o) => o.text.trim().toLowerCase() === manualOverride.toLowerCase());
+          const match = matchOptionByCandidates(q.options, manualOverrideCandidates(manualOverride));
           if (match) {
             const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
             if (checked) {
@@ -314,7 +316,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
             const memoryMatch = await findBestMemoryMatch(q.label, posting.companyName, memoryRows).catch(() => null);
             if (memoryMatch) {
-              const filledValue = await fillWorkableFieldValue(page, q, [memoryMatch.answer]);
+              const filledValue = await fillWorkableFieldValue(page, q, manualOverrideCandidates(memoryMatch.answer));
               if (filledValue != null) {
                 submittedAnswers[q.label || q.name] = filledValue;
                 await recordMemoryReuse(memoryMatch.id).catch(() => {});
@@ -378,7 +380,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           const usage = await getTodayLlmUsage();
           if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
             const memoryMatch = await findBestMemoryMatch(q.label, posting.companyName, memoryRows).catch(() => null);
-            const match = memoryMatch && q.options.find((o) => o.text.trim().toLowerCase() === memoryMatch.answer.toLowerCase());
+            const match = memoryMatch && matchOptionByCandidates(q.options, manualOverrideCandidates(memoryMatch.answer));
             if (match) {
               const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
               if (checked) {

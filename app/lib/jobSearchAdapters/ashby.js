@@ -23,6 +23,7 @@ import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
   isWorkAuthLabel,
+  manualOverrideCandidates,
   normalizeLabel,
   resolveEeoValue,
   resolveManualOverride,
@@ -81,8 +82,20 @@ async function classifyWidget(locator) {
 
 // The real clickable target for a yes/no question is a sibling <button
 // data-option="yes|no">, not the (non-interactive) checkbox itself.
+//
+// Only ever called today with something that should already cleanly mean
+// yes or no (resolveWorkAuthValue/resolveEeoValue's own "Yes"/"No" strings —
+// the LLM free-text path never reaches this widget at all, see the "always
+// manual" comment below). But a manual-answer override or a memory-bank
+// match is a human's own free-form text, and could be anything, e.g. "Yes, I
+// have strong proficiency in..." — treating "not literally 'yes'" as "no"
+// would silently click the WRONG button for that, not just fail to fill it.
+// Explicit prefix match both ways; anything else declines rather than
+// guessing.
 async function fillYesNo(page, locator, value) {
-  const target = String(value).trim().toLowerCase() === "yes" ? "yes" : "no";
+  const normalized = String(value).trim().toLowerCase();
+  const target = /^yes\b/.test(normalized) ? "yes" : /^no\b/.test(normalized) ? "no" : null;
+  if (!target) return false;
   const container = locator.locator("xpath=..");
   const button = container.locator(`button[data-option="${target}"]`);
   if (await button.count().catch(() => 0) === 0) return false;
@@ -243,8 +256,15 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       // auto-resolution strategy below. Falls through to those on failure.
       const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
       if (manualOverride != null) {
-        if (await fillByWidget(page, field.locator, widget, manualOverride)) {
-          submittedAnswers[field.label] = manualOverride;
+        let overrideFilled = null;
+        for (const candidate of manualOverrideCandidates(manualOverride)) {
+          if (await fillByWidget(page, field.locator, widget, candidate)) {
+            overrideFilled = candidate;
+            break;
+          }
+        }
+        if (overrideFilled != null) {
+          submittedAnswers[field.label] = overrideFilled;
           continue;
         }
       }
@@ -305,10 +325,19 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         const usage = await getTodayLlmUsage();
         if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
           const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-          if (memoryMatch && await fillByWidget(page, field.locator, widget, memoryMatch.answer)) {
-            submittedAnswers[field.label] = memoryMatch.answer;
-            await recordMemoryReuse(memoryMatch.id).catch(() => {});
-            continue;
+          if (memoryMatch) {
+            let memoryFilled = null;
+            for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
+              if (await fillByWidget(page, field.locator, widget, candidate)) {
+                memoryFilled = candidate;
+                break;
+              }
+            }
+            if (memoryFilled != null) {
+              submittedAnswers[field.label] = memoryFilled;
+              await recordMemoryReuse(memoryMatch.id).catch(() => {});
+              continue;
+            }
           }
         }
       }
