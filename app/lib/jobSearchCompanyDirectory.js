@@ -24,34 +24,44 @@ function mapCompanyRow(row) {
   };
 }
 
+// A company can now have more than one row (one per confirmed platform —
+// see the (normalized_name, ats_type) unique key and probeCompanyAts()'s own
+// comment), so "the known company" is no longer a single answer. Currently
+// unused (nothing calls this) — kept only because a future single-row lookup
+// might still want just the pollable rows for a name; if you're adding a
+// caller, prefer a query scoped to what you actually need (e.g. join against
+// POLLABLE_ATS_TYPES like listPollableCompanies() does) over resurrecting a
+// "the" row picked arbitrarily out of several.
 export async function getKnownCompany(companyName) {
   const pool = requirePool(await ensureJobSearchSchema());
   const normalized = normalizeCompanyName(companyName);
-  if (!normalized) return null;
+  if (!normalized) return [];
   const [rows] = await pool.query(
-    "SELECT * FROM job_search_known_companies WHERE normalized_name = ? LIMIT 1",
+    "SELECT * FROM job_search_known_companies WHERE normalized_name = ? ORDER BY ats_type ASC",
     [normalized]
   );
-  return rows[0] ? mapCompanyRow(rows[0]) : null;
+  return rows.map(mapCompanyRow);
 }
 
 // Separate from discoverNewCompanies()'s bulk slug-guessing flow below —
 // this is for a company reached the OPPOSITE way: atsResolver.js already
-// resolved one of its postings to a real Workday URL (a platform with no
-// guessable public API, so probeCompanyAts() can never find it on its own —
-// see atsTypes.js's POLLABLE_ATS_TYPES comment) and parsed out the exact
-// tenant/datacenter/site boardToken from that real URL. Registering it here
+// resolved one of its postings to a real Workday/oracle_fusion URL (neither
+// has a guessable public API, so probeCompanyAts() can never find either on
+// its own — see atsTypes.js's POLLABLE_ATS_TYPES comment) and parsed out the
+// exact tenant/board identifier from that real URL. Registering it here
 // means jobSearchDirectPoll.js starts fetching the REST of that company's
 // board on every poll after, not just the one posting that happened to come
 // through Adzuna.
 //
-// Only ever fills an ats_type='unknown' gap, never overwrites an already-
-// confirmed different platform — a same-named-but-different company (the
-// exact false-positive shape already confirmed live for Workable/
-// SmartRecruiters/Personio elsewhere in this codebase) could otherwise
-// silently reassign a genuinely-probed Greenhouse/Lever/etc. company to
-// Workday just because Adzuna happened to also surface an unrelated posting
-// from a different company sharing that same display name.
+// Just adds this (company, platform) row if it isn't already known — never
+// touches any OTHER platform's row already on file for this same company
+// (the unique key is (normalized_name, ats_type), so those are separate rows
+// entirely; see discoverNewCompanies() below for the matching multi-platform
+// write path). Same accepted trade-off as that one: a different real company
+// that happens to share this exact display name could get merged in under
+// one normalized_name if it's ever independently found on another platform
+// too — bounded risk, since every posting still goes through hard-filtering,
+// scoring, and human review before anything is ever submitted.
 export async function registerDiscoveredCompany({ companyName, atsType, boardToken }) {
   const pool = requirePool(await ensureJobSearchSchema());
   const normalized = normalizeCompanyName(companyName);
@@ -61,11 +71,7 @@ export async function registerDiscoveredCompany({ companyName, atsType, boardTok
     `INSERT INTO job_search_known_companies
        (company_name, normalized_name, ats_type, board_token, last_probed_at, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
-     ON DUPLICATE KEY UPDATE
-       ats_type = IF(ats_type = 'unknown', VALUES(ats_type), ats_type),
-       board_token = IF(ats_type = 'unknown', VALUES(board_token), board_token),
-       last_probed_at = IF(ats_type = 'unknown', VALUES(last_probed_at), last_probed_at),
-       updated_at = IF(ats_type = 'unknown', VALUES(updated_at), updated_at)`,
+     ON DUPLICATE KEY UPDATE company_name = VALUES(company_name)`,
     [cleanText(companyName, 160), normalized, atsType, cleanText(boardToken, 160), now, now, now]
   );
 }
@@ -95,11 +101,18 @@ export async function listPollableCompanies() {
 // Overview-tab summary only — deliberately not a management surface (no
 // list/edit/delete here). Company discovery is fully automatic; there is
 // nothing for a human to curate.
+//
+// COUNT(DISTINCT normalized_name), not COUNT(*) — a company can now have one
+// row per confirmed platform, and this label says "companies", not
+// "company/platform pairs". listPollableCompanies().length (what
+// jobSearchDirectPoll.js actually iterates) is the row count, which is the
+// more honest number for "how many polls will this run do" — this stat
+// answers a different question ("how many distinct companies").
 export async function getCompanyDirectoryStats() {
   const pool = requirePool(await ensureJobSearchSchema());
-  const [totalRows] = await pool.query("SELECT COUNT(*) AS total FROM job_search_known_companies");
+  const [totalRows] = await pool.query("SELECT COUNT(DISTINCT normalized_name) AS total FROM job_search_known_companies");
   const [pollableRows] = await pool.query(
-    "SELECT COUNT(*) AS total FROM job_search_known_companies WHERE ats_type IN (?)",
+    "SELECT COUNT(DISTINCT normalized_name) AS total FROM job_search_known_companies WHERE ats_type IN (?)",
     [[...POLLABLE_ATS_TYPES]]
   );
   return {
@@ -133,9 +146,10 @@ export async function recordCompanyPollResult(id, { ok, jobsFound = 0, error = "
 // fewer distinct companies than that) should never hit it — if it ever does,
 // whatever's left over is simply not probed this run rather than queued, so
 // the ceiling exists to bound worst-case runtime, not to spread work out.
-// `concurrency` probes several companies at once (each company's own 5
-// platform checks stay sequential and stop at the first hit, so this is
-// concurrency across companies, not per-company).
+// `concurrency` probes several companies at once (each company's own 8
+// platform checks run concurrently too — see probeAllPlatforms — so this is
+// concurrency across companies stacked on top of concurrency within one
+// company's own probe, not a substitute for it).
 export async function discoverNewCompanies(companyNames, { limit = 200, concurrency = 8 } = {}) {
   const pool = requirePool(await ensureJobSearchSchema());
   const seen = new Set();
@@ -158,22 +172,37 @@ export async function discoverNewCompanies(companyNames, { limit = 200, concurre
     toProbe.push({ companyName, normalized });
   }
 
+  // `found` counts distinct COMPANIES that turned up at least one hit, not
+  // total platform rows written — matches getCompanyDirectoryStats()'s own
+  // "companies" framing and what the Overview tab's discovery-run history
+  // already means by "companies found".
   let found = 0;
   for (let i = 0; i < toProbe.length; i += concurrency) {
     const batch = toProbe.slice(i, i + concurrency);
     const results = await Promise.all(batch.map(async ({ companyName, normalized }) => {
-      const hit = await probeCompanyAts(companyName).catch(() => null);
+      const hits = await probeCompanyAts(companyName).catch(() => []);
       const now = new Date();
-      await pool.query(
-        `INSERT INTO job_search_known_companies
-           (company_name, normalized_name, ats_type, board_token, last_probed_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE company_name = VALUES(company_name)`,
-        [companyName, normalized, hit?.atsType || "unknown", hit?.boardToken || "", now, now, now]
-      );
-      return hit;
+      // Zero hits still gets exactly one row (ats_type stays its 'unknown'
+      // default) — that's what makes the existence check above skip this
+      // company on every future discovery pass instead of re-probing it
+      // forever. One or more hits gets one row PER platform — see
+      // probeAllPlatforms()'s own comment for why every genuine hit is kept
+      // rather than picking a single winner.
+      const rows = hits.length > 0
+        ? hits.map((hit) => [companyName, normalized, hit.atsType, hit.boardToken, now, now, now])
+        : [[companyName, normalized, "unknown", "", now, now, now]];
+      for (const row of rows) {
+        await pool.query(
+          `INSERT INTO job_search_known_companies
+             (company_name, normalized_name, ats_type, board_token, last_probed_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE company_name = VALUES(company_name), board_token = VALUES(board_token)`,
+          row
+        );
+      }
+      return hits;
     }));
-    found += results.filter(Boolean).length;
+    found += results.filter((hits) => hits.length > 0).length;
   }
 
   return { probed: toProbe.length, found };

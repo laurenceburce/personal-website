@@ -330,6 +330,20 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // A company can now be confirmed on more than one ATS platform at once
+      // (see probeCompanyAts()'s own comment in jobSearchCompanyProbe.js) —
+      // jobSearchCompanyDirectory.js writes one row per confirmed platform
+      // instead of picking a single winner, so the unique key has to widen
+      // from "one row per company" to "one row per (company, platform)". The
+      // CREATE TABLE above still only ever defines the original name-only key
+      // (matching every other table's convention here of leaving its own
+      // CREATE statement as originally written and evolving it via trailing
+      // migrations) — this pair runs on both a fresh install and an
+      // already-running database, and is a harmless no-op on any boot after
+      // the first (DROP hits 1091, ADD hits 1061, both swallowed above).
+      await runMigration(pool, "ALTER TABLE job_search_known_companies DROP INDEX job_search_known_companies_name_idx");
+      await runMigration(pool, "ALTER TABLE job_search_known_companies ADD UNIQUE KEY job_search_known_companies_name_ats_idx (normalized_name, ats_type)");
+
       // Tracks the two workers (see scripts/job-search-worker.mjs — a Railway
       // Cron Schedule — and scripts/job-search-submit-worker-server.mjs — an
       // always-on event-driven server) so the dashboard can show a real

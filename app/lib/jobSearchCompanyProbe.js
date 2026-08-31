@@ -7,7 +7,11 @@
 // here, jobSearchDirectPoll.js can fetch its postings straight from the ATS
 // instead of relying solely on Adzuna ever surfacing them, and any posting
 // found this way is tagged with its real ats_type from the start — no lazy
-// per-posting resolution needed later. Every platform in POLLABLE_ATS_TYPES
+// per-posting resolution needed later. A company can come back confirmed on
+// MORE than one platform at once (see probeAllPlatforms below) — every
+// genuine hit is kept and gets its own row in the directory, not just
+// whichever platform happened to be checked first. Every platform in
+// POLLABLE_ATS_TYPES
 // that's actually guessable this way (greenhouse/lever/ashby/workable/
 // recruitee/personio/breezy/smartrecruiters — see jobSearchAdapters/
 // atsTypes.js) gets probed for that reason, submission adapter or not —
@@ -116,12 +120,11 @@ function namesPlausiblyMatch(searched, returned) {
 // probe-time just stays 'unknown' rather than getting mislabeled — no retry
 // mechanism exists yet, but that's a safer failure mode than the reverse.
 
-// Every hit below carries jobCount alongside atsType/boardToken — the
-// signal probeCompanyAts() uses to pick between more than one genuine match
-// for the same slug (an ATS migration leaving a stale-but-still-responding
-// old board, or two unrelated companies coincidentally sharing a slug on
-// different platforms). A real, currently-used board almost always has
-// meaningfully more open postings than a leftover or coincidental one.
+// Every hit below carries jobCount alongside atsType/boardToken. Not used to
+// arbitrate between platforms anymore (see probeAllPlatforms) — every
+// genuine hit is kept — but still worth returning: it's what a hit actually
+// means ("this board has N currently open postings"), useful for debugging
+// a surprising multi-platform result after the fact.
 
 async function probeGreenhouse(slug) {
   const data = await fetchJson(`https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=false`);
@@ -218,16 +221,22 @@ async function probeSmartRecruiters(slug, companyName) {
   return { atsType: "smartrecruiters", boardToken: slug, jobCount: data.totalFound };
 }
 
-// Checks every platform for a given slug CONCURRENTLY rather than stopping
-// at the first hit — a company can genuinely (or coincidentally) match more
-// than one platform for the same slug, and picking whichever was checked
-// first would silently lock in the wrong one forever, since a company is
-// never re-probed once known. Confirmed genuinely possible two ways this
-// session: an ATS migration can leave an old board still responding, and a
-// generic slug can coincidentally belong to a different, unrelated company
-// on another platform. Whichever match has the most currently-open postings
-// wins — a real, actively-used board almost always dwarfs a stale or
-// coincidental one.
+// Checks every platform for a given slug CONCURRENTLY, and keeps EVERY
+// genuine hit rather than picking a single winner — a company can genuinely
+// (or coincidentally) match more than one platform for the same slug, and
+// this is deliberately the point now: jobSearchCompanyDirectory.js registers
+// one row per hit, so jobSearchDirectPoll.js ends up polling all of them.
+// Confirmed genuinely possible two ways: an ATS migration can leave an old
+// board still responding alongside the new one, and a company can
+// deliberately run boards on two platforms at once (e.g. a subsidiary or
+// regional brand on its own board). The trade-off: a generic slug
+// coincidentally belonging to a different, unrelated company on another
+// platform (also confirmed live, elsewhere in this file's own comments) now
+// gets registered too, for the platforms with no company-name field to
+// cross-check (Greenhouse/Lever/Ashby/Personio — see each probe function
+// above). Accepted as low-stakes: a wrongly-registered board only ever
+// contributes postings that still go through hard-filtering, scoring, and
+// human review same as everything else — never straight to submission.
 async function probeAllPlatforms(slug, companyName) {
   const results = await Promise.all([
     probeGreenhouse(slug),
@@ -240,23 +249,26 @@ async function probeAllPlatforms(slug, companyName) {
     probePersonio(slug)
   ]);
 
-  const hits = results.filter(Boolean);
-  if (hits.length === 0) return null;
-  return hits.reduce((best, hit) => (hit.jobCount > best.jobCount ? hit : best));
+  return results.filter(Boolean);
 }
 
-// Tries each candidate slug shape in turn, checking every platform for each
-// one before moving to the next. Never throws — a company nobody can find on
-// any of these stays untagged (ats_type stays 'unknown'), which is exactly
-// as informative as it sounds: still worth a retry someday, but nothing to
+// Tries each candidate slug shape in turn, stopping at the first shape that
+// gets ANY hit (still not chasing the rarer case of a company using a
+// different slug convention on each platform — e.g. "openai" on one board,
+// "open-ai" on another — which would mean trying every shape against every
+// platform, roughly doubling probe traffic for a case not yet confirmed to
+// matter in practice). Returns every platform that matched at that winning
+// slug, not just one. Never throws — a company nobody can find on any of
+// these stays untagged (ats_type stays 'unknown'), which is exactly as
+// informative as it sounds: still worth a retry someday, but nothing to
 // poll directly right now.
 export async function probeCompanyAts(companyName) {
   const candidates = generateSlugCandidates(companyName);
 
   for (const slug of candidates) {
-    const hit = await probeAllPlatforms(slug, companyName);
-    if (hit) return hit;
+    const hits = await probeAllPlatforms(slug, companyName);
+    if (hits.length > 0) return hits;
   }
 
-  return null;
+  return [];
 }
