@@ -204,6 +204,22 @@ function hasCapturedOptions(field) {
   return Array.isArray(field.options) && field.options.length > 0;
 }
 
+// Not every manualReviewFields entry is a QUESTION — a resume/CV upload the
+// adapter couldn't confirm (see resumeUploadCheck.js) is a synthetic,
+// system-flagged label like "Resume upload (could not confirm success)",
+// never a real form field, so there's nothing a typed or selected answer
+// could ever match on retry (resolveManualOverride() matches against the
+// ATS's own field labels, and this was never one). Confirmed live this was
+// a real dead end: the popup still demanded SOME non-blank text here before
+// Save & Retry would enable at all, with no indication anything typed would
+// do nothing. Matches every adapter's own wording (greenhouse/workable:
+// "Resume upload (...)"; ashby/breezy: "Resume upload (<reason>)" or bare
+// "Resume upload"; personio: "CV upload (...)"/"CV upload"; oracleFusion:
+// "Resume/CV upload (...)"/"Resume/CV upload").
+function isResumeUploadFlag(label) {
+  return /^(resume(\/cv)?|cv)\s+upload\b/i.test(label || "");
+}
+
 // The "Answer & Retry" popup — one field per entry the submit worker
 // couldn't confidently fill on its own (see jobSearchSubmitWorkerRun.js /
 // profileMapping.js's resolveManualOverride), pre-filled with whatever answer
@@ -233,22 +249,32 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
   const [polishNotes, setPolishNotes] = useState({});
   const [saveError, setSaveError] = useState("");
   const isBusy = Boolean(saving) || polishingAll;
-  // Every field reaching this popup is required by construction — an
-  // adapter only ever pushes a label into manualReviewFields when
-  // field.required was true (see e.g. greenhouse.js's own per-field loop) —
-  // so a blank answer here isn't "optional, skip it", it's a guaranteed
-  // repeat of the exact same manual-review outcome. Confirmed live this was
-  // the actual failure mode behind "Answer & Retry doesn't work": nothing
-  // stopped Save & Retry with a field left blank, it just silently submitted
-  // an empty override for it (ignored by resolveManualOverride, same as
-  // never having answered at all) with no indication that's what happened.
-  const blankLabels = fields.map((f) => f.label).filter((label) => !(answers[label] || "").trim());
+  // Every ANSWERABLE field reaching this popup is required by construction
+  // — an adapter only ever pushes a real question's label into
+  // manualReviewFields when field.required was true (see e.g. greenhouse.js's
+  // own per-field loop) — so a blank answer here isn't "optional, skip it",
+  // it's a guaranteed repeat of the exact same manual-review outcome.
+  // Confirmed live this was the actual failure mode behind "Answer & Retry
+  // doesn't work": nothing stopped Save & Retry with a field left blank, it
+  // just silently submitted an empty override for it (ignored by
+  // resolveManualOverride, same as never having answered at all) with no
+  // indication that's what happened. A resume-upload flag is excluded here —
+  // see isResumeUploadFlag's own comment for why nothing typed there could
+  // ever do anything, so it can't be allowed to block Save & Retry the same
+  // way a real blank question does.
+  const answerableFields = fields.filter((f) => !isResumeUploadFlag(f.label));
+  const blankLabels = answerableFields.map((f) => f.label).filter((label) => !(answers[label] || "").trim());
   const allAnswered = blankLabels.length === 0;
 
   // Fields with captured options are excluded below — no free-text draft to
-  // polish, and hiding the whole button (further down) when EVERY field is
-  // select-backed relies on this same set.
+  // polish, and hiding the whole button (further down) when nothing left is
+  // actually polishable relies on this same set.
   const optionLabels = new Set(fields.filter(hasCapturedOptions).map((f) => f.label));
+  // Neither a select-backed field nor a resume-upload flag (see
+  // isResumeUploadFlag above — no textarea is even rendered for one) has a
+  // free-text draft to polish — used below to hide "Polish all with AI"
+  // entirely when nothing in this popup actually qualifies.
+  const polishableFieldCount = fields.filter((f) => !hasCapturedOptions(f) && !isResumeUploadFlag(f.label)).length;
 
   // One button polishes every field with a draft in it, one request at a
   // time (not concurrently — this shares the same daily LLM-call budget as
@@ -306,14 +332,28 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
         </div>
         <p className="job-search-panel-hint">
           {posting.title} at {posting.companyName} — answer whatever the submit worker couldn't confidently fill on
-          its own ({fields.length - blankLabels.length}/{fields.length} answered — every one is required, scroll
-          down if that count looks off). A dropdown was a real widget on the page, so it only offers its actual
-          options — pick one rather than typing. "Polish all with AI" refines every free-text draft's wording
-          without inventing anything you didn't say; it's optional. Saving retries the submission using these
-          answers.
+          its own {answerableFields.length > 0
+            ? `(${answerableFields.length - blankLabels.length}/${answerableFields.length} answered — every one is `
+              + "required, scroll down if that count looks off). "
+            : "— nothing here needs an answer from you (see below). "}
+          A dropdown was a real widget on the page, so it only offers its actual options — pick one rather than
+          typing. "Polish all with AI" refines every free-text draft's wording without inventing anything you didn't
+          say; it's optional. Saving retries the submission using these answers.
         </p>
 
         {fields.map((field) => {
+          if (isResumeUploadFlag(field.label)) {
+            return (
+              <Field key={field.label} label={`ℹ ${field.label}`}>
+                <p className="job-search-panel-hint">
+                  Not a question — the submit worker couldn't confirm your resume actually attached. There's nothing
+                  to type here; retrying re-attempts the upload itself, and that alone might just work this time.
+                  If it keeps landing back here, something about this posting's upload widget may need a closer
+                  look.
+                </p>
+              </Field>
+            );
+          }
           const answered = Boolean((answers[field.label] || "").trim());
           const optioned = hasCapturedOptions(field);
           return (
@@ -349,7 +389,7 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
         {polishNotes._all ? <p className="job-search-alert">{polishNotes._all}</p> : null}
 
         <div className="job-search-form-actions">
-          {optionLabels.size < fields.length ? (
+          {polishableFieldCount > 0 ? (
             <button type="button" disabled={isBusy} onClick={handlePolishAll}>
               {polishingAll ? "Polishing..." : "Polish all with AI"}
             </button>
