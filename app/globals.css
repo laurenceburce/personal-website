@@ -7403,6 +7403,15 @@ html[data-theme="light"] .auth-feature-gate {
   letter-spacing: 0.04em;
 }
 
+/* Flags a still-blank required field in the "Answer & Retry" popup — every
+   field there is required by construction, so this is what makes an
+   overlooked one (easy to miss once the field list needs scrolling) obvious
+   before Save & Retry, instead of silently repeating the same manual-review
+   outcome. */
+.job-search-field-required-empty {
+  border-color: rgba(251, 191, 36, 0.5) !important;
+}
+
 .job-search-field input:not([type="checkbox"]),
 .job-search-field select,
 .job-search-field textarea,

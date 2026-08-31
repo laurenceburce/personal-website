@@ -9,6 +9,22 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
+// Distinguishes "this is a fresh result from the retry I just kicked off"
+// from "this is stale — my retry hasn't actually landed yet (or never
+// triggered)" — a real gap when Save & Retry's own outcome only shows up
+// once the submit-worker gets around to it, sometime after the click.
+function timeAgo(value) {
+  if (!value) return null;
+  const ms = Date.now() - new Date(value).getTime();
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 const SKIP_REASON_LABELS = {
   unsupported_ats: "Unsupported ATS",
   required_field_unknown: "Required field unknown",
@@ -109,6 +125,9 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
                   {reasonPrefix && posting.decisionNote ? (
                     <p className={(posting.status === "failed" || posting.status === "unsupported_ats") ? "job-search-alert job-search-alert-error" : "job-search-alert"}>
                       {reasonPrefix}: {posting.decisionNote}
+                      {posting.decidedAt ? (
+                        <span className="job-search-cell-note"> — {timeAgo(posting.decidedAt)}{posting.decidedBy ? ` (${posting.decidedBy})` : ""}</span>
+                      ) : null}
                     </p>
                   ) : null}
 
@@ -170,12 +189,25 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
 // this one's body is a form, not a list/table, so there's little to share
 // beyond the outer shell.
 function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry }) {
+  const fields = posting.manualReviewFields || [];
   const [answers, setAnswers] = useState(() => Object.fromEntries(
-    (posting.manualReviewFields || []).map((f) => [f.label, f.answer || ""])
+    fields.map((f) => [f.label, f.answer || ""])
   ));
   const [polishingAll, setPolishingAll] = useState(false);
   const [polishNotes, setPolishNotes] = useState({});
+  const [saveError, setSaveError] = useState("");
   const isBusy = Boolean(saving) || polishingAll;
+  // Every field reaching this popup is required by construction — an
+  // adapter only ever pushes a label into manualReviewFields when
+  // field.required was true (see e.g. greenhouse.js's own per-field loop) —
+  // so a blank answer here isn't "optional, skip it", it's a guaranteed
+  // repeat of the exact same manual-review outcome. Confirmed live this was
+  // the actual failure mode behind "Answer & Retry doesn't work": nothing
+  // stopped Save & Retry with a field left blank, it just silently submitted
+  // an empty override for it (ignored by resolveManualOverride, same as
+  // never having answered at all) with no indication that's what happened.
+  const blankLabels = fields.map((f) => f.label).filter((label) => !(answers[label] || "").trim());
+  const allAnswered = blankLabels.length === 0;
 
   // One button polishes every field with a draft in it, one request at a
   // time (not concurrently — this shares the same daily LLM-call budget as
@@ -208,6 +240,15 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
   }
 
   async function handleSaveAndRetry() {
+    if (!allAnswered) {
+      setSaveError(
+        blankLabels.length === 1
+          ? `"${blankLabels[0]}" is still blank — every field here is required, so retrying now would just land back in Manual Review on that one again.`
+          : `${blankLabels.length} fields are still blank — every field here is required, so retrying now would just land back in Manual Review on those again.`
+      );
+      return;
+    }
+    setSaveError("");
     const payload = Object.entries(answers).map(([label, answer]) => ({ label, answer: answer.trim() }));
     await onSaveAndRetry(posting.id, payload);
     onClose();
@@ -222,21 +263,28 @@ function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry 
         </div>
         <p className="job-search-panel-hint">
           {posting.title} at {posting.companyName} — answer whatever the submit worker couldn't confidently fill on
-          its own. "Polish all with AI" refines every draft's wording without inventing anything you didn't say;
-          it's optional. Saving retries the submission using these answers.
+          its own ({fields.length - blankLabels.length}/{fields.length} answered — every one is required, scroll
+          down if that count looks off). "Polish all with AI" refines every draft's wording without inventing
+          anything you didn't say; it's optional. Saving retries the submission using these answers.
         </p>
 
-        {(posting.manualReviewFields || []).map((field) => (
-          <Field key={field.label} label={field.label}>
-            <textarea
-              rows={3}
-              value={answers[field.label] || ""}
-              disabled={isBusy}
-              onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
-            />
-            {polishNotes[field.label] ? <small>{polishNotes[field.label]}</small> : null}
-          </Field>
-        ))}
+        {fields.map((field) => {
+          const answered = Boolean((answers[field.label] || "").trim());
+          return (
+            <Field key={field.label} label={`${answered ? "✓ " : "○ "}${field.label}`}>
+              <textarea
+                rows={3}
+                value={answers[field.label] || ""}
+                disabled={isBusy}
+                className={answered ? "" : "job-search-field-required-empty"}
+                onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
+              />
+              {polishNotes[field.label] ? <small>{polishNotes[field.label]}</small> : null}
+            </Field>
+          );
+        })}
+
+        {saveError ? <p className="job-search-alert job-search-alert-error">{saveError}</p> : null}
 
         {polishNotes._all ? <p className="job-search-alert">{polishNotes._all}</p> : null}
 
