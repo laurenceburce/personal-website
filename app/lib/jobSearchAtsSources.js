@@ -155,6 +155,33 @@ const REGION_RESTRICTED_REMOTE = new RegExp(
   "i"
 );
 
+// A second, independent reason a STRONG_REMOTE_SIGNALS match can still be
+// wrong, beyond region-restriction: the description negates it outright
+// ("This is NOT a remote role" — already documented above as a confirmed
+// live miss, only caught today when the ATS happens to supply a structured
+// remote flag to override it), or the role is explicitly hybrid/onsite with
+// specific in-office days, and "remote" only appears elsewhere in the same
+// description (a generic benefits blurb, a mention of "remote team
+// tooling") — Greenhouse in particular has no structured flag at all (see
+// fetchGreenhouseJobs below), so this description-level check is the only
+// signal available for that platform. Deliberately conservative in the safer
+// direction: misreading a genuinely-remote role as hybrid costs a human one
+// extra glance in Review; misreading a genuinely-hybrid role as remote means
+// it skips remote_only hard filtering entirely.
+const HYBRID_OR_ONSITE_OVERRIDE = new RegExp(
+  "\\bnot\\s+(a\\s+)?(fully\\s+)?remote\\b|\\bno\\s+remote\\b|\\bisn'?t\\s+remote\\b" +
+  "|\\bhybrid\\s+(role|position|schedule|work|team)\\b|\\boffice[- ]centric\\b" +
+  "|\\b\\d+\\s*(day|days)\\s*(per|a)\\s*week\\s*in\\s*(the\\s*)?office\\b" +
+  // "in-office" alone is too broad on its own — confirmed live it false-
+  // positives on a genuinely fully-remote posting mentioning "occasional
+  // optional in-office days" as a perk, not a requirement — only counts here
+  // paired with a word that actually signals a requirement.
+  "|\\bin[- ]office\\s+(required|only|requirement|days?\\s+are\\s+required)\\b" +
+  "|\\brequired\\b[^.]{0,30}\\bin[- ]office\\b" +
+  "|\\bon[- ]?site\\s+(required|only|role|position)\\b",
+  "i"
+);
+
 // Priority order, confirmed live to matter (not arbitrary):
 // 1. The location field itself saying remote/hybrid — a human typed this
 //    directly into the location field, the strongest signal available.
@@ -168,10 +195,15 @@ const REGION_RESTRICTED_REMOTE = new RegExp(
 //    own isRemote:false is what actually gets that one right.
 // 3. The free-text description heuristic, only once neither of the above
 //    gave an answer — kept to strong, explicit phrasings to avoid false-
-//    positiving on a JD that merely mentions "remote" in passing, and now
-//    also rejecting geography-restricted claims (see REGION_RESTRICTED_REMOTE
-//    above) so "fully remote within European timezones" doesn't count as
-//    unrestricted remote for a candidate who can't actually work it.
+//    positiving on a JD that merely mentions "remote" in passing, and
+//    rejecting both geography-restricted claims (REGION_RESTRICTED_REMOTE —
+//    "fully remote within European timezones" isn't unrestricted remote for
+//    a candidate who can't actually work it) and outright negated/hybrid-
+//    overridden ones (HYBRID_OR_ONSITE_OVERRIDE — confirmed live twice now:
+//    a description can say "remote role" while meaning the opposite, or
+//    while requiring specific in-office days, and Greenhouse has no
+//    structured flag to catch that the way step 2 below does for Ashby/
+//    Workable).
 // structuredRemote is deliberately NOT allowed to override step 1: a Cinder/
 // Ashby posting whose location field literally said "Remote: SF/NYC/London"
 // still had isRemote:false on that specific listing (a stale/inconsistent
@@ -182,9 +214,15 @@ export function guessRemoteType(locationText, descriptionText, structuredRemote 
   if (/hybrid/.test(text)) return "hybrid";
   if (structuredRemote === true) return "remote";
   if (structuredRemote === false) return "onsite";
-  if (descriptionText && STRONG_REMOTE_SIGNALS.test(descriptionText) && !REGION_RESTRICTED_REMOTE.test(descriptionText)) {
+  if (
+    descriptionText
+    && STRONG_REMOTE_SIGNALS.test(descriptionText)
+    && !REGION_RESTRICTED_REMOTE.test(descriptionText)
+    && !HYBRID_OR_ONSITE_OVERRIDE.test(descriptionText)
+  ) {
     return "remote";
   }
+  if (descriptionText && HYBRID_OR_ONSITE_OVERRIDE.test(descriptionText)) return "hybrid";
   if (text.trim()) return "onsite";
   return "unknown";
 }

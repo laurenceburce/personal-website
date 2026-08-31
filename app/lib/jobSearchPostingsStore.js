@@ -80,6 +80,13 @@ export function mapPostingRow(row) {
     decidedAt: row.decided_at,
     decidedBy: row.decided_by,
     decisionNote: row.decision_note,
+    // Structured counterpart to decision_note's flattened string, for the
+    // needs_manual_review path only (see jobSearchSubmitWorkerRun.js) — one
+    // entry per field an adapter couldn't confidently fill on its own, each
+    // carrying whatever answer the user has saved for it so far (null until
+    // they do). Lets the Review Queue render one input per actual unanswered
+    // field instead of just showing the joined string.
+    manualReviewFields: parseJsonColumn(row.manual_review_fields, []),
     isActive: Boolean(row.is_active),
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
@@ -368,6 +375,27 @@ export async function updatePostingScore(id, patch) {
     assign("decision_note", String(patch.submissionNote || "").slice(0, 500));
     assign("decided_at", now);
     assign("decided_by", "submit-worker");
+  }
+
+  // The scoring pipeline's own auto-reject (see AUTO_REJECT_LOCATION_MAX_
+  // SCORE in jobSearchScoringPipeline.js) — a hard dealbreaker dimension
+  // score skips the review queue entirely rather than landing in
+  // pending_review/scored_low. Same shape as the two blocks above: an
+  // automated decision, not a human one, so its own decided_by.
+  if ("autoRejectNote" in patch) {
+    assign("decision_note", String(patch.autoRejectNote || "").slice(0, 500));
+    assign("decided_at", now);
+    assign("decided_by", "auto-scoring");
+  }
+
+  // The structured [{label, answer}] list backing the manual-answer-override
+  // feature (see profileMapping.js's resolveManualOverride and the adapters
+  // that call it). Written unconditionally whenever the caller includes it —
+  // including `[]` on a successful submit, so a posting that finally goes
+  // through doesn't keep showing stale unanswered fields if it's ever
+  // resubmitted for some unrelated reason later.
+  if ("manualReviewFields" in patch) {
+    assign("manual_review_fields", toJsonParam(patch.manualReviewFields || []));
   }
 
   values.push(postingId);

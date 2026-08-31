@@ -1,3 +1,4 @@
+import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -9,6 +10,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
@@ -205,10 +207,27 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     }
 
     const fields = await collectLabeledFields(scope);
+    // Fetched once, reused for every field below — see
+    // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
+    // per-field query.
+    const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     for (const field of fields) {
       const widget = await classifyWidget(field.locator);
       if (widget === "file") continue; // resume/cover-letter handled separately
+
+      // A human already answered this exact question for this exact posting
+      // (see the Review Queue's "Answer & Retry" popup) — try it before any
+      // auto-resolution strategy below. Falls through to those on failure
+      // (e.g. the form's widget shape changed since the answer was saved),
+      // rather than giving up on the field outright.
+      const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
+      if (manualOverride != null) {
+        if (await fillByWidget(page, scope, field.locator, widget, manualOverride)) {
+          submittedAnswers[field.label] = manualOverride;
+          continue;
+        }
+      }
 
       if (widget === "checkbox" && isEeoConsentCheckboxLabel(field.normalizedLabel)) {
         const hasEeoData = Object.values(profile.eeoAnswers || {}).some(Boolean);
@@ -264,6 +283,25 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           manualReviewFields.push(field.label);
         }
         continue;
+      }
+
+      // A similarly-worded question was answered by hand on a DIFFERENT
+      // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+      // popup) — a human-verified past answer beats a fresh LLM guess, so
+      // this is checked before the free-text fallback below, for any widget
+      // type (not just text), reusing the exact same daily LLM-call budget
+      // check the free-text branch already does right after this.
+      if (memoryRows.length > 0) {
+        const llmSettings = await getLlmFindSettings();
+        const usage = await getTodayLlmUsage();
+        if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+          const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+          if (memoryMatch && await fillByWidget(page, scope, field.locator, widget, memoryMatch.answer)) {
+            submittedAnswers[field.label] = memoryMatch.answer;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            continue;
+          }
+        }
       }
 
       // Novel free-text question — LLM-assisted, capped, and only for plain

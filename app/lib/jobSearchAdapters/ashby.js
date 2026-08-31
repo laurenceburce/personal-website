@@ -13,6 +13,7 @@
 // (`g-recaptcha-response`) AND a separate "decode this and prove you're not a
 // bot" text puzzle in the ordinary question flow — see blockerDetection.js,
 // checked before any field is touched.
+import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -24,6 +25,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
@@ -225,12 +227,27 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     }
 
     const fields = await collectLabeledFields(page);
+    // Fetched once, reused for every field below — see
+    // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
+    // per-field query.
+    const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     for (const field of fields) {
       if (field.forId === "_systemfield_resume") continue; // handled above
 
       const widget = await classifyWidget(field.locator);
       if (widget === "file") continue; // e.g. optional cover-letter file upload — not supported, never guessed
+
+      // A human already answered this exact question for this exact posting
+      // (see the Review Queue's "Answer & Retry" popup) — try it before any
+      // auto-resolution strategy below. Falls through to those on failure.
+      const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
+      if (manualOverride != null) {
+        if (await fillByWidget(page, field.locator, widget, manualOverride)) {
+          submittedAnswers[field.label] = manualOverride;
+          continue;
+        }
+      }
 
       if (isWorkAuthLabel(field.normalizedLabel)) {
         const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
@@ -274,6 +291,26 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           manualReviewFields.push(field.label);
         }
         continue;
+      }
+
+      // A similarly-worded question was answered by hand on a DIFFERENT
+      // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+      // popup) — a human-verified past answer beats a fresh LLM guess, so
+      // this is checked ahead of every "never guessed" category below (yes/no,
+      // fixed option sets) and the free-text fallback, for any widget type,
+      // reusing the exact same daily LLM-call budget check the free-text
+      // branch already does.
+      if (memoryRows.length > 0) {
+        const llmSettings = await getLlmFindSettings();
+        const usage = await getTodayLlmUsage();
+        if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+          const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+          if (memoryMatch && await fillByWidget(page, field.locator, widget, memoryMatch.answer)) {
+            submittedAnswers[field.label] = memoryMatch.answer;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            continue;
+          }
+        }
       }
 
       // Yes/no capability-style questions ("Do you have N years of experience

@@ -217,3 +217,21 @@ export function resolveWorkAuthValue(label, workAuthorization) {
   }
   return null;
 }
+
+// A human's own saved answer for a specific field this posting previously
+// landed in needs_manual_review over (see jobSearchPostingsStore.js's
+// manual_review_fields column and the Review Queue's "Answer & Retry" popup)
+// — checked by every adapter as the FIRST resolution strategy for a field,
+// ahead of EEO/work-auth/profile-matching/LLM, since a real person already
+// looked at this exact question for this exact posting and answered it
+// on purpose. `manualReviewFields` is the posting's own array, `normalizedLabel`
+// the field currently being resolved (same normalizeLabel() call every other
+// resolver here already uses) — matched by normalized label rather than exact
+// text so trivial whitespace/asterisk differences between the DOM at save-time
+// and at retry-time can't cause a real saved answer to silently miss.
+export function resolveManualOverride(normalizedLabel, manualReviewFields) {
+  const match = (manualReviewFields || []).find(
+    (f) => f?.answer != null && f.answer !== "" && normalizeLabel(f.label) === normalizedLabel
+  );
+  return match ? match.answer : null;
+}

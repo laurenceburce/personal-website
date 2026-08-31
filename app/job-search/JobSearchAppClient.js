@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import AnswerMemoryPanel from "./AnswerMemoryPanel";
 import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
@@ -14,6 +15,7 @@ const TABS = [
   { id: "overview", label: "Overview" },
   { id: "review", label: "Review" },
   { id: "applied", label: "Applied Jobs" },
+  { id: "memory", label: "Memory" },
   { id: "settings", label: "User Settings" },
   { id: "find", label: "Job Find Settings" }
 ];
@@ -155,6 +157,15 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             onBatchReject={(ids, note) => runAction("/api/job-search/review-queue", "batchReject", { ids, note }, `Rejected ${ids.length}.`)}
             onRescore={(id) => runAction("/api/job-search/review-queue", "rescoreNow", { id }, "Re-scored.")}
             onMarkApplied={(id) => runAction("/api/job-search/review-queue", "markAppliedManually", { id }, "Marked as applied.")}
+            // Read-only preview, no posting state changes — called directly
+            // rather than through runAction so it doesn't show a misleading
+            // "Saved." banner or force a full-page refresh for nothing.
+            onPolishManualAnswer={(id, label, draftAnswer) => callJobSearchAction(
+              "/api/job-search/review-queue", "polishManualAnswer", { id, label, draftAnswer }
+            )}
+            onSaveManualAnswersAndRetry={(id, answers) => runAction(
+              "/api/job-search/review-queue", "saveManualAnswersAndRetry", { id, answers }, "Answers saved — retrying."
+            )}
           />
         )}
 
@@ -164,6 +175,15 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             saving={saving}
             onUpdateNote={(id, note) => runAction("/api/job-search/applications", "updateApplicationNote", { id, note }, "Note saved.")}
             onDelete={(id) => runAction("/api/job-search/applications", "deleteApplication", { id }, "Application deleted.")}
+          />
+        )}
+
+        {tab === "memory" && (
+          <AnswerMemoryPanel
+            entries={snapshot.answerMemory}
+            saving={saving}
+            onSave={(id, answer) => runAction("/api/job-search/answer-memory", "updateAnswerMemory", { id, answer }, "Answer updated.")}
+            onDelete={(id) => runAction("/api/job-search/answer-memory", "deleteAnswerMemory", { id }, "Memory entry deleted.")}
           />
         )}
 

@@ -1,3 +1,4 @@
+import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -9,6 +10,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
@@ -254,9 +256,41 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
     }
 
     const fields = await collectFields(page);
+    // Fetched once, reused for every field below — see
+    // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
+    // per-field query.
+    const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     for (const field of fields) {
       const normalizedLabel = normalizeLabel(field.label);
+
+      // A human already answered this exact question for this exact posting
+      // (see the Review Queue's "Answer & Retry" popup) — try it before any
+      // auto-resolution strategy below. Not attempted for a plain "checkbox"
+      // kind (a single consent-style box — a text override doesn't map to
+      // "check this"); "field" reuses fillField, "radio-group" reuses the
+      // same option-text matching the EEO/work-auth branch below already
+      // does.
+      const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
+      if (manualOverride != null && field.kind !== "checkbox") {
+        if (field.kind === "radio-group") {
+          const match = field.options.find((option) => option.text.trim().toLowerCase() === manualOverride.toLowerCase());
+          if (match) {
+            const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(match.value)}"]`).first();
+            const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
+            if (checked) {
+              submittedAnswers[field.label] = match.text;
+              continue;
+            }
+          }
+        } else {
+          const overrideFilled = await fillField(page, field, [manualOverride]);
+          if (overrideFilled != null) {
+            submittedAnswers[field.label] = overrideFilled;
+            continue;
+          }
+        }
+      }
 
       if (field.kind === "checkbox") {
         if (field.name === "smsConsent") continue;
@@ -279,6 +313,30 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
             continue;
           }
         }
+
+        // Not an EEO/work-auth radio-group (or the profile had no matching
+        // data) — a similarly-worded question answered by hand on a
+        // DIFFERENT posting before (see the Review Queue's Memory tab)
+        // still gets a chance, ahead of manual review, using the same
+        // option-text matching as the EEO/work-auth attempt just above.
+        if (memoryRows.length > 0) {
+          const llmSettings = await getLlmFindSettings();
+          const usage = await getTodayLlmUsage();
+          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+            const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+            const memoryOption = memoryMatch && field.options.find((option) => option.text.trim().toLowerCase() === memoryMatch.answer.toLowerCase());
+            if (memoryOption) {
+              const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(memoryOption.value)}"]`).first();
+              const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
+              if (checked) {
+                submittedAnswers[field.label] = memoryOption.text;
+                await recordMemoryReuse(memoryMatch.id).catch(() => {});
+                continue;
+              }
+            }
+          }
+        }
+
         if (field.required) manualReviewFields.push(cleanLabel(field.label));
         continue;
       }
@@ -325,6 +383,29 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
           manualReviewFields.push(field.label);
         }
         continue;
+      }
+
+      // A similarly-worded question was answered by hand on a DIFFERENT
+      // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+      // popup) — a human-verified past answer beats a fresh LLM guess, so
+      // this is checked ahead of the salary/logistics exclusion and the
+      // select-tag exclusion right below (both normally always manual for
+      // Breezy — this file doesn't even attempt an LLM on a select), and
+      // ahead of the free-text fallback further down.
+      if (memoryRows.length > 0) {
+        const llmSettings = await getLlmFindSettings();
+        const usage = await getTodayLlmUsage();
+        if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+          const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+          if (memoryMatch) {
+            const memoryFilled = await fillField(page, field, [memoryMatch.answer]);
+            if (memoryFilled != null) {
+              submittedAnswers[field.label] = memoryFilled;
+              await recordMemoryReuse(memoryMatch.id).catch(() => {});
+              continue;
+            }
+          }
+        }
       }
 
       if (field.name === "cSalary" || field.name === "salaryCurrency" || /salary|compensation|notice period|available from|availability/i.test(field.label)) {

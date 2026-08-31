@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
-import { atsTypeLabel, Badge, scamBadgeTone } from "./JobSearchUi";
+import { atsTypeLabel, Badge, Field, scamBadgeTone } from "./JobSearchUi";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -30,7 +30,7 @@ const REASON_PREFIXES = {
   unsupported_ats: "Submission failed"
 };
 
-function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, saving }) {
+function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, onOpenManualAnswer, saving }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState("");
   const isBusy = Boolean(saving);
@@ -42,6 +42,10 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   // 'approved' so the submit worker picks it up again) reads as "Retry".
   const isRetryable = posting.status === "needs_manual_review" || posting.status === "failed" || posting.status === "unsupported_ats";
   const reasonPrefix = REASON_PREFIXES[posting.status];
+  // The targeted alternative to plain "Retry" — only makes sense once there's
+  // an actual structured field list to answer (older postings from before
+  // this existed only ever got the flattened decisionNote string).
+  const hasAnswerableFields = posting.status === "needs_manual_review" && posting.manualReviewFields?.length > 0;
 
   return (
     <>
@@ -80,6 +84,9 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
           {posting.status !== "approved" ? (
             <>
               <button type="button" disabled={isBusy} onClick={() => onApprove(posting.id)}>{isRetryable ? "Retry" : "Approve"}</button>
+              {hasAnswerableFields ? (
+                <button type="button" disabled={isBusy} onClick={() => onOpenManualAnswer(posting)}>Answer &amp; Retry</button>
+              ) : null}
               <button type="button" disabled={isBusy} onClick={() => onRescore(posting.id)}>Re-score</button>
             </>
           ) : null}
@@ -152,13 +159,104 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
   );
 }
 
+// The "Answer & Retry" popup — one textarea per field the submit worker
+// couldn't confidently fill on its own (see jobSearchSubmitWorkerRun.js /
+// profileMapping.js's resolveManualOverride), pre-filled with whatever answer
+// was already saved for it (if any). "Polish with AI" refines just that one
+// field's current draft in place; "Save & Retry" persists every field's
+// current text and re-queues the posting exactly like the plain "Retry"
+// button does. Same `.job-search-modal` backdrop/header structure as
+// OverviewPanel.js's own HistoryModal, kept local here rather than shared —
+// this one's body is a form, not a list/table, so there's little to share
+// beyond the outer shell.
+function ManualAnswerModal({ posting, saving, onClose, onPolish, onSaveAndRetry }) {
+  const [answers, setAnswers] = useState(() => Object.fromEntries(
+    (posting.manualReviewFields || []).map((f) => [f.label, f.answer || ""])
+  ));
+  const [polishingLabel, setPolishingLabel] = useState(null);
+  const [polishNotes, setPolishNotes] = useState({});
+  const isBusy = Boolean(saving) || polishingLabel != null;
+
+  async function handlePolish(label) {
+    const draft = (answers[label] || "").trim();
+    if (!draft) {
+      setPolishNotes((prev) => ({ ...prev, [label]: "Type an answer first, then polish it." }));
+      return;
+    }
+    setPolishingLabel(label);
+    setPolishNotes((prev) => ({ ...prev, [label]: "" }));
+    try {
+      const result = await onPolish(posting.id, label, draft);
+      if (result?.polished) {
+        setAnswers((prev) => ({ ...prev, [label]: result.polished }));
+      } else {
+        setPolishNotes((prev) => ({ ...prev, [label]: "AI couldn't improve this — your answer is unchanged." }));
+      }
+    } catch (err) {
+      setPolishNotes((prev) => ({ ...prev, [label]: err?.message || "Polish failed." }));
+    } finally {
+      setPolishingLabel(null);
+    }
+  }
+
+  async function handleSaveAndRetry() {
+    const payload = Object.entries(answers).map(([label, answer]) => ({ label, answer: answer.trim() }));
+    await onSaveAndRetry(posting.id, payload);
+    onClose();
+  }
+
+  return (
+    <div className="job-search-modal-backdrop" onClick={onClose}>
+      <div className="job-search-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="job-search-modal-header">
+          <h2>Answer &amp; Retry</h2>
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+        <p className="job-search-panel-hint">
+          {posting.title} at {posting.companyName} — answer whatever the submit worker couldn't confidently fill on
+          its own. "Polish with AI" refines your draft's wording without inventing anything you didn't say; it's
+          optional. Saving retries the submission using these answers.
+        </p>
+
+        {(posting.manualReviewFields || []).map((field) => (
+          <Field key={field.label} label={field.label}>
+            <textarea
+              rows={3}
+              value={answers[field.label] || ""}
+              disabled={isBusy}
+              onChange={(e) => setAnswers((prev) => ({ ...prev, [field.label]: e.target.value }))}
+            />
+            <div className="job-search-form-actions">
+              <button type="button" disabled={isBusy} onClick={() => handlePolish(field.label)}>
+                {polishingLabel === field.label ? "Polishing..." : "Polish with AI"}
+              </button>
+              {polishNotes[field.label] ? <small>{polishNotes[field.label]}</small> : null}
+            </div>
+          </Field>
+        ))}
+
+        <div className="job-search-form-actions">
+          <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>Save &amp; Retry</button>
+          <button type="button" disabled={isBusy} onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ReviewQueueTable({
   postings, scoredLow, autoApplySkipped, approvedWaiting, autoApplyQueue, autoApplyEnabled,
   needsManualReview, failedPostings,
-  saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied
+  saving, onApprove, onReject, onBatchApprove, onBatchReject, onRescore, onMarkApplied,
+  onPolishManualAnswer, onSaveManualAnswersAndRetry
 }) {
   const [selected, setSelected] = useState(new Set());
   const [view, setView] = useState("all");
+  // The full posting object (not just an id) — its manualReviewFields are
+  // only ever present on the needs_manual_review-status objects reaching this
+  // component, and storing the object directly avoids a second lookup keyed
+  // off whichever view/list the row that opened it happened to be in.
+  const [manualAnswerPosting, setManualAnswerPosting] = useState(null);
 
   // Four tabs instead of seven — each one a union of statuses that share the
   // same next action, not a 1:1 mirror of every distinct posting.status
@@ -239,9 +337,10 @@ export default function ReviewQueueTable({
 
       {view === "manualReview" ? (
         <p className="job-search-panel-hint">
-          A submission attempt (approved by hand, or auto-applied) hit at least one required field it couldn't
-          confidently fill on its own — expand a row to see exactly which ones. Fill in the missing info in your
-          Profile Settings if it's something reusable, then click "Retry" to have the submit worker try again.
+          A submission attempt hit at least one required field it couldn't confidently fill on its own — expand a
+          row to see exactly which ones. If it's something reusable, fill it into your Profile Settings and click
+          "Retry"; if it's specific to this posting (a question only this company asks), click "Answer &amp; Retry"
+          to type an answer for just those fields and have the submit worker try again with them.
         </p>
       ) : null}
 
@@ -298,6 +397,7 @@ export default function ReviewQueueTable({
                   onReject={onReject}
                   onRescore={onRescore}
                   onMarkApplied={onMarkApplied}
+                  onOpenManualAnswer={setManualAnswerPosting}
                   saving={saving}
                 />
               ))}
@@ -305,6 +405,16 @@ export default function ReviewQueueTable({
           </table>
         </div>
       )}
+
+      {manualAnswerPosting ? (
+        <ManualAnswerModal
+          posting={manualAnswerPosting}
+          saving={saving}
+          onClose={() => setManualAnswerPosting(null)}
+          onPolish={onPolishManualAnswer}
+          onSaveAndRetry={onSaveManualAnswersAndRetry}
+        />
+      ) : null}
     </section>
   );
 }

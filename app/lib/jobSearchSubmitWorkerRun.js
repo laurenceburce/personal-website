@@ -12,6 +12,7 @@
 // code path in the whole system.
 import { submitApplication } from "./jobSearchAdapters/index.js";
 import { resolvePostingForSubmission } from "./jobSearchAdapters/atsResolver.js";
+import { normalizeLabel } from "./jobSearchAdapters/profileMapping.js";
 import { evaluateAutoApply } from "./jobSearchAutoApply.js";
 import { insertApplicationAttempt } from "./jobSearchApplicationStore.js";
 import { listPostingsByStatus, updatePostingScore } from "./jobSearchPostingsStore.js";
@@ -96,6 +97,26 @@ export async function runSubmitWorkerPass() {
           ? `Needs manual review: ${result.manualReviewFields.join(", ")}`
           : result.errorMessage;
 
+        // Structured counterpart of the joined outcomeMessage above — one
+        // {label, answer} entry per field this attempt couldn't confidently
+        // fill, powering the Review Queue's "Answer & Retry" popup (see
+        // jobSearchAdapters/profileMapping.js's resolveManualOverride, which
+        // reads this same array back on the next attempt). A label that was
+        // already answered on a PRIOR attempt but shows up again here means
+        // either it's genuinely new, or a saved answer's fill attempt failed
+        // for some structural reason (e.g. the form's widget shape changed) —
+        // either way, carry the previous answer forward rather than wiping it,
+        // so the user doesn't lose what they already typed. Written even when
+        // empty on a successful submit, so stale unanswered-field data doesn't
+        // linger once a posting actually goes through.
+        const previousAnswersByLabel = new Map(
+          (posting.manualReviewFields || []).map((f) => [normalizeLabel(f.label), f.answer])
+        );
+        const structuredManualReviewFields = (result.manualReviewFields || []).map((label) => ({
+          label,
+          answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? null
+        }));
+
         await insertApplicationAttempt({
           postingId: posting.id,
           companyName: posting.companyName,
@@ -122,7 +143,8 @@ export async function runSubmitWorkerPass() {
           // row) so it can actually show up somewhere a human would act on
           // it again — see the Review Queue's Needs Manual Review/Failed
           // tabs. Only worth setting when it's not a plain success.
-          ...(applicationStatus !== "submitted" ? { submissionNote: outcomeMessage } : {})
+          ...(applicationStatus !== "submitted" ? { submissionNote: outcomeMessage } : {}),
+          manualReviewFields: structuredManualReviewFields
         });
         console.log(`  -> ${applicationStatus}`);
       } catch (error) {

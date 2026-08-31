@@ -303,6 +303,13 @@ export const ensureJobSearchSchema = async () => {
       // Audit trail: did a human approve this, or did auto-apply submit it
       // with nobody in the loop? Surfaced as a badge in Applied Jobs.
       await runMigration(pool, "ALTER TABLE job_search_applications ADD COLUMN auto_applied TINYINT(1) NOT NULL DEFAULT 0");
+      // Structured [{label, answer}] list for needs_manual_review postings —
+      // see jobSearchSubmitWorkerRun.js (writes it) and
+      // jobSearchAdapters/profileMapping.js's resolveManualOverride (reads
+      // it on retry). decision_note already carries a flattened, human-only
+      // version of the same field labels; this is what lets the Review Queue
+      // actually render one input per field instead of just that string.
+      await runMigration(pool, "ALTER TABLE job_search_postings ADD COLUMN manual_review_fields JSON NULL");
 
       // Auto-discovered company -> ATS board directory (see
       // jobSearchCompanyProbe.js / jobSearchCompanyDirectory.js). Populated
@@ -465,6 +472,38 @@ export const ensureJobSearchSchema = async () => {
           created_at DATETIME(3) NOT NULL,
           updated_at DATETIME(3) NOT NULL,
           UNIQUE KEY job_search_oracle_sessions_host_idx (tenant_host)
+        )
+      `);
+
+      // Cross-posting "answer memory" (see jobSearchAnswerMemoryStore.js) —
+      // every answer typed into the Review Queue's "Answer & Retry" popup is
+      // saved here, one row per DISTINCT remembered question, so a similar
+      // question on a LATER, unrelated posting can be auto-filled from it
+      // instead of landing in manual review again. UNIQUE on normalized_label
+      // so re-answering the same recurring question upserts (most recent
+      // answer wins) rather than piling up duplicates. embedding/
+      // embedding_model mirror job_search_postings' own columns exactly —
+      // same embedText()/cosineSimilarity() machinery, reused rather than
+      // reimplemented, just matching a question against past questions
+      // instead of a posting against a profile. source_posting_id is
+      // informational only (no FK, matches this table's neighbors) —
+      // source_company_name is denormalized alongside it so the Memory tab
+      // can still show provenance after the source posting is long gone.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_answer_memory (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          question_label VARCHAR(500) NOT NULL,
+          normalized_label VARCHAR(500) NOT NULL,
+          answer TEXT NOT NULL,
+          embedding JSON NULL,
+          embedding_model VARCHAR(64) NULL,
+          source_posting_id BIGINT UNSIGNED NULL,
+          source_company_name VARCHAR(160) NOT NULL DEFAULT '',
+          times_reused INT NOT NULL DEFAULT 0,
+          last_reused_at DATETIME(3) NULL,
+          created_at DATETIME(3) NOT NULL,
+          updated_at DATETIME(3) NOT NULL,
+          UNIQUE KEY job_search_answer_memory_label_idx (normalized_label)
         )
       `);
 

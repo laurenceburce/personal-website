@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import JobSearchAppClient from "./JobSearchAppClient";
+import { listAnswerMemory } from "../lib/jobSearchAnswerMemoryStore";
 import { listApplications } from "../lib/jobSearchApplicationStore";
 import { evaluateCheapGates } from "../lib/jobSearchAutoApplyGates";
 import { getJobSearchAccess } from "../lib/jobSearchAuth";
@@ -44,7 +45,8 @@ async function getDashboardSnapshot() {
     llmUsage,
     dbSizeMb,
     companyDirectoryStats,
-    workerStatus
+    workerStatus,
+    answerMemory
   ] = await Promise.all([
     getProfile(),
     getFindSettings(),
@@ -74,7 +76,8 @@ async function getDashboardSnapshot() {
     getTodayLlmUsage(),
     getDatabaseSizeMb(),
     getCompanyDirectoryStats(),
-    getAllWorkerStatus()
+    getAllWorkerStatus(),
+    listAnswerMemory()
   ]);
 
   // Postings that would actually be attempted on the NEXT submit-worker run
@@ -96,7 +99,7 @@ async function getDashboardSnapshot() {
   return {
     profile, findSettings, resumes, defaultResume, oracleSessions, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
     needsManualReview, failedPostings, autoApplyQueue, applications,
-    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus,
+    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus, answerMemory,
     adzunaConfigured: isAdzunaConfigured()
   };
 }

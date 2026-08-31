@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
+import { upsertAnswerMemory } from "../../../lib/jobSearchAnswerMemoryStore";
 import { insertApplicationAttempt } from "../../../lib/jobSearchApplicationStore";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
-import { decidePosting, getPostingById } from "../../../lib/jobSearchPostingsStore";
+import { polishFreeTextAnswer } from "../../../lib/jobSearchLlm";
+import { decidePosting, getPostingById, updatePostingScore } from "../../../lib/jobSearchPostingsStore";
 import { scorePosting } from "../../../lib/jobSearchScoringPipeline";
-import { getDefaultResume } from "../../../lib/jobSearchSettingsStore";
+import { getDefaultResume, getFindSettings, getProfile } from "../../../lib/jobSearchSettingsStore";
 import { triggerSubmitWorker } from "../../../lib/jobSearchSubmitTrigger";
+import { getTodayLlmUsage, incrementLlmUsage } from "../../../lib/jobSearchUsageStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +56,74 @@ async function markAppliedManuallyOne(id, email) {
   });
 
   return decidePosting(id, { status: "submitted", decidedBy: email, decisionNote: "Marked as applied manually." });
+}
+
+// Rewrites a candidate's own draft answer to one flagged manual-review
+// question (see profileMapping.js's resolveManualOverride) — read-only, never
+// touches the posting's stored answers or status. Metered against the same
+// daily LLM budget as every other Gemini call in this system (scoring,
+// embedding, the adapters' own free-text fallback) since it's the same model
+// call, just seeded with the candidate's draft instead of generating from
+// scratch — see jobSearchLlm.js's polishFreeTextAnswer.
+async function polishManualAnswerOne(id, label, draftAnswer) {
+  const posting = await getPostingById(id);
+  if (!posting) throw new Error("Posting not found.");
+
+  const findSettings = await getFindSettings();
+  const usage = await getTodayLlmUsage();
+  if (usage.totalCalls >= findSettings.maxLlmCallsPerDay) {
+    throw new Error("Today's LLM call budget is used up — try again tomorrow, or save your answer as-is.");
+  }
+
+  const [profile, defaultResume] = await Promise.all([getProfile(), getDefaultResume()]);
+  const polished = await polishFreeTextAnswer({
+    question: label,
+    draftAnswer,
+    posting,
+    profile,
+    resumeText: defaultResume?.parsedText || ""
+  });
+  await incrementLlmUsage("score");
+
+  return { polished };
+}
+
+// Persists the user's answers for a needs_manual_review posting's flagged
+// fields, then does exactly what "Retry" already does (approveOne +
+// triggerSubmitWorker) — see profileMapping.js's resolveManualOverride for
+// where each adapter reads these back on the next attempt. Only labels
+// already present in the posting's own stored manual_review_fields are
+// written — anything else in the request is silently dropped, guarding
+// against a stale client submitting answers for fields that no longer apply
+// (e.g. the posting was retried again by some other means in between).
+async function saveManualAnswersAndRetryOne(id, answers, email) {
+  const posting = await getPostingById(id);
+  if (!posting) throw new Error("Posting not found.");
+
+  const submitted = new Map((Array.isArray(answers) ? answers : []).map((a) => [a.label, a.answer]));
+  const merged = (posting.manualReviewFields || []).map((f) => (
+    submitted.has(f.label) ? { label: f.label, answer: submitted.get(f.label) } : f
+  ));
+  await updatePostingScore(id, { manualReviewFields: merged });
+
+  // Cross-posting answer memory — best-effort per field, never allowed to
+  // fail (or even slow down noticeably) the retry itself; upsertAnswerMemory
+  // already silently declines a company-specific question on its own (see
+  // its own comment). See jobSearchAnswerMemoryStore.js / the adapters'
+  // findBestMemoryMatch() call for where this gets read back on a LATER,
+  // unrelated posting.
+  await Promise.all(
+    merged
+      .filter((f) => submitted.has(f.label) && f.answer)
+      .map((f) => upsertAnswerMemory({
+        label: f.label,
+        answer: f.answer,
+        postingCompanyName: posting.companyName,
+        sourcePostingId: posting.id
+      }).catch((error) => console.error(`[answer-memory] Failed to save "${f.label}":`, error?.message || error)))
+  );
+
+  return approveOne(id, email);
 }
 
 export async function POST(request) {
@@ -123,6 +194,16 @@ export async function POST(request) {
         if (!posting) return NextResponse.json({ error: "Posting not found." }, { status: 404 });
         const outcome = await scorePosting(posting);
         return NextResponse.json({ ok: true, result: outcome });
+      }
+      case "polishManualAnswer":
+        return NextResponse.json({ ok: true, result: await polishManualAnswerOne(data.id, data.label, data.draftAnswer) });
+      case "saveManualAnswersAndRetry": {
+        const result = await saveManualAnswersAndRetryOne(data.id, data.answers, access.email);
+        // Same reasoning as the plain "approve" case above — no fallback
+        // timer on the submit-worker side, so this call landing is what
+        // actually gets the posting picked up promptly.
+        await triggerSubmitWorker("answerManualReview");
+        return NextResponse.json({ ok: true, result });
       }
       default:
         return NextResponse.json({ error: "Unknown review-queue action." }, { status: 400 });

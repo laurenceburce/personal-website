@@ -8,6 +8,20 @@ import { getTodayLlmUsage, incrementLlmUsage } from "./jobSearchUsageStore.js";
 
 const POSTING_EMBEDDING_CHARS = 8000;
 
+// Auto-reject threshold for a single hard-dealbreaker dimension, independent
+// of the weighted overall score — locationRemoteFit only, on purpose (see
+// SCORE_WEIGHTS in jobSearchScoringConfig.js). Confirmed live this needed to
+// exist: a posting requiring a specific in-office schedule the candidate
+// flatly cannot work scored locationRemoteFit=0/10 but still landed at
+// overall=69.5 (well above the default 65 pending-review threshold) because
+// six other, unrelated, genuinely-strong dimensions (culture/tech-stack/
+// compensation/etc.) diluted that 0 into insignificance in the weighted
+// average. A weighted average is the right model for soft preference
+// dimensions trading off against each other; it's the wrong model for a
+// dimension that's actually binary (you either can work the arrangement or
+// you can't). 0-10 scale, matching every dimension's own scale.
+const AUTO_REJECT_LOCATION_MAX_SCORE = 2;
+
 function computeOverallScore(dimensionScores) {
   let total = 0;
   for (const dimension of SCORE_DIMENSIONS) {
@@ -131,7 +145,13 @@ export async function scorePosting(posting, context = {}) {
   ]);
   await incrementLlmUsage("score");
   const overall = computeOverallScore(scoreResult.dimensionScores);
-  const nextStatus = overall >= findSettings.minLlmScore ? "pending_review" : "scored_low";
+
+  // A hard dealbreaker on location/remote fit skips the review queue
+  // entirely — see AUTO_REJECT_LOCATION_MAX_SCORE's own comment for why this
+  // needs to be a gate rather than just another weighted-average input.
+  const locationScore = scoreResult.dimensionScores?.locationRemoteFit;
+  const isAutoRejected = locationScore != null && locationScore <= AUTO_REJECT_LOCATION_MAX_SCORE;
+  const nextStatus = isAutoRejected ? "rejected" : (overall >= findSettings.minLlmScore ? "pending_review" : "scored_low");
 
   await updatePostingScore(posting.id, {
     status: nextStatus,
@@ -146,7 +166,11 @@ export async function scorePosting(posting, context = {}) {
     model: scoreResult.model,
     scamRiskScore: scamRisk.score,
     scamRiskLevel: scamRisk.level,
-    scamRiskFlags: scamRisk.flags
+    scamRiskFlags: scamRisk.flags,
+    ...(isAutoRejected ? {
+      autoRejectNote: `Auto-rejected: location/remote fit ${locationScore}/10 — `
+        + (scoreResult.reasoning?.locationRemoteFit || "incompatible location requirement.")
+    } : {})
   });
 
   // Auto-apply evaluation deliberately does NOT happen here, even though a
@@ -182,6 +206,7 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
     belowThreshold: 0,
     pendingReview: 0,
     scoredLow: 0,
+    autoRejected: 0,
     autoSubmitted: 0,
     autoSkipped: 0,
     errors: 0,
@@ -201,7 +226,7 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
         // count by however many postings auto-apply already submitted or
         // skipped earlier in this same run.
         tally.budgetExceeded = postings.length - (
-          tally.filteredOut + tally.belowThreshold + tally.pendingReview + tally.scoredLow
+          tally.filteredOut + tally.belowThreshold + tally.pendingReview + tally.scoredLow + tally.autoRejected
           + tally.autoSubmitted + tally.autoSkipped + tally.errors
         );
         console.warn(`[jobSearchScoringPipeline] Daily LLM call budget (${findSettings.maxLlmCallsPerDay}) reached — stopping early, ${tally.budgetExceeded} posting(s) deferred to the next run.`);
@@ -211,6 +236,12 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
       else if (outcome.status === "below_threshold") tally.belowThreshold += 1;
       else if (outcome.status === "pending_review") tally.pendingReview += 1;
       else if (outcome.status === "scored_low") tally.scoredLow += 1;
+      // Only ever reached from a 'new' posting scored just now — a human
+      // rejection never lands here (decidePosting() only ever runs on a
+      // posting already past this pipeline), so this unambiguously means
+      // this run's own auto-reject gate fired (see AUTO_REJECT_LOCATION_
+      // MAX_SCORE's comment).
+      else if (outcome.status === "rejected") tally.autoRejected += 1;
       else if (outcome.status === "submitted") tally.autoSubmitted += 1;
       else if (outcome.status === "skipped_auto_apply") tally.autoSkipped += 1;
     } catch (error) {

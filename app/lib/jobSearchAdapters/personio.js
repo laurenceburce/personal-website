@@ -1,3 +1,4 @@
+import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -9,6 +10,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
@@ -226,8 +228,24 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
     }
 
     const fields = await collectLabeledFields(page);
+    // Fetched once, reused for every field below — see
+    // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
+    // per-field query.
+    const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     for (const field of fields) {
+      // A human already answered this exact question for this exact posting
+      // (see the Review Queue's "Answer & Retry" popup) — try it before any
+      // auto-resolution strategy below. Falls through to those on failure.
+      const manualOverride = resolveManualOverride(field.normalizedLabel, posting.manualReviewFields);
+      if (manualOverride != null) {
+        const overrideFilled = await fillCandidates(field, [manualOverride]);
+        if (overrideFilled != null) {
+          submittedAnswers[field.label] = overrideFilled;
+          continue;
+        }
+      }
+
       let filledValue = await fillCandidates(field, namedCandidates(field, profile));
       if (filledValue != null) {
         submittedAnswers[field.label] = filledValue;
@@ -265,6 +283,24 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
           manualReviewFields.push(field.label);
         }
         continue;
+      }
+
+      // A similarly-worded question was answered by hand on a DIFFERENT
+      // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+      // popup) — a human-verified past answer beats a fresh LLM guess, so
+      // this is checked ahead of the candidate-logistics exclusion below
+      // (salary/notice-period/etc., normally always manual) and the free-text
+      // fallback, reusing this file's own shouldUseLlm() budget check.
+      if (memoryRows.length > 0 && await shouldUseLlm(getLlmFindSettings)) {
+        const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+        if (memoryMatch) {
+          filledValue = await fillCandidates(field, [memoryMatch.answer]);
+          if (filledValue != null) {
+            submittedAnswers[field.label] = filledValue;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            continue;
+          }
+        }
       }
 
       if (isCandidateLogisticsLabel(field.normalizedLabel, field.name)) {

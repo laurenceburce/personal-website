@@ -7,6 +7,7 @@
 // a checkbox (multi-select) question wraps its options in
 // div[role="group"][aria-labelledby="<groupId>_label"]; a radio (single-select)
 // question wraps its options in fieldset[role="radiogroup"][aria-labelledby].
+import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -18,6 +19,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
@@ -224,9 +226,40 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
     }
 
     const questions = await collectQuestions(page);
+    // Fetched once, reused for every question below — see
+    // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
+    // per-field query.
+    const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     for (const q of questions) {
       const normalizedLabel = normalizeLabel(q.label);
+
+      // A human already answered this exact question for this exact posting
+      // (see the Review Queue's "Answer & Retry" popup) — try it before any
+      // auto-resolution strategy below. Not attempted for checkbox-group (a
+      // multi-select — a single saved answer doesn't map cleanly onto
+      // checking several boxes); "field" reuses fillWorkableFieldValue,
+      // "radio-group" reuses the same option-text matching the EEO/work-auth
+      // branch below already does.
+      const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
+      if (manualOverride != null && q.kind !== "checkbox-group") {
+        if (q.kind === "field") {
+          const filledValue = await fillWorkableFieldValue(page, q, [manualOverride]);
+          if (filledValue != null) {
+            submittedAnswers[q.label || q.name] = filledValue;
+            continue;
+          }
+        } else if (q.kind === "radio-group") {
+          const match = q.options.find((o) => o.text.trim().toLowerCase() === manualOverride.toLowerCase());
+          if (match) {
+            const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
+            if (checked) {
+              submittedAnswers[q.label] = match.text;
+              continue;
+            }
+          }
+        }
+      }
 
       if (q.kind === "field") {
         // Standard field, keyed by its stable `name` attribute. These are
@@ -267,6 +300,28 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           }
           if (q.required) manualReviewFields.push(q.label);
           continue;
+        }
+
+        // A similarly-worded question was answered by hand on a DIFFERENT
+        // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+        // popup) — a human-verified past answer beats a fresh LLM guess, so
+        // this is checked ahead of the free-text fallback below, for ANY tag
+        // (including select — unlike the LLM branch right after this, which
+        // deliberately excludes select to avoid inventing an option).
+        if (memoryRows.length > 0) {
+          const llmSettings = await getLlmFindSettings();
+          const usage = await getTodayLlmUsage();
+          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+            const memoryMatch = await findBestMemoryMatch(q.label, posting.companyName, memoryRows).catch(() => null);
+            if (memoryMatch) {
+              const filledValue = await fillWorkableFieldValue(page, q, [memoryMatch.answer]);
+              if (filledValue != null) {
+                submittedAnswers[q.label || q.name] = filledValue;
+                await recordMemoryReuse(memoryMatch.id).catch(() => {});
+                continue;
+              }
+            }
+          }
         }
 
         if (q.tag !== "select" && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
@@ -315,6 +370,26 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             }
           }
         }
+        // Same memory check as the "field" kind above, adapted to a
+        // radio-group's own option-text matching (identical mechanism the
+        // EEO/work-auth branches right above already use).
+        if (memoryRows.length > 0) {
+          const llmSettings = await getLlmFindSettings();
+          const usage = await getTodayLlmUsage();
+          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
+            const memoryMatch = await findBestMemoryMatch(q.label, posting.companyName, memoryRows).catch(() => null);
+            const match = memoryMatch && q.options.find((o) => o.text.trim().toLowerCase() === memoryMatch.answer.toLowerCase());
+            if (match) {
+              const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
+              if (checked) {
+                submittedAnswers[q.label] = match.text;
+                await recordMemoryReuse(memoryMatch.id).catch(() => {});
+                continue;
+              }
+            }
+          }
+        }
+
         // A years-of-experience-shaped question IS something the resume can
         // genuinely answer, unlike an arbitrary radio group — see
         // looksLikeExperienceDurationQuestion()'s own comment. Everything

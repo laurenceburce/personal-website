@@ -46,6 +46,7 @@
 // (dryRun: true) against a real posting before trusting it unattended, and
 // treat it as less proven than greenhouse.js/ashby.js/workable.js/
 // personio.js/breezy.js until it has a real successful submission behind it.
+import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -58,6 +59,7 @@ import {
   isWorkAuthLabel,
   normalizeLabel,
   resolveEeoValue,
+  resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
@@ -310,10 +312,33 @@ async function shouldUseLlm(getLlmFindSettings) {
 }
 
 async function fillStepFields(page, fields, ctx) {
-  const { profile, posting, resumeText, submittedAnswers, manualReviewFields, llmState, getLlmFindSettings } = ctx;
+  const { profile, posting, resumeText, submittedAnswers, manualReviewFields, llmState, getLlmFindSettings, memoryRows } = ctx;
 
   for (const field of fields) {
     const normalizedLabel = normalizeLabel(field.label);
+
+    // A human already answered this exact question for this exact posting
+    // (see the Review Queue's "Answer & Retry" popup) — try it before any
+    // auto-resolution strategy below. Not attempted for checkbox kind (opt-in
+    // consent/marketing controls, not a real question — see that branch's own
+    // comment); radio-group reuses the same option-text matching the EEO/
+    // work-auth branch below already does, everything else reuses fillField.
+    const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
+    if (manualOverride != null && field.kind !== "checkbox") {
+      if (field.kind === "radio-group") {
+        const match = field.options.find((option) => option.text.trim().toLowerCase() === manualOverride.toLowerCase());
+        if (match && await checkOracleControl(page, match)) {
+          submittedAnswers[field.label] = match.text;
+          continue;
+        }
+      } else {
+        const filledValue = await fillField(page, field, [manualOverride]);
+        if (filledValue != null) {
+          submittedAnswers[field.label] = filledValue;
+          continue;
+        }
+      }
+    }
 
     if (field.kind === "checkbox") {
       // Marketing/consent checkboxes are opt-in, not a real application
@@ -371,6 +396,34 @@ async function fillStepFields(page, fields, ctx) {
       if (filledValue != null) submittedAnswers[field.label] = filledValue;
       else if (field.required) manualReviewFields.push(field.label);
       continue;
+    }
+
+    // A similarly-worded question was answered by hand on a DIFFERENT
+    // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+    // popup) — a human-verified past answer beats a fresh LLM guess, so this
+    // is checked ahead of the candidate-logistics exclusion below (normally
+    // always manual) and the free-text/select-choice fallbacks further down.
+    // Not attempted for checkbox kind, same reasoning as the per-posting
+    // override right above.
+    if (memoryRows.length > 0 && field.kind !== "checkbox" && await shouldUseLlm(getLlmFindSettings)) {
+      const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
+      if (memoryMatch) {
+        if (field.kind === "radio-group") {
+          const match = field.options.find((option) => option.text.trim().toLowerCase() === memoryMatch.answer.toLowerCase());
+          if (match && await checkOracleControl(page, match)) {
+            submittedAnswers[field.label] = match.text;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            continue;
+          }
+        } else {
+          const filledValue = await fillField(page, field, [memoryMatch.answer]);
+          if (filledValue != null) {
+            submittedAnswers[field.label] = filledValue;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            continue;
+          }
+        }
+      }
     }
 
     if (isCandidateLogisticsLabel(normalizedLabel)) {
@@ -509,6 +562,10 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
 
     let submitButton = null;
     let resumeAttempted = false;
+    // Fetched once for the whole submission (not once per wizard step) — see
+    // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
+    // per-field query.
+    const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     for (let step = 0; step < MAX_WIZARD_STEPS; step += 1) {
       if (!resumeAttempted) {
@@ -529,7 +586,7 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
       }
 
       const fields = await collectFields(page);
-      await fillStepFields(page, fields, { profile, posting, resumeText, submittedAnswers, manualReviewFields, llmState, getLlmFindSettings });
+      await fillStepFields(page, fields, { profile, posting, resumeText, submittedAnswers, manualReviewFields, llmState, getLlmFindSettings, memoryRows });
 
       const action = await findPrimaryActionButton(page);
       if (!action) break;

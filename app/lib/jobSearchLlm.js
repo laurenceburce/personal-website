@@ -216,6 +216,55 @@ nothing in the context above is relevant to the question.`;
   return text.slice(0, 1000);
 }
 
+// Refines a candidate's OWN draft answer to a manual-review question (see the
+// Review Queue's "Answer & Retry" popup / jobSearchAdapters/profileMapping.js's
+// resolveManualOverride) — deliberately a different job from answerFreeText
+// above: that one GENERATES an answer from scratch out of profile/resume
+// context; this one takes a human's already-written draft and cleans it up,
+// never inventing anything the draft + context doesn't already support. Same
+// candidate/job context block as answerFreeText so the model can still ground
+// wording in real facts (dates, job title) without changing what the person
+// actually said. Returns null on failure/empty, same convention as every
+// other LLM helper here — the caller falls back to the user's own draft text.
+export async function polishFreeTextAnswer({ question, draftAnswer, posting, profile, resumeText }) {
+  const draft = String(draftAnswer || "").trim();
+  if (!draft) return null;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const prompt = `You are helping a job applicant refine their OWN draft answer to a company's
+application question — you are editing, not writing from scratch. Improve grammar, clarity, and
+professionalism while preserving exactly what the candidate actually said: never add a claim,
+skill, date, or fact that isn't already in their draft or the candidate context below. If the
+draft is already clear and well-written, return it unchanged (or only lightly touched up). Today's
+date is ${today}.
+
+QUESTION: ${String(question || "").slice(0, 500)}
+
+CANDIDATE'S DRAFT ANSWER: ${draft.slice(0, 1000)}
+
+CANDIDATE CONTEXT (for grounding wording only — do not introduce anything from here that isn't
+already implied by the draft above):
+Name: ${profile?.fullName || ""}
+Work history: ${JSON.stringify(profile?.workHistory || [])}
+Education: ${JSON.stringify(profile?.education || [])}
+${resumeText ? `Resume text:\n${String(resumeText).slice(0, 6000)}\n` : ""}
+JOB CONTEXT:
+Title: ${posting?.title || ""} at ${posting?.companyName || ""}
+
+Respond with ONLY the refined answer in plain text, no markdown, no preamble, no quotation marks
+around it.`;
+
+  const response = await getClient().models.generateContent({
+    model: getScoreModel(),
+    contents: prompt,
+    config: { temperature: 0.3 }
+  });
+
+  const text = String(response?.text || "").trim();
+  if (!text) return null;
+  return text.slice(0, 1000);
+}
+
 // For a fixed-choice question (radio/select — no free text allowed) where the
 // candidate's own resume genuinely determines the right answer: "years of
 // experience with X" rendered as a multiple-choice range ("0-1", "1-3", ...)
