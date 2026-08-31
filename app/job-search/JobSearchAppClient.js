@@ -10,6 +10,7 @@ import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
 import ReviewQueueTable from "./ReviewQueueTable";
+import SecurityChallengesPanel from "./SecurityChallengesPanel";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -111,6 +112,17 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
 
       {error ? <div className="job-search-alert job-search-alert-error">{error}</div> : null}
       {notice && !error ? <div className="job-search-alert">{notice}</div> : null}
+
+      <SecurityChallengesPanel
+        initialChallenges={snapshot.securityChallenges}
+        saving={saving}
+        onSubmitCode={(id, code) => runAction(
+          "/api/job-search/security-challenges",
+          "submitSecurityCode",
+          { id, code },
+          "Security code submitted."
+        )}
+      />
 
       <main className="job-search-main">
         {tab === "overview" && (

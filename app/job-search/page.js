@@ -10,6 +10,7 @@ import { isAdzunaConfigured } from "../lib/jobSearchDiscovery";
 import { listRecentDiscoveryRuns } from "../lib/jobSearchDiscoveryRunStore";
 import { listOracleSessions } from "../lib/jobSearchOracleSessionStore";
 import { countPostingsByStatus, listPostingsByStatus } from "../lib/jobSearchPostingsStore";
+import { listPendingSecurityChallenges } from "../lib/jobSearchSecurityChallengeStore";
 import { getDefaultResume, getFindSettings, getProfile, listResumes } from "../lib/jobSearchSettingsStore";
 import { listRecentSubmitRuns } from "../lib/jobSearchSubmitRunStore";
 import { getTodayLlmUsage } from "../lib/jobSearchUsageStore";
@@ -46,7 +47,8 @@ async function getDashboardSnapshot() {
     dbSizeMb,
     companyDirectoryStats,
     workerStatus,
-    answerMemory
+    answerMemory,
+    securityChallenges
   ] = await Promise.all([
     getProfile(),
     getFindSettings(),
@@ -77,7 +79,8 @@ async function getDashboardSnapshot() {
     getDatabaseSizeMb(),
     getCompanyDirectoryStats(),
     getAllWorkerStatus(),
-    listAnswerMemory()
+    listAnswerMemory(),
+    listPendingSecurityChallenges({ limit: 20 })
   ]);
 
   // Postings that would actually be attempted on the NEXT submit-worker run
@@ -99,7 +102,7 @@ async function getDashboardSnapshot() {
   return {
     profile, findSettings, resumes, defaultResume, oracleSessions, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
     needsManualReview, failedPostings, autoApplyQueue, applications,
-    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus, answerMemory,
+    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus, answerMemory, securityChallenges,
     adzunaConfigured: isAdzunaConfigured()
   };
 }

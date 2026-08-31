@@ -7366,6 +7366,46 @@ html[data-theme="light"] .auth-feature-gate {
   line-height: 1.5;
 }
 
+.job-search-security-panel {
+  margin-bottom: 16px;
+  border-color: rgba(251, 191, 36, 0.34);
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.09), rgba(6, 10, 22, 0.78));
+}
+
+.job-search-security-list {
+  display: grid;
+  gap: 12px;
+}
+
+.job-search-security-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px) auto;
+  align-items: end;
+  gap: 12px;
+  border: 1px solid rgba(251, 191, 36, 0.22);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  background: rgba(6, 10, 22, 0.58);
+}
+
+.job-search-security-context {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.job-search-security-context strong,
+.job-search-security-context small {
+  overflow-wrap: anywhere;
+}
+
+.job-search-security-context span,
+.job-search-security-context small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .job-search-empty {
   color: var(--muted);
   font-size: 0.88rem;
@@ -7899,4 +7939,5 @@ html[data-theme="light"] .auth-feature-gate {
   .job-search-app { padding-left: 10px; padding-right: 10px; }
   .job-search-panel { padding: 14px; }
   .job-search-field-grid { grid-template-columns: 1fr; }
+  .job-search-security-item { grid-template-columns: 1fr; }
 }

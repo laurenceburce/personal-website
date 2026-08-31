@@ -1,9 +1,14 @@
 import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
+import {
+  createSecurityChallenge,
+  markSecurityChallengeUsed,
+  waitForSecurityChallengeCode
+} from "../jobSearchSecurityChallengeStore.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
-import { detectSubmissionBlocker } from "./blockerDetection.js";
+import { detectSubmissionBlocker, isSecurityCodeBlockerReason } from "./blockerDetection.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
@@ -20,6 +25,23 @@ import { resumeFilePayload } from "./resumeFilePayload.js";
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
 const SUBMIT_OUTCOME_TIMEOUT_MS = 45000;
+const SECURITY_CODE_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_SECURITY_CODE_WAIT_MS || 5 * 60 * 1000));
+const SECURITY_CODE_CONTEXT_SIGNALS = /\b(security|verification|one[-\s]?time|authentication)\s+code\b|enter (the )?(security|verification|one[-\s]?time)?\s*code\b|code (sent|emailed|mailed) to/i;
+const STRONG_SECURITY_CODE_FIELD_SIGNALS = /\b(security|verification|one[-\s]?time|authentication)\s+code\b|one-time-code/i;
+const SECURITY_CODE_INPUT_SELECTOR = [
+  'input[autocomplete="one-time-code"]',
+  'input[name*="security" i]',
+  'input[id*="security" i]',
+  'input[placeholder*="security" i]',
+  'input[name*="verification" i]',
+  'input[id*="verification" i]',
+  'input[placeholder*="verification" i]',
+  'input[name*="code" i]',
+  'input[id*="code" i]',
+  'input[placeholder*="code" i]',
+  'input[inputmode="numeric"]',
+  'input[type="tel"]'
+].join(", ");
 // Greenhouse renders some fields conditionally — confirmed live on GitLab's
 // own EEO block: "Please identify your race" only enters the DOM AFTER "Are
 // you Hispanic/Latino?" gets an answer. A single collectLabeledFields() scan
@@ -414,6 +436,172 @@ async function collectPostSubmitValidationFields(scope) {
   return invalidFields;
 }
 
+async function detectGreenhouseBlocker(page, scope) {
+  const scopedReason = await detectSubmissionBlocker(scope);
+  if (scopedReason) return scopedReason;
+  return scope === page ? null : detectSubmissionBlocker(page);
+}
+
+function securityCodePromptExcerpt(text, fallback = "") {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  const index = source.search(SECURITY_CODE_CONTEXT_SIGNALS);
+  if (index < 0) return String(fallback || "").slice(0, 500);
+  return source.slice(Math.max(0, index - 140), index + 360).slice(0, 500);
+}
+
+function isSecurityCodeFieldDescriptor(descriptor, { allowGenericCode = false } = {}) {
+  const normalized = String(descriptor || "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (STRONG_SECURITY_CODE_FIELD_SIGNALS.test(normalized)) return true;
+  if (!allowGenericCode) return false;
+
+  const tokens = normalized.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+  return tokens.length > 0 && tokens.every((token) => ["enter", "the", "code"].includes(token));
+}
+
+async function isVisibleEnabled(locator) {
+  return await locator.isVisible().catch(() => false) && await locator.isEnabled().catch(() => false);
+}
+
+async function describeInput(locator) {
+  return locator.evaluate((el) => {
+    const labels = Array.from(el.labels || []).map((label) => label.innerText || "");
+    return [
+      ...labels,
+      el.getAttribute("aria-label"),
+      el.getAttribute("placeholder"),
+      el.getAttribute("name"),
+      el.getAttribute("id"),
+      el.getAttribute("autocomplete"),
+      el.getAttribute("inputmode")
+    ].filter(Boolean).join(" ");
+  }).catch(() => "");
+}
+
+async function findSecurityCodeInput(scope, { allowSingleTextFallback = false } = {}) {
+  const labeledFields = await collectLabeledFields(scope).catch(() => []);
+  for (const field of labeledFields) {
+    if (!isSecurityCodeFieldDescriptor(field.label, { allowGenericCode: allowSingleTextFallback })) continue;
+    const widget = await classifyWidget(field.locator).catch(() => "");
+    if (!["text", "textarea"].includes(widget)) continue;
+    if (await isVisibleEnabled(field.locator)) {
+      return { locator: field.locator, descriptor: field.label };
+    }
+  }
+
+  const targetedInputs = await scope.locator(SECURITY_CODE_INPUT_SELECTOR).all().catch(() => []);
+  for (const input of targetedInputs) {
+    if (!(await isVisibleEnabled(input))) continue;
+    const descriptor = await describeInput(input);
+    if (isSecurityCodeFieldDescriptor(descriptor, { allowGenericCode: allowSingleTextFallback })) return { locator: input, descriptor };
+  }
+
+  if (!allowSingleTextFallback) return null;
+
+  const genericInputs = await scope.locator(
+    'input:not([type]), input[type="text"], input[type="tel"], input[type="number"], input[type="password"]'
+  ).all().catch(() => []);
+  const visibleInputs = [];
+  for (const input of genericInputs) {
+    if (await isVisibleEnabled(input)) visibleInputs.push(input);
+  }
+
+  return visibleInputs.length === 1 ? { locator: visibleInputs[0], descriptor: "Security/verification code" } : null;
+}
+
+async function findSecurityCodeChallenge(page, preferredScope) {
+  const scopes = [];
+  const addScope = (candidate) => {
+    if (candidate && !scopes.includes(candidate)) scopes.push(candidate);
+  };
+
+  addScope(preferredScope);
+  addScope(page);
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame() || !/greenhouse/i.test(frame.url())) continue;
+    addScope(frame);
+  }
+
+  for (const candidateScope of scopes) {
+    const bodyText = await candidateScope.locator("body").innerText().catch(() => "");
+    const hasSecurityContext = SECURITY_CODE_CONTEXT_SIGNALS.test(bodyText);
+    const codeInput = await findSecurityCodeInput(candidateScope, { allowSingleTextFallback: hasSecurityContext });
+    if (!codeInput) continue;
+    if (hasSecurityContext || isSecurityCodeFieldDescriptor(codeInput.descriptor)) {
+      return {
+        scope: candidateScope,
+        input: codeInput.locator,
+        promptText: securityCodePromptExcerpt(bodyText, codeInput.descriptor)
+      };
+    }
+  }
+
+  return null;
+}
+
+async function findSecurityCodeSubmitButton(scope) {
+  const roleButton = scope.getByRole("button", { name: /verify|continue|submit|next|confirm/i }).first();
+  if (await isVisibleEnabled(roleButton)) return roleButton;
+
+  const submitButton = scope.locator('button[type="submit"], input[type="submit"], input[type="button"]').first();
+  if (await isVisibleEnabled(submitButton)) return submitButton;
+
+  return null;
+}
+
+async function resolveSecurityCodeChallenge({ page, scope, posting, submittedAnswers }) {
+  const challenge = await findSecurityCodeChallenge(page, scope);
+  if (!challenge) {
+    return {
+      ok: false,
+      errorMessage: "Security/verification code challenge was detected, but no fillable code input was found."
+    };
+  }
+
+  const pendingChallenge = await createSecurityChallenge({
+    postingId: posting.id,
+    companyName: posting.companyName,
+    jobTitle: posting.title,
+    atsType: posting.atsType,
+    applyUrl: posting.applyUrl,
+    promptText: challenge.promptText,
+    timeoutMs: SECURITY_CODE_WAIT_TIMEOUT_MS
+  });
+  console.log(`  [security-code] Waiting for dashboard code for "${posting.title}" at ${posting.companyName} (challenge ${pendingChallenge.id}).`);
+
+  const codeResult = await waitForSecurityChallengeCode(pendingChallenge.id, { timeoutMs: SECURITY_CODE_WAIT_TIMEOUT_MS });
+  if (codeResult.status !== "answered" || !codeResult.code) {
+    return {
+      ok: false,
+      errorMessage: `Security/verification code required; timed out waiting for dashboard input after ${Math.round(SECURITY_CODE_WAIT_TIMEOUT_MS / 1000)}s.`
+    };
+  }
+
+  try {
+    await challenge.input.fill(codeResult.code);
+  } finally {
+    await markSecurityChallengeUsed(pendingChallenge.id).catch(() => {});
+  }
+
+  submittedAnswers["Security/verification code"] = "[entered by user]";
+
+  const challengeSubmitButton = await findSecurityCodeSubmitButton(challenge.scope);
+  if (!challengeSubmitButton) {
+    return {
+      ok: false,
+      errorMessage: "Security/verification code was entered, but no verify/continue button was found."
+    };
+  }
+
+  await clickWithBrowserMouse(page, challengeSubmitButton);
+  const submitOutcome = await waitForSubmitOutcome(page, challenge.scope, challengeSubmitButton);
+  return {
+    ok: true,
+    scope: challenge.scope,
+    submitButton: challengeSubmitButton,
+    submitOutcome
+  };
+}
+
 export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
@@ -438,12 +626,29 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     const resumeUploadReady = waitForResumeUploadReady(page);
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
 
-    const scope = await findFormScope(page);
+    let scope = await findFormScope(page);
 
-    const blockerReason = await detectSubmissionBlocker(scope);
+    const blockerReason = await detectGreenhouseBlocker(page, scope);
     if (blockerReason) {
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      if (isSecurityCodeBlockerReason(blockerReason)) {
+        const challengeResult = await resolveSecurityCodeChallenge({ page, scope, posting, submittedAnswers });
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        if (!challengeResult.ok) {
+          return {
+            status: "blocked",
+            submittedAnswers,
+            manualReviewFields,
+            fieldOptions,
+            confirmationText,
+            screenshotBuffer,
+            errorMessage: challengeResult.errorMessage
+          };
+        }
+        scope = await findFormScope(page);
+      } else {
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      }
     }
 
     if (resumeBuffer) {
@@ -466,11 +671,11 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     // per-field query.
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
-    async function flagForReview(label, locator, widget) {
+    async function flagForReview(label, locator, widget, optionScope = scope) {
       if (!manualReviewFields.some((existing) => normalizeLabel(existing) === normalizeLabel(label))) {
         manualReviewFields.push(label);
       }
-      const options = await captureFieldOptions(page, scope, locator, widget).catch(() => []);
+      const options = await captureFieldOptions(page, optionScope, locator, widget).catch(() => []);
       if (options.length > 0) fieldOptions[label] = options;
     }
 
@@ -664,30 +869,56 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     } else if (dryRun) {
       status = "dry_run_ok";
     } else {
-      const submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
+      let outcomeScope = scope;
+      let submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
       await clickWithBrowserMouse(page, submitButton);
 
       // Greenhouse can leave the submit button in a loading state well after
       // networkidle would time out (confirmed live by a failed GitLab attempt's
       // screenshot), so wait on page/form state instead of a fixed short delay.
-      const submitOutcome = await waitForSubmitOutcome(page, scope, submitButton);
+      let submitOutcome = await waitForSubmitOutcome(page, outcomeScope, submitButton);
       confirmationText = submissionTextExcerpt(submitOutcome.text);
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
+
+      let postSubmitBlockerReason = await detectGreenhouseBlocker(page, outcomeScope);
+      if (isSecurityCodeBlockerReason(postSubmitBlockerReason)) {
+        const challengeResult = await resolveSecurityCodeChallenge({ page, scope: outcomeScope, posting, submittedAnswers });
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
+        if (challengeResult.ok) {
+          outcomeScope = challengeResult.scope || outcomeScope;
+          submitButton = challengeResult.submitButton || submitButton;
+          submitOutcome = challengeResult.submitOutcome;
+          confirmationText = submissionTextExcerpt(submitOutcome.text);
+          postSubmitBlockerReason = await detectGreenhouseBlocker(page, outcomeScope);
+          if (isSecurityCodeBlockerReason(postSubmitBlockerReason)) {
+            status = "blocked";
+            errorMessage = "Security/verification code was submitted, but the form is still asking for a code. Check the code and retry.";
+          }
+        } else {
+          status = "blocked";
+          errorMessage = challengeResult.errorMessage;
+        }
+      }
 
       const stillOnFormPage = await submitButton.isVisible().catch(() => false);
       const hasErrorSignal = ERROR_TEXT_SIGNALS.test(submitOutcome.text || "");
       const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(submitOutcome.text || "");
 
-      if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome.state !== "timeout")) {
+      if (postSubmitBlockerReason) {
+        status = "blocked";
+        errorMessage = errorMessage || postSubmitBlockerReason;
+      } else if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome.state !== "timeout")) {
         status = "submitted";
       } else {
-        const invalidFields = await collectPostSubmitValidationFields(scope);
+        const invalidFields = await collectPostSubmitValidationFields(outcomeScope);
         for (const field of invalidFields) {
-          await flagForReview(field.label, field.locator, field.widget);
+          await flagForReview(field.label, field.locator, field.widget, outcomeScope);
         }
       }
 
-      if (manualReviewFields.length > 0) {
+      if (status === "blocked") {
+        // Keep the blocker reason set above.
+      } else if (manualReviewFields.length > 0) {
         status = "needs_manual_review";
       } else if (submitOutcome.state === "timeout") {
         status = "failed";

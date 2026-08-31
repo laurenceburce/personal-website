@@ -14,6 +14,9 @@ const CAPTCHA_WIDGET_SELECTORS = [
   "[data-sitekey]"
 ].join(", ");
 
+export const SECURITY_CODE_BLOCKER_REASON = "Security/verification code challenge present on the application form.";
+
+const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|one[-\s]?time)\s+code\b|enter (the )?(security|verification) code/i;
 const ANTI_BOT_TEXT_SIGNALS = /(prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret)/i;
 const LOGIN_WALL_SIGNALS = /(sign in to apply|log in to apply|create an account to apply|please log in to continue)/i;
 
@@ -29,9 +32,16 @@ export async function detectSubmissionBlocker(scope) {
   if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
     return "Anti-automation challenge question present in the application form.";
   }
+  if (SECURITY_CODE_TEXT_SIGNALS.test(bodyText)) {
+    return SECURITY_CODE_BLOCKER_REASON;
+  }
   if (LOGIN_WALL_SIGNALS.test(bodyText)) {
     return "Application requires signing in / creating an account first.";
   }
 
   return null;
+}
+
+export function isSecurityCodeBlockerReason(reason) {
+  return reason === SECURITY_CODE_BLOCKER_REASON;
 }

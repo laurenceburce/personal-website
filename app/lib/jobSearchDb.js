@@ -475,6 +475,33 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // Human-in-the-loop one-time-code prompts raised by submit adapters.
+      // These are NOT email-scraped or auto-bypassed: the worker creates a
+      // short-lived pending row, keeps its browser session open, and the
+      // dashboard lets the owner type the code they received. The code is
+      // blanked once used/expired; list queries intentionally omit it.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_security_challenges (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          posting_id BIGINT UNSIGNED NOT NULL,
+          application_id BIGINT UNSIGNED NULL,
+          company_name VARCHAR(160) NOT NULL DEFAULT '',
+          job_title VARCHAR(300) NOT NULL DEFAULT '',
+          ats_type VARCHAR(24) NOT NULL DEFAULT '',
+          apply_url VARCHAR(600) NOT NULL DEFAULT '',
+          challenge_kind VARCHAR(40) NOT NULL DEFAULT 'security_code',
+          prompt_text VARCHAR(500) NOT NULL DEFAULT '',
+          status VARCHAR(24) NOT NULL DEFAULT 'pending',
+          code VARCHAR(80) NOT NULL DEFAULT '',
+          created_at DATETIME(3) NOT NULL,
+          expires_at DATETIME(3) NOT NULL,
+          answered_at DATETIME(3) NULL,
+          updated_at DATETIME(3) NOT NULL,
+          INDEX job_search_security_challenges_status_idx (status, expires_at),
+          INDEX job_search_security_challenges_posting_idx (posting_id)
+        )
+      `);
+
       // Cross-posting "answer memory" (see jobSearchAnswerMemoryStore.js) —
       // every answer typed into the Review Queue's "Answer & Retry" popup is
       // saved here, one row per DISTINCT remembered question, so a similar
