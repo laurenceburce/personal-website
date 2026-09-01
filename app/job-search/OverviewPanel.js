@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { atsTypeLabel, Badge, Metric } from "./JobSearchUi";
+import PushNotificationsControl from "./PushNotificationsControl";
 
 // How often the Workers panel re-fetches worker status from the server so
 // "Last run"/"Next expected" reflect an actual cron run landing in the
@@ -542,6 +543,7 @@ export default function OverviewPanel({
         <header className="job-search-panel-header">
           <h2>Workers</h2>
           <div className="job-search-form-actions">
+            <PushNotificationsControl />
             <button type="button" disabled={isBusy} onClick={onRunDiscovery}>
               {saving === "discoveryNow" ? "Running discovery..." : "Run Discovery Now"}
             </button>

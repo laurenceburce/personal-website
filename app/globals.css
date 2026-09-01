@@ -7406,6 +7406,128 @@ html[data-theme="light"] .auth-feature-gate {
   line-height: 1.45;
 }
 
+/* CAPTCHA items in the same held-submissions list have no code field to
+   type into — just context + a "Solve Now" button — so this overrides the
+   3-column code-entry grid with a simpler 2-column one. */
+.job-search-security-item-captcha {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.job-search-alert-toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.job-search-alert-toast button {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.job-search-push-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-search-push-control small {
+  color: #fca5a5;
+  font-size: 0.76rem;
+}
+
+/* ── Live CAPTCHA relay ── */
+
+.job-search-live-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(2, 6, 16, 0.72);
+}
+
+.job-search-live-modal {
+  width: min(760px, 100%);
+  max-height: min(92vh, 900px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: var(--radius-lg);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-card);
+  padding: 18px;
+  overflow: auto;
+}
+
+.job-search-live-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.job-search-live-header div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.job-search-live-header span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.job-search-live-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.job-search-live-frame {
+  position: relative;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: var(--radius-md);
+  background: #04121c;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+
+.job-search-live-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.job-search-live-loading {
+  padding: 60px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.job-search-live-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .job-search-empty {
   color: var(--muted);
   font-size: 0.88rem;

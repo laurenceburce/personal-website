@@ -51,7 +51,8 @@ import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
-import { detectSubmissionBlocker } from "./blockerDetection.js";
+import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import { getOracleSessionForHost } from "../jobSearchOracleSessionStore.js";
 import {
@@ -574,6 +575,15 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
     // detectSubmissionBlocker(), whose LOGIN_WALL_SIGNALS doesn't recognize
     // this screen's actual wording (see this file's own NEEDS_VERIFICATION_
     // SIGNALS comment).
+    //
+    // Deliberately NOT routed through heldChallengeRelay.js like the generic
+    // check just below — this is a per-TENANT identity gate that exists
+    // before any application-specific session does, not a per-submission
+    // challenge on a form that's otherwise ready to fill. This codebase
+    // already has the right mechanism for it (scripts/job-search-oracle-
+    // connect.mjs, run once per tenant — see this file's own header
+    // comment); relaying it live here would mean re-doing that same
+    // one-time step on every single submission instead of once per tenant.
     const earlyBodyText = await page.locator("body").innerText().catch(() => "");
     if (NEEDS_VERIFICATION_SIGNALS.test(earlyBodyText)) {
       screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
@@ -586,8 +596,19 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
 
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return blockedResult({ blockerReason, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
+      if (isHeldChallengeBlockerReason(blockerReason)) {
+        const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        if (!challengeResult.ok) {
+          // Not routed through blockedResult() — that helper's guidance is
+          // specifically about the Oracle-session/connect-script gate above,
+          // which has nothing to do with a held-challenge relay timing out.
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+        }
+      } else {
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        return blockedResult({ blockerReason, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
+      }
     }
 
     let submitButton = null;
@@ -636,8 +657,16 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
 
       const blockerAfterStep = await detectSubmissionBlocker(page);
       if (blockerAfterStep) {
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return blockedResult({ blockerReason: blockerAfterStep, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
+        if (isHeldChallengeBlockerReason(blockerAfterStep)) {
+          const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason: blockerAfterStep });
+          screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+          if (!challengeResult.ok) {
+            return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+          }
+        } else {
+          screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+          return blockedResult({ blockerReason: blockerAfterStep, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
+        }
       }
     }
 

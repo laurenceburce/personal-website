@@ -1,16 +1,16 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import AnswerMemoryPanel from "./AnswerMemoryPanel";
 import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
+import HeldSubmissionsPanel from "./HeldSubmissionsPanel";
 import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
 import ReviewQueueTable from "./ReviewQueueTable";
-import SecurityChallengesPanel from "./SecurityChallengesPanel";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -27,6 +27,27 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   const [saving, setSaving] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [heldToast, setHeldToast] = useState("");
+
+  // Real-time counterpart to HeldSubmissionsPanel's own poll — wakes the
+  // dashboard up the moment a new held item appears (security code /
+  // anti-bot question / CAPTCHA) instead of waiting for the next 4s poll.
+  // The panel below still does the actual polling/rendering; this only
+  // raises a toast and nudges it via router.refresh() so a currently-open
+  // tab doesn't sit for up to 4s showing a stale count.
+  useEffect(() => {
+    const source = new EventSource("/api/job-search/held-events");
+    source.addEventListener("new", (event) => {
+      try {
+        const challenge = JSON.parse(event.data);
+        setHeldToast(`Action needed: ${challenge.jobTitle} at ${challenge.companyName}.`);
+        router.refresh();
+      } catch {
+        // Malformed event payload — ignore rather than crash the listener.
+      }
+    });
+    return () => source.close();
+  }, [router]);
 
   function setTabAndUrl(nextTab) {
     setTab(nextTab);
@@ -112,15 +133,27 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
 
       {error ? <div className="job-search-alert job-search-alert-error">{error}</div> : null}
       {notice && !error ? <div className="job-search-alert">{notice}</div> : null}
+      {heldToast ? (
+        <div className="job-search-alert job-search-alert-toast">
+          {heldToast}
+          <button type="button" onClick={() => setHeldToast("")} aria-label="Dismiss">×</button>
+        </div>
+      ) : null}
 
-      <SecurityChallengesPanel
+      <HeldSubmissionsPanel
         initialChallenges={snapshot.securityChallenges}
         saving={saving}
         onSubmitCode={(id, code) => runAction(
           "/api/job-search/security-challenges",
           "submitSecurityCode",
           { id, code },
-          "Security code submitted."
+          "Answer submitted."
+        )}
+        onResolveLiveCaptcha={(id) => runAction(
+          "/api/job-search/security-challenges",
+          "resolveLiveCaptcha",
+          { id },
+          "Submission resumed."
         )}
       />
 

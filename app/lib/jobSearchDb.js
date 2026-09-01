@@ -534,6 +534,32 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // Lets a held challenge (security code / anti-bot text / CAPTCHA — see
+      // job_search_security_challenges above) reach the account owner even
+      // when the dashboard tab isn't open — jobSearchHeldChallengeWatcher.js
+      // sends a browser push to every row here the moment a new challenge is
+      // created. One row per subscribed browser/device (endpoint is that
+      // browser's own push-service URL, effectively unique per install), not
+      // per "user" — this system has exactly one owner (see jobSearchAuth.js)
+      // but they may check the dashboard from more than one device.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_push_subscriptions (
+          id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+          endpoint VARCHAR(600) NOT NULL,
+          p256dh VARCHAR(255) NOT NULL,
+          auth VARCHAR(255) NOT NULL,
+          created_at DATETIME(3) NOT NULL,
+          UNIQUE KEY job_search_push_subscriptions_endpoint_idx (endpoint)
+        )
+      `);
+
+      // Lets jobSearchHeldChallengeWatcher.js tell "a challenge it has
+      // already sent a push for" apart from "a challenge that just appeared"
+      // without keeping its own in-memory set (which a restart would lose,
+      // re-sending a push for every still-pending challenge). NULL until the
+      // watcher's poll loop sends (or attempts) a push for that row.
+      await runMigration(pool, "ALTER TABLE job_search_security_challenges ADD COLUMN notified_at DATETIME(3) NULL");
+
       // Singleton settings rows always exist after schema init, so stores can
       // plain SELECT/UPDATE ... WHERE id = 1 without upsert branching.
       const now = new Date();

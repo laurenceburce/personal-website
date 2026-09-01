@@ -28,6 +28,8 @@
 import { createServer } from "node:http";
 import { runSubmitWorkerPass } from "../app/lib/jobSearchSubmitWorkerRun.js";
 import { getPool, isJobSearchDbConfigured } from "../app/lib/jobSearchDb.js";
+import { getLiveSession } from "../app/lib/jobSearchLiveSessionRegistry.js";
+import { resolveLiveCaptchaSession } from "../app/lib/jobSearchSecurityChallengeStore.js";
 import { recordWorkerRunResult } from "../app/lib/jobSearchWorkerStatusStore.js";
 
 if (!isJobSearchDbConfigured()) {
@@ -124,6 +126,113 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function hasValidTriggerSecret(req) {
+  if (!TRIGGER_SECRET) return true;
+  return (req.headers["x-trigger-secret"] || "") === TRIGGER_SECRET;
+}
+
+// The three routes behind a live CAPTCHA-solve session (see
+// app/lib/jobSearchAdapters/heldChallengeRelay.js's captcha branch and
+// app/lib/jobSearchLiveSessionRegistry.js). Same auth posture as /run —
+// private networking plus this shared secret, never reachable from the
+// browser directly. The web app's own /api/job-search/live-sessions/[id]/*
+// routes are the only caller, and they authenticate the real dashboard user
+// first (requireAccessOrRespond) before ever reaching here.
+async function handleLiveFrame(res, challengeId) {
+  const session = getLiveSession(challengeId);
+  if (!session) {
+    sendJson(res, 404, { error: "No live session for that challenge — it may have already resolved, timed out, or this server restarted." });
+    return;
+  }
+
+  try {
+    const result = await session.cdpSession.send("Page.captureScreenshot", { format: "jpeg", quality: 60 });
+    const buffer = Buffer.from(result.data, "base64");
+    res.writeHead(200, {
+      "content-type": "image/jpeg",
+      "content-length": buffer.length,
+      "x-live-viewport-width": String(session.viewport.width || ""),
+      "x-live-viewport-height": String(session.viewport.height || "")
+    });
+    res.end(buffer);
+  } catch (error) {
+    sendJson(res, 502, { error: `Failed to capture frame: ${error?.message || error}` });
+  }
+}
+
+// One CDP call per relayed event — mirrors browserEngineClick.js's own
+// dispatchCdpMouseClick shape (mouseMoved/mousePressed/mouseReleased), plus
+// wheel/key events for drag-based and text-based challenges.
+async function dispatchLiveInputEvent(cdpSession, evt) {
+  const type = evt?.type;
+
+  if (type === "mouseMove" || type === "mouseDown" || type === "mouseUp") {
+    await cdpSession.send("Input.dispatchMouseEvent", {
+      type: type === "mouseMove" ? "mouseMoved" : type === "mouseDown" ? "mousePressed" : "mouseReleased",
+      x: Number(evt.x) || 0,
+      y: Number(evt.y) || 0,
+      button: evt.button || "left",
+      buttons: type === "mouseUp" ? 0 : 1,
+      clickCount: 1
+    });
+    return;
+  }
+
+  if (type === "wheel") {
+    await cdpSession.send("Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: Number(evt.x) || 0,
+      y: Number(evt.y) || 0,
+      deltaX: Number(evt.deltaX) || 0,
+      deltaY: Number(evt.deltaY) || 0
+    });
+    return;
+  }
+
+  if (type === "keyDown" || type === "keyUp") {
+    await cdpSession.send("Input.dispatchKeyEvent", {
+      type,
+      key: evt.key,
+      text: type === "keyDown" ? (evt.text || evt.key) : undefined
+    });
+  }
+}
+
+async function handleLiveInput(res, challengeId, rawBody) {
+  const session = getLiveSession(challengeId);
+  if (!session) {
+    sendJson(res, 404, { error: "No live session for that challenge — it may have already resolved, timed out, or this server restarted." });
+    return;
+  }
+
+  let events;
+  try {
+    const parsed = JSON.parse(rawBody || "{}");
+    events = Array.isArray(parsed.events) ? parsed.events : [parsed];
+  } catch {
+    sendJson(res, 400, { error: "Invalid JSON body." });
+    return;
+  }
+
+  try {
+    for (const evt of events) {
+      await dispatchLiveInputEvent(session.cdpSession, evt);
+    }
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    sendJson(res, 502, { error: `Failed to dispatch input: ${error?.message || error}` });
+  }
+}
+
+async function handleLiveResolve(res, challengeId) {
+  try {
+    await resolveLiveCaptchaSession(challengeId);
+    sendJson(res, 200, { ok: true });
+  } catch (error) {
+    sendJson(res, Number(error?.status) || 500, { error: error?.message || "Failed to resolve." });
+  }
+}
+
 const server = createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
@@ -132,12 +241,9 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && req.url === "/run") {
-      if (TRIGGER_SECRET) {
-        const provided = req.headers["x-trigger-secret"] || "";
-        if (provided !== TRIGGER_SECRET) {
-          sendJson(res, 401, { error: "Invalid trigger secret." });
-          return;
-        }
+      if (!hasValidTriggerSecret(req)) {
+        sendJson(res, 401, { error: "Invalid trigger secret." });
+        return;
       }
 
       const rawBody = await readBody(req).catch(() => "");
@@ -152,6 +258,31 @@ const server = createServer(async (req, res) => {
       const outcome = await triggerRun(reason);
       sendJson(res, 202, outcome);
       return;
+    }
+
+    const liveMatch = (req.url || "").match(/^\/live\/(\d+)\/(frame|input|resolve)$/);
+    if (liveMatch) {
+      if (!hasValidTriggerSecret(req)) {
+        sendJson(res, 401, { error: "Invalid trigger secret." });
+        return;
+      }
+
+      const challengeId = Number(liveMatch[1]);
+      const action = liveMatch[2];
+
+      if (req.method === "GET" && action === "frame") {
+        await handleLiveFrame(res, challengeId);
+        return;
+      }
+      if (req.method === "POST" && action === "input") {
+        const rawBody = await readBody(req).catch(() => "");
+        await handleLiveInput(res, challengeId, rawBody);
+        return;
+      }
+      if (req.method === "POST" && action === "resolve") {
+        await handleLiveResolve(res, challengeId);
+        return;
+      }
     }
 
     sendJson(res, 404, { error: "Not found." });

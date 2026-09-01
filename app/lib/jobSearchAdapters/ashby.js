@@ -18,7 +18,8 @@ import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
-import { detectSubmissionBlocker } from "./blockerDetection.js";
+import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
@@ -254,8 +255,18 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
 
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      if (isHeldChallengeBlockerReason(blockerReason)) {
+        const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        if (!challengeResult.ok) {
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+        }
+        // No separate iframe scope to re-acquire here (unlike Greenhouse's
+        // findFormScope) — Ashby's form lives directly on `page`.
+      } else {
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      }
     }
 
     if (resumeBuffer) {

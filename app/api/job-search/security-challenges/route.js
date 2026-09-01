@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
-import { answerSecurityChallenge, listPendingSecurityChallenges } from "../../../lib/jobSearchSecurityChallengeStore";
+import { answerSecurityChallenge, listPendingSecurityChallenges, resolveLiveCaptchaSession } from "../../../lib/jobSearchSecurityChallengeStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +29,12 @@ export async function POST(request) {
     switch (action) {
       case "submitSecurityCode":
         return NextResponse.json({ ok: true, result: await answerSecurityChallenge(data.id, data.code) });
+      // No CDP call needed here — resolving a live CAPTCHA session is a pure
+      // DB status flip. The paused submit-worker call (heldChallengeRelay.js's
+      // resolveCaptchaChallenge) discovers it the same way the text-relay
+      // path does: polling the DB, not an HTTP call to this route.
+      case "resolveLiveCaptcha":
+        return NextResponse.json({ ok: true, result: await resolveLiveCaptchaSession(data.id) });
       default:
         return NextResponse.json({ error: "Unknown security-challenge action." }, { status: 400 });
     }

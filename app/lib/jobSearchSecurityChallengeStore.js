@@ -101,6 +101,29 @@ export async function listPendingSecurityChallenges({ limit = 20 } = {}) {
   return rows.map((row) => mapChallengeRow(row));
 }
 
+// jobSearchHeldChallengeWatcher.js's own poll loop — every still-pending
+// challenge that hasn't been notified about yet (see jobSearchDb.js's own
+// comment on notified_at for why this column exists instead of an in-memory
+// set: a process restart must not re-send a push for every challenge
+// already pending, but also must not silently skip one that really is new).
+export async function listUnnotifiedPendingChallenges() {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const [rows] = await pool.query(
+    `SELECT id, posting_id, application_id, company_name, job_title, ats_type, apply_url,
+            challenge_kind, prompt_text, status, created_at, expires_at, answered_at, updated_at
+     FROM job_search_security_challenges
+     WHERE status = 'pending' AND notified_at IS NULL AND expires_at > ?
+     ORDER BY created_at ASC`,
+    [new Date()]
+  );
+  return rows.map((row) => mapChallengeRow(row));
+}
+
+export async function markChallengeNotified(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  await pool.query("UPDATE job_search_security_challenges SET notified_at = ? WHERE id = ?", [new Date(), Number(id)]);
+}
+
 export async function answerSecurityChallenge(id, code) {
   const pool = requirePool(await ensureJobSearchSchema());
   const challengeId = cleanId(id, "Security challenge");
@@ -120,6 +143,18 @@ export async function answerSecurityChallenge(id, code) {
   }
 
   return { id: challengeId };
+}
+
+// The live-CAPTCHA-solve counterpart of answerSecurityChallenge() above —
+// same 'pending' -> 'answered' transition, but there's no typed code to
+// store: the account owner solved the challenge directly, live, through the
+// relay in jobSearchLiveSessionRegistry.js. The fixed marker text is never
+// read as an answer anywhere (unlike `code`, which greenhouse.js et al.
+// actually type into a field) — it only needs to be non-empty so this reuses
+// the exact same UPDATE shape (and the exact same waitForSecurityChallengeCode()
+// poll loop below) as the text-relay path instead of duplicating it.
+export async function resolveLiveCaptchaSession(id) {
+  return answerSecurityChallenge(id, "[solved live]");
 }
 
 async function getSecurityChallengeForWorker(id) {

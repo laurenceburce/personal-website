@@ -3,7 +3,8 @@ import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
-import { detectSubmissionBlocker } from "./blockerDetection.js";
+import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
   isEeoLabel,
@@ -254,8 +255,16 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
 
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      if (isHeldChallengeBlockerReason(blockerReason)) {
+        const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        if (!challengeResult.ok) {
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+        }
+      } else {
+        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+      }
     }
 
     const resumeRequired = await page.locator('input[type="file"][name="cResume"][required], #resume_required[value="true"]').count().catch(() => 0) > 0;

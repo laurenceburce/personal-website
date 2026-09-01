@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { atsTypeLabel, Badge, Field } from "./JobSearchUi";
+import LiveCaptchaModal from "./LiveCaptchaModal";
 
-const SECURITY_CHALLENGE_POLL_MS = 4000;
+const HELD_ITEM_POLL_MS = 4000;
 
 function formatTimeLeft(expiresAt, now) {
   if (!expiresAt) return "";
@@ -15,11 +16,22 @@ function formatTimeLeft(expiresAt, now) {
   return minutes > 0 ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
 
-export default function SecurityChallengesPanel({ initialChallenges = [], saving, onSubmitCode }) {
+// Same DB row (job_search_security_challenges), three flavors — see
+// heldChallengeRelay.js. security_code/anti_bot_text share one type-an-
+// answer form; captcha gets a "Solve Now" button into the live-relay modal
+// instead, since there's no text to type.
+function kindLabel(kind) {
+  if (kind === "captcha") return "CAPTCHA";
+  if (kind === "anti_bot_text") return "Anti-bot Question";
+  return "Security Code";
+}
+
+export default function HeldSubmissionsPanel({ initialChallenges = [], saving, onSubmitCode, onResolveLiveCaptcha }) {
   const [challenges, setChallenges] = useState(initialChallenges || []);
   const [codes, setCodes] = useState({});
   const [pollError, setPollError] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const [liveChallenge, setLiveChallenge] = useState(null);
 
   useEffect(() => {
     setChallenges(initialChallenges || []);
@@ -33,23 +45,27 @@ export default function SecurityChallengesPanel({ initialChallenges = [], saving
       try {
         const response = await fetch("/api/job-search/security-challenges");
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload?.error || "Failed to load security-code prompts.");
+        if (!response.ok) throw new Error(payload?.error || "Failed to load held-submission prompts.");
         if (!cancelled) {
           setChallenges(Array.isArray(payload?.challenges) ? payload.challenges : []);
           setPollError("");
         }
       } catch (error) {
-        if (!cancelled) setPollError(error?.message || "Failed to load security-code prompts.");
+        if (!cancelled) setPollError(error?.message || "Failed to load held-submission prompts.");
       }
     }
 
-    const interval = setInterval(poll, SECURITY_CHALLENGE_POLL_MS);
+    const interval = setInterval(poll, HELD_ITEM_POLL_MS);
     poll();
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
   }, []);
+
+  function removeChallenge(id) {
+    setChallenges((current) => current.filter((item) => item.id !== id));
+  }
 
   async function submitCode(event, challenge) {
     event.preventDefault();
@@ -61,7 +77,13 @@ export default function SecurityChallengesPanel({ initialChallenges = [], saving
       delete next[challenge.id];
       return next;
     });
-    setChallenges((current) => current.filter((item) => item.id !== challenge.id));
+    removeChallenge(challenge.id);
+  }
+
+  async function handleLiveResolve(challenge) {
+    await onResolveLiveCaptcha(challenge.id);
+    setLiveChallenge(null);
+    removeChallenge(challenge.id);
   }
 
   if (challenges.length === 0) return null;
@@ -69,46 +91,73 @@ export default function SecurityChallengesPanel({ initialChallenges = [], saving
   return (
     <section className="job-search-panel job-search-security-panel">
       <header className="job-search-panel-header">
-        <h2>Security Code Required</h2>
+        <h2>Held For You</h2>
         <Badge text={`${challenges.length} waiting`} tone="warn" />
       </header>
 
       <p className="job-search-panel-hint">
-        The submit worker is paused on the employer page. Enter the code you received to let it continue this submission.
+        The submit worker is paused on the employer page. Answer or solve these to let it continue.
       </p>
 
       {pollError ? <p className="job-search-alert job-search-alert-error">{pollError}</p> : null}
 
       <div className="job-search-security-list">
         {challenges.map((challenge) => {
-          const code = codes[challenge.id] || "";
           const isBusy = Boolean(saving);
+          const kind = challenge.challengeKind || "security_code";
+
+          if (kind === "captcha") {
+            return (
+              <div key={challenge.id} className="job-search-security-item job-search-security-item-captcha">
+                <div className="job-search-security-context">
+                  <strong>{challenge.jobTitle}</strong>
+                  <span>{challenge.companyName} · {atsTypeLabel(challenge.atsType)} · <Badge text={kindLabel(kind)} tone="danger" /></span>
+                  <small>Expires in {formatTimeLeft(challenge.expiresAt, now)}</small>
+                  {challenge.applyUrl ? <a href={challenge.applyUrl} target="_blank" rel="noreferrer">View posting</a> : null}
+                </div>
+                <button type="button" disabled={isBusy} onClick={() => setLiveChallenge(challenge)}>
+                  Solve Now
+                </button>
+              </div>
+            );
+          }
+
+          const code = codes[challenge.id] || "";
           return (
             <form key={challenge.id} className="job-search-security-item" onSubmit={(event) => submitCode(event, challenge)}>
               <div className="job-search-security-context">
                 <strong>{challenge.jobTitle}</strong>
-                <span>{challenge.companyName} · {atsTypeLabel(challenge.atsType)}</span>
+                <span>{challenge.companyName} · {atsTypeLabel(challenge.atsType)} · <Badge text={kindLabel(kind)} /></span>
                 {challenge.promptText ? <small>{challenge.promptText}</small> : null}
                 {challenge.applyUrl ? <a href={challenge.applyUrl} target="_blank" rel="noreferrer">View posting</a> : null}
               </div>
 
-              <Field label={`Code · ${formatTimeLeft(challenge.expiresAt, now)}`}>
+              <Field label={`Answer · ${formatTimeLeft(challenge.expiresAt, now)}`}>
                 <input
                   value={code}
                   onChange={(event) => setCodes((current) => ({ ...current, [challenge.id]: event.target.value }))}
                   autoComplete="one-time-code"
-                  inputMode="numeric"
-                  placeholder="Security code"
+                  inputMode={kind === "security_code" ? "numeric" : "text"}
+                  placeholder={kind === "anti_bot_text" ? "Your answer" : "Security code"}
                 />
               </Field>
 
               <button type="submit" disabled={isBusy || !code.trim()}>
-                {saving === "submitSecurityCode" ? "Sending..." : "Submit Code"}
+                {saving === "submitSecurityCode" ? "Sending..." : "Submit"}
               </button>
             </form>
           );
         })}
       </div>
+
+      {liveChallenge ? (
+        <LiveCaptchaModal
+          challenge={liveChallenge}
+          saving={saving}
+          onClose={() => setLiveChallenge(null)}
+          onResolve={() => handleLiveResolve(liveChallenge)}
+        />
+      ) : null}
     </section>
   );
 }
