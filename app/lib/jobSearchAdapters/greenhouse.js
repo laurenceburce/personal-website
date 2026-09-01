@@ -47,7 +47,7 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 // copy. Deliberately conservative — an unmatched confirmation page falls
 // through to "still on the form" below rather than being guessed as success.
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|required field|error submitting|something went wrong)/i;
 
 // Real Greenhouse forms are embedded two ways: inline on boards.greenhouse.io /
 // job-boards.greenhouse.io, or via <iframe src="...greenhouse.io/embed/job_app...">
@@ -374,10 +374,20 @@ async function waitForSubmitOutcome(page, scope, submitButton) {
   const deadline = startedAt + SUBMIT_OUTCOME_TIMEOUT_MS;
   let lastText = await readSubmissionText(page, scope);
   let sawBusyState = false;
+  let lastValidationCheckAt = 0;
 
   while (Date.now() < deadline) {
     if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
+
+    const blockerReason = await detectGreenhouseBlocker(page, scope).catch(() => null);
+    if (blockerReason) return { state: "blocker", text: lastText, blockerReason };
+
     if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+    if (Date.now() - lastValidationCheckAt > 1000) {
+      lastValidationCheckAt = Date.now();
+      const invalidFields = await collectPostSubmitValidationFields(scope).catch(() => []);
+      if (invalidFields.length > 0) return { state: "validation", text: lastText };
+    }
 
     const stillOnFormPage = await submitButton.isVisible().catch(() => false);
     if (!stillOnFormPage) return { state: "changed", text: lastText };
@@ -385,12 +395,8 @@ async function waitForSubmitOutcome(page, scope, submitButton) {
     const busy = await isSubmitButtonBusy(submitButton);
     if (busy) {
       sawBusyState = true;
-    } else if (sawBusyState || Date.now() - startedAt > 2500) {
-      await page.waitForTimeout(1000);
-      lastText = await readSubmissionText(page, scope);
-      if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
-      if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
-      return { state: "settled_on_form", text: lastText };
+    } else if (sawBusyState) {
+      sawBusyState = false;
     }
 
     await page.waitForTimeout(500);
@@ -739,7 +745,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       let submitOutcome = await waitForSubmitOutcome(page, outcomeScope, submitButton);
       confirmationText = submissionTextExcerpt(submitOutcome.text);
 
-      let postSubmitBlockerReason = await detectGreenhouseBlocker(page, outcomeScope);
+      let postSubmitBlockerReason = submitOutcome.blockerReason || await detectGreenhouseBlocker(page, outcomeScope);
       if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope: outcomeScope, posting, submittedAnswers, blockerReason: postSubmitBlockerReason });
         if (challengeResult.ok) {
@@ -750,7 +756,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           // owner's own clicks during the relay left it).
           submitOutcome = await waitForSubmitOutcome(page, outcomeScope, submitButton);
           confirmationText = submissionTextExcerpt(submitOutcome.text);
-          postSubmitBlockerReason = await detectGreenhouseBlocker(page, outcomeScope);
+          postSubmitBlockerReason = submitOutcome.blockerReason || await detectGreenhouseBlocker(page, outcomeScope);
           if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
             status = "blocked";
             errorMessage = "A held challenge was resolved, but the form is still asking for one. Check the answer and retry.";

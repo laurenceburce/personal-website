@@ -40,8 +40,8 @@ function sleep(ms) {
 // decided by the time resolveHeldChallenge() is called). Covers both the
 // security-code phrasing and the anti-bot-text phrasing so the fallback
 // helps either kind.
-const CONTEXT_SIGNALS = /\b(security|verification|one[-\s]?time|authentication)\s+code\b|enter (the )?(security|verification|one[-\s]?time)?\s*code\b|code (sent|emailed|mailed) to|prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret|decode (this|the following)|what('s| is) the answer/i;
-const STRONG_FIELD_SIGNALS = /\b(security|verification|one[-\s]?time|authentication)\s+code\b|one-time-code/i;
+const CONTEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication)\s+(code|passcode|pin)\b|enter (the )?(security|verification|confirmation|one[-\s]?time)?\s*(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email|prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret|decode (this|the following)|what('s| is) the answer/i;
+const STRONG_FIELD_SIGNALS = /\b(security|verification|confirmation|one[-\s]?time|authentication)\s+(code|passcode|pin)\b|one-time-code|passcode|\bpin\b|\botp\b/i;
 const INPUT_SELECTOR = [
   'input[autocomplete="one-time-code"]',
   'input[name*="security" i]',
@@ -50,6 +50,15 @@ const INPUT_SELECTOR = [
   'input[name*="verification" i]',
   'input[id*="verification" i]',
   'input[placeholder*="verification" i]',
+  'input[name*="confirmation" i]',
+  'input[id*="confirmation" i]',
+  'input[placeholder*="confirmation" i]',
+  'input[name*="passcode" i]',
+  'input[id*="passcode" i]',
+  'input[placeholder*="passcode" i]',
+  'input[name*="pin" i]',
+  'input[id*="pin" i]',
+  'input[placeholder*="pin" i]',
   'input[name*="code" i]',
   'input[id*="code" i]',
   'input[placeholder*="code" i]',
@@ -70,7 +79,7 @@ function isChallengeFieldDescriptor(descriptor, { allowGenericMatch = false } = 
   if (!allowGenericMatch) return false;
 
   const tokens = normalized.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
-  return tokens.length > 0 && tokens.every((token) => ["enter", "the", "code"].includes(token));
+  return tokens.length > 0 && tokens.every((token) => ["enter", "the", "code", "passcode", "pin"].includes(token));
 }
 
 async function isVisibleEnabled(locator) {

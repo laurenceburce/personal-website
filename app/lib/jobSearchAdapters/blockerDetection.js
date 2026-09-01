@@ -26,6 +26,15 @@ const SECURITY_CODE_INPUT_SELECTORS = [
   'input[name*="verification" i]',
   'input[id*="verification" i]',
   'input[placeholder*="verification" i]',
+  'input[name*="confirmation" i]',
+  'input[id*="confirmation" i]',
+  'input[placeholder*="confirmation" i]',
+  'input[name*="passcode" i]',
+  'input[id*="passcode" i]',
+  'input[placeholder*="passcode" i]',
+  'input[name*="pin" i]',
+  'input[id*="pin" i]',
+  'input[placeholder*="pin" i]',
   'input[name*="otp" i]',
   'input[id*="otp" i]',
   'input[name*="code" i][inputmode="numeric"]',
@@ -37,7 +46,7 @@ export const SECURITY_CODE_BLOCKER_REASON = "Security/verification code challeng
 export const ANTI_BOT_TEXT_BLOCKER_REASON = "Anti-automation challenge question present in the application form.";
 export const CAPTCHA_BLOCKER_REASON = "CAPTCHA widget present on the application form.";
 
-const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|one[-\s]?time|authentication|two[-\s]?factor|2fa)\s+code\b|enter (the )?(security|verification|one[-\s]?time|authentication)?\s*code\b|code (sent|emailed|mailed) to|sent .{0,80}code.{0,80}(email|inbox)|check .{0,80}(email|inbox).{0,80}code|verify .{0,40}(email|identity)/i;
+const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication|two[-\s]?factor|2fa)\s+(code|passcode|pin)\b|\b(code|passcode|pin|otp)\b.{0,80}\b(security|verification|confirmation|authentication|email)\b|enter (the )?(security|verification|confirmation|one[-\s]?time|authentication)?\s*(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email/i;
 const ANTI_BOT_TEXT_SIGNALS = /(prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret)/i;
 const LOGIN_WALL_SIGNALS = /(sign in to apply|log in to apply|create an account to apply|please log in to continue)/i;
 
@@ -109,7 +118,7 @@ export async function detectSubmissionBlocker(scope) {
       el.getAttribute("name"),
       el.getAttribute("id")
     ].filter(Boolean).join(" ")).catch(() => "");
-    if (/one[-\s]?time|security|verification|authentication|\botp\b/i.test(descriptor)) {
+    if (/one[-\s]?time|security|verification|confirmation|authentication|passcode|\bpin\b|\botp\b/i.test(descriptor)) {
       return SECURITY_CODE_BLOCKER_REASON;
     }
   }
