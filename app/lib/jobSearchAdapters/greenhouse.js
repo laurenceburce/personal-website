@@ -47,7 +47,9 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 // copy. Deliberately conservative — an unmatched confirmation page falls
 // through to "still on the form" below rather than being guessed as success.
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|required field|error submitting|something went wrong)/i;
+// Do not match bare "required field": Greenhouse's static "* indicates a
+// required field" legend is present before and after every valid submit click.
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|error submitting|something went wrong)/i;
 
 // Real Greenhouse forms are embedded two ways: inline on boards.greenhouse.io /
 // job-boards.greenhouse.io, or via <iframe src="...greenhouse.io/embed/job_app...">
