@@ -9,6 +9,20 @@ const MAX_RESULTS_CAP = 50;
 
 const SECURITY_TERMS = /\b(security|verification|verify|one[-\s]?time|authentication|login|sign[-\s]?in|passcode|otp|confirm|validate|code)\b/i;
 const CODE_CONTEXT_TERMS = /\b(code|passcode|otp|pin|verification|security|authentication|one[-\s]?time)\b/i;
+const CODE_MARKER_TERMS = "(?:code|passcode|otp|pin|verification|security|authentication|confirmation)";
+const CODE_TOKEN_STOPWORDS = new Set([
+  "application",
+  "authentication",
+  "checking",
+  "confirm",
+  "confirmation",
+  "greenhouse",
+  "identity",
+  "passcode",
+  "security",
+  "verification",
+  "verify"
+]);
 const COMPANY_STOPWORDS = new Set([
   "the",
   "and",
@@ -116,37 +130,93 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function codeDigitsPattern(code) {
+function codeCharactersPattern(code) {
   return String(code).split("").map(escapeRegExp).join("[\\s-]*");
 }
 
-function extractCodes(text) {
+function expectedCodeLengthsFromChallenge(challenge) {
+  const text = normalizeText([
+    challenge?.promptText,
+    challenge?.jobTitle,
+    challenge?.companyName
+  ].filter(Boolean).join(" "));
+  const lengths = new Set();
+  const patterns = [
+    /\b(\d{1,2})\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\s+(?:code|passcode|otp|pin)\b/gi,
+    /\b(?:code|passcode|otp|pin)\b\D{0,40}\b(\d{1,2})\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\b/gi
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text))) {
+      const length = Number(match[1]);
+      if (Number.isInteger(length) && length >= 4 && length <= 12) lengths.add(length);
+    }
+  }
+
+  return lengths;
+}
+
+function candidateLooksLikeNoise(code, { rawCode, directContext, expectedLengths }) {
+  const normalized = String(code || "").trim();
+  const raw = String(rawCode || "").trim();
+  if (!normalized) return true;
+  if (/^20[2-3]\d$/.test(normalized)) return true;
+  if (/^[01]+$/.test(normalized) && normalized.length >= 6) return true;
+  if (CODE_TOKEN_STOPWORDS.has(normalized.toLowerCase())) return true;
+  if (expectedLengths.size > 0 && !expectedLengths.has(normalized.length)) return true;
+
+  const hasDigit = /\d/.test(normalized);
+  const hasLetter = /[a-z]/i.test(normalized);
+  if (hasDigit && hasLetter) return false;
+  if (hasDigit) return false;
+
+  // All-letter tokens are common in sender names, company names, subjects,
+  // and legal footer text. Only accept them when the surrounding sentence is
+  // explicitly presenting the token as the code.
+  return !directContext || raw !== raw.toUpperCase();
+}
+
+function extractCodes(text, { expectedLengths = new Set() } = {}) {
   const source = normalizeText(text);
   const candidates = [];
-  const codePattern = /(^|[^\d])(\d(?:[\s-]?\d){3,7})(?!\d)/g;
-  let match;
+  const seen = new Set();
+  const codePatterns = [
+    /(^|[^a-z0-9])([a-z0-9]{4,12})(?![a-z0-9])/gi,
+    /(^|[^\d])(\d(?:[\s-]?\d){3,7})(?!\d)/g
+  ];
 
-  while ((match = codePattern.exec(source))) {
-    const rawCode = match[2];
-    const code = rawCode.replace(/\D/g, "");
-    if (code.length < 4 || code.length > 8) continue;
-    if (/^20[2-3]\d$/.test(code)) continue;
+  for (const codePattern of codePatterns) {
+    let match;
+    while ((match = codePattern.exec(source))) {
+      const rawCode = match[2];
+      const code = rawCode.replace(/[\s-]/g, "");
+      if (code.length < 4 || code.length > 12) continue;
 
-    const start = match.index + match[1].length;
-    const context = source.slice(Math.max(0, start - 120), Math.min(source.length, start + rawCode.length + 160));
-    if (!CODE_CONTEXT_TERMS.test(context)) continue;
+      const start = match.index + match[1].length;
+      const context = source.slice(Math.max(0, start - 120), Math.min(source.length, start + rawCode.length + 160));
+      if (!CODE_CONTEXT_TERMS.test(context)) continue;
 
-    const flexibleCode = codeDigitsPattern(code);
-    const before = new RegExp(`\\b(code|passcode|otp|pin|verification|security|authentication)\\b\\D{0,70}${flexibleCode}`, "i");
-    const after = new RegExp(`${flexibleCode}\\D{0,70}\\b(code|passcode|otp|pin|verification|security|authentication)\\b`, "i");
-    const directContext = before.test(context) || after.test(context);
+      const flexibleCode = codeCharactersPattern(code);
+      const before = new RegExp(`\\b${CODE_MARKER_TERMS}\\b\\D{0,90}${flexibleCode}`, "i");
+      const after = new RegExp(`${flexibleCode}\\D{0,90}\\b${CODE_MARKER_TERMS}\\b`, "i");
+      const directContext = before.test(context) || after.test(context);
+      if (candidateLooksLikeNoise(code, { rawCode, directContext, expectedLengths })) continue;
 
-    let score = directContext ? 40 : 18;
-    if (code.length === 6) score += 10;
-    if (code.length === 5 || code.length === 7) score += 4;
-    if (code.length === 4) score -= 5;
+      const key = code.toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-    candidates.push({ code, score, context });
+      let score = directContext ? 40 : 18;
+      if (expectedLengths.has(code.length)) score += 35;
+      else if (expectedLengths.size === 0 && code.length === 6) score += 10;
+      else if (expectedLengths.size === 0 && (code.length === 5 || code.length === 7 || code.length === 8)) score += 4;
+      if (code.length === 4) score -= 5;
+      if (/[a-z]/i.test(code) && /\d/.test(code)) score += 8;
+      if (/^\d+$/.test(code) && code.length < 6) score -= 8;
+
+      candidates.push({ code, score, context });
+    }
   }
 
   return candidates;
@@ -294,6 +364,7 @@ async function findGmailSecurityCode(challenge) {
   const maxResults = intEnv("JOB_SEARCH_EMAIL_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: MAX_RESULTS_CAP });
   const now = Date.now();
   const lookbackMs = lookbackMinutes * 60_000;
+  const expectedLengths = expectedCodeLengthsFromChallenge(challenge);
 
   const listParams = {
     q: buildGmailSearchQuery(lookbackMinutes),
@@ -317,7 +388,7 @@ async function findGmailSecurityCode(challenge) {
     if (message.receivedAt && now - message.receivedAt > lookbackMs) continue;
     if (!SECURITY_TERMS.test(message.text)) continue;
 
-    for (const candidate of extractCodes(message.text)) {
+    for (const candidate of extractCodes(message.text, { expectedLengths })) {
       candidates.push({
         ...candidate,
         message,
