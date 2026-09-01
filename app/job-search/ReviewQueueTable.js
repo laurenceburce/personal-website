@@ -47,7 +47,7 @@ const REASON_PREFIXES = {
   unsupported_ats: "Submission failed"
 };
 
-function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, onOpenManualAnswer, latestApplication, saving }) {
+function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, onOpenManualAnswer, saving }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState("");
   const isBusy = Boolean(saving);
@@ -129,21 +129,6 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
                       {posting.decidedAt ? (
                         <span className="job-search-cell-note"> — {timeAgo(posting.decidedAt)}{posting.decidedBy ? ` (${posting.decidedBy})` : ""}</span>
                       ) : null}
-                    </p>
-                  ) : null}
-
-                  {latestApplication?.hasScreenshot ? (
-                    // What the adapter's browser actually saw at the moment it
-                    // gave up on this attempt — e.g. what widget type a
-                    // stubbornly-failing field really is, or what a saved
-                    // answer's fill attempt actually looked like — already
-                    // captured on every failed/needs_manual_review attempt
-                    // (jobSearchAdapters/*.js), just never linked to from here
-                    // before now.
-                    <p className="job-search-cell-note">
-                      <a href={`/api/job-search/applications/${latestApplication.id}/screenshot`} target="_blank" rel="noreferrer">
-                        View screenshot from this attempt ({timeAgo(latestApplication.attemptedAt)})
-                      </a>
                     </p>
                   ) : null}
 
@@ -476,19 +461,6 @@ export default function ReviewQueueTable({
   // off whichever view/list the row that opened it happened to be in.
   const [manualAnswerPosting, setManualAnswerPosting] = useState(null);
 
-  // One lookup, built once — `applications` already comes back newest-first
-  // (see jobSearchApplicationStore.js's listApplications), so the first hit
-  // per postingId is the latest attempt. Lets a row link straight to the
-  // screenshot from whatever actually just happened to it, instead of
-  // guessing blind at what a stubbornly-failing field's real widget looks
-  // like.
-  const latestApplicationByPostingId = new Map();
-  for (const application of applications || []) {
-    if (!latestApplicationByPostingId.has(application.postingId)) {
-      latestApplicationByPostingId.set(application.postingId, application);
-    }
-  }
-
   // Four tabs instead of seven — each one a union of statuses that share the
   // same next action, not a 1:1 mirror of every distinct posting.status
   // value. Every row still carries its own specific reason/tag regardless of
@@ -577,10 +549,10 @@ export default function ReviewQueueTable({
 
       {view === "autoApplyFailed" ? (
         <p className="job-search-panel-hint">
-          Either auto-apply declined to even attempt a submission (a skip reason — below the score/match/scam-risk/
-          freshness threshold, an unanswerable field, CAPTCHA, or an unsupported ATS) or a real submission attempt
-          genuinely errored out — expand a row to see which. "Retry" re-queues it for the submit worker; if it's
-          the same error every time, it likely needs a code-level fix rather than another attempt.
+          Either auto-apply declined before launching a browser (below the score/match/scam-risk/freshness threshold,
+          or an unsupported ATS) or a real submission attempt genuinely errored out — expand a row to see which.
+          "Retry" re-queues it for the submit worker; if it's the same error every time, it likely needs a code-level
+          fix rather than another attempt.
         </p>
       ) : null}
 
@@ -629,7 +601,6 @@ export default function ReviewQueueTable({
                   onRescore={onRescore}
                   onMarkApplied={onMarkApplied}
                   onOpenManualAnswer={setManualAnswerPosting}
-                  latestApplication={latestApplicationByPostingId.get(posting.id)}
                   saving={saving}
                 />
               ))}

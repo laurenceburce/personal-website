@@ -5,18 +5,34 @@ import mysql from "mysql2/promise";
 
 import { fetchAtsJobs } from "../app/lib/jobSearchAtsSources.js";
 import { clickWithBrowserMouse } from "../app/lib/jobSearchAdapters/browserEngineClick.js";
+import { ATS_DOMAIN_PATTERNS } from "../app/lib/jobSearchAdapters/atsTypes.js";
 import { detectSubmissionBlocker } from "../app/lib/jobSearchAdapters/blockerDetection.js";
 import { launchJobSearchBrowser } from "../app/lib/jobSearchAdapters/jobSearchBrowser.js";
 
-const DEFAULT_ATS_TYPES = ["personio", "breezy", "recruitee", "smartrecruiters", "lever", "workday"];
+const DEFAULT_ATS_TYPES = [
+  "greenhouse",
+  "ashby",
+  "workable",
+  "personio",
+  "breezy",
+  "oracle_fusion",
+  "lever",
+  "recruitee",
+  "smartrecruiters",
+  "workday"
+];
 const DEFAULT_MAX_PER_ATS = 1;
 
 const FALLBACK_TARGETS = [
-  { atsType: "personio", companyName: "ACS", boardToken: "acs" },
+  { atsType: "greenhouse", companyName: "GitLab", boardToken: "gitlab" },
+  { atsType: "ashby", companyName: "Ramp", boardToken: "ramp" },
+  { atsType: "workable", companyName: "Codurance", boardToken: "codurance" },
+  { atsType: "personio", companyName: "OpenProject GmbH", boardToken: "openproject-gmbh" },
   { atsType: "breezy", companyName: "Anytime Fitness", boardToken: "anytime-fitness" },
-  { atsType: "recruitee", companyName: "Dunkin'", boardToken: "dunkin" },
-  { atsType: "smartrecruiters", companyName: "ServiceTitan", boardToken: "servicetitan" },
+  { atsType: "oracle_fusion", companyName: "Oracle", boardToken: "eeho.fa.us2.oraclecloud.com::jobsearch::CX_45001" },
   { atsType: "lever", companyName: "Palantir", boardToken: "palantir" },
+  { atsType: "recruitee", companyName: "Attendi", boardToken: "attendi" },
+  { atsType: "smartrecruiters", companyName: "ServiceTitan", boardToken: "servicetitan" },
   { atsType: "workday", companyName: "Workday", boardToken: "workday::wd5::Workday" }
 ];
 
@@ -92,7 +108,7 @@ function orderAndCapTargets(targets, atsTypes, maxPerAts) {
   const deduped = [...byKey.values()].sort((a, b) => {
     const atsDelta = atsTypes.indexOf(a.atsType) - atsTypes.indexOf(b.atsType);
     if (atsDelta !== 0) return atsDelta;
-    const priority = (target) => target.source === "cli-url" ? 0 : target.source === "job_search_known_companies" ? 1 : 2;
+    const priority = (target) => target.source === "cli-url" ? 0 : target.source === "fallback" ? 1 : 2;
     const priorityDelta = priority(a) - priority(b);
     if (priorityDelta !== 0) return priorityDelta;
     return (Number(b.jobsFoundLastPoll) || 0) - (Number(a.jobsFoundLastPoll) || 0);
@@ -219,6 +235,11 @@ async function summarizePage(page) {
   }));
 }
 
+function atsHostMatches(atsType, host) {
+  const entry = ATS_DOMAIN_PATTERNS.find((pattern) => pattern.atsType === atsType);
+  return entry ? entry.pattern.test(host) : false;
+}
+
 function hostReview(atsType, applyUrl, finalUrl) {
   try {
     const applyHost = new URL(applyUrl).hostname.toLowerCase();
@@ -226,19 +247,7 @@ function hostReview(atsType, applyUrl, finalUrl) {
     const sameHost = applyHost === finalHost;
 
     if (sameHost) return { applyHost, finalHost, redirectedAway: false };
-    if (atsType === "smartrecruiters" && finalHost.endsWith("smartrecruiters.com")) {
-      return { applyHost, finalHost, redirectedAway: false };
-    }
-    if (atsType === "workday" && finalHost.endsWith("myworkdayjobs.com")) {
-      return { applyHost, finalHost, redirectedAway: false };
-    }
-    if (atsType === "lever" && finalHost.endsWith("lever.co")) {
-      return { applyHost, finalHost, redirectedAway: false };
-    }
-    if (atsType === "breezy" && finalHost.endsWith("breezy.hr")) {
-      return { applyHost, finalHost, redirectedAway: false };
-    }
-    if (atsType === "personio" && /\.jobs\.personio\.(de|com)$/i.test(finalHost)) {
+    if (atsHostMatches(atsType, finalHost)) {
       return { applyHost, finalHost, redirectedAway: false };
     }
 

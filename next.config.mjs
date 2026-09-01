@@ -47,7 +47,7 @@ const nextConfig = {
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.plaid.com",
               "style-src 'self' 'unsafe-inline'",
               // blob: added for the Job Search live-CAPTCHA relay
-              // (LiveCaptchaModal.js polls a screenshot every ~500ms via
+              // (LiveCaptchaModal.js polls a live frame every ~500ms via
               // URL.createObjectURL — a data: URI would work under the
               // existing policy too, but re-base64-encoding a JPEG on every
               // poll is wasteful when the browser can just stream the bytes).

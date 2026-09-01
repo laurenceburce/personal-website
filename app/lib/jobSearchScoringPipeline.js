@@ -207,8 +207,6 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
     pendingReview: 0,
     scoredLow: 0,
     autoRejected: 0,
-    autoSubmitted: 0,
-    autoSkipped: 0,
     errors: 0,
     budgetExceeded: 0
   };
@@ -221,13 +219,11 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
         // iterating rather than re-checking (and logging) it postings.length
         // more times. They stay at 'new' and get picked up on the next run,
         // once tomorrow's budget resets or the cap is raised. Every outcome
-        // bucket has to be subtracted here, including the two auto-apply
-        // ones — omitting them (as this once did) inflates the "deferred"
-        // count by however many postings auto-apply already submitted or
-        // skipped earlier in this same run.
+        // Every outcome bucket has to be subtracted here so the "deferred"
+        // count reflects only untouched postings.
         tally.budgetExceeded = postings.length - (
           tally.filteredOut + tally.belowThreshold + tally.pendingReview + tally.scoredLow + tally.autoRejected
-          + tally.autoSubmitted + tally.autoSkipped + tally.errors
+          + tally.errors
         );
         console.warn(`[jobSearchScoringPipeline] Daily LLM call budget (${findSettings.maxLlmCallsPerDay}) reached — stopping early, ${tally.budgetExceeded} posting(s) deferred to the next run.`);
         break;
@@ -242,8 +238,6 @@ export async function scoreNewPostings({ limit = 100 } = {}) {
       // this run's own auto-reject gate fired (see AUTO_REJECT_LOCATION_
       // MAX_SCORE's comment).
       else if (outcome.status === "rejected") tally.autoRejected += 1;
-      else if (outcome.status === "submitted") tally.autoSubmitted += 1;
-      else if (outcome.status === "skipped_auto_apply") tally.autoSkipped += 1;
     } catch (error) {
       tally.errors += 1;
       console.error(`[jobSearchScoringPipeline] scoring failed for posting ${posting.id}:`, error?.message || error);

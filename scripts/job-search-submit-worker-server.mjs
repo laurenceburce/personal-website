@@ -61,7 +61,7 @@ let lastRunError = null;
 // yields to the next scheduled/triggered run — matches the same
 // "safety valve, not pacing" posture already used elsewhere in this project
 // (e.g. jobSearchCompanyDirectory.js's discoverNewCompanies limit).
-const MAX_CONSECUTIVE_RERUNS = 5;
+const MAX_CONSECUTIVE_RERUNS = 10;
 
 async function triggerRun(reason) {
   if (isRunning) {
@@ -85,6 +85,10 @@ async function triggerRun(reason) {
         try {
           lastRunSummary = await runSubmitWorkerPass();
           lastRunError = null;
+          if (lastRunSummary?.needsRerun) {
+            rerunRequested = true;
+            console.log("[run] Submit-worker pass hit its batch cap — queued a follow-up pass to drain remaining work.");
+          }
         } catch (error) {
           lastRunError = error?.message || String(error);
           console.error("[run] Pass failed:", lastRunError);

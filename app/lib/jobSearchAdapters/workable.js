@@ -7,7 +7,7 @@
 // a checkbox (multi-select) question wraps its options in
 // div[role="group"][aria-labelledby="<groupId>_label"]; a radio (single-select)
 // question wraps its options in fieldset[role="radiogroup"][aria-labelledby].
-import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
+import { findBestMemoryMatch, findExactMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -220,7 +220,6 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
-  let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
   let findSettings = null;
@@ -239,13 +238,11 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
     if (blockerReason) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
         if (!challengeResult.ok) {
-          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: challengeResult.errorMessage };
         }
       } else {
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: blockerReason };
       }
     }
 
@@ -264,6 +261,60 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       manualReviewFields.push(label);
       const options = await captureFieldOptions(page, q).catch(() => []);
       if (options.length > 0) fieldOptions[label] = options;
+    }
+
+    // A similarly-worded question was answered by hand on a DIFFERENT
+    // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+    // popup) — a human-verified past answer beats manual review, so this is
+    // tried as a last resort by EVERY resolution branch below (EEO/work-auth,
+    // a matched-but-unfillable standard field, and the plain free-text/
+    // radio-group fallbacks), not just one of them — see greenhouse.js's
+    // identical helper for why this needs to be its own function reused
+    // across branches rather than one inline block the EEO/work-auth/
+    // standard-field paths skip straight past on their way to
+    // flagForReview. Never attempted for checkbox-group — a single saved
+    // answer doesn't map cleanly onto checking several boxes, same
+    // exclusion the manual-override check above already applies. An exact
+    // label match is tried first and, unlike the fuzzy embedding match
+    // right after it, is never gated behind the daily LLM-call budget — it
+    // costs no LLM call at all.
+    async function tryMemoryAnswer(q) {
+      if (memoryRows.length === 0 || q.kind === "checkbox-group") return false;
+
+      const fillMemoryMatch = async (memoryMatch) => {
+        if (!memoryMatch) return false;
+
+        if (q.kind === "radio-group") {
+          const match = matchOptionByCandidates(q.options, manualOverrideCandidates(memoryMatch.answer));
+          if (!match) return false;
+          const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
+          if (!checked) return false;
+          submittedAnswers[q.label] = match.text;
+          await recordMemoryReuse(memoryMatch.id).catch(() => {});
+          return true;
+        }
+
+        const filledValue = await fillWorkableFieldValue(page, q, manualOverrideCandidates(memoryMatch.answer));
+        if (filledValue == null) return false;
+        submittedAnswers[q.label || q.name] = filledValue;
+        await recordMemoryReuse(memoryMatch.id).catch(() => {});
+        return true;
+      };
+
+      const exactMemoryMatch = findExactMemoryMatch(q.label, posting.companyName, memoryRows);
+      if (await fillMemoryMatch(exactMemoryMatch)) return true;
+
+      const llmSettings = await getLlmFindSettings();
+      const usage = await getTodayLlmUsage();
+      if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) return false;
+
+      const memoryMatch = await findBestMemoryMatch(
+        q.label,
+        posting.companyName,
+        memoryRows,
+        { includeExact: !exactMemoryMatch }
+      ).catch(() => null);
+      return fillMemoryMatch(memoryMatch);
     }
 
     for (const q of questions) {
@@ -320,6 +371,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           // Not gated behind q.required — see greenhouse.js's identical
           // comment on why an EEO/work-auth question needs that regardless
           // of its visible asterisk.
+          if (await tryMemoryAnswer(q)) continue;
           await flagForReview(q.label, q);
           continue;
         }
@@ -336,6 +388,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
             submittedAnswers[q.label] = filledValue;
             continue;
           }
+          if (await tryMemoryAnswer(q)) continue;
           if (q.required) await flagForReview(q.label, q);
           continue;
         }
@@ -346,21 +399,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         // this is checked ahead of the free-text fallback below, for ANY tag
         // (including select — unlike the LLM branch right after this, which
         // deliberately excludes select to avoid inventing an option).
-        if (memoryRows.length > 0) {
-          const llmSettings = await getLlmFindSettings();
-          const usage = await getTodayLlmUsage();
-          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-            const memoryMatch = await findBestMemoryMatch(q.label, posting.companyName, memoryRows).catch(() => null);
-            if (memoryMatch) {
-              const filledValue = await fillWorkableFieldValue(page, q, manualOverrideCandidates(memoryMatch.answer));
-              if (filledValue != null) {
-                submittedAnswers[q.label || q.name] = filledValue;
-                await recordMemoryReuse(memoryMatch.id).catch(() => {});
-                continue;
-              }
-            }
-          }
-        }
+        if (await tryMemoryAnswer(q)) continue;
 
         if (q.tag !== "select" && llmAnsweredCount < MAX_LLM_ANSWERED_FIELDS) {
           const llmSettings = await getLlmFindSettings();
@@ -416,22 +455,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         // Same memory check as the "field" kind above, adapted to a
         // radio-group's own option-text matching (identical mechanism the
         // EEO/work-auth branches right above already use).
-        if (memoryRows.length > 0) {
-          const llmSettings = await getLlmFindSettings();
-          const usage = await getTodayLlmUsage();
-          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-            const memoryMatch = await findBestMemoryMatch(q.label, posting.companyName, memoryRows).catch(() => null);
-            const match = memoryMatch && matchOptionByCandidates(q.options, manualOverrideCandidates(memoryMatch.answer));
-            if (match) {
-              const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
-              if (checked) {
-                submittedAnswers[q.label] = match.text;
-                await recordMemoryReuse(memoryMatch.id).catch(() => {});
-                continue;
-              }
-            }
-          }
-        }
+        if (await tryMemoryAnswer(q)) continue;
 
         // A years-of-experience-shaped question IS something the resume can
         // genuinely answer, unlike an arbitrary radio group — see
@@ -469,8 +493,6 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       }
     }
 
-    screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-
     if (manualReviewFields.length > 0) {
       status = "needs_manual_review";
     } else if (dryRun) {
@@ -483,7 +505,6 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       await page.waitForTimeout(500);
 
       confirmationText = (await page.locator("body").innerText().catch(() => "")).slice(0, 500);
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
 
       const stillOnFormPage = await submitButton.isVisible().catch(() => false);
       const hasErrorSignal = ERROR_TEXT_SIGNALS.test(confirmationText);
@@ -492,7 +513,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
       if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
         status = "failed";
         errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
-          + "the submit button or a validation error. Check the screenshot before assuming this was submitted.";
+          + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
       } else {
         status = "submitted";
       }
@@ -504,13 +525,5 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
     await browser.close();
   }
 
-  // A screenshot is only worth its storage cost (~600KB/attempt, LONGBLOB,
-  // never pruned — see jobSearchApplicationStore.js) when a human actually
-  // needs to look at it: failed/needs_manual_review/blocked outcomes, where
-  // it's the only way to see what the page actually looked like without
-  // re-running Playwright. A successful submission already has
-  // confirmationText as its receipt, so it doesn't need one too.
-  if (status === "submitted") screenshotBuffer = null;
-
-  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage };
 }

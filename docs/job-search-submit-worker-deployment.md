@@ -1,9 +1,9 @@
 # Job Search: submit-worker deployment (event-driven)
 
-The submit-worker is an always-running server that the main app wakes up
-immediately when there's new work (an approval, or a scoring pass with
-auto-apply on) — purely event-driven, no periodic fallback check. This is
-what needs to change on Railway to run it that way.
+The submit-worker is an always-running server that the app or poll worker
+wakes up immediately when there's new work (an approval, or a scoring pass
+with auto-apply on) — event-driven, with capped follow-up passes to drain
+normal backlogs. This is what needs to change on Railway to run it that way.
 
 ## What's in the repo
 
@@ -13,13 +13,14 @@ what needs to change on Railway to run it that way.
 - `Dockerfile.job-search-submit-worker` — `CMD` points at the server script.
 - `app/lib/jobSearchSubmitTrigger.js` — the main app's side of this: a
   best-effort, fire-and-forget call to the submit-worker's `/run` endpoint.
-  Wired into approve/batchApprove (Review Queue) and scoreNow (when
-  auto-apply is on).
+  Wired into approve/batchApprove (Review Queue), scoreNow (when auto-apply
+  is on), and the poll worker after its scoring pass.
 
-There's no fallback timer: if a trigger call is dropped or fails (misconfig,
-network blip, this service mid-restart), an approved posting sits untouched
-until the next trigger-worthy event (any pass sweeps up ALL approved
-postings, not just the one that triggered it) or the next service restart.
+There's no standalone fallback timer inside the submit-worker: if a trigger
+call is dropped or fails (misconfig, network blip, this service mid-restart),
+an approved posting sits untouched until the next trigger-worthy event (any
+pass sweeps up approved and auto-apply-eligible postings, not just the one
+that triggered it) or the next service restart.
 
 ## Submit-worker service — Railway dashboard changes
 

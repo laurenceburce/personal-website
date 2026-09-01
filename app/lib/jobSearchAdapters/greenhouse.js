@@ -431,7 +431,6 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
   const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
-  let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
   let findSettings = null;
@@ -451,7 +450,6 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     if (blockerReason) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope, posting, submittedAnswers, blockerReason });
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
         if (!challengeResult.ok) {
           return {
             status: "blocked",
@@ -459,14 +457,12 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
             manualReviewFields,
             fieldOptions,
             confirmationText,
-            screenshotBuffer,
             errorMessage: challengeResult.errorMessage
           };
         }
         scope = await findFormScope(page);
       } else {
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: blockerReason };
       }
     }
 
@@ -699,8 +695,6 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       }
     }
 
-    screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-
     if (manualReviewFields.length > 0) {
       status = "needs_manual_review";
     } else if (dryRun) {
@@ -711,16 +705,14 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       await clickWithBrowserMouse(page, submitButton);
 
       // Greenhouse can leave the submit button in a loading state well after
-      // networkidle would time out (confirmed live by a failed GitLab attempt's
-      // screenshot), so wait on page/form state instead of a fixed short delay.
+      // networkidle would time out (confirmed live by a failed GitLab attempt),
+      // so wait on page/form state instead of a fixed short delay.
       let submitOutcome = await waitForSubmitOutcome(page, outcomeScope, submitButton);
       confirmationText = submissionTextExcerpt(submitOutcome.text);
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
 
       let postSubmitBlockerReason = await detectGreenhouseBlocker(page, outcomeScope);
       if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope: outcomeScope, posting, submittedAnswers, blockerReason: postSubmitBlockerReason });
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
         if (challengeResult.ok) {
           // outcomeScope/submitButton stay the same locators — Playwright
           // locators re-query live, so this correctly reflects wherever the
@@ -762,11 +754,11 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         status = "needs_manual_review";
       } else if (submitOutcome.state === "timeout") {
         status = "failed";
-        errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Greenhouse to finish processing the submission. Check the screenshot before retrying.`;
+        errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Greenhouse to finish processing the submission. Review the posting manually before retrying.`;
       } else if (stillOnFormPage && !hasSuccessSignal) {
         status = "failed";
         errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
-          + "the submit button or a validation error. Check the screenshot before assuming this was submitted.";
+          + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
       } else {
         status = "submitted";
       }
@@ -778,13 +770,5 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     await browser.close();
   }
 
-  // A screenshot is only worth its storage cost (~600KB/attempt, LONGBLOB,
-  // never pruned — see jobSearchApplicationStore.js) when a human actually
-  // needs to look at it: failed/needs_manual_review/blocked outcomes, where
-  // it's the only way to see what the page actually looked like without
-  // re-running Playwright. A successful submission already has
-  // confirmationText as its receipt, so it doesn't need one too.
-  if (status === "submitted") screenshotBuffer = null;
-
-  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage };
 }

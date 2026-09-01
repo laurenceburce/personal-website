@@ -120,7 +120,7 @@ async function collectLabeledInputs(scope) {
 }
 
 // Split one-time-code entry — Greenhouse's own shape (confirmed live on a
-// real GitLab posting's screenshot: six separate boxes, each
+// real GitLab posting page: six separate boxes, each
 // `maxlength="1"`), not a single fillable field. A single .fill() on one box
 // silently only ever fills that one box, so this has to be detected and
 // handled as its own case rather than folded into the single-input path.

@@ -13,7 +13,7 @@
 // (`g-recaptcha-response`) AND a separate "decode this and prove you're not a
 // bot" text puzzle in the ordinary question flow — see blockerDetection.js,
 // checked before any field is touched.
-import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
+import { findBestMemoryMatch, findExactMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -239,7 +239,6 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
   const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
-  let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
   let findSettings = null;
@@ -257,15 +256,13 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     if (blockerReason) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
         if (!challengeResult.ok) {
-          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: challengeResult.errorMessage };
         }
         // No separate iframe scope to re-acquire here (unlike Greenhouse's
         // findFormScope) — Ashby's form lives directly on `page`.
       } else {
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: blockerReason };
       }
     }
 
@@ -288,6 +285,50 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       manualReviewFields.push(label);
       const options = await captureFieldOptions(locator, widget, page).catch(() => []);
       if (options.length > 0) fieldOptions[label] = options;
+    }
+
+    // A similarly-worded question was answered by hand on a DIFFERENT
+    // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+    // popup) — a human-verified past answer beats manual review, so this is
+    // tried as a last resort by EVERY resolution branch below (EEO/work-auth,
+    // a matched-but-unfillable standard field, and the generic catch-all),
+    // not just the generic one — see greenhouse.js's identical helper for why
+    // this needs to be its own function reused across branches rather than
+    // one inline block the EEO/work-auth/standard-field paths skip straight
+    // past on their way to flagForReview. An exact label match is tried
+    // first and, unlike the fuzzy embedding match right after it, is never
+    // gated behind the daily LLM-call budget — it costs no LLM call at all.
+    async function tryMemoryAnswer(field, widget) {
+      if (memoryRows.length === 0) return false;
+
+      const fillMemoryMatch = async (memoryMatch) => {
+        if (!memoryMatch) return false;
+
+        for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
+          if (await fillByWidget(page, field.locator, widget, candidate)) {
+            submittedAnswers[field.label] = candidate;
+            await recordMemoryReuse(memoryMatch.id).catch(() => {});
+            return true;
+          }
+        }
+
+        return false;
+      };
+
+      const exactMemoryMatch = findExactMemoryMatch(field.label, posting.companyName, memoryRows);
+      if (await fillMemoryMatch(exactMemoryMatch)) return true;
+
+      const llmSettings = await getLlmFindSettings();
+      const usage = await getTodayLlmUsage();
+      if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) return false;
+
+      const memoryMatch = await findBestMemoryMatch(
+        field.label,
+        posting.companyName,
+        memoryRows,
+        { includeExact: !exactMemoryMatch }
+      ).catch(() => null);
+      return fillMemoryMatch(memoryMatch);
     }
 
     for (const field of fields) {
@@ -326,9 +367,10 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         const value = resolveWorkAuthValue(field.normalizedLabel, profile.workAuthorization);
         if (value && await fillByWidget(page, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
-        } else {
-          await flagForReview(field.label, field.locator, widget);
+          continue;
         }
+        if (await tryMemoryAnswer(field, widget)) continue;
+        await flagForReview(field.label, field.locator, widget);
         continue;
       }
 
@@ -336,9 +378,10 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
         if (value && await fillByWidget(page, field.locator, widget, value)) {
           submittedAnswers[field.label] = value;
-        } else {
-          await flagForReview(field.label, field.locator, widget);
+          continue;
         }
+        if (await tryMemoryAnswer(field, widget)) continue;
+        await flagForReview(field.label, field.locator, widget);
         continue;
       }
 
@@ -360,7 +403,10 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         }
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
+          continue;
+        }
+        if (await tryMemoryAnswer(field, widget)) continue;
+        if (field.required) {
           await flagForReview(field.label, field.locator, widget);
         }
         continue;
@@ -370,30 +416,8 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       // posting before (see the Review Queue's Memory tab / "Answer & Retry"
       // popup) — a human-verified past answer beats a fresh LLM guess, so
       // this is checked ahead of every "never guessed" category below (yes/no,
-      // fixed option sets) and the free-text fallback, for any widget type,
-      // reusing the exact same daily LLM-call budget check the free-text
-      // branch already does.
-      if (memoryRows.length > 0) {
-        const llmSettings = await getLlmFindSettings();
-        const usage = await getTodayLlmUsage();
-        if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-          const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-          if (memoryMatch) {
-            let memoryFilled = null;
-            for (const candidate of manualOverrideCandidates(memoryMatch.answer)) {
-              if (await fillByWidget(page, field.locator, widget, candidate)) {
-                memoryFilled = candidate;
-                break;
-              }
-            }
-            if (memoryFilled != null) {
-              submittedAnswers[field.label] = memoryFilled;
-              await recordMemoryReuse(memoryMatch.id).catch(() => {});
-              continue;
-            }
-          }
-        }
-      }
+      // fixed option sets) and the free-text fallback, for any widget type.
+      if (await tryMemoryAnswer(field, widget)) continue;
 
       // Yes/no capability-style questions ("Do you have N years of experience
       // with X?") are a factual claim about the candidate, not a lookup — the
@@ -437,8 +461,6 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       if (field.required) await flagForReview(field.label, field.locator, widget);
     }
 
-    screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-
     if (manualReviewFields.length > 0) {
       status = "needs_manual_review";
     } else if (dryRun) {
@@ -451,7 +473,6 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       await page.waitForTimeout(500);
 
       confirmationText = (await page.locator("body").innerText().catch(() => "")).slice(0, 500);
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
 
       const stillOnFormPage = await submitButton.isVisible().catch(() => false);
       const hasErrorSignal = ERROR_TEXT_SIGNALS.test(confirmationText);
@@ -460,7 +481,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
         status = "failed";
         errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
-          + "the submit button or a validation error. Check the screenshot before assuming this was submitted.";
+          + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
       } else {
         status = "submitted";
       }
@@ -472,13 +493,5 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     await browser.close();
   }
 
-  // A screenshot is only worth its storage cost (~600KB/attempt, LONGBLOB,
-  // never pruned — see jobSearchApplicationStore.js) when a human actually
-  // needs to look at it: failed/needs_manual_review/blocked outcomes, where
-  // it's the only way to see what the page actually looked like without
-  // re-running Playwright. A successful submission already has
-  // confirmationText as its receipt, so it doesn't need one too.
-  if (status === "submitted") screenshotBuffer = null;
-
-  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage };
 }

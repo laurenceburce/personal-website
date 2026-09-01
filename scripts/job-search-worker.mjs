@@ -11,6 +11,7 @@ import { recordDiscoveryRun } from "../app/lib/jobSearchDiscoveryRunStore.js";
 import { cleanupOldPostings } from "../app/lib/jobSearchPostingsStore.js";
 import { scoreNewPostings } from "../app/lib/jobSearchScoringPipeline.js";
 import { getFindSettings } from "../app/lib/jobSearchSettingsStore.js";
+import { triggerSubmitWorker } from "../app/lib/jobSearchSubmitTrigger.js";
 import { isWorkerEnabled, recordHeartbeat, recordWorkerRunResult } from "../app/lib/jobSearchWorkerStatusStore.js";
 
 // Storage circuit breaker: this is a hard stop on inserting MORE data, checked
@@ -109,16 +110,19 @@ try {
 
     console.log("Scoring new postings (hard filters -> embedding rank -> LLM rubric)...");
     const tally = await scoreNewPostings({ limit: 200 });
+    if (findSettings.autoApplyEnabled) {
+      await triggerSubmitWorker("pollScore");
+    }
     console.log(
       `Scored ${tally.total}: ${tally.filteredOut} filtered out, ${tally.belowThreshold} below match threshold, ` +
-      `${tally.pendingReview} pending review, ${tally.scoredLow} scored low, ${tally.autoSubmitted} auto-submitted, ` +
-      `${tally.autoSkipped} auto-apply skipped, ${tally.errors} errors` +
+      `${tally.pendingReview} pending review, ${tally.scoredLow} scored low, ` +
+      `${tally.autoRejected} auto-rejected, ${tally.errors} errors` +
       (tally.budgetExceeded ? `, ${tally.budgetExceeded} deferred (daily LLM budget reached)` : "") + "."
     );
 
     await recordWorkerRunResult("poll", {
       ok: true,
-      summary: `${discoveryLog}; direct-poll: ${directPoll.companiesPolled}/${directPoll.companiesTotal} companies, ${directPoll.created} new; scored ${tally.total} (${tally.pendingReview} pending review, ${tally.autoSubmitted} auto-submitted)`
+      summary: `${discoveryLog}; direct-poll: ${directPoll.companiesPolled}/${directPoll.companiesTotal} companies, ${directPoll.created} new; scored ${tally.total} (${tally.pendingReview} pending review)`
     });
   }
 

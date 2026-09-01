@@ -34,9 +34,6 @@ function AppliedJobRow({ application, saving, onUpdateNote, onDelete }) {
         <td>{formatDate(application.submittedAt || application.attemptedAt)}</td>
         <td className="job-search-row-actions" onClick={(e) => e.stopPropagation()}>
           <a href={application.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(application.atsType)}</a>
-          {application.hasScreenshot ? (
-            <a href={`/api/job-search/applications/${application.id}/screenshot`} target="_blank" rel="noreferrer">Screenshot</a>
-          ) : null}
         </td>
       </tr>
       <AnimatePresence initial={false}>

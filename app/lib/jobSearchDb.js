@@ -214,7 +214,6 @@ export const ensureJobSearchSchema = async () => {
           submission_status VARCHAR(24) NOT NULL DEFAULT 'pending',
           error_message VARCHAR(500) NOT NULL DEFAULT '',
           ats_confirmation_text VARCHAR(500) NOT NULL DEFAULT '',
-          screenshot LONGBLOB NULL,
           attempted_at DATETIME(3) NOT NULL,
           submitted_at DATETIME(3) NULL,
           created_at DATETIME(3) NOT NULL,
@@ -226,6 +225,11 @@ export const ensureJobSearchSchema = async () => {
       `);
 
       await runMigration(pool, "ALTER TABLE job_search_applications ADD COLUMN user_note VARCHAR(500) NOT NULL DEFAULT ''");
+      // Stored attempt screenshots were only ever human-facing diagnostics
+      // exposed through a dashboard link. The adapters now keep structured
+      // field labels/options and confirmation text instead, so drop the blob
+      // column and avoid letting failed attempts grow the database by MBs.
+      await runMigration(pool, "ALTER TABLE job_search_applications DROP COLUMN screenshot");
       await runMigration(pool, "ALTER TABLE job_search_find_settings ADD COLUMN max_posting_age_hours INT NULL");
       // description_html was never actually read anywhere (scoring/embedding/display
       // all use description_text) and stored the full raw HTML of every job listing —

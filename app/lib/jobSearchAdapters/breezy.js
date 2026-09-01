@@ -1,4 +1,4 @@
-import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
+import { findBestMemoryMatch, findExactMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -239,7 +239,6 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
   const fieldOptions = {};
   let llmAnsweredCount = 0;
   let confirmationText = "";
-  let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
   let findSettings = null;
@@ -257,13 +256,11 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
     if (blockerReason) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
         if (!challengeResult.ok) {
-          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: challengeResult.errorMessage };
         }
       } else {
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: blockerReason };
+        return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: blockerReason };
       }
     }
 
@@ -287,6 +284,59 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       manualReviewFields.push(label);
       const options = captureFieldOptions(field);
       if (options.length > 0) fieldOptions[label] = options;
+    }
+
+    // A similarly-worded question was answered by hand on a DIFFERENT
+    // posting before (see the Review Queue's Memory tab / "Answer & Retry"
+    // popup) — a human-verified past answer beats manual review, so this is
+    // tried as a last resort by EVERY resolution branch below (EEO/work-auth,
+    // a matched-but-unfillable standard field, and the free-text fallback),
+    // not just one of them — see greenhouse.js's identical helper for why
+    // this needs to be its own function reused across branches rather than
+    // one inline block the EEO/work-auth/standard-field paths skip straight
+    // past on their way to flagForReview. Never attempted for a plain
+    // "checkbox" kind, same exclusion the manual-override check above
+    // already applies. An exact label match is tried first and, unlike the
+    // fuzzy embedding match right after it, is never gated behind the daily
+    // LLM-call budget — it costs no LLM call at all.
+    async function tryMemoryAnswer(field) {
+      if (memoryRows.length === 0 || field.kind === "checkbox") return false;
+
+      const fillMemoryMatch = async (memoryMatch) => {
+        if (!memoryMatch) return false;
+
+        if (field.kind === "radio-group") {
+          const match = matchOptionByCandidates(field.options, manualOverrideCandidates(memoryMatch.answer));
+          if (!match) return false;
+          const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(match.value)}"]`).first();
+          const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
+          if (!checked) return false;
+          submittedAnswers[field.label] = match.text;
+          await recordMemoryReuse(memoryMatch.id).catch(() => {});
+          return true;
+        }
+
+        const memoryFilled = await fillField(page, field, manualOverrideCandidates(memoryMatch.answer));
+        if (memoryFilled == null) return false;
+        submittedAnswers[field.label] = memoryFilled;
+        await recordMemoryReuse(memoryMatch.id).catch(() => {});
+        return true;
+      };
+
+      const exactMemoryMatch = findExactMemoryMatch(field.label, posting.companyName, memoryRows);
+      if (await fillMemoryMatch(exactMemoryMatch)) return true;
+
+      const llmSettings = await getLlmFindSettings();
+      const usage = await getTodayLlmUsage();
+      if (usage.totalCalls >= llmSettings.maxLlmCallsPerDay) return false;
+
+      const memoryMatch = await findBestMemoryMatch(
+        field.label,
+        posting.companyName,
+        memoryRows,
+        { includeExact: !exactMemoryMatch }
+      ).catch(() => null);
+      return fillMemoryMatch(memoryMatch);
     }
 
     for (const field of fields) {
@@ -352,23 +402,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         // DIFFERENT posting before (see the Review Queue's Memory tab)
         // still gets a chance, ahead of manual review, using the same
         // option-text matching as the EEO/work-auth attempt just above.
-        if (memoryRows.length > 0) {
-          const llmSettings = await getLlmFindSettings();
-          const usage = await getTodayLlmUsage();
-          if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-            const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-            const memoryOption = memoryMatch && matchOptionByCandidates(field.options, manualOverrideCandidates(memoryMatch.answer));
-            if (memoryOption) {
-              const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(memoryOption.value)}"]`).first();
-              const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
-              if (checked) {
-                submittedAnswers[field.label] = memoryOption.text;
-                await recordMemoryReuse(memoryMatch.id).catch(() => {});
-                continue;
-              }
-            }
-          }
-        }
+        if (await tryMemoryAnswer(field)) continue;
 
         if (field.required || isEeoOrWorkAuth) flagForReview(cleanLabel(field.label), field);
         continue;
@@ -398,9 +432,10 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         filledValue = value ? await fillField(page, field, [value]) : null;
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else {
-          flagForReview(field.label, field);
+          continue;
         }
+        if (await tryMemoryAnswer(field)) continue;
+        flagForReview(field.label, field);
         continue;
       }
 
@@ -409,9 +444,10 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         filledValue = value ? await fillField(page, field, [value]) : null;
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else {
-          flagForReview(field.label, field);
+          continue;
         }
+        if (await tryMemoryAnswer(field)) continue;
+        flagForReview(field.label, field);
         continue;
       }
 
@@ -420,7 +456,10 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         filledValue = await fillField(page, field, standardCandidates);
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
-        } else if (field.required) {
+          continue;
+        }
+        if (await tryMemoryAnswer(field)) continue;
+        if (field.required) {
           flagForReview(field.label, field);
         }
         continue;
@@ -433,21 +472,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       // select-tag exclusion right below (both normally always manual for
       // Breezy — this file doesn't even attempt an LLM on a select), and
       // ahead of the free-text fallback further down.
-      if (memoryRows.length > 0) {
-        const llmSettings = await getLlmFindSettings();
-        const usage = await getTodayLlmUsage();
-        if (usage.totalCalls < llmSettings.maxLlmCallsPerDay) {
-          const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-          if (memoryMatch) {
-            const memoryFilled = await fillField(page, field, manualOverrideCandidates(memoryMatch.answer));
-            if (memoryFilled != null) {
-              submittedAnswers[field.label] = memoryFilled;
-              await recordMemoryReuse(memoryMatch.id).catch(() => {});
-              continue;
-            }
-          }
-        }
-      }
+      if (await tryMemoryAnswer(field)) continue;
 
       if (field.name === "cSalary" || field.name === "salaryCurrency" || /salary|compensation|notice period|available from|availability/i.test(field.label)) {
         if (field.required) flagForReview(field.label, field);
@@ -475,8 +500,6 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       if (field.required) flagForReview(field.label, field);
     }
 
-    screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-
     if (manualReviewFields.length > 0) {
       status = "needs_manual_review";
     } else if (dryRun) {
@@ -488,7 +511,6 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       await page.waitForTimeout(500);
 
       confirmationText = (await page.locator("body").innerText().catch(() => "")).slice(0, 500);
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
 
       const stillOnFormPage = await submitButton.isVisible().catch(() => false);
       const hasErrorSignal = ERROR_TEXT_SIGNALS.test(confirmationText);
@@ -497,7 +519,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
         status = "failed";
         errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
-          + "the submit button or a validation error. Check the screenshot before assuming this was submitted.";
+          + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
       } else {
         status = "submitted";
       }
@@ -509,7 +531,5 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
     await browser.close();
   }
 
-  if (status === "submitted") screenshotBuffer = null;
-
-  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage };
 }

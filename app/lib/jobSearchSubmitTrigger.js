@@ -4,10 +4,10 @@
 // might make one auto-apply-eligible) so it gets picked up in seconds.
 //
 // Deliberately Playwright-free: this file must be safely importable from the
-// main web app (page.js's own request path, API routes) without pulling
-// Chromium into that bundle — this only ever does a plain fetch() to another
-// Railway service, the same class of thing jobSearchCompanyProbe.js already
-// does to third-party APIs.
+// main web app (page.js's own request path, API routes) and the poll worker
+// without pulling Chromium into those bundles — this only ever does a plain
+// fetch() to another Railway service, the same class of thing
+// jobSearchCompanyProbe.js already does to third-party APIs.
 //
 // The call itself never throws — if JOB_SEARCH_SUBMIT_WORKER_URL isn't
 // configured (local dev, or the submit-worker service isn't up yet) or the

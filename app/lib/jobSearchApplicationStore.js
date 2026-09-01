@@ -15,7 +15,6 @@ export function mapApplicationRow(row) {
     submissionStatus: row.submission_status,
     errorMessage: row.error_message,
     atsConfirmationText: row.ats_confirmation_text,
-    hasScreenshot: Boolean(row.has_screenshot),
     autoApplied: Boolean(row.auto_applied),
     userNote: row.user_note || "",
     attemptedAt: row.attempted_at,
@@ -36,15 +35,13 @@ export function mapApplicationRow(row) {
 const APPLICATION_SELECT_COLUMNS = `
   a.id, a.posting_id, a.company_name, a.job_title, a.ats_type, a.apply_url, a.resume_id, a.resume_label,
   a.submitted_answers, a.score_snapshot, a.submission_status, a.error_message, a.ats_confirmation_text,
-  (a.screenshot IS NOT NULL) AS has_screenshot, a.auto_applied, a.user_note, a.attempted_at, a.submitted_at,
+  a.auto_applied, a.user_note, a.attempted_at, a.submitted_at,
   a.created_at, a.updated_at, p.status AS posting_status
 `;
 
 export async function listApplications({ limit = 200 } = {}) {
   const pool = requirePool(await ensureJobSearchSchema());
   const [rows] = await pool.query(
-    // screenshot is a LONGBLOB — never select it in a list query, it's streamed
-    // separately by the screenshot route (Milestone 5) when actually needed.
     // LEFT JOIN (not INNER) so an application whose posting was somehow
     // removed still shows up rather than silently vanishing.
     `SELECT ${APPLICATION_SELECT_COLUMNS}
@@ -84,13 +81,6 @@ export async function getApplicationById(id) {
   return rows[0] ? mapApplicationRow(rows[0]) : null;
 }
 
-export async function getApplicationScreenshot(id) {
-  const pool = requirePool(await ensureJobSearchSchema());
-  const applicationId = cleanId(id, "Application");
-  const [rows] = await pool.query("SELECT screenshot FROM job_search_applications WHERE id = ? LIMIT 1", [applicationId]);
-  return rows[0]?.screenshot || null;
-}
-
 // Called once per Playwright submit attempt (success, failure, or manual-review
 // hand-off) by the submit worker — one row per attempt, so a retry creates a
 // new row rather than overwriting the history of what was tried.
@@ -107,7 +97,6 @@ export async function insertApplicationAttempt({
   submissionStatus,
   errorMessage,
   atsConfirmationText,
-  screenshotBuffer,
   autoApplied = false
 }) {
   const pool = requirePool(await ensureJobSearchSchema());
@@ -117,8 +106,8 @@ export async function insertApplicationAttempt({
     `INSERT INTO job_search_applications
        (posting_id, company_name, job_title, ats_type, apply_url, resume_id, resume_label,
         submitted_answers, score_snapshot, submission_status, error_message, ats_confirmation_text,
-        screenshot, auto_applied, attempted_at, submitted_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        auto_applied, attempted_at, submitted_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       cleanId(postingId, "Posting"),
       cleanText(companyName, 160),
@@ -132,7 +121,6 @@ export async function insertApplicationAttempt({
       cleanText(submissionStatus, 24, "failed"),
       cleanText(errorMessage, 500),
       cleanText(atsConfirmationText, 500),
-      screenshotBuffer || null,
       autoApplied ? 1 : 0,
       now,
       submissionStatus === "submitted" ? now : null,
@@ -144,11 +132,10 @@ export async function insertApplicationAttempt({
   return { id: Number(result.insertId) };
 }
 
-// Removes only the application record (audit-trail row + its screenshot, if
-// any) — never touches the posting itself, so deleting a stray/duplicate/test
-// entry from Applied Jobs doesn't silently reopen or reclassify the posting
-// it came from. Same "just delete the one thing asked for" scope as the
-// existing deleteResume().
+// Removes only the application record — never touches the posting itself, so
+// deleting a stray/duplicate/test entry from Applied Jobs doesn't silently
+// reopen or reclassify the posting it came from. Same "just delete the one
+// thing asked for" scope as the existing deleteResume().
 export async function deleteApplication(id) {
   const pool = requirePool(await ensureJobSearchSchema());
   const applicationId = cleanId(id, "Application");

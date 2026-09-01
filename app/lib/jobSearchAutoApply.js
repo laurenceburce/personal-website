@@ -15,11 +15,11 @@ import { getDefaultResume, getResumeById } from "./jobSearchSettingsStore.js";
 
 export { AUTO_APPLY_SKIP_REASONS };
 
-// Returns { status, skipReason?, skipDetail? } where status is one of
-// 'submitted' | 'failed' | 'skipped_auto_apply'. Writes an applications-table
-// row (auto_applied = true) whenever an adapter was actually invoked — never
-// for the cheap-gate or unresolved-ATS skips, since nothing was attempted for
-// those and there's nothing worth an audit-trail screenshot of.
+// Returns { status, skipReason?, skipDetail?, manualReviewFields?, fieldOptions? }
+// where status is one of 'submitted' | 'failed' | 'needs_manual_review' |
+// 'skipped_auto_apply'. Writes an applications-table row (auto_applied = true)
+// whenever an adapter was actually invoked — never for the cheap-gate or
+// unresolved-ATS skips, since nothing was attempted.
 export async function evaluateAutoApply({ posting, findSettings, profile }) {
   const cheapSkip = evaluateCheapGates(posting, findSettings);
   if (cheapSkip) {
@@ -63,7 +63,14 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
     headless: process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false"
   });
 
-  const submissionStatus = result.status === "submitted" ? "submitted" : (adapterStatusToSkipReason(result.status) ? "skipped_auto_apply" : "failed");
+  const skipReason = adapterStatusToSkipReason(result.status);
+  const submissionStatus = result.status === "submitted"
+    ? "submitted"
+    : (result.status === "needs_manual_review" || result.status === "blocked")
+      ? "needs_manual_review"
+      : skipReason
+        ? result.status
+        : "failed";
 
   await insertApplicationAttempt({
     postingId: posting.id,
@@ -80,23 +87,25 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
       scamRiskScore: posting.scamRiskScore,
       scamRiskLevel: posting.scamRiskLevel
     },
-    submissionStatus: submissionStatus === "skipped_auto_apply" ? (result.status === "blocked" ? "needs_manual_review" : result.status) : submissionStatus,
+    submissionStatus,
     errorMessage: result.manualReviewFields?.length
       ? `Auto-apply couldn't confidently answer: ${result.manualReviewFields.join(", ")}`
       : result.errorMessage,
     atsConfirmationText: result.confirmationText,
-    screenshotBuffer: result.screenshotBuffer,
     autoApplied: true
   });
 
-  const skipReason = adapterStatusToSkipReason(result.status);
   if (skipReason) {
+    const needsHuman = result.status === "needs_manual_review" || result.status === "blocked";
     return {
-      status: "skipped_auto_apply",
+      status: needsHuman ? "needs_manual_review" : "skipped_auto_apply",
       skipReason,
       skipDetail: result.manualReviewFields?.length
         ? `Auto-apply couldn't confidently answer: ${result.manualReviewFields.join(", ")}`
-        : (result.errorMessage || "").slice(0, 500)
+        : (result.errorMessage || "").slice(0, 500),
+      submittedAnswers: result.submittedAnswers || {},
+      manualReviewFields: result.manualReviewFields || [],
+      fieldOptions: result.fieldOptions || {}
     };
   }
 
@@ -108,6 +117,9 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
   // the human-approval submission path had until this same fix.
   return {
     status: result.status === "submitted" ? "submitted" : "failed",
-    skipDetail: result.status === "submitted" ? undefined : (result.errorMessage || "Submission failed.").slice(0, 500)
+    skipDetail: result.status === "submitted" ? undefined : (result.errorMessage || "Submission failed.").slice(0, 500),
+    submittedAnswers: result.submittedAnswers || {},
+    manualReviewFields: result.manualReviewFields || [],
+    fieldOptions: result.fieldOptions || {}
   };
 }

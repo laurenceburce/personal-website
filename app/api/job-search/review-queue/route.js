@@ -27,7 +27,7 @@ async function rejectOne(id, email, note) {
 // unsupported-ATS posting, or one the user just preferred to apply to by
 // hand — recorded exactly like a real submission would be, so it shows up in
 // Applied Jobs and stops sitting in the review queue, but tagged distinctly
-// (autoApplied: false, no screenshot/submitted answers) so it's honest about
+// (autoApplied: false, no submitted answers) so it's honest about
 // having no automation trail.
 async function markAppliedManuallyOne(id, email) {
   const posting = await getPostingById(id);
@@ -51,7 +51,6 @@ async function markAppliedManuallyOne(id, email) {
     submissionStatus: "submitted",
     errorMessage: "",
     atsConfirmationText: "Marked as applied manually.",
-    screenshotBuffer: null,
     autoApplied: false
   });
 

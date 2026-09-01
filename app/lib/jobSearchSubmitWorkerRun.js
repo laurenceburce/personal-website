@@ -23,6 +23,7 @@ import { isWorkerEnabled, recordHeartbeat, recordWorkerRunResult } from "./jobSe
 // Local-only escape hatch to watch the browser while debugging a new adapter —
 // never set false on a real deployment.
 const headless = process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false";
+const SUBMIT_BATCH_LIMIT = 20;
 
 function toApplicationStatus(adapterStatus) {
   if (adapterStatus === "submitted") return "submitted";
@@ -33,6 +34,25 @@ function toApplicationStatus(adapterStatus) {
   if (adapterStatus === "needs_manual_review" || adapterStatus === "blocked") return "needs_manual_review";
   if (adapterStatus === "unsupported_ats") return "unsupported_ats";
   return "failed";
+}
+
+function structuredManualReviewFields({ labels, fieldOptions, posting, submittedAnswers }) {
+  const previousAnswersByLabel = new Map(
+    (posting.manualReviewFields || []).map((f) => [normalizeLabel(f.label), f.answer])
+  );
+  const submittedAnswersByLabel = new Map(
+    Object.entries(submittedAnswers || {}).map(([label, answer]) => [normalizeLabel(label), answer])
+  );
+
+  return (labels || []).map((label) => ({
+    label,
+    answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? submittedAnswersByLabel.get(normalizeLabel(label)) ?? null,
+    // Real options captured off the live widget the moment this field
+    // was flagged (select/dropdown/radio-group only — see each
+    // adapter's flagForReview/captureFieldOptions). null for anything
+    // not option-shaped, which the popup renders as a free-text box.
+    options: fieldOptions?.[label] || null
+  }));
 }
 
 export async function runSubmitWorkerPass() {
@@ -51,11 +71,13 @@ export async function runSubmitWorkerPass() {
   let failedCount = 0;
   let autoAppliedCount = 0;
   let autoSkippedCount = 0;
+  let needsRerun = false;
 
   // Highest-match jobs get submitted first when there's a backlog bigger than
   // one run's limit.
-  const approved = await listPostingsByStatus("approved", { limit: 20, orderBy: "score" });
+  const approved = await listPostingsByStatus("approved", { limit: SUBMIT_BATCH_LIMIT, orderBy: "score" });
   console.log(`Found ${approved.length} approved posting(s) to submit.`);
+  if (approved.length >= SUBMIT_BATCH_LIMIT) needsRerun = true;
 
   if (approved.length > 0) {
     const profile = await getProfile();
@@ -109,22 +131,12 @@ export async function runSubmitWorkerPass() {
         // so the user doesn't lose what they already typed. Written even when
         // empty on a successful submit, so stale unanswered-field data doesn't
         // linger once a posting actually goes through.
-        const previousAnswersByLabel = new Map(
-          (posting.manualReviewFields || []).map((f) => [normalizeLabel(f.label), f.answer])
-        );
-        const submittedAnswersByLabel = new Map(
-          Object.entries(result.submittedAnswers || {}).map(([label, answer]) => [normalizeLabel(label), answer])
-        );
-        const structuredManualReviewFields = (result.manualReviewFields || []).map((label) => ({
-          label,
-          answer: previousAnswersByLabel.get(normalizeLabel(label)) ?? submittedAnswersByLabel.get(normalizeLabel(label)) ?? null,
-          // Real options captured off the live widget the moment this field
-          // was flagged (select/dropdown/radio-group only — see each
-          // adapter's flagForReview/captureFieldOptions). null for anything
-          // not option-shaped, which the popup renders as a free-text box
-          // like before.
-          options: result.fieldOptions?.[label] || null
-        }));
+        const structuredFields = structuredManualReviewFields({
+          labels: result.manualReviewFields,
+          fieldOptions: result.fieldOptions,
+          posting,
+          submittedAnswers: result.submittedAnswers
+        });
         // A CAPTCHA/security/interstitial-style blocked attempt often has no
         // field list of its own; it should not erase answers the user already
         // saved for a prior "Answer & Retry" pass. Clearing is only correct
@@ -133,7 +145,7 @@ export async function runSubmitWorkerPass() {
         // already on the posting for the next retry.
         const manualReviewFieldsForPosting = applicationStatus === "submitted"
           ? []
-          : (structuredManualReviewFields.length > 0 ? structuredManualReviewFields : (posting.manualReviewFields || []));
+          : (structuredFields.length > 0 ? structuredFields : (posting.manualReviewFields || []));
 
         await insertApplicationAttempt({
           postingId: posting.id,
@@ -152,7 +164,7 @@ export async function runSubmitWorkerPass() {
           submissionStatus: applicationStatus,
           errorMessage: outcomeMessage,
           atsConfirmationText: result.confirmationText,
-          screenshotBuffer: result.screenshotBuffer
+          autoApplied: false
         });
 
         await updatePostingScore(posting.id, {
@@ -179,9 +191,10 @@ export async function runSubmitWorkerPass() {
   const findSettings = await getFindSettings();
   let pendingReviewCount = 0;
   if (findSettings.autoApplyEnabled) {
-    const pendingReview = await listPostingsByStatus("pending_review", { limit: 20, orderBy: "score" });
+    const pendingReview = await listPostingsByStatus("pending_review", { limit: SUBMIT_BATCH_LIMIT, orderBy: "score" });
     pendingReviewCount = pendingReview.length;
     console.log(`Auto-apply enabled — evaluating ${pendingReview.length} pending-review posting(s).`);
+    if (pendingReview.length >= SUBMIT_BATCH_LIMIT) needsRerun = true;
 
     if (pendingReview.length > 0) {
       const profile = await getProfile();
@@ -189,12 +202,27 @@ export async function runSubmitWorkerPass() {
         try {
           const result = await evaluateAutoApply({ posting, findSettings, profile });
           if (result.status === "submitted") autoAppliedCount += 1;
-          else if (result.status === "skipped_auto_apply") autoSkippedCount += 1;
-          await updatePostingScore(posting.id, {
+          else autoSkippedCount += 1;
+
+          const structuredFields = structuredManualReviewFields({
+            labels: result.manualReviewFields,
+            fieldOptions: result.fieldOptions,
+            posting,
+            submittedAnswers: result.submittedAnswers
+          });
+          const manualReviewFieldsForPosting = result.status === "submitted"
+            ? []
+            : (structuredFields.length > 0 ? structuredFields : (posting.manualReviewFields || []));
+
+          const postingPatch = {
             status: result.status,
             autoApplySkipReason: result.skipReason || null,
             decisionNote: result.skipDetail || (result.status === "submitted" ? "Auto-applied." : "")
-          });
+          };
+          if (result.status === "submitted" || result.status === "needs_manual_review") {
+            postingPatch.manualReviewFields = manualReviewFieldsForPosting;
+          }
+          await updatePostingScore(posting.id, postingPatch);
           console.log(`  auto-apply "${posting.title}" at ${posting.companyName} -> ${result.status}${result.skipReason ? ` (${result.skipReason})` : ""}`);
         } catch (error) {
           // Never lose a posting that already earned pending_review over an
@@ -214,7 +242,7 @@ export async function runSubmitWorkerPass() {
 
   const summary = {
     approvedTotal: approved.length, submittedCount, manualReviewCount, failedCount,
-    autoAppliedCount, autoSkippedCount
+    autoAppliedCount, autoSkippedCount, needsRerun
   };
 
   await recordWorkerRunResult("submit", {

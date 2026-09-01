@@ -24,7 +24,7 @@ async function postInputBatch(challengeId, events) {
   }).catch(() => {});
 }
 
-// Polls a screenshot of the paused employer page (~2fps — see
+// Polls a live frame of the paused employer page (~2fps — see
 // heldChallengeRelay.js's own comment on why this is polling, not a true
 // video stream) and relays clicks/drags/keystrokes back onto it. Coordinates
 // are translated from the rendered <img>'s on-screen size to the real page's

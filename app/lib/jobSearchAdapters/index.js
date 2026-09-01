@@ -24,7 +24,6 @@ export async function submitApplication(atsType, params) {
       submittedAnswers: {},
       manualReviewFields: [],
       confirmationText: "",
-      screenshotBuffer: null,
       errorMessage: `No adapter registered for ATS type "${atsType}".`
     };
   }

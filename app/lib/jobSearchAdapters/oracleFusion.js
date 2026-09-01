@@ -46,7 +46,7 @@
 // (dryRun: true) against a real posting before trusting it unattended, and
 // treat it as less proven than greenhouse.js/ashby.js/workable.js/
 // personio.js/breezy.js until it has a real successful submission behind it.
-import { findBestMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
+import { findBestMemoryMatch, findExactMemoryMatch, listAnswerMemoryForMatching, recordMemoryReuse } from "../jobSearchAnswerMemoryStore.js";
 import { answerFreeText, chooseFromOptions } from "../jobSearchLlm.js";
 import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
@@ -109,14 +109,13 @@ async function resolveOracleSession(applyUrl) {
   return getOracleSessionForHost(host);
 }
 
-function blockedResult({ blockerReason, hasSession, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer }) {
+function blockedResult({ blockerReason, hasSession, submittedAnswers, manualReviewFields, fieldOptions, confirmationText }) {
   return {
     status: "blocked",
     submittedAnswers,
     manualReviewFields,
     fieldOptions,
     confirmationText,
-    screenshotBuffer,
     errorMessage: hasSession
       ? `${blockerReason} The saved Oracle session for this tenant may have expired — rerun "node scripts/job-search-oracle-connect.mjs" and re-upload it in the dashboard (User Settings -> "Oracle Recruiting Cloud sessions").`
       : `${blockerReason} No saved Oracle session found for this tenant — run "node scripts/job-search-oracle-connect.mjs" once to connect it, then upload the resulting file in the dashboard (User Settings -> "Oracle Recruiting Cloud sessions").`
@@ -332,6 +331,54 @@ async function fillStepFields(page, fields, ctx) {
     if (options.length > 0) fieldOptions[label] = options;
   }
 
+  // A similarly-worded question was answered by hand on a DIFFERENT posting
+  // before (see the Review Queue's Memory tab / "Answer & Retry" popup) — a
+  // human-verified past answer beats manual review, so this is tried as a
+  // last resort by EVERY resolution branch below (EEO/work-auth, a
+  // matched-but-unfillable standard field, and the free-text fallback), not
+  // just one of them — see greenhouse.js's identical helper for why this
+  // needs to be its own function reused across branches rather than one
+  // inline block the EEO/work-auth/standard-field paths skip straight past
+  // on their way to flagForReview. Never attempted for a plain "checkbox"
+  // kind, same exclusion the manual-override check above already applies.
+  // An exact label match is tried first and, unlike the fuzzy embedding
+  // match right after it, is never gated behind the daily LLM-call budget —
+  // it costs no LLM call at all.
+  async function tryMemoryAnswer(field) {
+    if (memoryRows.length === 0 || field.kind === "checkbox") return false;
+
+    const fillMemoryMatch = async (memoryMatch) => {
+      if (!memoryMatch) return false;
+
+      if (field.kind === "radio-group") {
+        const match = matchOptionByCandidates(field.options, manualOverrideCandidates(memoryMatch.answer));
+        if (!match || !(await checkOracleControl(page, match))) return false;
+        submittedAnswers[field.label] = match.text;
+        await recordMemoryReuse(memoryMatch.id).catch(() => {});
+        return true;
+      }
+
+      const filledValue = await fillField(page, field, manualOverrideCandidates(memoryMatch.answer));
+      if (filledValue == null) return false;
+      submittedAnswers[field.label] = filledValue;
+      await recordMemoryReuse(memoryMatch.id).catch(() => {});
+      return true;
+    };
+
+    const exactMemoryMatch = findExactMemoryMatch(field.label, posting.companyName, memoryRows);
+    if (await fillMemoryMatch(exactMemoryMatch)) return true;
+
+    if (!(await shouldUseLlm(getLlmFindSettings))) return false;
+
+    const memoryMatch = await findBestMemoryMatch(
+      field.label,
+      posting.companyName,
+      memoryRows,
+      { includeExact: !exactMemoryMatch }
+    ).catch(() => null);
+    return fillMemoryMatch(memoryMatch);
+  }
+
   for (const field of fields) {
     const normalizedLabel = normalizeLabel(field.label);
 
@@ -393,6 +440,7 @@ async function fillStepFields(page, fields, ctx) {
           continue;
         }
       }
+      if (await tryMemoryAnswer(field)) continue;
       if (field.required || isEeoOrWorkAuth) flagForReview(cleanLabel(field.label), field);
       continue;
     }
@@ -400,8 +448,12 @@ async function fillStepFields(page, fields, ctx) {
     const standardCandidates = resolveStandardFieldCandidates(normalizedLabel, profile, field.label);
     if (standardCandidates.length > 0) {
       const filledValue = await fillField(page, field, standardCandidates);
-      if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else if (field.required) flagForReview(field.label, field);
+      if (filledValue != null) {
+        submittedAnswers[field.label] = filledValue;
+        continue;
+      }
+      if (await tryMemoryAnswer(field)) continue;
+      if (field.required) flagForReview(field.label, field);
       continue;
     }
 
@@ -413,16 +465,24 @@ async function fillStepFields(page, fields, ctx) {
     if (isWorkAuthLabel(normalizedLabel)) {
       const value = resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization);
       const filledValue = value ? await fillField(page, field, [value]) : null;
-      if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else flagForReview(field.label, field);
+      if (filledValue != null) {
+        submittedAnswers[field.label] = filledValue;
+        continue;
+      }
+      if (await tryMemoryAnswer(field)) continue;
+      flagForReview(field.label, field);
       continue;
     }
 
     if (isEeoLabel(normalizedLabel)) {
       const value = resolveEeoValue(normalizedLabel, profile?.eeoAnswers);
       const filledValue = value ? await fillField(page, field, [value]) : null;
-      if (filledValue != null) submittedAnswers[field.label] = filledValue;
-      else flagForReview(field.label, field);
+      if (filledValue != null) {
+        submittedAnswers[field.label] = filledValue;
+        continue;
+      }
+      if (await tryMemoryAnswer(field)) continue;
+      flagForReview(field.label, field);
       continue;
     }
 
@@ -431,28 +491,7 @@ async function fillStepFields(page, fields, ctx) {
     // popup) — a human-verified past answer beats a fresh LLM guess, so this
     // is checked ahead of the candidate-logistics exclusion below (normally
     // always manual) and the free-text/select-choice fallbacks further down.
-    // Not attempted for checkbox kind, same reasoning as the per-posting
-    // override right above.
-    if (memoryRows.length > 0 && field.kind !== "checkbox" && await shouldUseLlm(getLlmFindSettings)) {
-      const memoryMatch = await findBestMemoryMatch(field.label, posting.companyName, memoryRows).catch(() => null);
-      if (memoryMatch) {
-        if (field.kind === "radio-group") {
-          const match = matchOptionByCandidates(field.options, manualOverrideCandidates(memoryMatch.answer));
-          if (match && await checkOracleControl(page, match)) {
-            submittedAnswers[field.label] = match.text;
-            await recordMemoryReuse(memoryMatch.id).catch(() => {});
-            continue;
-          }
-        } else {
-          const filledValue = await fillField(page, field, manualOverrideCandidates(memoryMatch.answer));
-          if (filledValue != null) {
-            submittedAnswers[field.label] = filledValue;
-            await recordMemoryReuse(memoryMatch.id).catch(() => {});
-            continue;
-          }
-        }
-      }
-    }
+    if (await tryMemoryAnswer(field)) continue;
 
     if (isCandidateLogisticsLabel(normalizedLabel)) {
       if (field.required) flagForReview(field.label, field);
@@ -548,7 +587,6 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
   const fieldOptions = {};
   const llmState = { count: 0 };
   let confirmationText = "";
-  let screenshotBuffer = null;
   let status = "failed";
   let errorMessage = "";
   let findSettings = null;
@@ -586,11 +624,10 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
     // one-time step on every single submission instead of once per tenant.
     const earlyBodyText = await page.locator("body").innerText().catch(() => "");
     if (NEEDS_VERIFICATION_SIGNALS.test(earlyBodyText)) {
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
       return blockedResult({
         blockerReason: "This posting's tenant requires a one-time emailed verification code before applying.",
         hasSession: Boolean(session),
-        submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer
+        submittedAnswers, manualReviewFields, fieldOptions, confirmationText
       });
     }
 
@@ -598,16 +635,14 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
     if (blockerReason) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason });
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
         if (!challengeResult.ok) {
           // Not routed through blockedResult() — that helper's guidance is
           // specifically about the Oracle-session/connect-script gate above,
           // which has nothing to do with a held-challenge relay timing out.
-          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+          return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: challengeResult.errorMessage };
         }
       } else {
-        screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-        return blockedResult({ blockerReason, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
+        return blockedResult({ blockerReason, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText });
       }
     }
 
@@ -659,13 +694,11 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
       if (blockerAfterStep) {
         if (isHeldChallengeBlockerReason(blockerAfterStep)) {
           const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason: blockerAfterStep });
-          screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
           if (!challengeResult.ok) {
-            return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage: challengeResult.errorMessage };
+            return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: challengeResult.errorMessage };
           }
         } else {
-          screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
-          return blockedResult({ blockerReason: blockerAfterStep, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer });
+          return blockedResult({ blockerReason: blockerAfterStep, hasSession: Boolean(session), submittedAnswers, manualReviewFields, fieldOptions, confirmationText });
         }
       }
     }
@@ -673,8 +706,6 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
     if (!submitButton) {
       manualReviewFields.push('Could not find a final "Submit" step in this Oracle Recruiting Cloud wizard — it may use different step labels, or need more than the ' + MAX_WIZARD_STEPS + ' steps this adapter allows for.');
     }
-
-    screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => null);
 
     if (manualReviewFields.length > 0) {
       status = "needs_manual_review";
@@ -684,18 +715,17 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
       await clickWithBrowserMouse(page, submitButton);
       const outcome = await pollForSubmissionOutcome(page, submitButton);
       confirmationText = outcome.text;
-      screenshotBuffer = await page.screenshot({ fullPage: true }).catch(() => screenshotBuffer);
 
       if (outcome.result === "success") {
         status = "submitted";
       } else if (outcome.result === "error") {
         status = "failed";
-        errorMessage = "Clicking submit produced an error/validation signal on the page — check the screenshot before assuming this failed outright.";
+        errorMessage = "Clicking submit produced an error/validation signal on the page — review the posting manually before assuming this failed outright.";
       } else {
         status = "failed";
         errorMessage = outcome.result === "timeout"
-          ? `Clicking submit did not produce a recognized confirmation within ${Math.round(POLL_MAX_MS / 1000)}s of polling — the form may still be processing. Check the screenshot before assuming this was submitted.`
-          : "The submit step disappeared but no confirmation or error text was found afterward — check the screenshot before assuming this was submitted.";
+          ? `Clicking submit did not produce a recognized confirmation within ${Math.round(POLL_MAX_MS / 1000)}s of polling — the form may still be processing. Review the posting manually before assuming this was submitted.`
+          : "The submit step disappeared but no confirmation or error text was found afterward — review the posting manually before assuming this was submitted.";
       }
     }
   } catch (error) {
@@ -705,7 +735,5 @@ export async function submitOracleFusionApplication({ posting, profile, resumeBu
     await browser.close();
   }
 
-  if (status === "submitted") screenshotBuffer = null;
-
-  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, screenshotBuffer, errorMessage };
+  return { status, submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage };
 }
