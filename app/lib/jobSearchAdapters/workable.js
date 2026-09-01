@@ -99,7 +99,17 @@ async function fillWorkableFieldValue(page, q, candidates) {
   const locator = page.locator(`[name="${q.name}"]`).first();
   for (const candidate of candidates) {
     const ok = q.tag === "select"
-      ? await locator.selectOption({ label: String(candidate) }).then(() => true).catch(() => false)
+      ? await locator.selectOption({ label: String(candidate) }).then(() => true).catch(async () => {
+          const target = normalizeLabel(candidate);
+          const optionValue = await locator.evaluate((select, normalizedTarget) => {
+            const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+            const match = [...select.options].find((option) => clean(option.textContent) === normalizedTarget);
+            return match?.value || null;
+          }, target).catch(() => null);
+          if (optionValue == null) return false;
+          await locator.selectOption({ value: optionValue });
+          return true;
+        })
       : await locator.fill(String(candidate)).then(() => true).catch(() => false);
     if (ok) return candidate;
   }
@@ -391,7 +401,11 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         // fillWorkableFieldValue() handles that, and candidates covers
         // fields with more than one acceptable value (country name spelled
         // out vs. abbreviated, phone with/without its country code).
-        const standardCandidates = resolveStandardFieldCandidates(normalizedLabel, profile, q.label);
+        const standardCandidates = resolveStandardFieldCandidates(
+          normalizedLabel,
+          profile,
+          [q.label, q.name, q.kind, q.tag].filter(Boolean).join(" ")
+        );
         if (standardCandidates.length > 0) {
           const filledValue = await fillWorkableFieldValue(page, q, standardCandidates);
           if (filledValue != null) {

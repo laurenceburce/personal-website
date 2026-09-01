@@ -115,10 +115,14 @@ async function selectOptionByText(locator, candidates) {
   const values = Array.isArray(candidates) ? candidates : [candidates];
   for (const candidate of values.filter(Boolean)) {
     const optionValue = await locator.evaluate((select, wanted) => {
+      const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
       const normalizedWanted = String(wanted || "").trim().toLowerCase();
+      const normalizedCleanWanted = clean(wanted);
       const options = [...select.options];
       const exact = options.find((option) => option.textContent.trim().toLowerCase() === normalizedWanted);
       if (exact) return exact.value;
+      const normalized = options.find((option) => clean(option.textContent) === normalizedCleanWanted);
+      if (normalized) return normalized.value;
       const valueMatch = options.find((option) => String(option.value || "").trim().toLowerCase() === normalizedWanted);
       return valueMatch ? valueMatch.value : null;
     }, String(candidate)).catch(() => null);
@@ -309,7 +313,7 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
         const name = cardFieldName(card.cardId, index);
         const label = cleanLabel(field.text || `${card.text} field ${index + 1}`);
         const normalizedLabel = normalizeLabel(label);
-        const fieldRef = { field, name, label };
+        const fieldRef = { field, name, label, cardText: cleanLabel(card.text || "") };
         const options = optionTexts(field);
 
         const manualOverride = resolveManualOverride(normalizedLabel, posting.manualReviewFields);
@@ -344,7 +348,11 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
           continue;
         }
 
-        const standardCandidates = resolveStandardFieldCandidates(normalizedLabel, profile, label);
+        const standardCandidates = resolveStandardFieldCandidates(
+          normalizedLabel,
+          profile,
+          [fieldRef.cardText, label, name, field.type].filter(Boolean).join(" ")
+        );
         if (standardCandidates.length > 0) {
           const filledValue = await fillCardField(page, fieldRef, standardCandidates);
           if (filledValue != null) {

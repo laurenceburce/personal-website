@@ -152,43 +152,68 @@ async function classifyWidget(locator) {
 // that opened it — confirmed live that typing via .fill() correctly triggers
 // its filtered option list (Playwright's fill dispatches a real input event).
 async function fillReactSelect(page, scope, input, value, debugLabel = null) {
-  await clickWithBrowserMouse(page, input);
-  await input.fill(String(value));
-
-  const options = scope.locator(".select__option");
-  try {
-    await options.first().waitFor({ state: "visible", timeout: 3000 });
-  } catch {
-    await input.press("Escape").catch(() => {});
-    if (debugLabel) console.log(`  [fill-debug] react-select "${debugLabel}": no options appeared for "${value}"`);
-    return false;
-  }
-
-  // Only accept an exact (case-insensitive) match — never click the first
-  // fuzzy suggestion for a field we were asked to fill precisely. Confirmed
-  // live as a real miss, not theoretical: a "Country*" field built on
-  // Greenhouse's own phone-style country-picker component renders its
-  // options as "United States +1", not bare "United States" — a plain exact
-  // match against every candidate ("United States", "USA", "US", ...) never
-  // matched ANY of them, sending a resolvable field to manual review every
-  // time. Stripping a trailing " +<digits>" (the calling code) before
-  // re-checking catches that shape specifically — it does NOT loosen this
-  // into a substring/fuzzy match (still rejects "United States Minor
-  // Outlying Islands" for a "United States" candidate), it only strips one
-  // specific, known suffix pattern.
   const target = String(value).trim().toLowerCase();
-  const texts = await options.allInnerTexts().catch(() => []);
-  const stripTrailingCallingCode = (t) => t.replace(/\s*\+\d+\s*$/, "").trim().toLowerCase();
-  let exactIndex = texts.findIndex((t) => t.trim().toLowerCase() === target);
-  if (exactIndex < 0) exactIndex = texts.findIndex((t) => stripTrailingCallingCode(t) === target);
-  if (exactIndex < 0) {
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     await input.press("Escape").catch(() => {});
-    if (debugLabel) console.log(`  [fill-debug] react-select "${debugLabel}": no option matched "${value}" — saw: ${JSON.stringify(texts)}`);
-    return false;
+    await clickWithBrowserMouse(page, input);
+    await input.fill(String(value));
+
+    let options = await reactSelectOptionsLocator(scope, input);
+    try {
+      await options.first().waitFor({ state: "visible", timeout: 3000 });
+    } catch {
+      options = scope.locator(".select__menu:visible .select__option, [role=\"listbox\"]:visible [role=\"option\"]");
+      try {
+        await options.first().waitFor({ state: "visible", timeout: 1000 });
+      } catch {
+        await input.press("Escape").catch(() => {});
+        if (debugLabel && attempt === 1) console.log(`  [fill-debug] react-select "${debugLabel}": no options appeared for "${value}"`);
+        await page.waitForTimeout(150);
+        continue;
+      }
+    }
+
+    // Only accept an exact (case-insensitive) match — never click the first
+    // fuzzy suggestion for a field we were asked to fill precisely. Confirmed
+    // live as a real miss, not theoretical: a "Country*" field built on
+    // Greenhouse's own phone-style country-picker component renders its
+    // options as "United States +1", not bare "United States" — a plain exact
+    // match against every candidate ("United States", "USA", "US", ...) never
+    // matched ANY of them, sending a resolvable field to manual review every
+    // time. Stripping a trailing " +<digits>" (the calling code) before
+    // re-checking catches that shape specifically — it does NOT loosen this
+    // into a substring/fuzzy match (still rejects "United States Minor
+    // Outlying Islands" for a "United States" candidate), it only strips one
+    // specific, known suffix pattern.
+    const texts = await options.allInnerTexts().catch(() => []);
+    const stripTrailingCallingCode = (t) => t.replace(/\s*\+\d+\s*$/, "").trim().toLowerCase();
+    let exactIndex = texts.findIndex((t) => t.trim().toLowerCase() === target);
+    if (exactIndex < 0) exactIndex = texts.findIndex((t) => stripTrailingCallingCode(t) === target);
+    if (exactIndex < 0) exactIndex = texts.findIndex((t) => normalizeLabel(stripTrailingCallingCode(t)) === normalizeLabel(target));
+    if (exactIndex >= 0) {
+      await clickWithBrowserMouse(page, options.nth(exactIndex));
+      return true;
+    }
+
+    await input.press("Escape").catch(() => {});
+    if (debugLabel && attempt === 1) {
+      console.log(`  [fill-debug] react-select "${debugLabel}": no option matched "${value}" — saw: ${JSON.stringify(texts)}`);
+    }
+    await page.waitForTimeout(150);
   }
 
-  await clickWithBrowserMouse(page, options.nth(exactIndex));
-  return true;
+  return false;
+}
+
+async function reactSelectOptionsLocator(scope, input) {
+  const inputId = await input.getAttribute("id").catch(() => "");
+  const controlsId = await input.getAttribute("aria-controls").catch(() => "");
+  const listboxIds = [controlsId, inputId ? `react-select-${inputId}-listbox` : ""].filter(Boolean);
+  if (listboxIds.length > 0) {
+    return scope.locator(listboxIds.map((id) => `[id="${cssAttr(id)}"] .select__option, [id="${cssAttr(id)}"] [role="option"]`).join(", "));
+  }
+  return scope.locator(".select__menu:visible .select__option, [role=\"listbox\"]:visible [role=\"option\"]");
 }
 
 async function radioOptions(scope, locator) {
@@ -234,7 +259,7 @@ async function captureFieldOptions(page, scope, locator, widget) {
   }
   if (widget === "react-select") {
     await clickWithBrowserMouse(page, locator).catch(() => {});
-    const options = scope.locator(".select__option");
+    const options = await reactSelectOptionsLocator(scope, locator);
     try {
       await options.first().waitFor({ state: "visible", timeout: 2000 });
       const texts = await options.allInnerTexts();
@@ -269,6 +294,16 @@ async function fillByWidget(page, scope, locator, widget, value, debugLabel = nu
         await locator.selectOption({ label: String(value) });
         return true;
       } catch (error) {
+        const target = normalizeLabel(value);
+        const optionValue = await locator.evaluate((select, normalizedTarget) => {
+          const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+          const match = [...select.options].find((option) => clean(option.textContent) === normalizedTarget);
+          return match?.value || null;
+        }, target).catch(() => null);
+        if (optionValue != null) {
+          await locator.selectOption({ value: optionValue });
+          return true;
+        }
         if (debugLabel) {
           const optionTexts = await locator.locator("option").allInnerTexts().catch(() => []);
           console.log(`  [fill-debug] native-select "${debugLabel}": "${value}" didn't match — options: ${JSON.stringify(optionTexts)} (${error?.message || error})`);
@@ -347,11 +382,23 @@ async function collectLabeledFields(scope) {
       el.setAttribute("data-jsf-greenhouse-field", String(index));
       return `[data-jsf-greenhouse-field="${index}"]`;
     };
+    const resolutionTextFor = (el, labelText) => clean([
+      labelText,
+      el.id,
+      el.getAttribute("name"),
+      fieldContainer(el)?.innerText,
+      el.closest(".employment-form, .employment--container, .education-form, .education--container, [class*='employment' i], [class*='education' i]")?.innerText
+    ].filter(Boolean).join(" "));
+    const priorityFor = (field) => /\bcurrent role\b/i.test(field.label || "") && /\bemployment\b/i.test(field.resolutionText || "") ? -10 : 0;
 
     const fields = [];
     const seen = new Set();
     const seenRadioNames = new Set();
     let index = 0;
+
+    document.querySelectorAll("[data-jsf-greenhouse-field]").forEach((el) => {
+      el.removeAttribute("data-jsf-greenhouse-field");
+    });
 
     for (const el of document.querySelectorAll("input, textarea, select, [role='combobox'], [role='textbox'], [contenteditable='true']")) {
       const tag = el.tagName.toLowerCase();
@@ -374,6 +421,8 @@ async function collectLabeledFields(scope) {
           label,
           selector: `[data-jsf-greenhouse-field="${radioIndex}"]`,
           forId: `radio:${name}`,
+          order: radioIndex,
+          resolutionText: resolutionTextFor(el, label),
           required: radios.some((radio) => isRequired(radio, label))
         });
         continue;
@@ -390,12 +439,14 @@ async function collectLabeledFields(scope) {
         label,
         selector: selectorFor(el, index),
         forId: key,
+        order: index,
+        resolutionText: resolutionTextFor(el, label),
         required: isRequired(el, label)
       });
       index += 1;
     }
 
-    return fields;
+    return fields.sort((a, b) => (priorityFor(a) - priorityFor(b)) || (a.order - b.order));
   });
 
   return descriptors.map((field) => ({
@@ -754,6 +805,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         processedForIds.add(field.forId);
         const widget = await classifyWidget(field.locator);
         if (widget === "file") continue; // resume/cover-letter handled separately
+        if (!(await field.locator.isEnabled().catch(() => true))) continue;
 
         // A human already answered this exact question for this exact posting
         // (see the Review Queue's "Answer & Retry" popup) — try it before any
@@ -838,7 +890,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         // fillByWidget() already dispatches correctly per widget type, so
         // retrying candidates here is what actually lets a select succeed
         // instead of landing in manual review over a spelling mismatch.
-        const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.label);
+        const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.resolutionText || field.label);
         if (standardCandidates.length > 0) {
           let filledValue = null;
           for (const candidate of standardCandidates) {

@@ -350,6 +350,16 @@ async function fillByWidget(page, locator, widget, value) {
         await locator.selectOption({ label: String(value) });
         return true;
       } catch {
+        const target = normalizeLabel(value);
+        const optionValue = await locator.evaluate((select, normalizedTarget) => {
+          const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+          const match = [...select.options].find((option) => clean(option.textContent) === normalizedTarget);
+          return match?.value || null;
+        }, target).catch(() => null);
+        if (optionValue != null) {
+          await locator.selectOption({ value: optionValue });
+          return true;
+        }
         return false;
       }
     case "yesno":
@@ -670,7 +680,11 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       // select needs an option whose label actually matches, so retrying
       // candidates here is what actually lets it succeed instead of landing
       // in manual review over a spelling mismatch).
-      const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.label);
+      const standardCandidates = resolveStandardFieldCandidates(
+        field.normalizedLabel,
+        profile,
+        [field.label, field.selectorValue, field.forId].filter(Boolean).join(" ")
+      );
       if (standardCandidates.length > 0) {
         let filledValue = null;
         for (const candidate of standardCandidates) {
