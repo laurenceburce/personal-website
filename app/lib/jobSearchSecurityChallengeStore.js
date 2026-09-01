@@ -101,6 +101,26 @@ export async function listPendingSecurityChallenges({ limit = 20 } = {}) {
   return rows.map((row) => mapChallengeRow(row));
 }
 
+export async function getPendingSecurityChallenge(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  await expireStaleSecurityChallenges();
+  const challengeId = cleanId(id, "Security challenge");
+  const [rows] = await pool.query(
+    `SELECT id, posting_id, application_id, company_name, job_title, ats_type, apply_url,
+            challenge_kind, prompt_text, status, created_at, expires_at, answered_at, updated_at
+     FROM job_search_security_challenges
+     WHERE id = ? AND status = 'pending' AND expires_at > ?
+     LIMIT 1`,
+    [challengeId, new Date()]
+  );
+
+  if (!rows[0]) {
+    throw appError("That security-code prompt is no longer active. Retry the submission to generate a fresh prompt.", 409);
+  }
+
+  return mapChallengeRow(rows[0]);
+}
+
 // jobSearchHeldChallengeWatcher.js's own poll loop — every still-pending
 // challenge that hasn't been notified about yet (see jobSearchDb.js's own
 // comment on notified_at for why this column exists instead of an in-memory

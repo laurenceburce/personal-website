@@ -54,14 +54,29 @@ that triggered it) or the next service restart.
   whatever port it's listening on if you changed it from the default).
 - `JOB_SEARCH_SUBMIT_TRIGGER_SECRET` — the exact same value set on the
   submit-worker service above.
+- `JOB_SEARCH_EMAIL_PROVIDER=gmail` — enables the dashboard's "Check Email"
+  button for held security-code prompts.
+- `JOB_SEARCH_GMAIL_REFRESH_TOKEN` — Gmail OAuth refresh token with
+  `https://www.googleapis.com/auth/gmail.readonly`.
+- `JOB_SEARCH_GMAIL_CLIENT_ID` / `JOB_SEARCH_GMAIL_CLIENT_SECRET` — optional
+  when `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` already belong to the
+  Gmail-enabled OAuth client.
+- `JOB_SEARCH_EMAIL_LOOKBACK_MINUTES` — optional, defaults to `10`, capped at
+  `60`.
+- `JOB_SEARCH_EMAIL_MAX_RESULTS` — optional, defaults to `20`, capped at `50`.
+- `JOB_SEARCH_GMAIL_LABEL_IDS` — optional, defaults to `INBOX`; use `*` to
+  search recent mail across labels.
+- `JOB_SEARCH_EMAIL_SEARCH_QUERY` — optional extra Gmail search filter, such
+  as `from:no-reply@example.com`.
 
-If either of these is left unset, `triggerSubmitWorker()` just silently
-no-ops (see its own comment) — approving still works, but nothing will pick
-the posting up until the submit-worker's next startup (there's no fallback
-timer). Nothing breaks if you deploy the main app before the submit-worker
-service is ready, or vice versa, but check the submit-worker's `/health` and
-logs after a deploy of either service to make sure the trigger path is
-actually wired up — see "Verifying it worked" below.
+If either submit-worker trigger variable is left unset,
+`triggerSubmitWorker()` just silently no-ops (see its own comment) —
+approving still works, but nothing will pick the posting up until the
+submit-worker's next startup (there's no fallback timer). Nothing breaks if
+you deploy the main app before the submit-worker service is ready, or vice
+versa, but check the submit-worker's `/health` and logs after a deploy of
+either service to make sure the trigger path is actually wired up — see
+"Verifying it worked" below.
 
 ## Verifying it worked
 

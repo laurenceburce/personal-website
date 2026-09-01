@@ -60,6 +60,27 @@ GEMINI_API_KEY=your_gemini_api_key
 GEMINI_MODEL=gemini-3.5-flash
 ```
 
+For the private job-search dashboard's "Check Email" security-code helper,
+enable the Gmail API for the same OAuth client and store a refresh token with
+the `https://www.googleapis.com/auth/gmail.readonly` scope. The dedicated
+`JOB_SEARCH_GMAIL_*` client values are optional if `AUTH_GOOGLE_ID` and
+`AUTH_GOOGLE_SECRET` already point at that Gmail-enabled client.
+
+```env
+JOB_SEARCH_EMAIL_PROVIDER=gmail
+JOB_SEARCH_GMAIL_REFRESH_TOKEN=your_gmail_refresh_token
+JOB_SEARCH_GMAIL_CLIENT_ID=optional_if_AUTH_GOOGLE_ID_is_the_same_client
+JOB_SEARCH_GMAIL_CLIENT_SECRET=optional_if_AUTH_GOOGLE_SECRET_is_the_same_client
+JOB_SEARCH_EMAIL_LOOKBACK_MINUTES=10
+JOB_SEARCH_EMAIL_MAX_RESULTS=20
+JOB_SEARCH_GMAIL_LABEL_IDS=INBOX
+```
+
+Optional: set `JOB_SEARCH_EMAIL_SEARCH_QUERY` to add Gmail search filters such
+as `from:no-reply@example.com`, or set `JOB_SEARCH_GMAIL_LABEL_IDS=*` to search
+recent mail across labels instead of only `INBOX`. Keep the refresh token
+server-side only; never expose it with a `NEXT_PUBLIC_` prefix.
+
 For the private finance tracker, configure OAuth and keep
 `FINANCE_ALLOWED_EMAILS` limited to the owner account. If omitted, it defaults
 to `laurenceburce@gmail.com`.

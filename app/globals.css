@@ -7415,7 +7415,16 @@ html[data-theme="light"] .auth-feature-gate {
 
 .job-search-security-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
+}
+
+.job-search-security-email-status {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 /* Cancel — visually secondary to Submit/Solve Now, with a hint of the same

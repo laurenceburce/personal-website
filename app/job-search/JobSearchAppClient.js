@@ -75,6 +75,21 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
     }
   }
 
+  async function lookupEmailCode(id) {
+    setSaving("fetchEmailCode");
+    setError("");
+    try {
+      const result = await callJobSearchAction("/api/job-search/security-challenges", "fetchEmailCode", { id });
+      setNotice("Email code found.");
+      return result;
+    } catch (err) {
+      setError(err?.message || "Email lookup failed.");
+      throw err;
+    } finally {
+      setSaving("");
+    }
+  }
+
   // Multipart file uploads can't go through runAction (that one only ever
   // sends JSON via callJobSearchAction) but need the identical saving/error/
   // notice/rethrow shape — shared here so both callers behave the same and a
@@ -149,6 +164,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
           { id, code },
           "Answer submitted."
         )}
+        onFetchEmailCode={lookupEmailCode}
         onResolveLiveCaptcha={(id) => runAction(
           "/api/job-search/security-challenges",
           "resolveLiveCaptcha",

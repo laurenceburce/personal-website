@@ -27,9 +27,10 @@ function kindLabel(kind) {
   return "Security Code";
 }
 
-export default function HeldSubmissionsPanel({ initialChallenges = [], saving, onSubmitCode, onResolveLiveCaptcha, onCancelChallenge }) {
+export default function HeldSubmissionsPanel({ initialChallenges = [], saving, onSubmitCode, onFetchEmailCode, onResolveLiveCaptcha, onCancelChallenge }) {
   const [challenges, setChallenges] = useState(initialChallenges || []);
   const [codes, setCodes] = useState({});
+  const [lookupMessages, setLookupMessages] = useState({});
   const [pollError, setPollError] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [liveChallenge, setLiveChallenge] = useState(null);
@@ -88,6 +89,28 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
     removeChallenge(challenge.id);
   }
 
+  async function fetchEmailCode(challenge) {
+    if (!onFetchEmailCode) return;
+
+    setLookupMessages((current) => ({ ...current, [challenge.id]: "" }));
+    try {
+      const result = await onFetchEmailCode(challenge.id);
+      const code = String(result?.code || "").trim();
+      if (!code) throw new Error("No code was returned from email lookup.");
+
+      setCodes((current) => ({ ...current, [challenge.id]: code }));
+      setLookupMessages((current) => ({
+        ...current,
+        [challenge.id]: result?.from ? `Found in recent email from ${result.from}.` : "Found in recent email."
+      }));
+    } catch (error) {
+      setLookupMessages((current) => ({
+        ...current,
+        [challenge.id]: error?.message || "Email lookup failed."
+      }));
+    }
+  }
+
   async function handleLiveResolve(challenge) {
     await onResolveLiveCaptcha(challenge.id);
     setLiveChallenge(null);
@@ -142,6 +165,8 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
           }
 
           const code = codes[challenge.id] || "";
+          const lookupMessage = lookupMessages[challenge.id] || "";
+          const isFetchingEmail = saving === "fetchEmailCode";
           return (
             <form key={challenge.id} className="job-search-security-item" onSubmit={(event) => submitCode(event, challenge)}>
               <div className="job-search-security-context">
@@ -159,12 +184,18 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
                   inputMode={kind === "security_code" ? "numeric" : "text"}
                   placeholder={kind === "anti_bot_text" ? "Your answer" : "Security code"}
                 />
+                {lookupMessage ? <small className="job-search-security-email-status">{lookupMessage}</small> : null}
               </Field>
 
               <div className="job-search-security-actions">
                 <button type="button" className="job-search-btn-ghost" disabled={isBusy} onClick={() => handleCancel(challenge)}>
                   Cancel
                 </button>
+                {kind === "security_code" ? (
+                  <button type="button" disabled={isBusy} onClick={() => fetchEmailCode(challenge)}>
+                    {isFetchingEmail ? "Checking..." : "Check Email"}
+                  </button>
+                ) : null}
                 <button type="submit" disabled={isBusy || !code.trim()}>
                   {saving === "submitSecurityCode" ? "Sending..." : "Submit"}
                 </button>
