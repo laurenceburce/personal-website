@@ -19,6 +19,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -54,6 +55,13 @@ function compactErrorMessage(error) {
   return String(error?.message || error || "unknown error").replace(/\s+/g, " ").slice(0, 240);
 }
 
+async function waitForAshbyForm(page) {
+  return requireApplicationFormReady(page, {
+    platformName: "Ashby",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
+}
+
 async function collectLabeledFields(page) {
   const descriptors = await page.evaluate(() => {
     const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
@@ -67,6 +75,33 @@ async function collectLabeledFields(page) {
       const labelText = labelFor(radio.id);
       return labelText || clean(radio.closest("label, li, div")?.innerText || radio.value || `Option ${index + 1}`);
     };
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && Number(style.opacity || "1") !== 0
+        && Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    };
+    const labelledByText = (el) => clean((el.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .map((id) => clean(document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || ""))
+      .filter(Boolean)
+      .join(" "));
+    const containerText = (el) => {
+      const container = el.closest("fieldset, [role='group'], [role='radiogroup'], [class*='field' i], [class*='question' i]");
+      if (!container) return "";
+      return clean(container.querySelector("legend, label, [class*='label' i], [class*='question' i]")?.innerText || "");
+    };
+    const labelForControl = (el) => labelFor(el.id)
+      || clean((el.labels || [])[0]?.innerText || "")
+      || clean(el.closest("label")?.innerText || "")
+      || labelledByText(el)
+      || clean(el.getAttribute("aria-label"))
+      || clean(el.getAttribute("placeholder"))
+      || containerText(el)
+      || clean(el.getAttribute("name"))
+      || clean(el.id);
+    const requiredFor = (el, labelText) => Boolean(el.required || el.getAttribute("aria-required") === "true" || /\*/.test(labelText));
 
     const fields = [];
     const seenTargets = new Set();
@@ -133,6 +168,40 @@ async function collectLabeledFields(page) {
       });
     }
 
+    let fallbackIndex = 0;
+    for (const target of document.querySelectorAll("input, textarea, select, [role='combobox'], [role='textbox'], [contenteditable='true']")) {
+      const type = (target.getAttribute("type") || "").toLowerCase();
+      const id = target.id || "";
+      const name = target.getAttribute("name") || "";
+      if (["hidden", "file", "submit", "button", "reset", "image"].includes(type)) continue;
+      if (/honey.?pot/i.test(name) || /honeypot/i.test(target.getAttribute("aria-label") || "")) continue;
+      if (!visible(target) && type !== "checkbox") continue;
+      if (type === "radio") continue;
+
+      const selectorKind = id ? "id" : name ? "name" : "data";
+      const selectorValue = id || name || `fallback-${fallbackIndex}`;
+      const key = `${selectorKind}:${selectorValue}`;
+      if (seenTargets.has(key)) continue;
+
+      const label = labelForControl(target).replace(/\*\s*$/, "").trim();
+      if (!label) continue;
+
+      if (selectorKind === "data") {
+        target.setAttribute("data-jsf-ashby-field", selectorValue);
+        fallbackIndex += 1;
+      }
+
+      seenTargets.add(key);
+      fields.push({
+        kind: "field",
+        label,
+        selectorKind,
+        selectorValue,
+        forId: key,
+        required: requiredFor(target, label)
+      });
+    }
+
     return fields;
   });
 
@@ -141,9 +210,11 @@ async function collectLabeledFields(page) {
     normalizedLabel: normalizeLabel(field.label),
     locator: field.kind === "radio"
       ? page.locator(`input[type="radio"][name="${cssAttr(field.radioName)}"]`).first()
-      : field.selectorKind === "name"
-        ? page.locator(`[name="${cssAttr(field.selectorValue)}"]`).first()
-        : page.locator(`[id="${cssAttr(field.selectorValue)}"]`).first()
+      : field.selectorKind === "data"
+        ? page.locator(`[data-jsf-ashby-field="${cssAttr(field.selectorValue)}"]`).first()
+        : field.selectorKind === "name"
+          ? page.locator(`[name="${cssAttr(field.selectorValue)}"]`).first()
+          : page.locator(`[id="${cssAttr(field.selectorValue)}"]`).first()
   }));
 }
 
@@ -279,6 +350,16 @@ async function fillByWidget(page, locator, widget, value) {
         await locator.selectOption({ label: String(value) });
         return true;
       } catch {
+        const target = normalizeLabel(value);
+        const optionValue = await locator.evaluate((select, normalizedTarget) => {
+          const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+          const match = [...select.options].find((option) => clean(option.textContent) === normalizedTarget);
+          return match?.value || null;
+        }, target).catch(() => null);
+        if (optionValue != null) {
+          await locator.selectOption({ value: optionValue });
+          return true;
+        }
         return false;
       }
     case "yesno":
@@ -451,7 +532,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
   try {
     const page = await newPage();
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
-    await page.locator("label[for]").first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+    await waitForAshbyForm(page);
 
     const blockerReason = await detectSubmissionBlocker(page);
     if (blockerReason) {
@@ -599,7 +680,11 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       // select needs an option whose label actually matches, so retrying
       // candidates here is what actually lets it succeed instead of landing
       // in manual review over a spelling mismatch).
-      const standardCandidates = resolveStandardFieldCandidates(field.normalizedLabel, profile, field.label);
+      const standardCandidates = resolveStandardFieldCandidates(
+        field.normalizedLabel,
+        profile,
+        [field.label, field.selectorValue, field.forId].filter(Boolean).join(" ")
+      );
       if (standardCandidates.length > 0) {
         let filledValue = null;
         for (const candidate of standardCandidates) {

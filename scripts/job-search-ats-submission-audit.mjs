@@ -223,7 +223,7 @@ async function summarizePage(page) {
       checkboxes: inputs.filter((el) => (el.type || "").toLowerCase() === "checkbox").length,
       textareas: [...document.querySelectorAll("textarea")].filter(visible).length,
       selects: [...document.querySelectorAll("select")].filter(visible).length,
-      captchaWidgets: document.querySelectorAll(".g-recaptcha, [name='g-recaptcha-response'], iframe[src*='recaptcha'], .h-captcha, iframe[src*='hcaptcha'], iframe[src*='turnstile'], [data-sitekey]").length,
+      captchaWidgets: document.querySelectorAll(".g-recaptcha, [name='g-recaptcha-response'], iframe[src*='recaptcha'], .h-captcha, iframe[src*='hcaptcha'], .cf-turnstile, [data-cf-sitekey], [name='cf-turnstile-response'], iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile'], [data-sitekey]").length,
       submitCandidates,
       textSignals: {
         account: /(create an account|sign in|log in|already have an account|candidate home|candidate account)/i.test(bodyText),
@@ -258,9 +258,14 @@ function hostReview(atsType, applyUrl, finalUrl) {
 }
 
 function looksLikeForm(summary) {
+  const applicationControlCount = Number(summary?.textInputs)
+    + Number(summary?.textareas)
+    + Number(summary?.selects)
+    + Number(summary?.radios)
+    + Number(summary?.checkboxes);
   return Boolean(summary?.fileInputs)
-    || Number(summary?.textInputs) + Number(summary?.textareas) + Number(summary?.selects) >= 3
-    || Number(summary?.forms) > 0 && Number(summary?.controls) >= 3;
+    || applicationControlCount >= 2
+    || (applicationControlCount >= 1 && (summary?.submitCandidates || []).length > 0);
 }
 
 async function clickRevealCta(page, summary) {

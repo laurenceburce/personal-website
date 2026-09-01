@@ -244,10 +244,14 @@ async function selectOptionByText(locator, candidates) {
   const values = Array.isArray(candidates) ? candidates : [candidates];
   for (const candidate of values.filter(Boolean)) {
     const optionValue = await locator.evaluate((select, wanted) => {
+      const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
       const normalizedWanted = String(wanted || "").trim().toLowerCase();
+      const normalizedCleanWanted = clean(wanted);
       const options = [...select.options];
       const exact = options.find((option) => option.textContent.trim().toLowerCase() === normalizedWanted);
       if (exact) return exact.value;
+      const normalized = options.find((option) => clean(option.textContent) === normalizedCleanWanted);
+      if (normalized) return normalized.value;
       const valueMatch = options.find((option) => String(option.value || "").trim().toLowerCase() === normalizedWanted);
       return valueMatch ? valueMatch.value : null;
     }, String(candidate)).catch(() => null);
@@ -448,7 +452,11 @@ async function fillStepFields(page, fields, ctx) {
       continue;
     }
 
-    const standardCandidates = resolveStandardFieldCandidates(normalizedLabel, profile, field.label);
+    const standardCandidates = resolveStandardFieldCandidates(
+      normalizedLabel,
+      profile,
+      [field.label, field.selector, field.kind, field.tag].filter(Boolean).join(" ")
+    );
     if (standardCandidates.length > 0) {
       const filledValue = await fillField(page, field, standardCandidates);
       if (filledValue != null) {

@@ -14,6 +14,10 @@ const CAPTCHA_WIDGET_SELECTORS = [
   "iframe[src*=\"recaptcha\"]",
   ".h-captcha",
   "iframe[src*=\"hcaptcha\"]",
+  ".cf-turnstile",
+  "[data-cf-sitekey]",
+  "[name=\"cf-turnstile-response\"]",
+  "iframe[src*=\"challenges.cloudflare.com\"]",
   "iframe[src*=\"turnstile\"]",
   "[data-sitekey]"
 ].join(", ");
@@ -46,8 +50,9 @@ export const SECURITY_CODE_BLOCKER_REASON = "Security/verification code challeng
 export const ANTI_BOT_TEXT_BLOCKER_REASON = "Anti-automation challenge question present in the application form.";
 export const CAPTCHA_BLOCKER_REASON = "CAPTCHA widget present on the application form.";
 
-const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication|two[-\s]?factor|2fa)\s+(code|passcode|pin)\b|\b(code|passcode|pin|otp)\b.{0,80}\b(security|verification|confirmation|authentication|email)\b|enter (the )?(security|verification|confirmation|one[-\s]?time|authentication)?\s*(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email/i;
+const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication|two[-\s]?factor|2fa)\s+(code|passcode|pin)\b|\b\d{1,2}\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\s+(?:code|passcode|pin|otp)\b|\b(code|passcode|pin|otp)\b.{0,80}\b(security|verification|confirmation|authentication|email)\b|enter (the )?(security|verification|confirmation|one[-\s]?time|authentication)?\s*(\d{1,2}\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\s+)?(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email/i;
 const ANTI_BOT_TEXT_SIGNALS = /(prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret)/i;
+const SECURITY_INTERSTITIAL_SIGNALS = /(performing security verification|checking if the site connection is secure|verify you are human|verif(y|ies) you are not a bot|website uses a security service to protect against malicious bots|performance and security by cloudflare|ray id:)/i;
 const LOGIN_WALL_SIGNALS = /(sign in to apply|log in to apply|create an account to apply|please log in to continue)/i;
 
 async function isInteractiveCaptchaWidget(locator) {
@@ -87,30 +92,26 @@ async function isInteractiveCaptchaWidget(locator) {
   }).catch(() => false);
 }
 
-// Returns a short human-readable reason string if this application should be
-// treated as blocked, or null if nothing was detected. Deliberately checked
-// BEFORE any field is filled — no point answering nine questions only to
-// discover the tenth is an unsolvable anti-bot puzzle.
-export async function detectSubmissionBlocker(scope) {
-  const bodyText = await scope.locator("body").innerText().catch(() => "");
+async function isVisibleEnabled(locator) {
+  return await locator.isVisible().catch(() => false) && await locator.isEnabled().catch(() => false);
+}
 
-  // Checked BEFORE the CAPTCHA widget scan below: a real security-code or
-  // anti-bot text prompt is a more specific, actionable signal than a
-  // co-present CAPTCHA badge. Confirmed live (GitLab's Greenhouse posting,
-  // Snowflake's Ashby posting both carry Google's invisible reCAPTCHA badge
-  // as boilerplate anti-spam alongside a genuine text challenge) — checking
-  // the CAPTCHA widget first was masking the text challenge entirely, so the
-  // security-code relay never actually fired even though the page clearly
-  // had a fillable code field.
-  if (SECURITY_CODE_TEXT_SIGNALS.test(bodyText)) {
-    return SECURITY_CODE_BLOCKER_REASON;
+async function hasVisibleSplitCodeBoxes(scope) {
+  const boxes = await scope.locator('input[maxlength="1"]').all().catch(() => []);
+  let visibleCount = 0;
+  for (const box of boxes) {
+    if (await isVisibleEnabled(box)) visibleCount += 1;
+    if (visibleCount >= 2) return true;
   }
+  return false;
+}
 
+async function hasTargetedSecurityCodeInput(scope) {
   const codeInputs = scope.locator(SECURITY_CODE_INPUT_SELECTORS);
   const codeInputCount = await codeInputs.count().catch(() => 0);
   for (let i = 0; i < codeInputCount; i += 1) {
     const input = codeInputs.nth(i);
-    if (!(await input.isVisible().catch(() => false))) continue;
+    if (!(await isVisibleEnabled(input))) continue;
     const descriptor = await input.evaluate((el) => [
       el.getAttribute("autocomplete"),
       el.getAttribute("aria-label"),
@@ -119,12 +120,58 @@ export async function detectSubmissionBlocker(scope) {
       el.getAttribute("id")
     ].filter(Boolean).join(" ")).catch(() => "");
     if (/one[-\s]?time|security|verification|confirmation|authentication|passcode|\bpin\b|\botp\b/i.test(descriptor)) {
-      return SECURITY_CODE_BLOCKER_REASON;
+      return true;
     }
+  }
+  return false;
+}
+
+async function hasSingleVisibleTextEntry(scope) {
+  const inputs = await scope.locator(
+    'input:not([type]), input[type="text"], input[type="tel"], input[type="number"], input[type="password"], textarea'
+  ).all().catch(() => []);
+  let visibleCount = 0;
+  for (const input of inputs) {
+    if (await isVisibleEnabled(input)) visibleCount += 1;
+    if (visibleCount > 1) return false;
+  }
+  return visibleCount === 1;
+}
+
+async function hasActionableSecurityCodeEntry(scope, { allowSingleTextFallback = false } = {}) {
+  if (allowSingleTextFallback && await hasVisibleSplitCodeBoxes(scope)) return true;
+  if (await hasTargetedSecurityCodeInput(scope)) return true;
+  return allowSingleTextFallback ? hasSingleVisibleTextEntry(scope) : false;
+}
+
+// Returns a short human-readable reason string if this application should be
+// treated as blocked, or null if nothing was detected. Deliberately checked
+// BEFORE any field is filled — no point answering nine questions only to
+// discover the tenth is an unsolvable anti-bot puzzle.
+export async function detectSubmissionBlocker(scope) {
+  const bodyText = await scope.locator("body").innerText().catch(() => "");
+
+  const hasSecurityCodeText = SECURITY_CODE_TEXT_SIGNALS.test(bodyText);
+  // Checked BEFORE the CAPTCHA widget scan below: a real security-code prompt
+  // is a more specific, actionable signal than a co-present CAPTCHA badge.
+  // The text alone is not enough, though: Greenhouse can keep old challenge
+  // copy in the page after the code is accepted. Require a visible entry
+  // control so a solved/stale prompt does not become a false "still asking"
+  // loop.
+  if (await hasActionableSecurityCodeEntry(scope, { allowSingleTextFallback: hasSecurityCodeText })) {
+    return SECURITY_CODE_BLOCKER_REASON;
   }
 
   if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
     return ANTI_BOT_TEXT_BLOCKER_REASON;
+  }
+
+  // Cloudflare/Turnstile interstitials often expose only a hidden response
+  // input while the visible page says "performing security verification".
+  // Treat that as the same live CAPTCHA class instead of letting adapters
+  // time out waiting for a form that cannot render until the check passes.
+  if (SECURITY_INTERSTITIAL_SIGNALS.test(bodyText)) {
+    return CAPTCHA_BLOCKER_REASON;
   }
 
   // Visibility-gated, not raw DOM presence. Greenhouse/Ashby (among others)

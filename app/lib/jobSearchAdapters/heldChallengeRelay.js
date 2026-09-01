@@ -28,7 +28,7 @@ import {
 
 const TEXT_RELAY_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_SECURITY_CODE_WAIT_MS || 5 * 60 * 1000));
 const CAPTCHA_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_CAPTCHA_WAIT_MS || 5 * 60 * 1000));
-const CAPTCHA_PAGE_CHECK_INTERVAL_MS = Math.max(250, Number(process.env.JOB_SEARCH_CAPTCHA_PAGE_CHECK_INTERVAL_MS || 750));
+const CAPTCHA_PAGE_CHECK_INTERVAL_MS = Math.max(250, Number(process.env.JOB_SEARCH_CAPTCHA_PAGE_CHECK_INTERVAL_MS || 500));
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,7 +40,7 @@ function sleep(ms) {
 // decided by the time resolveHeldChallenge() is called). Covers both the
 // security-code phrasing and the anti-bot-text phrasing so the fallback
 // helps either kind.
-const CONTEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication)\s+(code|passcode|pin)\b|enter (the )?(security|verification|confirmation|one[-\s]?time)?\s*(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email|prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret|decode (this|the following)|what('s| is) the answer/i;
+const CONTEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication)\s+(code|passcode|pin)\b|\b\d{1,2}\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\s+(?:code|passcode|pin|otp)\b|enter (the )?(security|verification|confirmation|one[-\s]?time)?\s*(\d{1,2}\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\s+)?(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email|prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret|decode (this|the following)|what('s| is) the answer/i;
 const STRONG_FIELD_SIGNALS = /\b(security|verification|confirmation|one[-\s]?time|authentication)\s+(code|passcode|pin)\b|one-time-code|passcode|\bpin\b|\botp\b/i;
 const INPUT_SELECTOR = [
   'input[autocomplete="one-time-code"]',

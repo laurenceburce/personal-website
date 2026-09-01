@@ -1,8 +1,8 @@
-// Label-text matching is the only reliable way to map a Greenhouse/Lever/Ashby
-// form field to profile data — custom question field IDs are unique per job
-// posting (confirmed against a real live Greenhouse form: "question_68292370"
-// etc.), so nothing here can key off IDs for anything but the ATS's ~6 standard
-// fields (name/email/phone/country/location).
+// Label text plus nearby field context is the most reliable way to map an ATS
+// form field to profile data. Custom question ids are unique per job posting,
+// but ATS-owned repeatable resume sections (employment/education) often expose
+// stable-ish names like company-name-0 or school--0, so callers pass those ids
+// and nearby section text as rawLabel context when available.
 
 export function normalizeLabel(text) {
   return String(text || "")
@@ -61,6 +61,60 @@ const COUNTRY_CALLING_CODES = {
   "france": "33"
 };
 
+const US_STATE_NAME_BY_ABBR = {
+  AL: "Alabama",
+  AK: "Alaska",
+  AZ: "Arizona",
+  AR: "Arkansas",
+  CA: "California",
+  CO: "Colorado",
+  CT: "Connecticut",
+  DE: "Delaware",
+  FL: "Florida",
+  GA: "Georgia",
+  HI: "Hawaii",
+  ID: "Idaho",
+  IL: "Illinois",
+  IN: "Indiana",
+  IA: "Iowa",
+  KS: "Kansas",
+  KY: "Kentucky",
+  LA: "Louisiana",
+  ME: "Maine",
+  MD: "Maryland",
+  MA: "Massachusetts",
+  MI: "Michigan",
+  MN: "Minnesota",
+  MS: "Mississippi",
+  MO: "Missouri",
+  MT: "Montana",
+  NE: "Nebraska",
+  NV: "Nevada",
+  NH: "New Hampshire",
+  NJ: "New Jersey",
+  NM: "New Mexico",
+  NY: "New York",
+  NC: "North Carolina",
+  ND: "North Dakota",
+  OH: "Ohio",
+  OK: "Oklahoma",
+  OR: "Oregon",
+  PA: "Pennsylvania",
+  RI: "Rhode Island",
+  SC: "South Carolina",
+  SD: "South Dakota",
+  TN: "Tennessee",
+  TX: "Texas",
+  UT: "Utah",
+  VT: "Vermont",
+  VA: "Virginia",
+  WA: "Washington",
+  WV: "West Virginia",
+  WI: "Wisconsin",
+  WY: "Wyoming",
+  DC: "District of Columbia"
+};
+
 function getCallingCode(country) {
   return COUNTRY_CALLING_CODES[String(country || "").trim().toLowerCase()] || null;
 }
@@ -102,13 +156,16 @@ function locationCandidates(profile) {
   if (!city) return [];
 
   const state = String(profile?.stateRegion || "").trim();
+  const stateVariants = state
+    ? [state, US_STATE_NAME_BY_ABBR[state.toUpperCase()]].filter(Boolean)
+    : [];
   const countryVariants = getCountryVariants(profile?.country);
   const candidates = [];
 
   for (const country of countryVariants) {
-    if (state) candidates.push(`${city}, ${state}, ${country}`);
+    for (const stateVariant of stateVariants) candidates.push(`${city}, ${stateVariant}, ${country}`);
   }
-  if (state) candidates.push(`${city}, ${state}`);
+  for (const stateVariant of stateVariants) candidates.push(`${city}, ${stateVariant}`);
   for (const country of countryVariants) candidates.push(`${city}, ${country}`);
   candidates.push(city);
 
@@ -134,6 +191,195 @@ function preferredNameCandidates(profile) {
   const firstName = String(profile?.firstName || "").trim();
   const firstToken = firstName.split(/\s+/)[0] || "";
   return [firstToken, firstName, profile?.fullName].filter(Boolean);
+}
+
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+
+function uniqueTruthyStrings(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values || []) {
+    const clean = String(value || "").trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+}
+
+function parseDateParts(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return {};
+
+  const lower = raw.toLowerCase();
+  const year = raw.match(/\b(19|20)\d{2}\b/)?.[0] || "";
+  const yearMonth = raw.match(/\b(?:19|20)\d{2}[-/](\d{1,2})\b/);
+  const monthYear = raw.match(/\b(\d{1,2})[-/](?:19|20)\d{2}\b/);
+  const numericMonth = Number(yearMonth?.[1] || monthYear?.[1] || 0);
+  if (numericMonth >= 1 && numericMonth <= 12) {
+    return { year, monthName: MONTH_NAMES[numericMonth - 1] };
+  }
+
+  const monthIndex = MONTH_NAMES.findIndex((month) => lower.includes(month.toLowerCase()) || lower.includes(month.slice(0, 3).toLowerCase()));
+  return { year, monthName: monthIndex >= 0 ? MONTH_NAMES[monthIndex] : "" };
+}
+
+function datePartCandidates(dateValue, part) {
+  const { year, monthName } = parseDateParts(dateValue);
+  if (part === "year") return year ? [year] : [];
+  if (!monthName) return [];
+  const monthNumber = MONTH_NAMES.indexOf(monthName) + 1;
+  return uniqueTruthyStrings([monthName, monthName.slice(0, 3), String(monthNumber), String(monthNumber).padStart(2, "0")]);
+}
+
+function indexedEntry(entries, rawLabel, fallbackIndex = 0) {
+  const raw = String(rawLabel || "");
+  const indexText = raw.match(/(?:company-name|company|employer|organization|org|title|job-title|position-title|start-date-month|start-date-year|end-date-month|end-date-year|current-role|school|degree|discipline|field-of-study|major|education)[^\d]*(\d+)/i)?.[1]
+    || raw.match(/\[(\d+)\]/)?.[1];
+  const index = Number(indexText);
+  const safeIndex = Number.isInteger(index) && index >= 0 ? index : fallbackIndex;
+  return entries?.[safeIndex] || entries?.[fallbackIndex] || entries?.find((entry) => Object.values(entry || {}).some(Boolean)) || null;
+}
+
+function workEntry(profile, rawLabel) {
+  return indexedEntry(profile?.workHistory || [], rawLabel);
+}
+
+function educationEntry(profile, rawLabel) {
+  return indexedEntry(profile?.education || [], rawLabel);
+}
+
+function hasEmploymentContext(label, rawLabel) {
+  const combined = normalizeLabel(`${label} ${rawLabel || ""}`);
+  const hasEducationSignal = /\beducation\b|\bschool\b|\buniversity\b|\bcollege\b|\bdegree\b|\bdiscipline\b|\bfield of study\b|\bmajor\b/.test(combined);
+  const hasWorkSignal = /\bemployment\b|\bwork history\b|\bwork experience\b|\bprofessional experience\b|\bexperience\b|company name \d|company \d|employer \d|organization \d|org \d|title \d|job title \d|position title \d|current role|current position/.test(combined);
+  const hasDateIndexedSignal = /start date month \d|start date year \d|end date month \d|end date year \d/.test(combined);
+  return hasWorkSignal || (hasDateIndexedSignal && !hasEducationSignal);
+}
+
+function hasEducationContext(label, rawLabel) {
+  const combined = normalizeLabel(`${label} ${rawLabel || ""}`);
+  return /\beducation\b|\bschool\b|\buniversity\b|\bcollege\b|\bdegree\b|\bdiscipline\b|\bfield of study\b|\bmajor\b|school \d|degree \d|discipline \d|field of study \d|major \d/.test(combined);
+}
+
+function degreeCandidates(education) {
+  const degree = String(education?.degree || "").trim();
+  const normalized = normalizeLabel(degree);
+  const candidates = [degree];
+
+  if (/\b(bachelor|bachelors|bachelor s|bs|b s|ba|b a)\b/.test(normalized)) {
+    candidates.push("Bachelor's Degree", "Bachelor of Science", "Bachelor of Arts", "BS", "B.S.", "BA", "B.A.");
+  }
+  if (/\b(master|masters|master s|ms|m s|ma|m a|mba|m b a)\b/.test(normalized)) {
+    candidates.push("Master's Degree", "Master of Science", "Master of Arts", "Master of Business Administration (M.B.A.)", "MS", "M.S.", "MA", "M.A.", "MBA");
+  }
+  if (/\b(associate|associates|associate s)\b/.test(normalized)) {
+    candidates.push("Associate's Degree");
+  }
+  if (/\b(phd|ph d|doctor of philosophy|doctorate)\b/.test(normalized)) {
+    candidates.push("Doctor of Philosophy (Ph.D.)");
+  }
+
+  return uniqueTruthyStrings(candidates);
+}
+
+function schoolCandidates(education) {
+  const school = String(education?.school || "").trim();
+  if (!school) return [];
+  return uniqueTruthyStrings([
+    school,
+    school.replace(/,/g, ""),
+    school.replace(/\b&\b/g, "and"),
+    "0 - Other",
+    "Other"
+  ]);
+}
+
+function disciplineCandidates(education) {
+  const field = String(education?.field || "").trim();
+  const normalized = normalizeLabel(field);
+  const candidates = [field];
+
+  if (/\bcomputer\b|\bsoftware\b|\bprogramming\b/.test(normalized)) {
+    candidates.push("Computer Science", "Engineering", "Information Systems");
+  }
+  if (/\bengineering\b/.test(normalized)) candidates.push("Engineering");
+  if (/\belectrical\b|\belectronic\b/.test(normalized)) candidates.push("Electronics", "Engineering");
+  if (/\binformation systems\b|\binformation technology\b|\bit\b/.test(normalized)) candidates.push("Information Systems", "Computer Science");
+  if (/\bbusiness\b/.test(normalized)) candidates.push("Business", "Business Administration");
+  if (/\bmath\b|\bmathematics\b/.test(normalized)) candidates.push("Mathematics");
+
+  return uniqueTruthyStrings(candidates);
+}
+
+function hasProfessionalProfile(profile) {
+  return Boolean(
+    profile?.workHistory?.some((entry) => entry?.company || entry?.title)
+      || profile?.education?.some((entry) => entry?.school || entry?.degree)
+  );
+}
+
+function previouslyEmployedCandidates(label, profile) {
+  const match = String(label || "").match(/\bpreviously\s+been\s+employed\s+by\s+(.+?)(?:\s+in\s+any\s+capacity|\?|$)/i);
+  const employer = normalizeLabel(match?.[1] || "");
+  if (!employer) return [];
+  const hadEmployer = (profile?.workHistory || []).some((entry) => {
+    const company = normalizeLabel(entry?.company || "");
+    return company && (company === employer || company.includes(employer) || employer.includes(company));
+  });
+  return [hadEmployer ? "Yes" : "No"];
+}
+
+function aiToolUseCandidates(profile) {
+  const text = normalizeLabel([
+    profile?.workHistory?.map((entry) => `${entry?.title || ""} ${entry?.description || ""}`).join(" "),
+    profile?.coverLetterTemplate
+  ].filter(Boolean).join(" "));
+  if (/\b(ai|artificial intelligence|automation|automate|agent|llm|copilot|prompt)\b/.test(text)) {
+    return [
+      "I design or automate workflows with AI tools (e.g., building agents, integrating AI into team processes).",
+      "I regularly use AI tools to speed up existing tasks (e.g., drafting, summarizing, debugging, basic analysis)."
+    ];
+  }
+  return [];
+}
+
+function currentRoleCandidates(entry) {
+  return entry?.current ? ["true", "Yes", "Current role"] : [];
+}
+
+function workLocationCandidates(entry, profile) {
+  return uniqueTruthyStrings([
+    entry?.location,
+    ...locationCandidates(profile)
+  ]);
+}
+
+function heardAboutJobCandidates() {
+  return [
+    "Career Page",
+    "Company Website",
+    "Company Careers Page",
+    "Company Careers Site",
+    "Employer Website",
+    "Job Board",
+    "Other"
+  ];
 }
 
 // Each resolver returns a string, an array of candidate strings (tried in
@@ -170,11 +416,36 @@ export const STANDARD_FIELD_RESOLVERS = [
   { test: (l) => isPhoneCountryCodeOnlyLabel(l), resolve: (p) => getCallingCodeCandidates(p.country) },
   { test: (l, raw) => /\bphone\b/.test(l) && wantsCountryCodeInPhone(raw), resolve: (p) => phoneCandidates(p.phone, p.country, { preferWithCode: true }) },
   { test: (l) => /\bphone\b/.test(l), resolve: (p) => phoneCandidates(p.phone, p.country, { preferWithCode: false }) },
+  { test: (l) => /\b(street\s*)?address( line 1)?\b/.test(l), resolve: (p) => p.addressLine1 || null },
+  { test: (l) => /\bcity\b/.test(l) && !/location city|current location|^location$/.test(l), resolve: (p) => p.city || null },
+  { test: (l) => /\b(state|province|region)\b/.test(l), resolve: (p) => p.stateRegion || null },
+  { test: (l) => /\b(zip|postal)\s*code\b/.test(l), resolve: (p) => p.postalCode || null },
   { test: (l) => /\bcountry\b/.test(l) && !/\bcountry\s*code\b/.test(l), resolve: (p) => getCountryVariants(p.country) },
   { test: (l) => /location city|current location|^location$/.test(l), resolve: (p) => locationCandidates(p) },
   { test: (l) => l.includes("linkedin"), resolve: (p) => p.linkedinUrl },
   { test: (l) => l.includes("github"), resolve: (p) => p.githubUrl },
   { test: (l) => l.includes("personal website") || l.includes("portfolio"), resolve: (p) => p.portfolioUrl },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && (/\bcompany\s*name\b/.test(l) || /^company$/.test(l) || /^employer$/.test(l)), resolve: (p, l, raw) => workEntry(p, raw)?.company || null },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && (/^title$/.test(l) || /\bjob\s*title\b|\bposition\s*title\b/.test(l)), resolve: (p, l, raw) => workEntry(p, raw)?.title || null },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && /\b(location|city|state|country)\b/.test(l), resolve: (p, l, raw) => workLocationCandidates(workEntry(p, raw), p) },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && /\bcurrent\s*role\b|\bcurrent\s*position\b/.test(l), resolve: (p, l, raw) => currentRoleCandidates(workEntry(p, raw)) },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && /\bstart\s*date\s*month\b/.test(l), resolve: (p, l, raw) => datePartCandidates(workEntry(p, raw)?.startDate, "month") },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && /\bstart\s*date\s*year\b/.test(l), resolve: (p, l, raw) => datePartCandidates(workEntry(p, raw)?.startDate, "year") },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && /\bend\s*date\s*month\b/.test(l), resolve: (p, l, raw) => workEntry(p, raw)?.current ? [] : datePartCandidates(workEntry(p, raw)?.endDate, "month") },
+  { test: (l, raw) => hasEmploymentContext(l, raw) && /\bend\s*date\s*year\b/.test(l), resolve: (p, l, raw) => workEntry(p, raw)?.current ? [] : datePartCandidates(workEntry(p, raw)?.endDate, "year") },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bschool\b|\buniversity\b|\bcollege\b/.test(l), resolve: (p, l, raw) => schoolCandidates(educationEntry(p, raw)) },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bdegree\b/.test(l), resolve: (p, l, raw) => degreeCandidates(educationEntry(p, raw)) },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bdiscipline\b|\bfield\s*of\s*study\b|\bmajor\b/.test(l), resolve: (p, l, raw) => disciplineCandidates(educationEntry(p, raw)) },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bstart\s*date\s*month\b/.test(l), resolve: (p, l, raw) => datePartCandidates(educationEntry(p, raw)?.startDate, "month") },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bstart\s*date\s*year\b/.test(l), resolve: (p, l, raw) => datePartCandidates(educationEntry(p, raw)?.startDate, "year") },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bend\s*date\s*month\b/.test(l), resolve: (p, l, raw) => datePartCandidates(educationEntry(p, raw)?.endDate, "month") },
+  { test: (l, raw) => hasEducationContext(l, raw) && /\bend\s*date\s*year\b/.test(l), resolve: (p, l, raw) => datePartCandidates(educationEntry(p, raw)?.endDate, "year") },
+  { test: (l) => /\bat least\s+18\b|\b18\s+years\s+of\s+age\b/.test(l), resolve: (p) => hasProfessionalProfile(p) ? "Yes" : null },
+  { test: (l) => /\bpreviously\s+been\s+employed\s+by\b/.test(l), resolve: (p, l) => previouslyEmployedCandidates(l, p) },
+  { test: (l) => /\bhow\b.*\bhear\b.*\b(job|role|position|opening)\b|\bwhere\b.*\b(find|found)\b.*\b(job|role|position|opening)\b/.test(l), resolve: () => heardAboutJobCandidates() },
+  { test: (l) => /\b(confirm|receipt|acknowledge|acknowledgement)\b.*\b(privacy notice|privacy policy|arbitration agreement)\b/.test(l), resolve: () => ["Confirmed", "Yes", "I confirm", "I agree"] },
+  { test: (l) => /\bi understand\b.*\bai tools\b.*\b(application|interview|hiring)\b/.test(l), resolve: () => ["Yes"] },
+  { test: (l) => /\buse ai tools today\b|\busing ai tools\b/.test(l), resolve: (p) => aiToolUseCandidates(p) },
   { test: (l) => /\b(current|most recent|recent|latest)\b.*\b(company|employer|organization|organisation)\b/.test(l), resolve: (p) => p.workHistory?.[0]?.company },
   { test: (l) => /\b(current|most recent|recent|latest)\b.*\b(job\s*title|title|role|position)\b/.test(l), resolve: (p) => p.workHistory?.[0]?.title }
 ];
@@ -190,7 +461,7 @@ export const STANDARD_FIELD_RESOLVERS = [
 export function resolveStandardFieldCandidates(label, profile, rawLabel = label) {
   const match = STANDARD_FIELD_RESOLVERS.find((r) => r.test(label, rawLabel));
   if (!match) return [];
-  const result = match.resolve(profile);
+  const result = match.resolve(profile, label, rawLabel);
   if (!result) return [];
   const list = Array.isArray(result) ? result : [result];
   return list.filter(Boolean).map(String);
@@ -235,6 +506,7 @@ function uniqueStrings(values) {
 
 const EEO_DECLINE_CANDIDATES = [
   "Decline to self-identify",
+  "Decline To Self Identify",
   "I don't wish to answer",
   "I do not wish to answer",
   "I don't want to answer",

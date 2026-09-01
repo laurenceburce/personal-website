@@ -13,6 +13,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -79,6 +80,13 @@ async function dismissCookieBanner(page) {
   await clickWithBrowserMouse(page, page.locator('button:has-text("Accept all")').first(), { timeout: 3000 }).catch(() => {});
 }
 
+async function waitForForm(page) {
+  return requireApplicationFormReady(page, {
+    platformName: "Workable",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
+}
+
 // Standard/label-matched "field" questions were always filled with a plain
 // .fill() regardless of q.tag — Playwright's .fill() throws on a real
 // <select> (it isn't a text input), so a Country (or any other enum-like)
@@ -91,7 +99,17 @@ async function fillWorkableFieldValue(page, q, candidates) {
   const locator = page.locator(`[name="${q.name}"]`).first();
   for (const candidate of candidates) {
     const ok = q.tag === "select"
-      ? await locator.selectOption({ label: String(candidate) }).then(() => true).catch(() => false)
+      ? await locator.selectOption({ label: String(candidate) }).then(() => true).catch(async () => {
+          const target = normalizeLabel(candidate);
+          const optionValue = await locator.evaluate((select, normalizedTarget) => {
+            const clean = (text) => String(text || "").toLowerCase().replace(/\*/g, "").replace(/\[optional[^\]]*\]/g, "").replace(/\([^)]*\)/g, "").replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+            const match = [...select.options].find((option) => clean(option.textContent) === normalizedTarget);
+            return match?.value || null;
+          }, target).catch(() => null);
+          if (optionValue == null) return false;
+          await locator.selectOption({ value: optionValue });
+          return true;
+        })
       : await locator.fill(String(candidate)).then(() => true).catch(() => false);
     if (ok) return candidate;
   }
@@ -231,7 +249,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   try {
     const page = await newPage();
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
-    await page.locator('input[name="firstname"]').first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+    await waitForForm(page);
     await dismissCookieBanner(page);
 
     const blockerReason = await detectSubmissionBlocker(page);
@@ -383,7 +401,11 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         // fillWorkableFieldValue() handles that, and candidates covers
         // fields with more than one acceptable value (country name spelled
         // out vs. abbreviated, phone with/without its country code).
-        const standardCandidates = resolveStandardFieldCandidates(normalizedLabel, profile, q.label);
+        const standardCandidates = resolveStandardFieldCandidates(
+          normalizedLabel,
+          profile,
+          [q.label, q.name, q.kind, q.tag].filter(Boolean).join(" ")
+        );
         if (standardCandidates.length > 0) {
           const filledValue = await fillWorkableFieldValue(page, q, standardCandidates);
           if (filledValue != null) {
