@@ -38,7 +38,23 @@ export default function SubmitWorkerBanner({ progress }) {
 
   if (!isRunning && !open) return null;
 
-  const total = (progress?.submittingTotal || 0) + (progress?.autoApplyTotal || 0);
+  // submittingTotal/autoApplyTotal are a snapshot of each phase's queue
+  // length taken once, at the moment that phase started (see
+  // jobSearchSubmitWorkerRun.js) — a posting approved a moment later (e.g. a
+  // second "Approve" click that landed after this pass had already fetched
+  // its batch, whose own trigger call then no-oped against the "only one
+  // pass at a time" guard) never gets folded back in, so the frozen total
+  // silently undercounts for the rest of this pass. While a pass is running,
+  // use the live approved/pending-review counts instead (same fields
+  // WorkerCard already polls for its own queue-depth line) so the total
+  // keeps catching up with reality; once the pass finishes, fall back to the
+  // frozen totals so a finished run's own numbers don't drift as newer,
+  // unrelated postings get approved after the fact.
+  const total = isRunning
+    ? (progress?.processedCount || 0)
+      + (progress?.approvedWaitingCount || 0)
+      + ((progress?.autoApplyTotal || 0) > 0 ? (progress?.pendingReviewCount || 0) : 0)
+    : (progress?.submittingTotal || 0) + (progress?.autoApplyTotal || 0);
   const pct = total > 0 ? Math.min(100, Math.round(((progress?.processedCount || 0) / total) * 100)) : 0;
   const items = progress?.items || [];
 
