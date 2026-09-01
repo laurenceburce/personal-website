@@ -35,7 +35,7 @@ import { resumeFilePayload } from "./resumeFilePayload.js";
 
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
-const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
+const SUBMIT_OUTCOME_TIMEOUT_MS = 45000;
 const FIELD_COLLECTION_MAX_WAIT_MS = 4000;
 // Raised from 5 after an audit pass — see greenhouse.js's identical constant
 // for the reasoning (daily LLM usage has plenty of headroom; 5 was an
@@ -44,6 +44,7 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
+const PROCESSING_TEXT_SIGNALS = /(we('| a)re updating your application|updating your application|submitting|processing|please wait)/i;
 
 function cssAttr(value) {
   return String(value || "").replace(/[\\"]/g, "\\$&");
@@ -379,6 +380,56 @@ async function clickSubmitOrReadBlocker(page, submitButton) {
   }
 }
 
+async function isSubmitButtonBusy(submitButton) {
+  return submitButton.evaluate((el) => {
+    const text = `${el.innerText || ""} ${el.value || ""}`.trim();
+    return Boolean(
+      el.disabled
+        || el.getAttribute("aria-disabled") === "true"
+        || el.getAttribute("aria-busy") === "true"
+        || /submitting|loading|processing/i.test(text)
+        || el.querySelector('[role="progressbar"], [class*="spinner" i], [class*="loading" i], [aria-label*="loading" i]')
+    );
+  }).catch(() => false);
+}
+
+async function waitForAshbySubmitOutcome(page, submitButton) {
+  const startedAt = Date.now();
+  const deadline = startedAt + SUBMIT_OUTCOME_TIMEOUT_MS;
+  let lastText = await readSubmissionText(page);
+  let sawProcessingState = PROCESSING_TEXT_SIGNALS.test(lastText);
+
+  while (Date.now() < deadline) {
+    if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
+    if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+
+    const stillOnFormPage = await submitButton.isVisible().catch(() => false);
+    if (!stillOnFormPage) {
+      await page.waitForTimeout(1000);
+      lastText = await readSubmissionText(page);
+      if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
+      if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+      return { state: "changed", text: lastText };
+    }
+
+    const busy = await isSubmitButtonBusy(submitButton);
+    if (busy || PROCESSING_TEXT_SIGNALS.test(lastText)) {
+      sawProcessingState = true;
+    } else if (sawProcessingState || Date.now() - startedAt > 5000) {
+      await page.waitForTimeout(1000);
+      lastText = await readSubmissionText(page);
+      if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
+      if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+      if (!PROCESSING_TEXT_SIGNALS.test(lastText)) return { state: "settled_on_form", text: lastText };
+    }
+
+    await page.waitForTimeout(500);
+    lastText = await readSubmissionText(page);
+  }
+
+  return { state: "timeout", text: lastText };
+}
+
 export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
@@ -650,22 +701,32 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         status = clickResult.blockerReason ? "blocked" : "failed";
         errorMessage = clickResult.blockerReason || clickResult.errorMessage || "Ashby submit button was not visible after filling the form. Review the posting manually before retrying.";
       } else {
-        await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
-        await page.waitForTimeout(500);
+        let submitOutcome = await waitForAshbySubmitOutcome(page, submitButton);
 
-        const postSubmitBlockerReason = await detectSubmissionBlocker(page).catch(() => null);
+        let postSubmitBlockerReason = await detectSubmissionBlocker(page).catch(() => null);
         if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
           const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason: postSubmitBlockerReason });
           if (!challengeResult.ok) {
             status = "blocked";
             errorMessage = challengeResult.errorMessage;
+          } else if (await submitButton.isVisible().catch(() => false)) {
+            const retryClickResult = await clickSubmitOrReadBlocker(page, submitButton);
+            if (retryClickResult.ok) {
+              submitOutcome = await waitForAshbySubmitOutcome(page, submitButton);
+              postSubmitBlockerReason = await detectSubmissionBlocker(page).catch(() => null);
+            } else {
+              status = retryClickResult.blockerReason ? "blocked" : "failed";
+              errorMessage = retryClickResult.blockerReason || retryClickResult.errorMessage || "Ashby submit button was not visible after resolving the held challenge. Review the posting manually before retrying.";
+            }
           }
-        } else if (postSubmitBlockerReason) {
+        }
+
+        if (status !== "blocked" && postSubmitBlockerReason) {
           status = "blocked";
           errorMessage = postSubmitBlockerReason;
         }
 
-        const pageText = await readSubmissionText(page);
+        const pageText = submitOutcome?.text || await readSubmissionText(page);
         confirmationText = submissionTextExcerpt(pageText);
 
         if (status !== "blocked") {
@@ -673,7 +734,12 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           const hasErrorSignal = ERROR_TEXT_SIGNALS.test(pageText);
           const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(pageText);
 
-          if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
+          if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome?.state !== "timeout")) {
+            status = "submitted";
+          } else if (submitOutcome?.state === "timeout") {
+            status = "failed";
+            errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Ashby to finish processing the submission. Review the posting manually before retrying.`;
+          } else if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
             status = "failed";
             errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
               + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";

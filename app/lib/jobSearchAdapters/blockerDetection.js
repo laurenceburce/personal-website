@@ -41,6 +41,43 @@ const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|one[-\s]?time|authe
 const ANTI_BOT_TEXT_SIGNALS = /(prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret)/i;
 const LOGIN_WALL_SIGNALS = /(sign in to apply|log in to apply|create an account to apply|please log in to continue)/i;
 
+async function isInteractiveCaptchaWidget(locator) {
+  return locator.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (
+      rect.width <= 0
+        || rect.height <= 0
+        || style.display === "none"
+        || style.visibility === "hidden"
+        || Number(style.opacity || "1") === 0
+    ) {
+      return false;
+    }
+
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (tag === "textarea" || type === "hidden") return false;
+
+    const src = el.getAttribute("src") || "";
+    const size = [
+      el.getAttribute("data-size"),
+      el.getAttribute("data-theme"),
+      src
+    ].filter(Boolean).join(" ");
+
+    // Greenhouse and Ashby commonly keep invisible reCAPTCHA Enterprise
+    // anchors in the form. They are visible DOM iframes, but not a human
+    // challenge; treating them as blockers causes a false "still asking"
+    // loop after the form's own invisible token flow runs.
+    if (/\bsize=invisible\b|data-size=["']?invisible|(?:^|\s)invisible(?:\s|$)/i.test(size)) {
+      return false;
+    }
+
+    return true;
+  }).catch(() => false);
+}
+
 // Returns a short human-readable reason string if this application should be
 // treated as blocked, or null if nothing was detected. Deliberately checked
 // BEFORE any field is filled — no point answering nine questions only to
@@ -94,7 +131,7 @@ export async function detectSubmissionBlocker(scope) {
   const captchaWidgets = scope.locator(CAPTCHA_WIDGET_SELECTORS);
   const captchaCount = await captchaWidgets.count().catch(() => 0);
   for (let i = 0; i < captchaCount; i += 1) {
-    if (await captchaWidgets.nth(i).isVisible().catch(() => false)) {
+    if (await isInteractiveCaptchaWidget(captchaWidgets.nth(i))) {
       return CAPTCHA_BLOCKER_REASON;
     }
   }

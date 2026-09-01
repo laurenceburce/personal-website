@@ -130,6 +130,12 @@ function phoneCandidates(phone, country, { preferWithCode }) {
   return preferWithCode ? [withCode, bare].filter(Boolean) : [bare, withCode].filter(Boolean);
 }
 
+function preferredNameCandidates(profile) {
+  const firstName = String(profile?.firstName || "").trim();
+  const firstToken = firstName.split(/\s+/)[0] || "";
+  return [firstToken, firstName, profile?.fullName].filter(Boolean);
+}
+
 // Each resolver returns a string, an array of candidate strings (tried in
 // order by the caller until one actually fills), or null/undefined if the
 // profile doesn't have that data (in which case the field is left for the
@@ -150,8 +156,9 @@ export const STANDARD_FIELD_RESOLVERS = [
   // through to the LLM free-text fallback, which answered truthfully but
   // verbosely ("The candidate's legal name is Test Candidate.") instead of a
   // clean field value, since it's not really a question needing explanation.
-  // Deliberately excludes "preferred name"/"nickname" — those are genuinely
-  // different data we don't have, not just a spelling variant of full name.
+  // Preferred/chosen name is not stored separately today, so use the first
+  // token of firstName before falling back to the full firstName/fullName.
+  { test: (l) => /\b(preferred|chosen|nick)\s*name\b|\bnickname\b/.test(l), resolve: (p) => preferredNameCandidates(p) },
   { test: (l) => /\b(full|legal|applicant)\s*name\b|^name$/.test(l), resolve: (p) => p.fullName },
   // Word-boundaried, not exact-equality — confirmed live as a real miss:
   // Ashby's own field is labeled "Phone Number", not bare "Phone", so the
@@ -168,8 +175,8 @@ export const STANDARD_FIELD_RESOLVERS = [
   { test: (l) => l.includes("linkedin"), resolve: (p) => p.linkedinUrl },
   { test: (l) => l.includes("github"), resolve: (p) => p.githubUrl },
   { test: (l) => l.includes("personal website") || l.includes("portfolio"), resolve: (p) => p.portfolioUrl },
-  { test: (l) => l.includes("current company"), resolve: (p) => p.workHistory?.[0]?.company },
-  { test: (l) => l.includes("current title") || l.includes("current role"), resolve: (p) => p.workHistory?.[0]?.title }
+  { test: (l) => /\b(current|most recent|recent|latest)\b.*\b(company|employer|organization|organisation)\b/.test(l), resolve: (p) => p.workHistory?.[0]?.company },
+  { test: (l) => /\b(current|most recent|recent|latest)\b.*\b(job\s*title|title|role|position)\b/.test(l), resolve: (p) => p.workHistory?.[0]?.title }
 ];
 
 // Full candidate list, in priority order — for a caller that can retry a
