@@ -12,10 +12,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Manual triggers for the Overview tab's "Run Discovery Now" / "Score New
-// Postings Now" buttons, plus Find Settings' "Re-score filtered/low-scored"
-// bulk action — all three otherwise only run on the poll-worker's own cron
-// schedule, which can mean waiting up to 15 minutes to see anything happen
-// after a settings change.
+// Postings Now" / "Run Submit Worker Now" buttons, plus Find Settings'
+// "Re-score filtered/low-scored" bulk action — the first three otherwise
+// only run on a cron schedule or an incidental event (an approve, a scoring
+// pass), which can mean waiting a while to see anything happen after a
+// settings change or just wanting to nudge the queue right now.
 export async function POST(request) {
   const { unauthorizedResponse } = await requireAccessOrRespond();
   if (unauthorizedResponse) return unauthorizedResponse;
@@ -65,6 +66,19 @@ export async function POST(request) {
         const findSettings = await getFindSettings();
         if (findSettings.autoApplyEnabled) await triggerSubmitWorker("scoreNow");
         return NextResponse.json({ ok: true, result });
+      }
+      case "submitNow": {
+        // Just the wake-up call, not the pass itself — the submit worker is
+        // a separate always-on Railway service (see
+        // jobSearchSubmitTrigger.js's own header comment), so this can't
+        // run the batch inline and report a real outcome the way
+        // discoveryNow/scoreNow above do. triggerSubmitWorker() never
+        // throws (a missing/unreachable worker URL just no-ops), so this
+        // always reports success — the toolbar's "Working" banner and the
+        // Submit Worker card's live status are what actually confirm a pass
+        // picked it up, within a couple seconds if it did.
+        await triggerSubmitWorker("manual");
+        return NextResponse.json({ ok: true, result: { triggered: true } });
       }
       case "requeueForRescoring": {
         const result = await requeuePostingsForRescoring();

@@ -77,12 +77,26 @@ export async function listRecentSubmitRuns({ limit = 20 } = {}) {
 }
 
 // Powers the notification bell's "Successfully applied to X jobs" / "X
-// application(s) failed" popups (see NotificationsBell.js) — same on-demand
-// reconstruction as jobSearchDiscoveryRunStore's getDiscoveryRunDetails,
-// since this table only ever stores a run's aggregate counts (see
-// recordSubmitRun above), never the individual attempts themselves.
-// Windowed by attempted_at (not submitted_at, which is null for anything
-// that didn't succeed) between the previous run and this one.
+// application(s) failed" popups (see NotificationsBell.js) AND the Overview
+// tab's Submit Worker "Recent Runs" -> "Details" drill-down (see
+// OverviewPanel.js's SubmitRunDetail) — same on-demand reconstruction as
+// jobSearchDiscoveryRunStore's getDiscoveryRunDetails, since this table only
+// ever stores a run's aggregate counts (see recordSubmitRun above), never
+// the individual attempts themselves. Windowed by attempted_at (not
+// submitted_at, which is null for anything that didn't succeed) between the
+// previous run and this one.
+//
+// `applications` is every attempt in the window regardless of outcome (what
+// "Details" wants: which jobs were actually in this run); `submitted`/
+// `failed` are the same list pre-split, kept for NotificationsBell's two
+// separate notification types. NOTE this can undercount slightly against
+// the run's own aggregate totals in two ways, both edge cases: (1) an
+// approved posting whose attempt crashed before insertApplicationAttempt
+// was ever called (see jobSearchSubmitWorkerRun.js's outer catch) leaves no
+// row at all; (2) an auto-apply candidate declined by the cheap, Playwright-
+// free gate (evaluateCheapGates) or an unresolvable ATS is counted in
+// autoSkippedCount but never gets an application row either, since nothing
+// was actually attempted for it.
 export async function getSubmitRunDetails(id) {
   const pool = requirePool(await ensureJobSearchSchema());
   const runId = cleanId(id, "Submit run");
@@ -108,6 +122,7 @@ export async function getSubmitRunDetails(id) {
 
   return {
     run,
+    applications,
     submitted: applications.filter((a) => a.submissionStatus === "submitted"),
     failed: applications.filter((a) => a.submissionStatus === "failed")
   };

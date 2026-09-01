@@ -260,6 +260,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             submitProgress={submitProgress}
             onRunDiscovery={() => runAction("/api/job-search/run", "discoveryNow", {}, "Discovery run complete.")}
             onScoreNow={() => runAction("/api/job-search/run", "scoreNow", {}, "Scoring run complete.")}
+            onRunSubmitNow={() => runAction("/api/job-search/run", "submitNow", {}, "Submit worker triggered — watch the banner up top for live progress.")}
             onToggleWorker={(workerName, enabled) => runAction(
               "/api/job-search/settings",
               "setWorkerEnabled",

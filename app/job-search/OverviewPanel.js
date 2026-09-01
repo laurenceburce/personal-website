@@ -183,7 +183,7 @@ function SubmitLiveProgress({ progress }) {
   );
 }
 
-function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue, liveProgress }) {
+function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue, onRunNow, liveProgress }) {
   const isBusy = Boolean(saving);
   const isSubmit = worker.workerName === "submit";
   const label = isSubmit ? "Submit worker" : "Poll worker";
@@ -205,6 +205,16 @@ function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onVie
         </div>
         <div className="job-search-form-actions">
           {onViewQueue ? <button type="button" onClick={onViewQueue}>View Queue</button> : null}
+          {onRunNow ? (
+            <button
+              type="button"
+              disabled={isBusy || !worker.enabled}
+              title={!worker.enabled ? "Submit worker is turned off — turn it on first." : "Wake the submit worker up to process the current queue right now, instead of waiting for the next approve/scoring trigger."}
+              onClick={onRunNow}
+            >
+              {saving === "submitNow" ? "Triggering..." : "Run Submit Worker Now"}
+            </button>
+          ) : null}
           <button type="button" onClick={onViewHistory}>View Activity History</button>
           <button type="button" disabled={isBusy} onClick={() => onToggle(worker.workerName, !worker.enabled)}>
             {worker.enabled ? "Turn off" : "Turn on"}
@@ -368,8 +378,10 @@ function DiscoveryRunDetail({ state, onBack }) {
 
 // The submit-worker's own equivalent history — one row per cycle: postings
 // actually processed (approved -> submitted/failed/needs review) and, if
-// enabled, auto-apply's own evaluation of pending-review postings.
-function SubmitRunsTable({ runs }) {
+// enabled, auto-apply's own evaluation of pending-review postings. "Details"
+// mirrors the poll worker's own (see DiscoveryRunsTable above) — the
+// per-job breakdown a row here can only ever summarize as counts.
+function SubmitRunsTable({ runs, onViewDetails }) {
   if (!runs || runs.length === 0) {
     return <p className="job-search-empty">No submit-worker runs recorded yet.</p>;
   }
@@ -384,6 +396,7 @@ function SubmitRunsTable({ runs }) {
             <th>Outcome</th>
             <th>Auto-apply</th>
             <th>Status</th>
+            <th aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
@@ -401,10 +414,78 @@ function SubmitRunsTable({ runs }) {
                   : <span className="job-search-cell-note">Disabled</span>}
               </td>
               <td><Badge text={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} /></td>
+              <td><button type="button" onClick={() => onViewDetails(run.id)}>Details</button></td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// The full per-job breakdown a submit run's own row can only ever summarize
+// as counts — every application actually attempted during the run's window.
+// NOT necessarily every posting counted in the run's own aggregates — see
+// getSubmitRunDetails' own comment on the two cases (a pre-attempt crash, an
+// auto-apply candidate the cheap gate or an unresolvable ATS declined before
+// trying anything) that leave no row here despite counting toward a total
+// above.
+function SubmitRunDetail({ state, onBack }) {
+  if (state.loading) return <p className="job-search-empty">Loading...</p>;
+  if (state.error) return <p className="job-search-alert job-search-alert-error">{state.error}</p>;
+
+  const { run, applications } = state.data;
+
+  return (
+    <div>
+      <button type="button" onClick={onBack}>&larr; Back to all runs</button>
+
+      <div className="job-search-field-grid" style={{ marginTop: 12 }}>
+        <Metric label="Ran" value={timeAgo(run.ranAt)} />
+        <Metric
+          label="Approved queue"
+          value={`${run.approvedTotal} processed`}
+          detail={`${run.submittedCount} submitted, ${run.manualReviewCount} manual review`
+            + (run.failedCount > 0 ? `, ${run.failedCount} failed` : "")}
+        />
+        <Metric
+          label="Auto-apply"
+          value={run.autoApplyEnabled ? `${run.autoApplyEvaluated} evaluated` : "Disabled"}
+          detail={run.autoApplyEnabled ? `${run.autoAppliedCount} applied, ${run.autoSkippedCount} skipped` : null}
+        />
+        <Metric label="Status" value={run.ok ? "OK" : "Error"} tone={run.ok ? "success" : "danger"} />
+      </div>
+
+      {run.error ? <p className="job-search-alert job-search-alert-error">{run.error}</p> : null}
+
+      <h3>Jobs in this run ({applications.length})</h3>
+      <p className="job-search-panel-hint">
+        Every posting an actual submission attempt was made for. An auto-apply candidate the free pre-checks or an
+        unresolvable ATS declined before attempting anything only shows up in the Auto-apply count above — nothing
+        was actually tried for it, so there's no attempt to list here.
+      </p>
+      {applications.length === 0 ? (
+        <p className="job-search-empty">Nothing was actually attempted this run.</p>
+      ) : (
+        <div className="job-search-table-scroll">
+          <table className="job-search-table">
+            <thead><tr><th>Job</th><th>Queue</th><th>Outcome</th><th>Link</th></tr></thead>
+            <tbody>
+              {applications.map((a) => {
+                const meta = PROGRESS_ITEM_META[a.submissionStatus] || { label: a.submissionStatus, tone: "neutral" };
+                return (
+                  <tr key={a.id}>
+                    <td><strong>{a.jobTitle}</strong><div className="job-search-cell-note">{a.companyName}</div></td>
+                    <td>{a.autoApplied ? "Auto-apply" : "Approved queue"}</td>
+                    <td><Badge text={meta.label} tone={meta.tone} /></td>
+                    <td>{a.applyUrl ? <a href={a.applyUrl} target="_blank" rel="noreferrer">{atsTypeLabel(a.atsType)}</a> : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -478,6 +559,7 @@ export default function OverviewPanel({
   submitProgress,
   onRunDiscovery,
   onScoreNow,
+  onRunSubmitNow,
   onToggleWorker
 }) {
   const [historyModal, setHistoryModal] = useState(null); // null | "poll" | "submit" | "submitQueue"
@@ -485,6 +567,9 @@ export default function OverviewPanel({
   // popup is open, if any. Separate from historyModal itself so it's just a
   // nested view within the same "poll" modal, not a second overlay.
   const [runDetails, setRunDetails] = useState(null);
+  // Same idea, for the submit-worker's own "submit" modal — see
+  // viewSubmitRunDetails/SubmitRunDetail below.
+  const [submitRunDetails, setSubmitRunDetails] = useState(null);
   const totalPostings = Object.values(statusCounts || {}).reduce((sum, n) => sum + n, 0);
   const usagePct = llmUsage?.totalCalls != null ? llmUsage.totalCalls : 0;
   const nothingHasRunYet = totalPostings === 0;
@@ -556,6 +641,21 @@ export default function OverviewPanel({
       setRunDetails({ runId, loading: false, data: payload, error: "" });
     } catch (err) {
       setRunDetails({ runId, loading: false, data: null, error: err?.message || "Failed to load run details." });
+    }
+  }
+
+  // Same idea as viewRunDetails above, for a submit-worker run — which jobs
+  // an actual submission was attempted for during that pass (see
+  // getSubmitRunDetails' own comment on what this can and can't capture).
+  async function viewSubmitRunDetails(runId) {
+    setSubmitRunDetails({ runId, loading: true, data: null, error: "" });
+    try {
+      const response = await fetch(`/api/job-search/submit-runs/${runId}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Failed to load run details.");
+      setSubmitRunDetails({ runId, loading: false, data: payload, error: "" });
+    } catch (err) {
+      setSubmitRunDetails({ runId, loading: false, data: null, error: err?.message || "Failed to load run details." });
     }
   }
 
@@ -635,6 +735,7 @@ export default function OverviewPanel({
             worker={submitWorker} rules={submitRules} saving={saving} now={now}
             onToggle={onToggleWorker} onViewHistory={() => setHistoryModal("submit")}
             onViewQueue={() => setHistoryModal("submitQueue")}
+            onRunNow={onRunSubmitNow}
             liveProgress={submitProgress}
           />
         </div>
@@ -697,13 +798,18 @@ export default function OverviewPanel({
 
       {historyModal === "submit" ? (
         <Modal
-          title="Submit Worker — Recent Runs"
-          hint={"One row per submit-worker run: postings approved by hand and actually processed (submitted/failed/"
-            + "needs manual review), plus — when auto-apply is enabled — how many pending-review postings it "
-            + "evaluated on its own and what it decided for each."}
-          onClose={() => setHistoryModal(null)}
+          title={submitRunDetails ? "Submit Worker — Run Details" : "Submit Worker — Recent Runs"}
+          hint={submitRunDetails
+            ? null
+            : "One row per submit-worker run: postings approved by hand and actually processed (submitted/failed/"
+              + "needs manual review), plus — when auto-apply is enabled — how many pending-review postings it "
+              + "evaluated on its own and what it decided for each. Click \"Details\" on any row to see exactly "
+              + "which jobs were in it."}
+          onClose={() => { setHistoryModal(null); setSubmitRunDetails(null); }}
         >
-          <SubmitRunsTable runs={submitRuns} />
+          {submitRunDetails
+            ? <SubmitRunDetail state={submitRunDetails} onBack={() => setSubmitRunDetails(null)} />
+            : <SubmitRunsTable runs={submitRuns} onViewDetails={viewSubmitRunDetails} />}
         </Modal>
       ) : null}
 
