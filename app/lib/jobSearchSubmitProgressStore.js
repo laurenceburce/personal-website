@@ -1,11 +1,16 @@
 import { ensureJobSearchSchema, parseJsonColumn, requirePool, toJsonParam } from "./jobSearchDb.js";
+import { countPostingsByStatus } from "./jobSearchPostingsStore.js";
 
 // Live, single-row "what is the submit worker doing RIGHT NOW" state — see
 // job_search_submit_progress's own comment in jobSearchDb.js for how this
 // differs from job_search_submit_runs (history) and job_search_worker_status
 // (heartbeat). Called from app/lib/jobSearchSubmitWorkerRun.js as it works
-// through each posting; read by jobSearchSubmitProgressWatcher.js in the web
-// app process. Only one submit-worker pass ever runs at a time (see
+// through each posting; read from the web app via plain polling (see
+// app/api/job-search/submit-progress/route.js) — an earlier SSE-push version
+// of this turned out to be silently buffered by Railway's proxy in practice
+// (confirmed live: updates never arrived until the connection closed), so
+// this deliberately favors a dumb, provably-working poll over a fragile
+// push. Only one submit-worker pass ever runs at a time (see
 // scripts/job-search-submit-worker-server.mjs's isRunning guard), so the
 // read-modify-write in beginProgressItem/finishProgressItem below never
 // races against itself.
@@ -39,6 +44,23 @@ export async function getSubmitProgress() {
   const pool = requirePool(await ensureJobSearchSchema());
   const [rows] = await pool.query("SELECT * FROM job_search_submit_progress WHERE id = ? LIMIT 1", [ROW_ID]);
   return mapRow(rows[0]);
+}
+
+// What the toolbar banner and Overview's Submit Worker card actually poll
+// (see submit-progress/route.js) — progress plus live queue counts in one
+// cheap round trip (a single-row SELECT and a small GROUP BY, same query
+// worker-status/route.js's own comment already calls out as safe to poll
+// often).
+export async function getSubmitProgressSnapshot() {
+  const [progress, statusCounts] = await Promise.all([
+    getSubmitProgress(),
+    countPostingsByStatus().catch(() => ({}))
+  ]);
+  return {
+    ...progress,
+    approvedWaitingCount: statusCounts.approved || 0,
+    pendingReviewCount: statusCounts.pending_review || 0
+  };
 }
 
 // Called once at the top of a pass, before either phase's queue is even

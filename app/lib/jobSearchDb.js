@@ -438,13 +438,15 @@ export const ensureJobSearchSchema = async () => {
       // history of already-COMPLETED passes) and job_search_worker_status
       // (heartbeat/last-result only). Written by the always-on submit-worker
       // process as it works through each posting (see
-      // app/lib/jobSearchSubmitProgressStore.js), polled and fanned out to
-      // every open dashboard tab in real time by
-      // jobSearchSubmitProgressWatcher.js — the web app and the worker are
-      // separate Railway services, so the DB is the only channel between
-      // them. `items` accumulates one entry per posting touched THIS pass
-      // (cleared when the next pass starts, not retained as history — that's
-      // what job_search_submit_runs is for).
+      // app/lib/jobSearchSubmitProgressStore.js); the web app polls it
+      // (app/api/job-search/submit-progress/route.js) — the web app and the
+      // worker are separate Railway services, so the DB is the only channel
+      // between them. A push (SSE) version of this was tried first but
+      // turned out to be silently buffered by Railway's proxy in production,
+      // so this is deliberately a plain poll instead. `items` accumulates
+      // one entry per posting touched THIS pass (cleared when the next pass
+      // starts, not retained as history — that's what job_search_submit_runs
+      // is for).
       await pool.query(`
         CREATE TABLE IF NOT EXISTS job_search_submit_progress (
           id TINYINT UNSIGNED PRIMARY KEY,

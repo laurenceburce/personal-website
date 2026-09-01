@@ -130,12 +130,11 @@ const PROGRESS_ITEM_META = {
   skipped_auto_apply: { label: "Skipped", tone: "neutral" }
 };
 
-// Real-time "what is the submit worker doing right now" block — fed by an
-// SSE subscription in the OverviewPanel component below (see
-// app/api/job-search/submit-progress-events), not by the page's own
+// "What is the submit worker doing right now" block — fed by a poll loop in
+// JobSearchAppClient (see submit-progress/route.js), not by the page's own
 // server-rendered snapshot, since the worker runs as a separate always-on
 // process that can start a pass at any moment, not just when this dashboard
-// happens to reload. `progress` is null until the first SSE message lands.
+// happens to reload. `progress` is null until the first poll lands.
 function SubmitLiveProgress({ progress }) {
   if (!progress) return null;
   const isRunning = progress.status === "running";
@@ -539,11 +538,11 @@ export default function OverviewPanel({
     };
   }, []);
 
-  // submitProgress itself is a prop, not local state — the SSE subscription
-  // lives once in JobSearchAppClient.js (always mounted, unlike this panel
-  // which only exists while the Overview tab is active) so the topbar's
-  // SubmitWorkerBanner and this panel's SubmitLiveProgress share one
-  // EventSource instead of each opening their own.
+  // submitProgress itself is a prop, not local state — the poll loop lives
+  // once in JobSearchAppClient.js (always mounted, unlike this panel which
+  // only exists while the Overview tab is active) so the topbar's
+  // SubmitWorkerBanner and this panel's SubmitLiveProgress share one poll
+  // instead of each running their own.
 
   // On demand only (no polling) — a run's details are static once recorded,
   // unlike worker status above. Reconstructed server-side, not carried on

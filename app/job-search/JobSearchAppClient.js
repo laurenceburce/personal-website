@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import AnswerMemoryPanel from "./AnswerMemoryPanel";
 import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
@@ -30,11 +30,17 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [heldToast, setHeldToast] = useState("");
-  // null until the first SSE message lands. Lives here (not in
-  // OverviewPanel, which only mounts on the Overview tab) so the topbar's
-  // SubmitWorkerBanner and OverviewPanel's own live-progress block share one
-  // EventSource instead of each opening its own — both just read this prop.
+  // null until the first poll lands. Lives here (not in OverviewPanel, which
+  // only mounts on the Overview tab) so the topbar's SubmitWorkerBanner and
+  // OverviewPanel's own live-progress block share one poll loop instead of
+  // each running its own — both just read this prop.
   const [submitProgress, setSubmitProgress] = useState(null);
+  // How many items the worker had finished as of the last poll — used only
+  // to detect "the worker just did something" so the whole snapshot
+  // (Review's In Queue list, Applied Jobs, statusCounts, etc.) can be
+  // refreshed the moment it happens, not just the progress display itself.
+  // A ref, not state: it must never itself trigger a re-render.
+  const lastProcessedCountRef = useRef(null);
 
   // Real-time counterpart to HeldSubmissionsPanel's own poll — wakes the
   // dashboard up the moment a new held item appears (security code /
@@ -56,23 +62,49 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
     return () => source.close();
   }, [router]);
 
-  // Genuine real-time feed (not a poll) for the submit worker's live
-  // progress — a pass can start at any moment (the worker is event-driven,
-  // triggered the instant something's approved) and runs for as long as
-  // Playwright takes per posting, so a periodic poll would feel laggy for a
-  // progress bar. Powers both SubmitWorkerBanner (below) and OverviewPanel's
-  // own Submit Worker card.
+  // Live-ish (2s poll, not a push) feed for the submit worker's progress —
+  // powers both SubmitWorkerBanner (below) and OverviewPanel's own Submit
+  // Worker card. This used to be an SSE push, which turned out to be
+  // silently buffered by Railway's proxy in production (updates never
+  // arrived until the connection closed) — a plain poll is less elegant but
+  // is the mechanism actually proven to work in this deployment (same as
+  // NotificationsBell's poll and OverviewPanel's own worker-status poll).
+  //
+  // Also the thing that keeps the REST of the dashboard in sync with what
+  // the worker is doing in the background: whenever processedCount moves
+  // (the worker just finished a posting — queue counts, Applied Jobs, and
+  // Review's In Queue list all just changed as a result), this calls
+  // router.refresh() so those pick it up immediately instead of only ever
+  // updating when the user happens to trigger some other action in this tab.
   useEffect(() => {
-    const source = new EventSource("/api/job-search/submit-progress-events");
-    source.addEventListener("update", (event) => {
+    let cancelled = false;
+
+    async function poll() {
       try {
-        setSubmitProgress(JSON.parse(event.data));
+        const response = await fetch("/api/job-search/submit-progress");
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null);
+        if (cancelled || !payload?.progress) return;
+
+        setSubmitProgress(payload.progress);
+
+        const processedCount = payload.progress.processedCount ?? 0;
+        if (lastProcessedCountRef.current !== null && processedCount !== lastProcessedCountRef.current) {
+          router.refresh();
+        }
+        lastProcessedCountRef.current = processedCount;
       } catch {
-        // Malformed payload — ignore, the next update supersedes it.
+        // Best-effort — a missed poll just means the next one catches up.
       }
-    });
-    return () => source.close();
-  }, []);
+    }
+
+    poll();
+    const interval = setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [router]);
 
   function setTabAndUrl(nextTab) {
     setTab(nextTab);
