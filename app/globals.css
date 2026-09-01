@@ -7808,9 +7808,39 @@ html[data-theme="light"] .auth-feature-gate {
   background: rgba(56, 189, 248, 0.05);
 }
 
+.job-search-row-caret {
+  display: inline-block;
+  width: 0.9em;
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  transition: transform var(--t-fast) var(--ease-smooth);
+}
+
+.job-search-row-caret-open {
+  transform: rotate(90deg);
+}
+
+/* Row is counting down to deletion — dim everything but the actions cell
+   (which swaps to the countdown + Undo) so the pending state reads clearly
+   without the row jumping around or losing its place in the table. */
+.job-search-row-pending-delete {
+  cursor: default;
+  background: rgba(251, 113, 133, 0.06);
+}
+
+.job-search-row-pending-delete:hover {
+  background: rgba(251, 113, 133, 0.06);
+}
+
+.job-search-row-pending-delete > td:not(.job-search-row-actions) {
+  opacity: 0.45;
+}
+
 .job-search-row-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   white-space: nowrap;
 }
@@ -7822,11 +7852,45 @@ html[data-theme="light"] .auth-feature-gate {
   font-size: 0.76rem;
 }
 
+.job-search-row-delete-btn {
+  min-width: 32px;
+  padding: 0 !important;
+  background: transparent;
+  border-color: rgba(251, 113, 133, 0.28);
+  color: #fca5a5;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.job-search-row-delete-btn:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.14) !important;
+  border-color: rgba(251, 113, 133, 0.5) !important;
+}
+
+.job-search-delete-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #fca5a5;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.job-search-delete-pending button {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 0.76rem;
+}
+
 .job-search-cell-note {
   display: block;
   margin-top: 2px;
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.job-search-applied-stats {
+  margin-bottom: 14px;
 }
 
 .job-search-expanded {
