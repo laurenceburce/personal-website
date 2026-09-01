@@ -7272,6 +7272,56 @@ html[data-theme="light"] .auth-feature-gate {
   gap: 10px;
 }
 
+/* ── Submit worker banner ── */
+
+.job-search-submit-banner {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px !important;
+  padding: 0 14px 0 11px !important;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.14);
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 750;
+  overflow: hidden;
+}
+
+.job-search-submit-banner:hover {
+  background: rgba(56, 189, 248, 0.22) !important;
+  border-color: rgba(56, 189, 248, 0.6) !important;
+}
+
+.job-search-submit-banner-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: job-search-pulse 1.4s ease-in-out infinite;
+}
+
+.job-search-submit-banner-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+@keyframes job-search-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.65); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-search-submit-banner-dot { animation: none; }
+}
+
 /* ── Notification bell ── */
 
 .job-search-notif-wrap {

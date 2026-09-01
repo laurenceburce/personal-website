@@ -12,6 +12,7 @@ import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
 import ReviewQueueTable from "./ReviewQueueTable";
+import SubmitWorkerBanner from "./SubmitWorkerBanner";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -29,6 +30,11 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [heldToast, setHeldToast] = useState("");
+  // null until the first SSE message lands. Lives here (not in
+  // OverviewPanel, which only mounts on the Overview tab) so the topbar's
+  // SubmitWorkerBanner and OverviewPanel's own live-progress block share one
+  // EventSource instead of each opening its own — both just read this prop.
+  const [submitProgress, setSubmitProgress] = useState(null);
 
   // Real-time counterpart to HeldSubmissionsPanel's own poll — wakes the
   // dashboard up the moment a new held item appears (security code /
@@ -49,6 +55,24 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
     });
     return () => source.close();
   }, [router]);
+
+  // Genuine real-time feed (not a poll) for the submit worker's live
+  // progress — a pass can start at any moment (the worker is event-driven,
+  // triggered the instant something's approved) and runs for as long as
+  // Playwright takes per posting, so a periodic poll would feel laggy for a
+  // progress bar. Powers both SubmitWorkerBanner (below) and OverviewPanel's
+  // own Submit Worker card.
+  useEffect(() => {
+    const source = new EventSource("/api/job-search/submit-progress-events");
+    source.addEventListener("update", (event) => {
+      try {
+        setSubmitProgress(JSON.parse(event.data));
+      } catch {
+        // Malformed payload — ignore, the next update supersedes it.
+      }
+    });
+    return () => source.close();
+  }, []);
 
   function setTabAndUrl(nextTab) {
     setTab(nextTab);
@@ -123,6 +147,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
       <header className="job-search-topbar">
         <h1>Job Search</h1>
         <div className="job-search-topbar-actions">
+          <SubmitWorkerBanner progress={submitProgress} />
           <NotificationsBell />
           <button type="button" className="job-search-header-home" onClick={() => router.push("/")}>Home</button>
         </div>
@@ -200,6 +225,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             approvedWaiting={snapshot.approvedWaiting}
             autoApplyQueue={snapshot.autoApplyQueue}
             saving={saving}
+            submitProgress={submitProgress}
             onRunDiscovery={() => runAction("/api/job-search/run", "discoveryNow", {}, "Discovery run complete.")}
             onScoreNow={() => runAction("/api/job-search/run", "scoreNow", {}, "Scoring run complete.")}
             onToggleWorker={(workerName, enabled) => runAction(

@@ -476,6 +476,7 @@ export default function OverviewPanel({
   approvedWaiting,
   autoApplyQueue,
   saving,
+  submitProgress,
   onRunDiscovery,
   onScoreNow,
   onToggleWorker
@@ -498,10 +499,6 @@ export default function OverviewPanel({
   // one.
   const [liveWorkerStatus, setLiveWorkerStatus] = useState(workerStatus);
   const [now, setNow] = useState(() => Date.now());
-  // null until the first SSE message lands — see SubmitLiveProgress's own
-  // comment on why this can't just come from the page's server-rendered
-  // snapshot.
-  const [submitProgress, setSubmitProgress] = useState(null);
 
   // Resync whenever the parent hands over a new snapshot (e.g. right after
   // toggling a worker) so that action's result is reflected immediately
@@ -542,23 +539,11 @@ export default function OverviewPanel({
     };
   }, []);
 
-  // Genuine real-time feed (not a poll) for the Submit Worker card's live
-  // progress — a pass can start at any moment (the worker is event-driven,
-  // triggered the instant something's approved) and runs for as long as
-  // Playwright takes per posting, so a 20s poll like worker-status above
-  // would feel laggy for a progress bar. Same EventSource/SSE pattern as the
-  // held-challenge toast in JobSearchAppClient.js.
-  useEffect(() => {
-    const source = new EventSource("/api/job-search/submit-progress-events");
-    source.addEventListener("update", (event) => {
-      try {
-        setSubmitProgress(JSON.parse(event.data));
-      } catch {
-        // Malformed payload — ignore, the next update supersedes it.
-      }
-    });
-    return () => source.close();
-  }, []);
+  // submitProgress itself is a prop, not local state — the SSE subscription
+  // lives once in JobSearchAppClient.js (always mounted, unlike this panel
+  // which only exists while the Overview tab is active) so the topbar's
+  // SubmitWorkerBanner and this panel's SubmitLiveProgress share one
+  // EventSource instead of each opening their own.
 
   // On demand only (no polling) — a run's details are static once recorded,
   // unlike worker status above. Reconstructed server-side, not carried on
