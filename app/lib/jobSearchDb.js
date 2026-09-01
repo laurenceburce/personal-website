@@ -433,6 +433,34 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // Singleton (id=1) "what is the submit worker doing RIGHT NOW" row —
+      // a different concern from job_search_submit_runs above (append-only
+      // history of already-COMPLETED passes) and job_search_worker_status
+      // (heartbeat/last-result only). Written by the always-on submit-worker
+      // process as it works through each posting (see
+      // app/lib/jobSearchSubmitProgressStore.js), polled and fanned out to
+      // every open dashboard tab in real time by
+      // jobSearchSubmitProgressWatcher.js — the web app and the worker are
+      // separate Railway services, so the DB is the only channel between
+      // them. `items` accumulates one entry per posting touched THIS pass
+      // (cleared when the next pass starts, not retained as history — that's
+      // what job_search_submit_runs is for).
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_submit_progress (
+          id TINYINT UNSIGNED PRIMARY KEY,
+          status VARCHAR(16) NOT NULL DEFAULT 'idle',
+          started_at DATETIME(3) NULL,
+          finished_at DATETIME(3) NULL,
+          submitting_total INT NOT NULL DEFAULT 0,
+          auto_apply_total INT NOT NULL DEFAULT 0,
+          processed_count INT NOT NULL DEFAULT 0,
+          current_phase VARCHAR(16) NULL,
+          current_item JSON NULL,
+          items JSON NULL,
+          updated_at DATETIME(3) NOT NULL
+        )
+      `);
+
       // A single free-text "Full Name" field can't be reliably split back
       // into first/middle/last for forms that ask for them separately —
       // confirmed live as a real, unfixable-by-heuristic problem: for one
@@ -578,6 +606,10 @@ export const ensureJobSearchSchema = async () => {
       await pool.query(
         "INSERT IGNORE INTO job_search_worker_status (worker_name, updated_at) VALUES ('poll', ?), ('submit', ?)",
         [now, now]
+      );
+      await pool.query(
+        "INSERT IGNORE INTO job_search_submit_progress (id, updated_at) VALUES (1, ?)",
+        [now]
       );
     })();
   }

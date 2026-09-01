@@ -115,7 +115,76 @@ function nextRunEstimate(worker, now) {
   return `${formatCountdown(remainingMs)} (${cadence})`;
 }
 
-function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue }) {
+// One entry per posting the submit worker has touched THIS pass — 'status'
+// is 'in_progress' while it's mid-flight, then whatever toApplicationStatus/
+// evaluateAutoApply's own result.status settled on (see
+// jobSearchSubmitWorkerRun.js). Not the same vocabulary as posting status
+// (NotificationsBell.js's POSTING_STATUS_META) — this is specifically an
+// attempt outcome.
+const PROGRESS_ITEM_META = {
+  in_progress: { label: "Working…", tone: "warn" },
+  submitted: { label: "Submitted", tone: "success" },
+  failed: { label: "Failed", tone: "danger" },
+  needs_manual_review: { label: "Needs manual review", tone: "danger" },
+  unsupported_ats: { label: "Unsupported ATS", tone: "danger" },
+  skipped_auto_apply: { label: "Skipped", tone: "neutral" }
+};
+
+// Real-time "what is the submit worker doing right now" block — fed by an
+// SSE subscription in the OverviewPanel component below (see
+// app/api/job-search/submit-progress-events), not by the page's own
+// server-rendered snapshot, since the worker runs as a separate always-on
+// process that can start a pass at any moment, not just when this dashboard
+// happens to reload. `progress` is null until the first SSE message lands.
+function SubmitLiveProgress({ progress }) {
+  if (!progress) return null;
+  const isRunning = progress.status === "running";
+  const total = (progress.submittingTotal || 0) + (progress.autoApplyTotal || 0);
+  const pct = total > 0 ? Math.min(100, Math.round((progress.processedCount / total) * 100)) : 0;
+  const items = progress.items || [];
+
+  return (
+    <div className="job-search-live-progress">
+      <div className="job-search-live-progress-header">
+        <Badge text={isRunning ? "Working" : "Idle"} tone={isRunning ? "warn" : "neutral"} />
+        {isRunning ? <span className="job-search-cell-note">{progress.processedCount} of {total || "?"} processed</span> : null}
+      </div>
+
+      {isRunning ? (
+        <>
+          <div className="job-search-progress-bar">
+            <div className="job-search-progress-bar-fill" style={{ width: `${pct}%` }} />
+          </div>
+          {progress.currentItem ? (
+            <p className="job-search-cell-note">
+              Now processing: <strong>{progress.currentItem.title}</strong> at {progress.currentItem.companyName}
+              {" — "}{progress.currentItem.phase === "auto_apply" ? "auto-apply" : "approved queue"}
+            </p>
+          ) : null}
+        </>
+      ) : null}
+
+      {items.length > 0 ? (
+        <details className="job-search-live-log-wrap" open={isRunning}>
+          <summary>This run — {items.length} job{items.length === 1 ? "" : "s"}</summary>
+          <ul className="job-search-live-log">
+            {[...items].reverse().map((item, i) => {
+              const meta = PROGRESS_ITEM_META[item.status] || { label: "Working…", tone: "warn" };
+              return (
+                <li key={`${item.postingId}-${i}`}>
+                  <span>{item.title}<span className="job-search-cell-note"> · {item.companyName}</span></span>
+                  <Badge text={meta.label} tone={meta.tone} />
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onViewQueue, liveProgress }) {
   const isBusy = Boolean(saving);
   const isSubmit = worker.workerName === "submit";
   const label = isSubmit ? "Submit worker" : "Poll worker";
@@ -149,6 +218,8 @@ function WorkerCard({ worker, rules, saving, now, onToggle, onViewHistory, onVie
         <Metric label="Last run" value={worker.lastRunAt ? timeAgo(worker.lastRunAt) : "Never"} detail={worker.lastRunSummary || null} />
         {!isSubmit ? <Metric label="Next expected" value={nextRunEstimate(worker, now)} /> : null}
       </div>
+
+      {isSubmit ? <SubmitLiveProgress progress={liveProgress} /> : null}
 
       {worker.lastError ? <p className="job-search-alert job-search-alert-error">{worker.lastError}</p> : null}
 
@@ -427,6 +498,10 @@ export default function OverviewPanel({
   // one.
   const [liveWorkerStatus, setLiveWorkerStatus] = useState(workerStatus);
   const [now, setNow] = useState(() => Date.now());
+  // null until the first SSE message lands — see SubmitLiveProgress's own
+  // comment on why this can't just come from the page's server-rendered
+  // snapshot.
+  const [submitProgress, setSubmitProgress] = useState(null);
 
   // Resync whenever the parent hands over a new snapshot (e.g. right after
   // toggling a worker) so that action's result is reflected immediately
@@ -465,6 +540,24 @@ export default function OverviewPanel({
       cancelled = true;
       clearInterval(interval);
     };
+  }, []);
+
+  // Genuine real-time feed (not a poll) for the Submit Worker card's live
+  // progress — a pass can start at any moment (the worker is event-driven,
+  // triggered the instant something's approved) and runs for as long as
+  // Playwright takes per posting, so a 20s poll like worker-status above
+  // would feel laggy for a progress bar. Same EventSource/SSE pattern as the
+  // held-challenge toast in JobSearchAppClient.js.
+  useEffect(() => {
+    const source = new EventSource("/api/job-search/submit-progress-events");
+    source.addEventListener("update", (event) => {
+      try {
+        setSubmitProgress(JSON.parse(event.data));
+      } catch {
+        // Malformed payload — ignore, the next update supersedes it.
+      }
+    });
+    return () => source.close();
   }, []);
 
   // On demand only (no polling) — a run's details are static once recorded,
@@ -510,8 +603,11 @@ export default function OverviewPanel({
     { label: `Job-search DB size: ${dbSizeMb} MB`, ok: null }
   ];
 
-  const approvedCount = statusCounts?.approved || 0;
-  const pendingReviewCount = statusCounts?.pending_review || 0;
+  // Prefers the SSE feed's live count (see submitProgress above) once it's
+  // arrived — otherwise falls back to the page's own server-rendered
+  // snapshot, so this line doesn't sit blank while the connection opens.
+  const approvedCount = submitProgress?.approvedWaitingCount ?? (statusCounts?.approved || 0);
+  const pendingReviewCount = submitProgress?.pendingReviewCount ?? (statusCounts?.pending_review || 0);
   const submitRules = [
     {
       label: defaultResume ? `Default resume set (${defaultResume.label || defaultResume.fileName})` : "No default resume uploaded — submissions can't attach one",
@@ -555,6 +651,7 @@ export default function OverviewPanel({
             worker={submitWorker} rules={submitRules} saving={saving} now={now}
             onToggle={onToggleWorker} onViewHistory={() => setHistoryModal("submit")}
             onViewQueue={() => setHistoryModal("submitQueue")}
+            liveProgress={submitProgress}
           />
         </div>
       </section>

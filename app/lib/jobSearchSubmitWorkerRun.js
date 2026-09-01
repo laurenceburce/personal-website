@@ -17,6 +17,9 @@ import { evaluateAutoApply } from "./jobSearchAutoApply.js";
 import { insertApplicationAttempt } from "./jobSearchApplicationStore.js";
 import { listPostingsByStatus, updatePostingScore } from "./jobSearchPostingsStore.js";
 import { getDefaultResume, getFindSettings, getProfile, getResumeById } from "./jobSearchSettingsStore.js";
+import {
+  beginProgressItem, finishProgressItem, finishSubmitRun, setAutoApplyTotal, setSubmittingTotal, startSubmitRun
+} from "./jobSearchSubmitProgressStore.js";
 import { recordSubmitRun } from "./jobSearchSubmitRunStore.js";
 import { isWorkerEnabled, recordHeartbeat, recordWorkerRunResult } from "./jobSearchWorkerStatusStore.js";
 
@@ -73,11 +76,16 @@ export async function runSubmitWorkerPass() {
   let autoSkippedCount = 0;
   let needsRerun = false;
 
+  // Best-effort throughout — see jobSearchSubmitProgressStore.js. Never let
+  // a live-progress write fail the real work it's just narrating.
+  await startSubmitRun().catch((error) => console.error("[submit-progress] startSubmitRun failed:", error?.message || error));
+
   // Highest-match jobs get submitted first when there's a backlog bigger than
   // one run's limit.
   const approved = await listPostingsByStatus("approved", { limit: SUBMIT_BATCH_LIMIT, orderBy: "score" });
   console.log(`Found ${approved.length} approved posting(s) to submit.`);
   if (approved.length >= SUBMIT_BATCH_LIMIT) needsRerun = true;
+  await setSubmittingTotal(approved.length).catch(() => {});
 
   if (approved.length > 0) {
     const profile = await getProfile();
@@ -90,6 +98,11 @@ export async function runSubmitWorkerPass() {
       // outside every adapter's own try/catch, or a transient DB error on the
       // insert/update below) would throw uncaught and abort the whole run,
       // leaving every remaining approved posting this run untouched.
+      await beginProgressItem({
+        postingId: posting.id, title: posting.title, companyName: posting.companyName,
+        atsType: posting.atsType, phase: "submitting"
+      }).catch(() => {});
+
       try {
         // A discovery-sourced posting is always tagged 'external' until
         // something resolves its real ATS — this is that resolution, shared
@@ -177,8 +190,10 @@ export async function runSubmitWorkerPass() {
           manualReviewFields: manualReviewFieldsForPosting
         });
         console.log(`  -> ${applicationStatus}`);
+        await finishProgressItem({ postingId: posting.id, status: applicationStatus }).catch(() => {});
       } catch (error) {
         console.error(`  -> failed to process "${posting.title}" at ${posting.companyName}:`, error?.message || error);
+        await finishProgressItem({ postingId: posting.id, status: "failed" }).catch(() => {});
       }
     }
   }
@@ -195,10 +210,16 @@ export async function runSubmitWorkerPass() {
     pendingReviewCount = pendingReview.length;
     console.log(`Auto-apply enabled — evaluating ${pendingReview.length} pending-review posting(s).`);
     if (pendingReview.length >= SUBMIT_BATCH_LIMIT) needsRerun = true;
+    await setAutoApplyTotal(pendingReview.length).catch(() => {});
 
     if (pendingReview.length > 0) {
       const profile = await getProfile();
       for (const posting of pendingReview) {
+        await beginProgressItem({
+          postingId: posting.id, title: posting.title, companyName: posting.companyName,
+          atsType: posting.atsType, phase: "auto_apply"
+        }).catch(() => {});
+
         try {
           const result = await evaluateAutoApply({ posting, findSettings, profile });
           if (result.status === "submitted") autoAppliedCount += 1;
@@ -224,15 +245,19 @@ export async function runSubmitWorkerPass() {
           }
           await updatePostingScore(posting.id, postingPatch);
           console.log(`  auto-apply "${posting.title}" at ${posting.companyName} -> ${result.status}${result.skipReason ? ` (${result.skipReason})` : ""}`);
+          await finishProgressItem({ postingId: posting.id, status: result.status }).catch(() => {});
         } catch (error) {
           // Never lose a posting that already earned pending_review over an
           // auto-apply bug/infra error — worst case, a human sees it in the
           // review queue exactly like auto-apply was never on.
           console.error(`  auto-apply failed for "${posting.title}" at ${posting.companyName}:`, error?.message || error);
+          await finishProgressItem({ postingId: posting.id, status: "failed" }).catch(() => {});
         }
       }
     }
   }
+
+  await finishSubmitRun().catch((error) => console.error("[submit-progress] finishSubmitRun failed:", error?.message || error));
 
   await recordSubmitRun({
     approvedTotal: approved.length, submittedCount, manualReviewCount, failedCount,

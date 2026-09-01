@@ -8144,6 +8144,65 @@ html[data-theme="light"] .auth-feature-gate {
   gap: 8px;
 }
 
+/* ── Submit worker live progress ── */
+
+.job-search-live-progress {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  border-radius: var(--radius-md);
+  background: rgba(56, 189, 248, 0.05);
+}
+
+.job-search-live-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-search-progress-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  overflow: hidden;
+}
+
+.job-search-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+.job-search-live-log-wrap summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.job-search-live-log {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.job-search-live-log li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(148, 163, 184, 0.06);
+  font-size: 0.8rem;
+}
+
 .job-search-ats-count {
   display: inline-block;
   margin: 0 6px 4px 0;
