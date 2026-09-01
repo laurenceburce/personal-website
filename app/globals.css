@@ -7373,12 +7373,33 @@ html[data-theme="light"] .auth-feature-gate {
 }
 
 .job-search-notif-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 4px 8px 8px;
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.job-search-notif-clear-btn {
+  min-height: auto !important;
+  padding: 2px 8px !important;
+  border-color: rgba(148, 163, 184, 0.25);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.job-search-notif-clear-btn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.14) !important;
+  border-color: rgba(148, 163, 184, 0.4) !important;
 }
 
 .job-search-notif-list {
@@ -8314,6 +8335,19 @@ html[data-theme="light"] .auth-feature-gate {
 .job-search-badge-success { background: rgba(52, 211, 153, 0.18); color: #6ee7b7; }
 .job-search-badge-warn { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
 .job-search-badge-danger { background: rgba(251, 113, 133, 0.18); color: #fca5a5; }
+.job-search-badge-new { background: rgba(56, 189, 248, 0.24); color: #7dd3fc; }
+
+/* Row containing something the user hasn't seen yet (a newly-applied
+   application, a newly-found posting) — a subtle full-row tint in addition
+   to the "New" badge itself, so it's noticeable scanning down the list, not
+   just on close reading of each row. */
+.job-search-row-new {
+  background: rgba(56, 189, 248, 0.045);
+}
+
+.job-search-row-new:hover {
+  background: rgba(56, 189, 248, 0.09);
+}
 
 /* ── Modal ── */
 

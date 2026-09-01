@@ -16,6 +16,13 @@ const POLL_MS = 10000;
 // read state at all.
 const LAST_SEEN_KEY = "job-search-notifications-seen-at";
 
+// "Clear" doesn't delete anything server-side (there's nothing to delete —
+// these are derived, see jobSearchNotifications.js) — it just remembers a
+// cutoff so already-dealt-with notifications stop showing up in the
+// dropdown. Anything with a ranAt AFTER this cutoff (a genuinely new run)
+// reappears normally.
+const CLEARED_BEFORE_KEY = "job-search-notifications-cleared-before";
+
 function timeAgo(value) {
   if (!value) return "—";
   const ms = Date.now() - new Date(value).getTime();
@@ -42,6 +49,22 @@ function writeLastSeen(value) {
   } catch {
     // Private-browsing/storage-blocked — the badge just won't remember
     // across visits, not worth surfacing as an error over.
+  }
+}
+
+function readClearedBefore() {
+  try {
+    return Number(localStorage.getItem(CLEARED_BEFORE_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeClearedBefore(value) {
+  try {
+    localStorage.setItem(CLEARED_BEFORE_KEY, String(value));
+  } catch {
+    // Private-browsing/storage-blocked — Clear just won't stick across visits.
   }
 }
 
@@ -139,12 +162,14 @@ export default function NotificationsBell() {
   const [notifications, setNotifications] = useState([]);
   const [open, setOpen] = useState(false);
   const [lastSeen, setLastSeen] = useState(0);
+  const [clearedBefore, setClearedBefore] = useState(0);
   // null | { notification, loading, data, error }
   const [detail, setDetail] = useState(null);
   const wrapRef = useRef(null);
 
   useEffect(() => {
     setLastSeen(readLastSeen());
+    setClearedBefore(readClearedBefore());
   }, []);
 
   useEffect(() => {
@@ -179,7 +204,11 @@ export default function NotificationsBell() {
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [open]);
 
-  const unreadCount = notifications.filter((n) => new Date(n.ranAt).getTime() > lastSeen).length;
+  // Cleared notifications drop out of the list entirely (not just "read") —
+  // everything downstream (the dropdown, the unread count) works off this,
+  // not the raw poll result.
+  const visibleNotifications = notifications.filter((n) => new Date(n.ranAt).getTime() > clearedBefore);
+  const unreadCount = visibleNotifications.filter((n) => new Date(n.ranAt).getTime() > lastSeen).length;
 
   // Opening the dropdown is what marks everything currently in it as seen —
   // same convention as a typical bell icon (Gmail/Slack-style), not a
@@ -187,13 +216,24 @@ export default function NotificationsBell() {
   function toggleOpen() {
     setOpen((wasOpen) => {
       const willOpen = !wasOpen;
-      if (willOpen && notifications.length > 0) {
-        const newest = Math.max(...notifications.map((n) => new Date(n.ranAt).getTime()));
+      if (willOpen && visibleNotifications.length > 0) {
+        const newest = Math.max(...visibleNotifications.map((n) => new Date(n.ranAt).getTime()));
         writeLastSeen(newest);
         setLastSeen(newest);
       }
       return willOpen;
     });
+  }
+
+  // Everything currently shown moves behind the cutoff — a notification for
+  // a run that hasn't happened yet obviously can't be in `notifications` yet,
+  // so this can never accidentally hide something that shows up later.
+  function handleClear() {
+    const newest = visibleNotifications.length > 0
+      ? Math.max(...visibleNotifications.map((n) => new Date(n.ranAt).getTime()))
+      : Date.now();
+    writeClearedBefore(newest);
+    setClearedBefore(newest);
   }
 
   async function openDetail(notification) {
@@ -227,12 +267,17 @@ export default function NotificationsBell() {
 
       {open ? (
         <div className="job-search-notif-dropdown">
-          <div className="job-search-notif-dropdown-header">Latest updates</div>
-          {notifications.length === 0 ? (
+          <div className="job-search-notif-dropdown-header">
+            <span>Latest updates</span>
+            {visibleNotifications.length > 0 ? (
+              <button type="button" className="job-search-notif-clear-btn" onClick={handleClear}>Clear</button>
+            ) : null}
+          </div>
+          {visibleNotifications.length === 0 ? (
             <p className="job-search-empty">Nothing to report yet.</p>
           ) : (
             <ul className="job-search-notif-list">
-              {notifications.map((n) => (
+              {visibleNotifications.map((n) => (
                 <li key={n.id}>
                   <button type="button" className="job-search-notif-item" onClick={() => openDetail(n)}>
                     <span>{n.message}</span>

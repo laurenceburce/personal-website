@@ -3,7 +3,12 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
 import { manualOverrideCandidates, normalizeLabel, resolveStandardFieldCandidates, resolveWorkAuthValue } from "../lib/jobSearchAdapters/profileMapping";
-import { atsTypeLabel, Badge, Field, scamBadgeTone } from "./JobSearchUi";
+import { atsTypeLabel, Badge, Field, scamBadgeTone, useIsNewSince } from "./JobSearchUi";
+
+// "Have you seen this posting before" cutoff for the "New" highlight —
+// keyed off createdAt (when it was first discovered), not postedAt (the
+// employer's own posting date, which can be old for a job only just found).
+const NEW_SINCE_KEY = "job-search-review-last-seen";
 
 function formatDate(value) {
   if (!value) return "—";
@@ -47,10 +52,11 @@ const REASON_PREFIXES = {
   unsupported_ats: "Submission failed"
 };
 
-function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, onOpenManualAnswer, saving }) {
+function ReviewQueueRow({ posting, selected, isNew, onToggleSelect, onApprove, onReject, onRescore, onMarkApplied, onOpenManualAnswer, saving }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState("");
   const isBusy = Boolean(saving);
+  const postingIsNew = isNew(posting.createdAt);
   const scores = posting.llmDimensionScores?.scores || {};
   const reasoning = posting.llmDimensionScores?.reasoning || {};
   // "Approve" only makes sense the first time — for anything that already
@@ -66,12 +72,13 @@ function ReviewQueueRow({ posting, selected, onToggleSelect, onApprove, onReject
 
   return (
     <>
-      <tr className="job-search-row" onClick={() => setExpanded((v) => !v)}>
+      <tr className={`job-search-row${postingIsNew ? " job-search-row-new" : ""}`} onClick={() => setExpanded((v) => !v)}>
         <td onClick={(e) => e.stopPropagation()}>
           <input type="checkbox" checked={selected} onChange={() => onToggleSelect(posting.id)} />
         </td>
         <td>
           <strong>{posting.title}</strong>
+          {postingIsNew ? <>{" "}<Badge text="New" tone="new" /></> : null}
           <div className="job-search-cell-note">{posting.companyName} · {posting.locationText || posting.remoteType}</div>
         </td>
         <td>{posting.llmOverallScore != null ? posting.llmOverallScore.toFixed(1) : "—"}</td>
@@ -455,6 +462,7 @@ export default function ReviewQueueTable({
 }) {
   const [selected, setSelected] = useState(new Set());
   const [view, setView] = useState("all");
+  const isNew = useIsNewSince(NEW_SINCE_KEY);
   // The full posting object (not just an id) — its manualReviewFields are
   // only ever present on the needs_manual_review-status objects reaching this
   // component, and storing the object directly avoids a second lookup keyed
@@ -595,6 +603,7 @@ export default function ReviewQueueTable({
                   key={posting.id}
                   posting={posting}
                   selected={selected.has(posting.id)}
+                  isNew={isNew}
                   onToggleSelect={toggleSelect}
                   onApprove={onApprove}
                   onReject={onReject}

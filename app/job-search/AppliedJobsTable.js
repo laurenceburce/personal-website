@@ -2,7 +2,11 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
-import { atsTypeLabel, Badge, Metric } from "./JobSearchUi";
+import { atsTypeLabel, Badge, Metric, useIsNewSince } from "./JobSearchUi";
+
+// Distinct from DELETE_COUNTDOWN_MS below — this is the "have you seen this
+// row before" cutoff (see useIsNewSince's own comment).
+const NEW_SINCE_KEY = "job-search-applied-last-seen";
 
 // How long a row sits in "Deleting in Ns…" before the delete actually fires
 // — long enough to catch a misclick and hit Undo, short enough that it
@@ -37,7 +41,7 @@ function timeAgo(value) {
 // manual review, or hit an unsupported ATS shows up in Review instead
 // (where it's actually actionable: retry, reject, mark applied by hand),
 // not buried here alongside real successes. See ReviewQueueTable.js.
-function AppliedJobRow({ application, saving, onUpdateNote, onDelete }) {
+function AppliedJobRow({ application, saving, isNew, onUpdateNote, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [note, setNote] = useState(application.userNote || "");
   const [deleteAt, setDeleteAt] = useState(null);
@@ -47,6 +51,7 @@ function AppliedJobRow({ application, saving, onUpdateNote, onDelete }) {
   const pendingDelete = deleteAt != null;
   const answers = application.submittedAnswers || {};
   const scoreSnapshot = application.scoreSnapshot || {};
+  const applicationIsNew = isNew(application.submittedAt || application.attemptedAt);
 
   // Only ticks while a delete is actually pending, so idle rows don't run a
   // timer for nothing.
@@ -88,12 +93,13 @@ function AppliedJobRow({ application, saving, onUpdateNote, onDelete }) {
   return (
     <>
       <tr
-        className={`job-search-row${pendingDelete ? " job-search-row-pending-delete" : ""}`}
+        className={`job-search-row${pendingDelete ? " job-search-row-pending-delete" : ""}${applicationIsNew && !pendingDelete ? " job-search-row-new" : ""}`}
         onClick={() => { if (!pendingDelete) setExpanded((v) => !v); }}
       >
         <td>
           <span className={`job-search-row-caret${expanded ? " job-search-row-caret-open" : ""}`} aria-hidden="true">▸</span>
           <strong>{application.jobTitle}</strong>
+          {applicationIsNew ? <>{" "}<Badge text="New" tone="new" /></> : null}
           <div className="job-search-cell-note">{application.companyName} · {application.atsType}</div>
         </td>
         <td>
@@ -183,6 +189,7 @@ const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 export default function AppliedJobsTable({ applications, saving, onUpdateNote, onDelete }) {
   const [view, setView] = useState("all");
+  const isNew = useIsNewSince(NEW_SINCE_KEY);
   const successfulApplications = applications.filter((a) => a.submissionStatus === "submitted");
   const activeView = APPLIED_VIEWS.find((v) => v.key === view) || APPLIED_VIEWS[0];
   const list = successfulApplications.filter(activeView.match);
@@ -245,7 +252,7 @@ export default function AppliedJobsTable({ applications, saving, onUpdateNote, o
             </thead>
             <tbody>
               {list.map((application) => (
-                <AppliedJobRow key={application.id} application={application} saving={saving} onUpdateNote={onUpdateNote} onDelete={onDelete} />
+                <AppliedJobRow key={application.id} application={application} saving={saving} isNew={isNew} onUpdateNote={onUpdateNote} onDelete={onDelete} />
               ))}
             </tbody>
           </table>

@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+
 // Small presentational helpers shared across the job-search panels/tables.
 // Finance keeps equivalents inline since it's one 2600-line file; job-search is
 // deliberately split into several smaller files, so these live in one shared spot.
@@ -56,6 +58,49 @@ export function Modal({ title, hint, onClose, children, wide = true }) {
       </div>
     </div>
   );
+}
+
+// Powers the "New" badge on Applied Jobs / Review Queue rows — a row is
+// "new" if its timestamp falls after the LAST time this tab was open, not
+// the current moment (which would make everything stop being new the
+// instant you look at it). The threshold is frozen once per mount (read
+// from localStorage before the first render) and only overwritten with
+// "now" afterward, in an effect — so this visit still shows what arrived
+// since the last one, and only the NEXT visit's threshold moves forward.
+// On a genuinely first-ever visit (nothing stored yet) it defaults to "now"
+// rather than 0, so a fresh install doesn't highlight the entire existing
+// backlog as new.
+//
+// Storage-only, same reasoning as NotificationsBell's own read state — see
+// jobSearchNotifications.js's comment on why none of this lives server-side.
+export function useIsNewSince(storageKey) {
+  const [threshold] = useState(() => {
+    try {
+      const stored = localStorage.getItem(storageKey);
+      return stored ? Number(stored) || 0 : Date.now();
+    } catch {
+      return Date.now();
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, String(Date.now()));
+    } catch {
+      // Private-browsing/storage-blocked — the highlight just won't persist
+      // across visits, not worth surfacing as an error over.
+    }
+    // Deliberately no cleanup/dependency beyond the key itself — writing on
+    // every render would keep pushing the threshold forward while the tab
+    // stays open, making rows go "not new" mid-session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
+
+  return (value) => {
+    if (!value) return false;
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) && ms > threshold;
+  };
 }
 
 export function scamBadgeTone(level) {
