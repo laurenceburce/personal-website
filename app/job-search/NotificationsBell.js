@@ -3,10 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { atsTypeLabel, Badge, Modal } from "./JobSearchUi";
 
-// How often to check for new notifications — same idea as OverviewPanel's
-// WORKER_STATUS_POLL_MS, just a bit longer since "a new run happened" is a
-// coarser signal than worker heartbeats and doesn't need sub-minute latency.
-const POLL_MS = 45000;
+// How often to check for new notifications. Originally 45s on the theory
+// that "a new run happened" doesn't need sub-minute latency — in practice
+// that read as the bell being stuck/delayed next to everything else in this
+// dashboard now polling every 2-20s, so this matches that faster cadence.
+// Still cheap either way: two small LIMIT-30 reads, no joins (see
+// jobSearchNotifications.js).
+const POLL_MS = 10000;
 
 // Read/unread lives in the browser, not the server — see
 // jobSearchNotifications.js's own comment on why this feed has no DB-backed
