@@ -39,6 +39,25 @@ export function Badge({ text, tone = "neutral" }) {
   return <span className={`job-search-badge job-search-badge-${tone}`}>{text}</span>;
 }
 
+// Shared modal shell — originally lived only in OverviewPanel.js (as
+// HistoryModal) for the worker Activity History popups; pulled out here once
+// NotificationsBell.js needed the identical backdrop/header/close pattern for
+// its own detail popups, so both stay visually identical for free.
+export function Modal({ title, hint, onClose, children, wide = true }) {
+  return (
+    <div className="job-search-modal-backdrop" onClick={onClose}>
+      <div className={`job-search-modal${wide ? " job-search-modal-wide" : ""}`} onClick={(e) => e.stopPropagation()}>
+        <div className="job-search-modal-header">
+          <h2>{title}</h2>
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+        {hint ? <p className="job-search-panel-hint">{hint}</p> : null}
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function scamBadgeTone(level) {
   if (level === "high") return "danger";
   if (level === "medium") return "warn";

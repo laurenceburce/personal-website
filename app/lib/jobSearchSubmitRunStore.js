@@ -1,4 +1,5 @@
-import { ensureJobSearchSchema, requirePool } from "./jobSearchDb.js";
+import { cleanId, ensureJobSearchSchema, requirePool } from "./jobSearchDb.js";
+import { mapApplicationRow } from "./jobSearchApplicationStore.js";
 
 // Same append-only-history reasoning as jobSearchDiscoveryRunStore.js — a
 // run row is small (no blobs) and short-lived in usefulness, so it's
@@ -73,4 +74,41 @@ export async function listRecentSubmitRuns({ limit = 20 } = {}) {
     [Number(limit) || 20]
   );
   return rows.map(mapRow);
+}
+
+// Powers the notification bell's "Successfully applied to X jobs" / "X
+// application(s) failed" popups (see NotificationsBell.js) — same on-demand
+// reconstruction as jobSearchDiscoveryRunStore's getDiscoveryRunDetails,
+// since this table only ever stores a run's aggregate counts (see
+// recordSubmitRun above), never the individual attempts themselves.
+// Windowed by attempted_at (not submitted_at, which is null for anything
+// that didn't succeed) between the previous run and this one.
+export async function getSubmitRunDetails(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const runId = cleanId(id, "Submit run");
+
+  const [runRows] = await pool.query("SELECT * FROM job_search_submit_runs WHERE id = ? LIMIT 1", [runId]);
+  if (!runRows[0]) return null;
+  const run = mapRow(runRows[0]);
+
+  const [prevRunRows] = await pool.query(
+    "SELECT ran_at FROM job_search_submit_runs WHERE ran_at < ? ORDER BY ran_at DESC LIMIT 1",
+    [run.ranAt]
+  );
+  const windowStart = prevRunRows[0]?.ran_at || new Date(new Date(run.ranAt).getTime() - 24 * 60 * 60 * 1000);
+  const windowEnd = run.ranAt;
+
+  const [appRows] = await pool.query(
+    `SELECT a.*, p.status AS posting_status FROM job_search_applications a
+     LEFT JOIN job_search_postings p ON p.id = a.posting_id
+     WHERE a.attempted_at > ? AND a.attempted_at <= ? ORDER BY a.attempted_at DESC LIMIT 500`,
+    [windowStart, windowEnd]
+  );
+  const applications = appRows.map(mapApplicationRow);
+
+  return {
+    run,
+    submitted: applications.filter((a) => a.submissionStatus === "submitted"),
+    failed: applications.filter((a) => a.submissionStatus === "failed")
+  };
 }

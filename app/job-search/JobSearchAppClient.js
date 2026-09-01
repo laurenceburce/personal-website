@@ -7,6 +7,7 @@ import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
 import HeldSubmissionsPanel from "./HeldSubmissionsPanel";
+import NotificationsBell from "./NotificationsBell";
 import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
 import ProfileSettingsPanel from "./ProfileSettingsPanel";
@@ -121,7 +122,10 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
     <div className="job-search-app">
       <header className="job-search-topbar">
         <h1>Job Search</h1>
-        <button type="button" className="job-search-header-home" onClick={() => router.push("/")}>Home</button>
+        <div className="job-search-topbar-actions">
+          <NotificationsBell />
+          <button type="button" className="job-search-header-home" onClick={() => router.push("/")}>Home</button>
+        </div>
       </header>
 
       <nav className="job-search-tabs">

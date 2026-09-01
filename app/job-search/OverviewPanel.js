@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { atsTypeLabel, Badge, Metric } from "./JobSearchUi";
+import { atsTypeLabel, Badge, Metric, Modal } from "./JobSearchUi";
 import PushNotificationsControl from "./PushNotificationsControl";
 
 // How often the Workers panel re-fetches worker status from the server so
@@ -390,21 +390,6 @@ function SubmitQueueTable({ approvedWaiting, autoApplyQueue }) {
   );
 }
 
-function HistoryModal({ title, hint, onClose, children }) {
-  return (
-    <div className="job-search-modal-backdrop" onClick={onClose}>
-      <div className="job-search-modal job-search-modal-wide" onClick={(e) => e.stopPropagation()}>
-        <div className="job-search-modal-header">
-          <h2>{title}</h2>
-          <button type="button" onClick={onClose}>Close</button>
-        </div>
-        {hint ? <p className="job-search-panel-hint">{hint}</p> : null}
-        {children}
-      </div>
-    </div>
-  );
-}
-
 export default function OverviewPanel({
   findSettings,
   statusCounts,
@@ -615,7 +600,7 @@ export default function OverviewPanel({
       </section>
 
       {historyModal === "poll" ? (
-        <HistoryModal
+        <Modal
           title={runDetails ? "Poll Worker — Run Details" : "Poll Worker — Recent Runs"}
           hint={runDetails
             ? null
@@ -626,11 +611,11 @@ export default function OverviewPanel({
           {runDetails
             ? <DiscoveryRunDetail state={runDetails} onBack={() => setRunDetails(null)} />
             : <DiscoveryRunsTable runs={discoveryRuns} onViewDetails={viewRunDetails} />}
-        </HistoryModal>
+        </Modal>
       ) : null}
 
       {historyModal === "submit" ? (
-        <HistoryModal
+        <Modal
           title="Submit Worker — Recent Runs"
           hint={"One row per submit-worker run: postings approved by hand and actually processed (submitted/failed/"
             + "needs manual review), plus — when auto-apply is enabled — how many pending-review postings it "
@@ -638,11 +623,11 @@ export default function OverviewPanel({
           onClose={() => setHistoryModal(null)}
         >
           <SubmitRunsTable runs={submitRuns} />
-        </HistoryModal>
+        </Modal>
       ) : null}
 
       {historyModal === "submitQueue" ? (
-        <HistoryModal
+        <Modal
           title="Submit Worker — Current Queue"
           hint={"Same data as Review's own \"In Queue\" tab, shown here for quick access. The auto-apply portion is a "
             + "preview, not a guarantee — a posting can still get skipped for a reason only discoverable by "
@@ -650,7 +635,7 @@ export default function OverviewPanel({
           onClose={() => setHistoryModal(null)}
         >
           <SubmitQueueTable approvedWaiting={approvedWaiting} autoApplyQueue={autoApplyQueue} />
-        </HistoryModal>
+        </Modal>
       ) : null}
     </>
   );

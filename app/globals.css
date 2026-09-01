@@ -7266,6 +7266,107 @@ html[data-theme="light"] .auth-feature-gate {
   font-size: 0.78rem;
 }
 
+.job-search-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── Notification bell ── */
+
+.job-search-notif-wrap {
+  position: relative;
+}
+
+.job-search-notif-btn {
+  position: relative;
+  width: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  padding: 0 !important;
+  border-radius: 999px;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.job-search-notif-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border: 2px solid var(--surface-solid);
+  border-radius: 999px;
+  background: #fb7185;
+  color: #240509;
+  font-size: 0.64rem;
+  font-weight: 900;
+}
+
+.job-search-notif-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  width: min(360px, 88vw);
+  max-height: 420px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.job-search-notif-dropdown-header {
+  padding: 4px 8px 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.job-search-notif-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.job-search-notif-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: auto;
+  padding: 9px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.job-search-notif-item:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.1) !important;
+  border-color: transparent !important;
+}
+
+.job-search-notif-item-time {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
 .job-search-tabs {
   display: flex;
   flex-wrap: wrap;
