@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-const FRAME_POLL_MS = 500;
-const MOUSE_MOVE_THROTTLE_MS = 60;
+const MOUSE_MOVE_THROTTLE_MS = 30;
 // Relayed events are buffered locally and flushed as one batched request on
 // this cadence, instead of one HTTP round-trip per event — under any real
 // network latency (this call crosses browser -> web app -> the submit-
@@ -13,7 +12,7 @@ const MOUSE_MOVE_THROTTLE_MS = 60;
 // compounding with every event. The worker's /live/:id/input already
 // accepted a batched {events:[...]} body from the start; this is what
 // actually uses it.
-const FLUSH_INTERVAL_MS = 50;
+const FLUSH_INTERVAL_MS = 25;
 
 async function postInputBatch(challengeId, events) {
   if (events.length === 0) return;
@@ -24,21 +23,29 @@ async function postInputBatch(challengeId, events) {
   }).catch(() => {});
 }
 
-// Polls a live frame of the paused employer page (~2fps — see
-// heldChallengeRelay.js's own comment on why this is polling, not a true
-// video stream) and relays clicks/drags/keystrokes back onto it. Coordinates
-// are translated from the rendered <img>'s on-screen size to the real page's
-// viewport size (reported via response headers on the first frame) so a
-// click lands where it visually appears to, regardless of how the modal
-// scales the image.
+function collapseInputEvents(events) {
+  const collapsed = [];
+  for (const evt of events) {
+    if (evt.type === "mouseMove" && collapsed.length > 0 && collapsed[collapsed.length - 1].type === "mouseMove") {
+      collapsed[collapsed.length - 1] = evt;
+    } else {
+      collapsed.push(evt);
+    }
+  }
+  return collapsed;
+}
+
+// Displays the paused employer page as an MJPEG stream and relays clicks/
+// drags/keystrokes back onto it. Coordinates are translated from the rendered
+// <img>'s on-screen size to the stream's natural image size, which matches
+// the real page viewport captured by the submit worker.
 export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve }) {
   const imgRef = useRef(null);
-  const [frameSrc, setFrameSrc] = useState("");
-  const [viewport, setViewport] = useState(null);
+  const [streamSrc, setStreamSrc] = useState("");
+  const [frameLoaded, setFrameLoaded] = useState(false);
   const [error, setError] = useState("");
   const lastMoveSentRef = useRef(0);
   const isPressedRef = useRef(false);
-  const objectUrlRef = useRef("");
   // Events queued here are plain synchronous pushes — the actual network
   // send happens on the flush interval below, batched and serialized
   // (awaiting the previous flush's request) so requests can never overlap
@@ -50,91 +57,42 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
     bufferRef.current.push(event);
   }
 
-  // Self-paced, not a fixed setInterval — each fetch is awaited before the
-  // next is scheduled, so a slow response delays the NEXT frame instead of
-  // piling up concurrent in-flight requests (which, since they all compete
-  // for the same CDP session on the worker, would only make every frame
-  // arrive later and later).
   useEffect(() => {
-    let cancelled = false;
-    let timer = null;
+    setFrameLoaded(false);
+    setError("");
+    setStreamSrc(`/api/job-search/live-sessions/${challenge.id}/stream?t=${Date.now()}`);
+  }, [challenge.id]);
 
-    async function pollFrame() {
-      try {
-        const response = await fetch(`/api/job-search/live-sessions/${challenge.id}/frame`, { cache: "no-store" });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          throw new Error(payload?.error || `Frame request failed (${response.status}).`);
-        }
-        const width = Number(response.headers.get("x-live-viewport-width")) || null;
-        const height = Number(response.headers.get("x-live-viewport-height")) || null;
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = url;
-        setFrameSrc(url);
-        if (width && height) setViewport((current) => current || { width, height });
-        setError("");
-      } catch (err) {
-        if (!cancelled) setError(err?.message || "Failed to load the live view.");
-      }
-    }
-
-    async function loop() {
-      await pollFrame();
-      if (!cancelled) timer = setTimeout(loop, FRAME_POLL_MS);
-    }
-
-    loop();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
-    };
+  const flushInputBuffer = useCallback(() => {
+    if (bufferRef.current.length === 0) return;
+    const raw = bufferRef.current;
+    bufferRef.current = [];
+    const collapsed = collapseInputEvents(raw);
+    sendQueueRef.current = sendQueueRef.current
+      .then(() => postInputBatch(challenge.id, collapsed))
+      .catch(() => {});
   }, [challenge.id]);
 
   // Batches whatever queued up since the last tick into one request. Runs
-  // independently of the frame poll above (different cadence, different
+  // independently of the image stream above (different cadence, different
   // purpose) but shares the same "await before sending the next one" posture
   // so a slow input request can't pile up either.
   useEffect(() => {
     const flush = setInterval(() => {
-      if (bufferRef.current.length === 0) return;
-      const raw = bufferRef.current;
-      bufferRef.current = [];
-
-      // Consecutive mouseMove events collapse to just the latest position —
-      // during a fast drag, replaying every intermediate point isn't needed
-      // for correctness and is exactly what was queuing up and falling
-      // behind under real latency. mouseDown/mouseUp/wheel/key events are
-      // never collapsed or reordered.
-      const collapsed = [];
-      for (const evt of raw) {
-        if (evt.type === "mouseMove" && collapsed.length > 0 && collapsed[collapsed.length - 1].type === "mouseMove") {
-          collapsed[collapsed.length - 1] = evt;
-        } else {
-          collapsed.push(evt);
-        }
-      }
-
-      sendQueueRef.current = sendQueueRef.current
-        .then(() => postInputBatch(challenge.id, collapsed))
-        .catch(() => {});
+      flushInputBuffer();
     }, FLUSH_INTERVAL_MS);
 
     return () => clearInterval(flush);
-  }, [challenge.id]);
+  }, [challenge.id, flushInputBuffer]);
 
   function toRealCoords(clientX, clientY) {
     const el = imgRef.current;
-    if (!el || !viewport) return { x: 0, y: 0 };
+    if (!el) return { x: 0, y: 0 };
     const rect = el.getBoundingClientRect();
-    const x = ((clientX - rect.left) / rect.width) * viewport.width;
-    const y = ((clientY - rect.top) / rect.height) * viewport.height;
+    const width = el.naturalWidth || rect.width || 1;
+    const height = el.naturalHeight || rect.height || 1;
+    const x = ((clientX - rect.left) / rect.width) * width;
+    const y = ((clientY - rect.top) / rect.height) * height;
     return { x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
   }
 
@@ -162,12 +120,14 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
     isPressedRef.current = false;
     const { x, y } = toRealCoords(event.clientX, event.clientY);
     queueInput({ type: "mouseUp", x, y, button: "left" });
+    flushInputBuffer();
   }
 
   function handleWheel(event) {
     event.preventDefault();
     const { x, y } = toRealCoords(event.clientX, event.clientY);
     queueInput({ type: "wheel", x, y, deltaX: event.deltaX, deltaY: event.deltaY });
+    flushInputBuffer();
   }
 
   function handleKeyDown(event) {
@@ -183,6 +143,7 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
   function handleKeyUp(event) {
     event.preventDefault();
     queueInput({ type: "keyUp", key: event.key });
+    flushInputBuffer();
   }
 
   const isBusy = Boolean(saving);
@@ -216,11 +177,22 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
           onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
         >
-          {frameSrc ? (
-            <img ref={imgRef} src={frameSrc} alt="Live employer application page" draggable={false} />
-          ) : (
+          {streamSrc ? (
+            <img
+              ref={imgRef}
+              src={streamSrc}
+              alt="Live employer application page"
+              draggable={false}
+              onLoad={() => {
+                setFrameLoaded(true);
+                setError("");
+              }}
+              onError={() => setError("Live stream disconnected. Close and reopen Solve Now if the session is still waiting.")}
+            />
+          ) : null}
+          {!frameLoaded ? (
             <div className="job-search-live-loading">Connecting…</div>
-          )}
+          ) : null}
         </div>
 
         <div className="job-search-live-actions">

@@ -6,7 +6,7 @@
 // (job_search_security_challenges, challenge_kind='captcha') is the
 // cross-process handle both sides agree on; this Map is what lets the
 // worker's own HTTP handler (added in job-search-submit-worker-server.mjs
-// for /live/:id/frame and /live/:id/input) find the right session without
+// for /live/:id/frame, /live/:id/stream, and /live/:id/input) find the right session without
 // threading the CDP session through every layer between there and
 // heldChallengeRelay.js's resolveHeldChallenge(), which is the only thing
 // that ever calls register()/unregister().

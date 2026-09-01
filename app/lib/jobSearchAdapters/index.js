@@ -1,16 +1,18 @@
 import { submitAshbyApplication } from "./ashby.js";
 import { submitBreezyApplication } from "./breezy.js";
 import { submitGreenhouseApplication } from "./greenhouse.js";
+import { submitLeverApplication } from "./lever.js";
 import { submitOracleFusionApplication } from "./oracleFusion.js";
 import { submitPersonioApplication } from "./personio.js";
+import { submitRecruiteeApplication } from "./recruitee.js";
 import { submitWorkableApplication } from "./workable.js";
-// Lever remains polling-only. Its public postings API works, but the apply
-// form is CAPTCHA-gated, so no submission adapter is registered here.
 
 const ADAPTERS = {
   greenhouse: submitGreenhouseApplication,
+  lever: submitLeverApplication,
   ashby: submitAshbyApplication,
   workable: submitWorkableApplication,
+  recruitee: submitRecruiteeApplication,
   personio: submitPersonioApplication,
   breezy: submitBreezyApplication,
   oracle_fusion: submitOracleFusionApplication

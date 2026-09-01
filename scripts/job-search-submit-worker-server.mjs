@@ -38,6 +38,8 @@ if (!isJobSearchDbConfigured()) {
 }
 
 const PORT = Number(process.env.JOB_SEARCH_SUBMIT_WORKER_PORT || 8080);
+const LIVE_FRAME_INTERVAL_MS = Math.max(100, Number(process.env.JOB_SEARCH_LIVE_FRAME_INTERVAL_MS || 250));
+const LIVE_FRAME_JPEG_QUALITY = Math.max(25, Math.min(85, Number(process.env.JOB_SEARCH_LIVE_FRAME_JPEG_QUALITY || 45)));
 // Shared secret the caller must present — Railway's private networking
 // (<service>.railway.internal) already isn't reachable from the public
 // internet by default, so this is defense in depth, not the only thing
@@ -130,6 +132,10 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function hasValidTriggerSecret(req) {
   if (!TRIGGER_SECRET) return true;
   return (req.headers["x-trigger-secret"] || "") === TRIGGER_SECRET;
@@ -142,6 +148,16 @@ function hasValidTriggerSecret(req) {
 // browser directly. The web app's own /api/job-search/live-sessions/[id]/*
 // routes are the only caller, and they authenticate the real dashboard user
 // first (requireAccessOrRespond) before ever reaching here.
+async function captureLiveFrame(session) {
+  const result = await session.cdpSession.send("Page.captureScreenshot", {
+    format: "jpeg",
+    quality: LIVE_FRAME_JPEG_QUALITY,
+    captureBeyondViewport: false,
+    optimizeForSpeed: true
+  });
+  return Buffer.from(result.data, "base64");
+}
+
 async function handleLiveFrame(res, challengeId) {
   const session = getLiveSession(challengeId);
   if (!session) {
@@ -150,8 +166,7 @@ async function handleLiveFrame(res, challengeId) {
   }
 
   try {
-    const result = await session.cdpSession.send("Page.captureScreenshot", { format: "jpeg", quality: 60 });
-    const buffer = Buffer.from(result.data, "base64");
+    const buffer = await captureLiveFrame(session);
     res.writeHead(200, {
       "content-type": "image/jpeg",
       "content-length": buffer.length,
@@ -162,6 +177,43 @@ async function handleLiveFrame(res, challengeId) {
   } catch (error) {
     sendJson(res, 502, { error: `Failed to capture frame: ${error?.message || error}` });
   }
+}
+
+async function handleLiveStream(req, res, challengeId) {
+  const session = getLiveSession(challengeId);
+  if (!session) {
+    sendJson(res, 404, { error: "No live session for that challenge — it may have already resolved, timed out, or this server restarted." });
+    return;
+  }
+
+  const boundary = "job-search-live-frame";
+  let closed = false;
+  req.on("close", () => { closed = true; });
+  res.writeHead(200, {
+    "content-type": `multipart/x-mixed-replace; boundary=${boundary}`,
+    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    "connection": "keep-alive",
+    "x-accel-buffering": "no",
+    "x-live-viewport-width": String(session.viewport.width || ""),
+    "x-live-viewport-height": String(session.viewport.height || "")
+  });
+
+  while (!closed && !res.destroyed && getLiveSession(challengeId) === session) {
+    try {
+      const buffer = await captureLiveFrame(session);
+      res.write(`--${boundary}\r\n`);
+      res.write("Content-Type: image/jpeg\r\n");
+      res.write(`Content-Length: ${buffer.length}\r\n\r\n`);
+      res.write(buffer);
+      res.write("\r\n");
+    } catch (error) {
+      console.error(`[live-stream] Failed to capture frame for challenge ${challengeId}:`, error?.message || error);
+      break;
+    }
+    await sleep(LIVE_FRAME_INTERVAL_MS);
+  }
+
+  if (!res.destroyed) res.end();
 }
 
 // CDP's Input.dispatchKeyEvent needs `code`/`windowsVirtualKeyCode` to do
@@ -302,7 +354,7 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const liveMatch = (req.url || "").match(/^\/live\/(\d+)\/(frame|input|resolve)$/);
+    const liveMatch = (req.url || "").match(/^\/live\/(\d+)\/(frame|stream|input|resolve)$/);
     if (liveMatch) {
       if (!hasValidTriggerSecret(req)) {
         sendJson(res, 401, { error: "Invalid trigger secret." });
@@ -314,6 +366,10 @@ const server = createServer(async (req, res) => {
 
       if (req.method === "GET" && action === "frame") {
         await handleLiveFrame(res, challengeId);
+        return;
+      }
+      if (req.method === "GET" && action === "stream") {
+        await handleLiveStream(req, res, challengeId);
         return;
       }
       if (req.method === "POST" && action === "input") {

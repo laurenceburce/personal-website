@@ -28,7 +28,7 @@ import {
 
 const TEXT_RELAY_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_SECURITY_CODE_WAIT_MS || 5 * 60 * 1000));
 const CAPTCHA_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_CAPTCHA_WAIT_MS || 5 * 60 * 1000));
-const CAPTCHA_PAGE_CHECK_INTERVAL_MS = 2000;
+const CAPTCHA_PAGE_CHECK_INTERVAL_MS = Math.max(250, Number(process.env.JOB_SEARCH_CAPTCHA_PAGE_CHECK_INTERVAL_MS || 750));
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

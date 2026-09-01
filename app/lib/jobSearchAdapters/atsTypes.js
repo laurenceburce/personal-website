@@ -14,30 +14,20 @@
 // actual browser-driven resolution) must import from here, never from
 // atsResolver.js.
 
-// Only greenhouse/ashby/workable/personio/breezy/oracle_fusion have a
-// submission adapter (see jobSearchAdapters/index.js) — everything else
-// here is recognized purely so a posting gets labeled accurately (e.g.
+// Only greenhouse/lever/ashby/workable/recruitee/personio/breezy/
+// oracle_fusion have a submission adapter (see jobSearchAdapters/index.js).
+// Everything else here is recognized purely so a posting gets labeled accurately (e.g.
 // "workday") instead of a generic "external" one. Confirmed live that none
 // of the rest are realistically automatable: SmartRecruiters and iCIMS both
 // hard bot-wall their application flow before it renders at all; Workday
 // requires per-tenant account creation and a non-standard component
 // framework; legacy Taleo (oracle_taleo, the taleo.net domain — a genuinely
 // different, older product than Fusion) shares that same enterprise-account
-// shape and has never been live-tested; Recruitee's own apply form ships an
-// invisible hCaptcha by default (confirmed live: a real `captchaToken`
-// field plus a `"captcha":"invisible"` app-config flag on a real company's
-// live board) — the same bot-wall category as SmartRecruiters/iCIMS, just
-// discovered later. Lever joined that same bucket during a later audit
-// pass: it now ships a real hCaptcha (`id="h-captcha"`, a genuine
-// `data-sitekey`, an actual hcaptcha.com iframe — confirmed live) on its
-// apply form platform-wide, not per-company — tested against 5 unrelated
-// companies (Aeva, Shield AI, Palantir, Filevine, Provectus), all 5 blocked.
-// A later check against the existing Lever adapter still returned
-// `blocked` for a live Palantir posting, so the adapter file was removed and
-// Lever stays pollable-only. Personio and Breezy HR were later live-audited
-// with CDP mouse dispatch against multiple application forms: both rendered
-// direct forms with no CAPTCHA/account wall, so they now have conservative
-// adapters registered.
+// shape and has never been live-tested. Lever and Recruitee were promoted
+// from polling-only once the submit-worker gained a live CAPTCHA relay: the
+// worker still never solves hCaptcha itself, but it can now pause on the
+// real employer page, let the account owner solve it, and then continue the
+// same conservative adapter flow.
 //
 // oracle_fusion (Oracle Recruiting/Fusion Cloud, the oraclecloud.com domain
 // — NOT the same product as legacy taleo.net, see oracle_taleo above) is a
@@ -77,29 +67,32 @@ export const ATS_DOMAIN_PATTERNS = [
 export const KNOWN_ATS_TYPES = new Set(ATS_DOMAIN_PATTERNS.map((p) => p.atsType));
 
 // Only these have a real submission adapter (jobSearchAdapters/index.js).
-// Lever is deliberately NOT here — see the ATS_DOMAIN_PATTERNS comment above
-// (confirmed-live platform-wide hCaptcha).
-export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable", "personio", "breezy", "oracle_fusion"]);
+// CAPTCHA-gated platforms are included only when the live relay can hand the
+// challenge to the account owner and then resume a normal form-fill path.
+export const SUBMITTABLE_ATS_TYPES = new Set([
+  "greenhouse",
+  "lever",
+  "ashby",
+  "workable",
+  "recruitee",
+  "personio",
+  "breezy",
+  "oracle_fusion"
+]);
 
 // Companies on any of these get their postings actually fetched by
 // jobSearchDirectPoll.js — a strict superset of SUBMITTABLE_ATS_TYPES.
 // Polling (finding postings from a platform's own public API) and
 // submitting (auto-filling that platform's application form) are
 // independent capabilities:
-// - Lever still has a perfectly good public polling API (unrelated to its
-//   apply form's CAPTCHA — confirmed live, the CAPTCHA only exists on the
-//   apply page, not the JSON board endpoint), so it's listed here explicitly
-//   even though it's no longer in SUBMITTABLE_ATS_TYPES — its postings still
-//   flow into scoring/review for the human to apply to by hand, exactly like
-//   SmartRecruiters below.
 // - Recruitee/Personio/Breezy HR/SmartRecruiters all have a confirmed
 //   public, unauthenticated polling API (see jobSearchAtsSources.js).
-//   Personio and Breezy now also have submission adapters; Recruitee and
-//   SmartRecruiters remain polling/manual-review only because their apply
-//   flows are blocked or fail to expose a direct form. SmartRecruiters'
-//   polling API in particular is unrelated to its bot-walled apply form —
-//   confirmed live to be the same read-only endpoint its own public job
-//   board widget already calls, no auth, no CAPTCHA.
+//   Recruitee, Personio, and Breezy now also have submission adapters.
+//   SmartRecruiters remains polling/manual-review only because its apply
+//   flow is bot-walled or fails to expose a direct form. SmartRecruiters'
+//   polling API is unrelated to its bot-walled apply form — confirmed live
+//   to be the same read-only endpoint its own public job board widget
+//   already calls, no auth, no CAPTCHA.
 // - Workday and oracle_fusion are here too, but reached differently from the
 //   rest: neither has a GUESSABLE public API. Workday needs 3 pieces
 //   (tenant/datacenter/site); oracle_fusion needs 3 of its own (hostname,
@@ -122,4 +115,4 @@ export const SUBMITTABLE_ATS_TYPES = new Set(["greenhouse", "ashby", "workable",
 //   ATS_DOMAIN_PATTERNS' comment) has never been live-tested for an
 //   equivalent anonymous read path the way Fusion's oracle_fusion now has.
 //   Both stay label-only.
-export const POLLABLE_ATS_TYPES = new Set([...SUBMITTABLE_ATS_TYPES, "lever", "recruitee", "smartrecruiters", "workday"]);
+export const POLLABLE_ATS_TYPES = new Set([...SUBMITTABLE_ATS_TYPES, "smartrecruiters", "workday"]);

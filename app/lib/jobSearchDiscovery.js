@@ -122,7 +122,7 @@ export async function fetchAdzunaJobs({ keywords, location, country = "us", maxA
       // 'external' — no ATS adapter is registered for this type, so submission
       // correctly falls through to needs-manual-apply (see jobSearchAdapters/index.js)
       // until/unless a future pass resolves redirect_url to a real ATS domain
-      // and re-tags it as greenhouse/lever/ashby.
+      // and re-tags it as a real ATS type before submission.
       atsType: "external",
       boardToken: "adzuna",
       externalJobId: String(job.id),
@@ -178,7 +178,7 @@ export async function runDiscoveryPass(findSettings) {
   // (its full-text search matched something, not necessarily a real title
   // fit), and a company only makes it into the directory because of ONE
   // posting here; nothing about that posting says the other 50 roles on
-  // their board (if they even use Greenhouse/Lever/Ashby/Workable at all)
+  // their board (if they even use one of the pollable ATS platforms at all)
   // are relevant. Confirmed live: without this, companies whose one loosely-
   // matched posting slipped through Adzuna's search got direct-polled for
   // their entire (usually unrelated) business ever after — see

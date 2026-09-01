@@ -1,6 +1,6 @@
 // Polls every company in the directory that's confirmed to be on a pollable
-// ATS (submittable platforms plus polling-only ones like Lever — see
-// jobSearchCompanyDirectory.js/atsTypes.js) straight from that platform's own
+// ATS (submittable platforms plus polling-only ones like SmartRecruiters —
+// see jobSearchCompanyDirectory.js/atsTypes.js) straight from that platform's own
 // API, the same pattern jobSearchAtsSources.js's fetch*Jobs functions were
 // originally built for (back when a manually-curated watchlist decided what
 // to poll). The difference now: the company list is entirely self-populated

@@ -284,8 +284,8 @@ export default function ProfileSettingsPanel({ profile, resumes, saving, onSaveP
           <fieldset className="job-search-fieldset">
             <legend>Voluntary self-identification (EEO)</legend>
             <p className="job-search-panel-hint">
-              Standard EEOC-style categories, matched against supported ATS forms (Greenhouse, Ashby, Workable,
-              Personio, Breezy, Oracle Recruiting Cloud) during autofill. Also never LLM-touched. Leave any
+              Standard EEOC-style categories, matched against supported ATS forms (Greenhouse, Lever, Ashby,
+              Workable, Recruitee, Personio, Breezy, Oracle Recruiting Cloud) during autofill. Also never LLM-touched. Leave any
               field blank to skip/decline on forms that allow it.
             </p>
             <div className="job-search-field-grid">

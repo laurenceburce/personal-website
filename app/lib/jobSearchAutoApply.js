@@ -41,7 +41,7 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
       status: "skipped_auto_apply",
       skipReason: AUTO_APPLY_SKIP_REASONS.UNSUPPORTED_ATS,
       skipDetail: resolvedAtsType === "external"
-        ? "Could not resolve this posting to a supported ATS (Greenhouse, Ashby, Workable, Personio, Breezy, or Oracle Recruiting Cloud)."
+        ? "Could not resolve this posting to a supported ATS (Greenhouse, Lever, Ashby, Workable, Recruitee, Personio, Breezy, or Oracle Recruiting Cloud)."
         : `Resolved to ${resolvedAtsType}, which has no submission adapter.`
     };
   }
