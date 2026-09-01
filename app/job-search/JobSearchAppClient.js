@@ -155,6 +155,12 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
           { id },
           "Submission resumed."
         )}
+        onCancelChallenge={(id) => runAction(
+          "/api/job-search/security-challenges",
+          "cancelChallenge",
+          { id },
+          "Cancelled."
+        )}
       />
 
       <main className="job-search-main">

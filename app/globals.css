@@ -7407,10 +7407,29 @@ html[data-theme="light"] .auth-feature-gate {
 }
 
 /* CAPTCHA items in the same held-submissions list have no code field to
-   type into — just context + a "Solve Now" button — so this overrides the
+   type into — just context + action buttons — so this overrides the
    3-column code-entry grid with a simpler 2-column one. */
 .job-search-security-item-captcha {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.job-search-security-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Cancel — visually secondary to Submit/Solve Now, with a hint of the same
+   red used for a danger badge so it still reads as "gives up on this item"
+   without being a full alert-red button. */
+.job-search-btn-ghost {
+  background: transparent;
+  border-color: rgba(251, 113, 133, 0.3);
+  color: #fca5a5;
+}
+
+.job-search-btn-ghost:hover:not(:disabled) {
+  background: rgba(251, 113, 133, 0.12) !important;
+  border-color: rgba(251, 113, 133, 0.5) !important;
 }
 
 .job-search-alert-toast {

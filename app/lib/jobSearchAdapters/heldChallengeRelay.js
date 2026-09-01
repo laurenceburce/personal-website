@@ -228,6 +228,16 @@ function challengeKindLabel(kind) {
   return kind === "anti_bot_text" ? "Anti-bot question" : "Security/verification code";
 }
 
+// The Held For You panel's Cancel button (cancelSecurityChallenge) sets
+// status='cancelled', which waitForSecurityChallengeCode's poll loop already
+// returns as soon as it sees a non-'pending' status — so this only needs to
+// pick the right WORDING for what's already a resolved failure, not detect
+// the cancellation itself.
+function describeUnresolvedChallenge(label, status, timeoutMs) {
+  if (status === "cancelled") return `${label} was cancelled from the dashboard.`;
+  return `${label} required; timed out waiting for dashboard input after ${Math.round(timeoutMs / 1000)}s.`;
+}
+
 async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswers, kind }) {
   const challenge = await findChallengeChallenge(page, scope);
   if (!challenge) {
@@ -248,10 +258,7 @@ async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswer
 
   const answerResult = await waitForSecurityChallengeCode(pendingChallenge.id, { timeoutMs: TEXT_RELAY_WAIT_TIMEOUT_MS });
   if (answerResult.status !== "answered" || !answerResult.code) {
-    return {
-      ok: false,
-      errorMessage: `${challengeKindLabel(kind)} required; timed out waiting for dashboard input after ${Math.round(TEXT_RELAY_WAIT_TIMEOUT_MS / 1000)}s.`
-    };
+    return { ok: false, errorMessage: describeUnresolvedChallenge(challengeKindLabel(kind), answerResult.status, TEXT_RELAY_WAIT_TIMEOUT_MS) };
   }
 
   try {
@@ -298,10 +305,7 @@ async function resolveCaptchaChallenge({ page, posting }) {
   try {
     const result = await waitForSecurityChallengeCode(pendingChallenge.id, { timeoutMs: CAPTCHA_WAIT_TIMEOUT_MS });
     if (result.status !== "answered") {
-      return {
-        ok: false,
-        errorMessage: `CAPTCHA challenge required; timed out waiting for it to be solved from the dashboard after ${Math.round(CAPTCHA_WAIT_TIMEOUT_MS / 1000)}s.`
-      };
+      return { ok: false, errorMessage: describeUnresolvedChallenge("CAPTCHA challenge", result.status, CAPTCHA_WAIT_TIMEOUT_MS) };
     }
     return { ok: true };
   } finally {

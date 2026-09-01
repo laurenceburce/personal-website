@@ -160,6 +160,38 @@ async function handleLiveFrame(res, challengeId) {
   }
 }
 
+// CDP's Input.dispatchKeyEvent needs `code`/`windowsVirtualKeyCode` to do
+// anything useful for a non-printable key — `text` alone (what the first cut
+// of this sent) only ever inserts a character; Backspace/Enter/Tab/arrows
+// have no `text` and were silently doing nothing. Windows Virtual-Key codes,
+// same table Playwright's own keyboard layer uses. Only the keys an OTP/
+// anti-bot-question/CAPTCHA field realistically needs — not a full layout.
+const KEY_DEFINITIONS = {
+  Backspace: { code: "Backspace", keyCode: 8 },
+  Tab: { code: "Tab", keyCode: 9 },
+  Enter: { code: "Enter", keyCode: 13 },
+  Shift: { code: "ShiftLeft", keyCode: 16 },
+  Control: { code: "ControlLeft", keyCode: 17 },
+  Alt: { code: "AltLeft", keyCode: 18 },
+  Escape: { code: "Escape", keyCode: 27 },
+  " ": { code: "Space", keyCode: 32 },
+  ArrowLeft: { code: "ArrowLeft", keyCode: 37 },
+  ArrowUp: { code: "ArrowUp", keyCode: 38 },
+  ArrowRight: { code: "ArrowRight", keyCode: 39 },
+  ArrowDown: { code: "ArrowDown", keyCode: 40 },
+  Delete: { code: "Delete", keyCode: 46 }
+};
+
+function keyEventFields(key) {
+  if (KEY_DEFINITIONS[key]) return KEY_DEFINITIONS[key];
+  if (/^[0-9]$/.test(key)) return { code: `Digit${key}`, keyCode: key.charCodeAt(0) };
+  if (/^[a-zA-Z]$/.test(key)) return { code: `Key${key.toUpperCase()}`, keyCode: key.toUpperCase().charCodeAt(0) };
+  // Punctuation and anything else unmapped — an approximate keyCode is still
+  // better than none for pages that branch on it, and `text` (set by the
+  // caller below) is what actually inserts the character either way.
+  return { code: "", keyCode: key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0 };
+}
+
 // One CDP call per relayed event — mirrors browserEngineClick.js's own
 // dispatchCdpMouseClick shape (mouseMoved/mousePressed/mouseReleased), plus
 // wheel/key events for drag-based and text-based challenges.
@@ -190,10 +222,16 @@ async function dispatchLiveInputEvent(cdpSession, evt) {
   }
 
   if (type === "keyDown" || type === "keyUp") {
+    const key = evt.key || "";
+    const { code, keyCode } = keyEventFields(key);
+    const text = type === "keyDown" ? evt.text : undefined;
     await cdpSession.send("Input.dispatchKeyEvent", {
       type,
-      key: evt.key,
-      text: type === "keyDown" ? (evt.text || evt.key) : undefined
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+      ...(text ? { text, unmodifiedText: text } : {})
     });
   }
 }

@@ -5,6 +5,7 @@ import { atsTypeLabel, Badge, Field } from "./JobSearchUi";
 import LiveCaptchaModal from "./LiveCaptchaModal";
 
 const HELD_ITEM_POLL_MS = 4000;
+const COUNTDOWN_TICK_MS = 1000;
 
 function formatTimeLeft(expiresAt, now) {
   if (!expiresAt) return "";
@@ -26,7 +27,7 @@ function kindLabel(kind) {
   return "Security Code";
 }
 
-export default function HeldSubmissionsPanel({ initialChallenges = [], saving, onSubmitCode, onResolveLiveCaptcha }) {
+export default function HeldSubmissionsPanel({ initialChallenges = [], saving, onSubmitCode, onResolveLiveCaptcha, onCancelChallenge }) {
   const [challenges, setChallenges] = useState(initialChallenges || []);
   const [codes, setCodes] = useState({});
   const [pollError, setPollError] = useState("");
@@ -41,7 +42,6 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
     let cancelled = false;
 
     async function poll() {
-      setNow(Date.now());
       try {
         const response = await fetch("/api/job-search/security-challenges");
         const payload = await response.json().catch(() => ({}));
@@ -61,6 +61,14 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
       cancelled = true;
       clearInterval(interval);
     };
+  }, []);
+
+  // Separate from the data poll above (which only re-fetches every 4s) — a
+  // per-second display-only tick is what makes the "Xm XXs" countdown next
+  // to each item actually count down smoothly instead of jumping every 4s.
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), COUNTDOWN_TICK_MS);
+    return () => clearInterval(tick);
   }, []);
 
   function removeChallenge(id) {
@@ -83,6 +91,12 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
   async function handleLiveResolve(challenge) {
     await onResolveLiveCaptcha(challenge.id);
     setLiveChallenge(null);
+    removeChallenge(challenge.id);
+  }
+
+  async function handleCancel(challenge) {
+    if (liveChallenge?.id === challenge.id) setLiveChallenge(null);
+    await onCancelChallenge(challenge.id);
     removeChallenge(challenge.id);
   }
 
@@ -115,9 +129,14 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
                   <small>Expires in {formatTimeLeft(challenge.expiresAt, now)}</small>
                   {challenge.applyUrl ? <a href={challenge.applyUrl} target="_blank" rel="noreferrer">View posting</a> : null}
                 </div>
-                <button type="button" disabled={isBusy} onClick={() => setLiveChallenge(challenge)}>
-                  Solve Now
-                </button>
+                <div className="job-search-security-actions">
+                  <button type="button" className="job-search-btn-ghost" disabled={isBusy} onClick={() => handleCancel(challenge)}>
+                    Cancel
+                  </button>
+                  <button type="button" disabled={isBusy} onClick={() => setLiveChallenge(challenge)}>
+                    Solve Now
+                  </button>
+                </div>
               </div>
             );
           }
@@ -142,9 +161,14 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
                 />
               </Field>
 
-              <button type="submit" disabled={isBusy || !code.trim()}>
-                {saving === "submitSecurityCode" ? "Sending..." : "Submit"}
-              </button>
+              <div className="job-search-security-actions">
+                <button type="button" className="job-search-btn-ghost" disabled={isBusy} onClick={() => handleCancel(challenge)}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={isBusy || !code.trim()}>
+                  {saving === "submitSecurityCode" ? "Sending..." : "Submit"}
+                </button>
+              </div>
             </form>
           );
         })}

@@ -192,6 +192,28 @@ export async function waitForSecurityChallengeCode(id, { timeoutMs = DEFAULT_WAI
   return { status: "timeout", code: "" };
 }
 
+// User-initiated "give up on this one" from the Held For You panel —
+// distinct from markSecurityChallengeExpired (a timeout/replaced-by-a-fresh-
+// challenge event) so the eventual submission's error_message can say
+// "cancelled by user" instead of the misleading "timed out" (see
+// heldChallengeRelay.js's own handling of this status). The waiting
+// adapter's poll loop (waitForSecurityChallengeCode above) already returns
+// as soon as status stops being 'pending' — no change needed there.
+export async function cancelSecurityChallenge(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const challengeId = cleanId(id, "Security challenge");
+  const [result] = await pool.query(
+    "UPDATE job_search_security_challenges SET status = 'cancelled', code = '', updated_at = ? WHERE id = ? AND status = 'pending'",
+    [new Date(), challengeId]
+  );
+
+  if (result.affectedRows === 0) {
+    throw appError("That prompt is no longer active.", 409);
+  }
+
+  return { id: challengeId };
+}
+
 export async function markSecurityChallengeUsed(id) {
   const pool = requirePool(await ensureJobSearchSchema());
   const challengeId = cleanId(id, "Security challenge");
