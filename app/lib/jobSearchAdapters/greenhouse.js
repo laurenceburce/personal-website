@@ -68,6 +68,9 @@ async function findFormScope(page) {
       if (await frame.locator("label[for]").first().isVisible().catch(() => false)) return frame;
     }
 
+    const blockerReason = await detectGreenhouseBlocker(page, page).catch(() => null);
+    if (blockerReason) return page;
+
     await page.waitForTimeout(250);
   }
 
@@ -416,9 +419,24 @@ async function collectPostSubmitValidationFields(scope) {
 }
 
 async function detectGreenhouseBlocker(page, scope) {
-  const scopedReason = await detectSubmissionBlocker(scope);
-  if (scopedReason) return scopedReason;
-  return scope === page ? null : detectSubmissionBlocker(page);
+  const scopes = [];
+  const addScope = (candidate) => {
+    if (candidate && !scopes.includes(candidate)) scopes.push(candidate);
+  };
+
+  addScope(scope);
+  addScope(page);
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    addScope(frame);
+  }
+
+  for (const candidateScope of scopes) {
+    const reason = await detectSubmissionBlocker(candidateScope).catch(() => null);
+    if (reason) return reason;
+  }
+
+  return null;
 }
 
 export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
@@ -445,9 +463,9 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
 
     let scope = await findFormScope(page);
-
-    const blockerReason = await detectGreenhouseBlocker(page, scope);
-    if (blockerReason) {
+    let blockerReason = await detectGreenhouseBlocker(page, scope);
+    let blockerResolutionCount = 0;
+    while (blockerReason && blockerResolutionCount < 2) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
         const challengeResult = await resolveHeldChallenge({ page, scope, posting, submittedAnswers, blockerReason });
         if (!challengeResult.ok) {
@@ -460,10 +478,15 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
             errorMessage: challengeResult.errorMessage
           };
         }
+        blockerResolutionCount += 1;
         scope = await findFormScope(page);
+        blockerReason = await detectGreenhouseBlocker(page, scope);
       } else {
         return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: blockerReason };
       }
+    }
+    if (blockerReason) {
+      return { status: "blocked", submittedAnswers, manualReviewFields, fieldOptions, confirmationText, errorMessage: blockerReason };
     }
 
     if (resumeBuffer) {

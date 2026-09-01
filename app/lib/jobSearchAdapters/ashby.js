@@ -36,6 +36,7 @@ import { resumeFilePayload } from "./resumeFilePayload.js";
 const NAV_TIMEOUT_MS = 30000;
 const FORM_WAIT_TIMEOUT_MS = 15000;
 const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
+const FIELD_COLLECTION_MAX_WAIT_MS = 4000;
 // Raised from 5 after an audit pass — see greenhouse.js's identical constant
 // for the reasoning (daily LLM usage has plenty of headroom; 5 was an
 // arbitrary early-caution number, not a real cost/rate-limit ceiling).
@@ -44,28 +45,118 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
 
+function cssAttr(value) {
+  return String(value || "").replace(/[\\"]/g, "\\$&");
+}
+
+function compactErrorMessage(error) {
+  return String(error?.message || error || "unknown error").replace(/\s+/g, " ").slice(0, 240);
+}
+
 async function collectLabeledFields(page) {
-  const labelHandles = await page.locator("label[for]").all();
-  const fields = [];
+  const descriptors = await page.evaluate(() => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const labelFor = (forId) => {
+      if (!forId) return "";
+      const label = [...document.querySelectorAll("label[for]")]
+        .find((candidate) => candidate.getAttribute("for") === forId);
+      return clean(label?.innerText || label?.textContent || "");
+    };
+    const optionLabel = (radio, index) => {
+      const labelText = labelFor(radio.id);
+      return labelText || clean(radio.closest("label, li, div")?.innerText || radio.value || `Option ${index + 1}`);
+    };
 
-  for (const label of labelHandles) {
-    const forId = await label.getAttribute("for").catch(() => null);
-    if (!forId) continue;
-    const text = (await label.innerText().catch(() => "")) || "";
-    const locator = page.locator(`[id="${forId.replace(/"/g, '\\"')}"]`);
-    if (await locator.count().catch(() => 0) === 0) continue;
+    const fields = [];
+    const seenTargets = new Set();
 
-    // Confirmed live: Ashby marks required fields ONLY via the input's real
-    // `required` IDL property, never a literal "*" in the label text (unlike
-    // Greenhouse) — reading the boolean property (not getAttribute, which
-    // returns "" for a valueless-but-present attribute, itself falsy) is the
-    // only reliable signal here.
-    const required = await locator.evaluate((el) => Boolean(el.required)).catch(() => false);
+    for (const label of document.querySelectorAll("label[for]")) {
+      const forId = label.getAttribute("for");
+      if (!forId) continue;
+      const text = clean(label.innerText || label.textContent);
+      if (!text) continue;
 
-    fields.push({ label: text.replace(/\*\s*$/, "").trim(), normalizedLabel: normalizeLabel(text), locator, forId, required });
+      let target = document.getElementById(forId);
+      let selectorKind = "id";
+      if (!target) {
+        target = document.querySelector(`[name="${CSS.escape(forId)}"]`);
+        selectorKind = "name";
+      }
+      if (!target) continue;
+
+      const type = (target.getAttribute("type") || "").toLowerCase();
+      if (type === "radio") continue;
+
+      const key = `${selectorKind}:${forId}`;
+      if (seenTargets.has(key)) continue;
+      seenTargets.add(key);
+
+      fields.push({
+        kind: "field",
+        label: text.replace(/\*\s*$/, "").trim(),
+        selectorKind,
+        selectorValue: forId,
+        forId: key,
+        required: Boolean(target.required || target.getAttribute("aria-required") === "true" || /\*/.test(text))
+      });
+    }
+
+    const seenRadioNames = new Set();
+    for (const radio of document.querySelectorAll('input[type="radio"][name]')) {
+      const name = radio.getAttribute("name") || "";
+      if (!name || seenRadioNames.has(name)) continue;
+      seenRadioNames.add(name);
+
+      const radios = [...document.querySelectorAll('input[type="radio"][name]')]
+        .filter((input) => input.getAttribute("name") === name);
+      const baseName = name.includes("__") ? name.slice(name.indexOf("__") + 1) : name;
+      const groupLabel = labelFor(name) || labelFor(baseName);
+      if (!groupLabel) continue;
+
+      const options = radios
+        .map((input, index) => ({
+          id: input.id || "",
+          value: input.value || "",
+          text: optionLabel(input, index)
+        }))
+        .filter((option) => option.text);
+      if (options.length === 0) continue;
+
+      fields.push({
+        kind: "radio",
+        label: groupLabel.replace(/\*\s*$/, "").trim(),
+        radioName: name,
+        forId: `radio:${name}`,
+        required: radios.some((input) => Boolean(input.required)) || /\*/.test(groupLabel),
+        options
+      });
+    }
+
+    return fields;
+  });
+
+  return descriptors.map((field) => ({
+    ...field,
+    normalizedLabel: normalizeLabel(field.label),
+    locator: field.kind === "radio"
+      ? page.locator(`input[type="radio"][name="${cssAttr(field.radioName)}"]`).first()
+      : field.selectorKind === "name"
+        ? page.locator(`[name="${cssAttr(field.selectorValue)}"]`).first()
+        : page.locator(`[id="${cssAttr(field.selectorValue)}"]`).first()
+  }));
+}
+
+async function collectSettledLabeledFields(page) {
+  const deadline = Date.now() + FIELD_COLLECTION_MAX_WAIT_MS;
+  let bestFields = [];
+
+  while (Date.now() < deadline) {
+    const fields = await collectLabeledFields(page);
+    if (fields.length >= bestFields.length) bestFields = fields;
+    await page.waitForTimeout(400);
   }
 
-  return fields;
+  return bestFields;
 }
 
 async function classifyWidget(locator) {
@@ -132,6 +223,29 @@ async function fillAutocomplete(page, locator, value) {
   return true;
 }
 
+async function radioOptions(page, locator) {
+  const name = await locator.getAttribute("name").catch(() => null);
+  if (!name) return [];
+
+  return page.evaluate((radioName) => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    return [...document.querySelectorAll('input[type="radio"][name]')]
+      .filter((radio) => radio.getAttribute("name") === radioName)
+      .map((radio, index) => {
+        const label = radio.id
+          ? [...document.querySelectorAll("label[for]")].find((candidate) => candidate.getAttribute("for") === radio.id)
+          : null;
+        return {
+          id: radio.id || "",
+          index,
+          value: radio.value || "",
+          text: clean(label?.innerText || label?.textContent || radio.closest("label, li, div")?.innerText || radio.value)
+        };
+      })
+      .filter((option) => option.text || option.value);
+  }, name).catch(() => []);
+}
+
 // Captures a field's real available options at the point it's about to be
 // flagged for manual review — see greenhouse.js's identical helper for the
 // full reasoning. "autocomplete" is deliberately excluded: its result list
@@ -147,11 +261,8 @@ async function captureFieldOptions(locator, widget, page) {
   }
   if (widget === "yesno") return ["Yes", "No"];
   if (widget === "radio") {
-    const name = await locator.getAttribute("name").catch(() => null);
-    if (!name) return [];
-    const radios = page.locator(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"]`);
-    const values = await radios.evaluateAll((els) => els.map((el) => el.value)).catch(() => []);
-    return values.filter(Boolean);
+    const options = await radioOptions(page, locator);
+    return options.map((option) => option.text || option.value).filter(Boolean);
   }
   return [];
 }
@@ -176,8 +287,15 @@ async function fillByWidget(page, locator, widget, value) {
     case "radio": {
       const name = await locator.getAttribute("name").catch(() => null);
       if (!name) return false;
-      const radio = page.locator(`input[type="radio"][name="${name.replace(/"/g, '\\"')}"][value="${String(value).replace(/"/g, '\\"')}"]`);
-      if (await radio.count().catch(() => 0) === 0) return false;
+      const target = String(value).trim().toLowerCase();
+      const options = await radioOptions(page, locator);
+      const match = options.find((option) => String(option.text || "").trim().toLowerCase() === target)
+        || options.find((option) => option.value && String(option.value).trim().toLowerCase() === target);
+      if (!match) return false;
+
+      const radio = match.id
+        ? page.locator(`[id="${cssAttr(match.id)}"]`).first()
+        : page.locator(`input[type="radio"][name="${cssAttr(name)}"]`).nth(match.index);
       await setCheckedWithBrowserMouse(page, radio, true);
       return true;
     }
@@ -229,6 +347,38 @@ async function uploadResumeAndVerify(page, resumeBuffer, resumeFileName) {
   return { ok: false, reason: "upload did not confirm after 2 attempts" };
 }
 
+async function readSubmissionText(page) {
+  return page.locator("body").innerText().catch(() => "");
+}
+
+function submissionTextExcerpt(text) {
+  const source = String(text || "");
+  const signalIndexes = [source.search(SUCCESS_TEXT_SIGNALS), source.search(ERROR_TEXT_SIGNALS)].filter((index) => index >= 0);
+  const start = signalIndexes.length > 0 ? Math.max(0, Math.min(...signalIndexes) - 160) : 0;
+  return source.slice(start, start + 500);
+}
+
+async function findVisibleSubmitButton(page) {
+  const candidates = await page.locator('button[type="submit"], input[type="submit"], button:has-text("Submit")').all().catch(() => []);
+  for (const candidate of candidates) {
+    const visible = await candidate.isVisible().catch(() => false);
+    const enabled = await candidate.isEnabled().catch(() => false);
+    if (visible && enabled) return candidate;
+  }
+  return null;
+}
+
+async function clickSubmitOrReadBlocker(page, submitButton) {
+  try {
+    await clickWithBrowserMouse(page, submitButton);
+    return { ok: true, blockerReason: "" };
+  } catch (error) {
+    const blockerReason = await detectSubmissionBlocker(page).catch(() => null);
+    if (blockerReason) return { ok: false, blockerReason };
+    return { ok: false, blockerReason: "", errorMessage: `Ashby submit button could not be clicked: ${compactErrorMessage(error)}` };
+  }
+}
+
 export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
   const { browser, newPage } = await launchJobSearchBrowser({ headless });
   const submittedAnswers = {};
@@ -275,7 +425,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       }
     }
 
-    const fields = await collectLabeledFields(page);
+    const fields = await collectSettledLabeledFields(page);
     // Fetched once, reused for every field below — see
     // jobSearchAnswerMemoryStore.js's own comment on why this isn't a
     // per-field query.
@@ -466,24 +616,65 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     } else if (dryRun) {
       status = "dry_run_ok";
     } else {
-      const submitButton = page.locator('button[type="submit"]').first();
-      await clickWithBrowserMouse(page, submitButton);
+      let submitButton = await findVisibleSubmitButton(page);
+      let clickResult = submitButton
+        ? await clickSubmitOrReadBlocker(page, submitButton)
+        : { ok: false, blockerReason: await detectSubmissionBlocker(page).catch(() => null) };
 
-      await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
-      await page.waitForTimeout(500);
+      if (!clickResult.ok && clickResult.blockerReason && isHeldChallengeBlockerReason(clickResult.blockerReason)) {
+        const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason: clickResult.blockerReason });
+        if (challengeResult.ok) {
+          submitButton = await findVisibleSubmitButton(page);
+          clickResult = submitButton
+            ? await clickSubmitOrReadBlocker(page, submitButton)
+            : {
+                ok: false,
+                blockerReason: await detectSubmissionBlocker(page).catch(() => null),
+                errorMessage: "Ashby submit button was not visible after resolving the held challenge. Review the posting manually before retrying."
+              };
+        } else {
+          status = "blocked";
+          errorMessage = challengeResult.errorMessage;
+        }
+      }
 
-      confirmationText = (await page.locator("body").innerText().catch(() => "")).slice(0, 500);
-
-      const stillOnFormPage = await submitButton.isVisible().catch(() => false);
-      const hasErrorSignal = ERROR_TEXT_SIGNALS.test(confirmationText);
-      const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(confirmationText);
-
-      if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
-        status = "failed";
-        errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
-          + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
+      if (status === "blocked") {
+        // Keep the held-challenge error set above.
+      } else if (!clickResult.ok) {
+        status = clickResult.blockerReason ? "blocked" : "failed";
+        errorMessage = clickResult.blockerReason || clickResult.errorMessage || "Ashby submit button was not visible after filling the form. Review the posting manually before retrying.";
       } else {
-        status = "submitted";
+        await page.waitForLoadState("networkidle", { timeout: SUBMIT_SETTLE_TIMEOUT_MS }).catch(() => {});
+        await page.waitForTimeout(500);
+
+        const postSubmitBlockerReason = await detectSubmissionBlocker(page).catch(() => null);
+        if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
+          const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason: postSubmitBlockerReason });
+          if (!challengeResult.ok) {
+            status = "blocked";
+            errorMessage = challengeResult.errorMessage;
+          }
+        } else if (postSubmitBlockerReason) {
+          status = "blocked";
+          errorMessage = postSubmitBlockerReason;
+        }
+
+        const pageText = await readSubmissionText(page);
+        confirmationText = submissionTextExcerpt(pageText);
+
+        if (status !== "blocked") {
+          const stillOnFormPage = submitButton ? await submitButton.isVisible().catch(() => false) : false;
+          const hasErrorSignal = ERROR_TEXT_SIGNALS.test(pageText);
+          const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(pageText);
+
+          if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
+            status = "failed";
+            errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
+              + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
+          } else {
+            status = "submitted";
+          }
+        }
       }
     }
   } catch (error) {

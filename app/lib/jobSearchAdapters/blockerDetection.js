@@ -18,11 +18,26 @@ const CAPTCHA_WIDGET_SELECTORS = [
   "[data-sitekey]"
 ].join(", ");
 
+const SECURITY_CODE_INPUT_SELECTORS = [
+  'input[autocomplete="one-time-code"]',
+  'input[name*="security" i]',
+  'input[id*="security" i]',
+  'input[placeholder*="security" i]',
+  'input[name*="verification" i]',
+  'input[id*="verification" i]',
+  'input[placeholder*="verification" i]',
+  'input[name*="otp" i]',
+  'input[id*="otp" i]',
+  'input[name*="code" i][inputmode="numeric"]',
+  'input[id*="code" i][inputmode="numeric"]',
+  'input[inputmode="numeric"][autocomplete="one-time-code"]'
+].join(", ");
+
 export const SECURITY_CODE_BLOCKER_REASON = "Security/verification code challenge present on the application form.";
 export const ANTI_BOT_TEXT_BLOCKER_REASON = "Anti-automation challenge question present in the application form.";
 export const CAPTCHA_BLOCKER_REASON = "CAPTCHA widget present on the application form.";
 
-const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|one[-\s]?time)\s+code\b|enter (the )?(security|verification) code/i;
+const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|one[-\s]?time|authentication|two[-\s]?factor|2fa)\s+code\b|enter (the )?(security|verification|one[-\s]?time|authentication)?\s*code\b|code (sent|emailed|mailed) to|sent .{0,80}code.{0,80}(email|inbox)|check .{0,80}(email|inbox).{0,80}code|verify .{0,40}(email|identity)/i;
 const ANTI_BOT_TEXT_SIGNALS = /(prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret)/i;
 const LOGIN_WALL_SIGNALS = /(sign in to apply|log in to apply|create an account to apply|please log in to continue)/i;
 
@@ -44,6 +59,24 @@ export async function detectSubmissionBlocker(scope) {
   if (SECURITY_CODE_TEXT_SIGNALS.test(bodyText)) {
     return SECURITY_CODE_BLOCKER_REASON;
   }
+
+  const codeInputs = scope.locator(SECURITY_CODE_INPUT_SELECTORS);
+  const codeInputCount = await codeInputs.count().catch(() => 0);
+  for (let i = 0; i < codeInputCount; i += 1) {
+    const input = codeInputs.nth(i);
+    if (!(await input.isVisible().catch(() => false))) continue;
+    const descriptor = await input.evaluate((el) => [
+      el.getAttribute("autocomplete"),
+      el.getAttribute("aria-label"),
+      el.getAttribute("placeholder"),
+      el.getAttribute("name"),
+      el.getAttribute("id")
+    ].filter(Boolean).join(" ")).catch(() => "");
+    if (/one[-\s]?time|security|verification|authentication|\botp\b/i.test(descriptor)) {
+      return SECURITY_CODE_BLOCKER_REASON;
+    }
+  }
+
   if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
     return ANTI_BOT_TEXT_BLOCKER_REASON;
   }
