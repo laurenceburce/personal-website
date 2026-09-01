@@ -157,6 +157,18 @@ export async function resolveLiveCaptchaSession(id) {
   return answerSecurityChallenge(id, "[solved live]");
 }
 
+// Lightweight counterpart to getSecurityChallengeForWorker below — just the
+// status column, no full row mapping. Used by heldChallengeRelay.js's live-
+// CAPTCHA wait loop to check "has the dashboard resolved this?" on the same
+// tick it's already checking "did the account owner get past it on the page
+// itself?" (see that file's own comment on why both are checked).
+export async function getChallengeStatus(id) {
+  const pool = requirePool(await ensureJobSearchSchema());
+  const challengeId = cleanId(id, "Security challenge");
+  const [rows] = await pool.query("SELECT status FROM job_search_security_challenges WHERE id = ? LIMIT 1", [challengeId]);
+  return rows[0]?.status || null;
+}
+
 async function getSecurityChallengeForWorker(id) {
   const pool = requirePool(await ensureJobSearchSchema());
   const challengeId = cleanId(id, "Security challenge");

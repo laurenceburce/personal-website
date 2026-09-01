@@ -15,13 +15,24 @@
 //    on the page and holds it open (via jobSearchLiveSessionRegistry.js) for
 //    the submit-worker's own HTTP server to relay frames/input through,
 //    until the dashboard says it's been solved.
-import { isAntiBotTextBlockerReason, isCaptchaBlockerReason, isSecurityCodeBlockerReason } from "./blockerDetection.js";
+import { detectSubmissionBlocker, isAntiBotTextBlockerReason, isCaptchaBlockerReason, isSecurityCodeBlockerReason } from "./blockerDetection.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { registerLiveSession, unregisterLiveSession } from "../jobSearchLiveSessionRegistry.js";
-import { createSecurityChallenge, markSecurityChallengeUsed, waitForSecurityChallengeCode } from "../jobSearchSecurityChallengeStore.js";
+import {
+  createSecurityChallenge,
+  getChallengeStatus,
+  markSecurityChallengeExpired,
+  markSecurityChallengeUsed,
+  waitForSecurityChallengeCode
+} from "../jobSearchSecurityChallengeStore.js";
 
 const TEXT_RELAY_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_SECURITY_CODE_WAIT_MS || 5 * 60 * 1000));
 const CAPTCHA_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_CAPTCHA_WAIT_MS || 5 * 60 * 1000));
+const CAPTCHA_PAGE_CHECK_INTERVAL_MS = 2000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // Broader than blockerDetection.js's own signals on purpose — this only
 // gates the "accept the single remaining visible input" fallback below, not
@@ -285,7 +296,45 @@ async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswer
   return { ok: true };
 }
 
-async function resolveCaptchaChallenge({ page, posting }) {
+// Two independent ways this resolves, whichever happens first:
+//  1. The dashboard's "Continue Submission" button (flips the DB row to
+//     'answered') — the ORIGINAL and still-supported path.
+//  2. The account owner simply gets past the CAPTCHA themselves through the
+//     live relay — clicking the real page's own submit button included.
+//     Confirmed live this matters, not theoretical: a real attempt solved
+//     the CAPTCHA and submitted the actual Domino application through the
+//     relay, but took longer than the wait window to also click "Continue
+//     Submission" in the dashboard — the challenge timed out, the posting
+//     went back to needs_manual_review, and only a LATER, separate run
+//     (hitting the site again and stumbling onto an already-submitted page)
+//     ever recorded it as submitted. Checking the page's own blocker state
+//     on every tick means the moment the CAPTCHA is actually gone, this
+//     returns immediately — the dashboard click becomes a nice-to-have
+//     shortcut instead of the only way out.
+async function waitForCaptchaResolution({ challengeId, page, scope, timeoutMs }) {
+  const startedAt = Date.now();
+  const waitMs = Math.max(30_000, Number(timeoutMs) || CAPTCHA_WAIT_TIMEOUT_MS);
+
+  while (Date.now() - startedAt < waitMs) {
+    const scopedReason = await detectSubmissionBlocker(scope).catch(() => null);
+    const stillBlocked = scopedReason && isCaptchaBlockerReason(scopedReason)
+      ? scopedReason
+      : (scope !== page ? await detectSubmissionBlocker(page).catch(() => null) : scopedReason);
+    if (!stillBlocked || !isCaptchaBlockerReason(stillBlocked)) return { ok: true, status: "resolved_on_page" };
+
+    const status = await getChallengeStatus(challengeId).catch(() => null);
+    if (status === "answered") return { ok: true, status: "answered" };
+    if (status && status !== "pending") return { ok: false, status };
+    if (!status) return { ok: false, status: "missing" };
+
+    await sleep(CAPTCHA_PAGE_CHECK_INTERVAL_MS);
+  }
+
+  await markSecurityChallengeExpired(challengeId).catch(() => {});
+  return { ok: false, status: "timeout" };
+}
+
+async function resolveCaptchaChallenge({ page, scope, posting }) {
   const pendingChallenge = await createSecurityChallenge({
     postingId: posting.id,
     companyName: posting.companyName,
@@ -303,8 +352,8 @@ async function resolveCaptchaChallenge({ page, posting }) {
   console.log(`  [held-challenge] Live CAPTCHA session open for "${posting.title}" at ${posting.companyName} (challenge ${pendingChallenge.id}) — waiting for it to be solved from the dashboard.`);
 
   try {
-    const result = await waitForSecurityChallengeCode(pendingChallenge.id, { timeoutMs: CAPTCHA_WAIT_TIMEOUT_MS });
-    if (result.status !== "answered") {
+    const result = await waitForCaptchaResolution({ challengeId: pendingChallenge.id, page, scope, timeoutMs: CAPTCHA_WAIT_TIMEOUT_MS });
+    if (!result.ok) {
       return { ok: false, errorMessage: describeUnresolvedChallenge("CAPTCHA challenge", result.status, CAPTCHA_WAIT_TIMEOUT_MS) };
     }
     return { ok: true };
@@ -323,7 +372,7 @@ async function resolveCaptchaChallenge({ page, posting }) {
 // through to its normal `status: "blocked"` return in that case, unchanged.
 export async function resolveHeldChallenge({ page, scope, posting, submittedAnswers, blockerReason }) {
   if (isCaptchaBlockerReason(blockerReason)) {
-    return resolveCaptchaChallenge({ page, posting });
+    return resolveCaptchaChallenge({ page, scope, posting });
   }
   if (isSecurityCodeBlockerReason(blockerReason)) {
     return resolveTextRelayChallenge({ page, scope, posting, submittedAnswers, kind: "security_code" });
