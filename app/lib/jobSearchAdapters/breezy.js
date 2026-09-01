@@ -12,7 +12,7 @@ import {
   manualOverrideCandidates,
   matchOptionByCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -385,9 +385,12 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
         const value = isWorkAuthLabel(normalizedLabel)
           ? resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization)
           : isEeoLabel(normalizedLabel)
-            ? resolveEeoValue(normalizedLabel, profile?.eeoAnswers)
+            ? null
             : null;
-        const match = value && field.options.find((option) => option.text.trim().toLowerCase() === value.toLowerCase());
+        const candidates = isEeoLabel(normalizedLabel)
+          ? resolveEeoCandidates(normalizedLabel, profile?.eeoAnswers)
+          : [value].filter(Boolean);
+        const match = matchOptionByCandidates(field.options, candidates);
         if (match) {
           const radio = page.locator(`input[type="radio"][name="${cssAttr(field.name)}"][value="${cssAttr(match.value)}"]`).first();
           const checked = await setCheckedWithBrowserMouse(page, radio, true).then(() => true).catch(() => false);
@@ -440,8 +443,7 @@ export async function submitBreezyApplication({ posting, profile, resumeBuffer, 
       }
 
       if (isEeoLabel(normalizedLabel)) {
-        const value = resolveEeoValue(normalizedLabel, profile?.eeoAnswers);
-        filledValue = value ? await fillField(page, field, [value]) : null;
+        filledValue = await fillField(page, field, resolveEeoCandidates(normalizedLabel, profile?.eeoAnswers));
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
           continue;

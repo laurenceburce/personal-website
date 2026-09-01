@@ -15,7 +15,7 @@ import {
   manualOverrideCandidates,
   matchOptionByCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -371,8 +371,7 @@ export async function submitRecruiteeApplication({ posting, profile, resumeBuffe
       }
 
       if (isEeoLabel(field.normalizedLabel)) {
-        const value = resolveEeoValue(field.normalizedLabel, profile?.eeoAnswers);
-        filledValue = value ? await fillField(page, field, [value]) : null;
+        filledValue = await fillField(page, field, resolveEeoCandidates(field.normalizedLabel, profile?.eeoAnswers));
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
           continue;

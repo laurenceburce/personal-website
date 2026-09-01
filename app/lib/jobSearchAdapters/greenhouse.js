@@ -11,7 +11,7 @@ import {
   isWorkAuthLabel,
   manualOverrideCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -589,13 +589,13 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           continue;
         }
 
-        // EEO/work-authorization: hard-mapped by exact stored text, never the LLM.
+        // EEO/work-authorization: hard-mapped by stored profile facts, never the LLM.
         //
         // Flagged for manual review on any failure to fill — NOT gated behind
         // field.required. Confirmed live this was a real gap: a "Are you
         // Hispanic/Latino?" EEO field carried no visible asterisk (EEO
         // questions are routinely framed as "voluntary"), so when
-        // resolveEeoValue() returned the profile's raceEthnicity value (right
+        // the old single-value EEO resolver returned the profile's raceEthnicity value (right
         // category, wrong shape — this specific field is yes/no, not a race
         // picklist) and the fill predictably failed, the old `else if
         // (field.required)` left it silently blank. Greenhouse's own
@@ -607,9 +607,15 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
         // flagging a genuinely-optional field here is one unnecessary manual
         // review; worst case for not flagging it is exactly what happened.
         if (isEeoLabel(field.normalizedLabel)) {
-          const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
-          if (value && await fillByWidget(page, scope, field.locator, widget, value)) {
-            submittedAnswers[field.label] = value;
+          let filledValue = null;
+          for (const candidate of resolveEeoCandidates(field.normalizedLabel, profile?.eeoAnswers)) {
+            if (await fillByWidget(page, scope, field.locator, widget, candidate)) {
+              filledValue = candidate;
+              break;
+            }
+          }
+          if (filledValue != null) {
+            submittedAnswers[field.label] = filledValue;
             continue;
           }
           if (await tryMemoryAnswer(field, widget)) continue;

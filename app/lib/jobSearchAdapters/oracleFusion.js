@@ -61,7 +61,7 @@ import {
   manualOverrideCandidates,
   matchOptionByCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -430,9 +430,12 @@ async function fillStepFields(page, fields, ctx) {
       const value = isWorkAuthLabel(normalizedLabel)
         ? resolveWorkAuthValue(normalizedLabel, profile?.workAuthorization)
         : isEeoLabel(normalizedLabel)
-          ? resolveEeoValue(normalizedLabel, profile?.eeoAnswers)
+          ? null
           : null;
-      const match = value && field.options.find((option) => option.text.trim().toLowerCase() === value.toLowerCase());
+      const candidates = isEeoLabel(normalizedLabel)
+        ? resolveEeoCandidates(normalizedLabel, profile?.eeoAnswers)
+        : [value].filter(Boolean);
+      const match = matchOptionByCandidates(field.options, candidates);
       if (match) {
         const checked = await checkOracleControl(page, match);
         if (checked) {
@@ -475,8 +478,7 @@ async function fillStepFields(page, fields, ctx) {
     }
 
     if (isEeoLabel(normalizedLabel)) {
-      const value = resolveEeoValue(normalizedLabel, profile?.eeoAnswers);
-      const filledValue = value ? await fillField(page, field, [value]) : null;
+      const filledValue = await fillField(page, field, resolveEeoCandidates(normalizedLabel, profile?.eeoAnswers));
       if (filledValue != null) {
         submittedAnswers[field.label] = filledValue;
         continue;

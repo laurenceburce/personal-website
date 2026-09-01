@@ -26,7 +26,7 @@ import {
   isWorkAuthLabel,
   manualOverrideCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -176,7 +176,7 @@ async function classifyWidget(locator) {
 // data-option="yes|no">, not the (non-interactive) checkbox itself.
 //
 // Only ever called today with something that should already cleanly mean
-// yes or no (resolveWorkAuthValue/resolveEeoValue's own "Yes"/"No" strings —
+// yes or no (resolveWorkAuthValue/resolveEeoCandidates's own "Yes"/"No" strings —
 // the LLM free-text path never reaches this widget at all, see the "always
 // manual" comment below). But a manual-answer override or a memory-bank
 // match is a human's own free-form text, and could be anything, e.g. "Yes, I
@@ -525,9 +525,15 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       }
 
       if (isEeoLabel(field.normalizedLabel)) {
-        const value = resolveEeoValue(field.normalizedLabel, profile.eeoAnswers);
-        if (value && await fillByWidget(page, field.locator, widget, value)) {
-          submittedAnswers[field.label] = value;
+        let filledValue = null;
+        for (const candidate of resolveEeoCandidates(field.normalizedLabel, profile?.eeoAnswers)) {
+          if (await fillByWidget(page, field.locator, widget, candidate)) {
+            filledValue = candidate;
+            break;
+          }
+        }
+        if (filledValue != null) {
+          submittedAnswers[field.label] = filledValue;
           continue;
         }
         if (await tryMemoryAnswer(field, widget)) continue;

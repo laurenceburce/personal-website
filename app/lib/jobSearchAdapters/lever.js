@@ -16,7 +16,7 @@ import {
   manualOverrideCandidates,
   matchOptionByCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -331,8 +331,7 @@ export async function submitLeverApplication({ posting, profile, resumeBuffer, r
         }
 
         if (isEeoLabel(normalizedLabel)) {
-          const value = resolveEeoValue(normalizedLabel, profile?.eeoAnswers);
-          const filledValue = value ? await fillCardField(page, fieldRef, [value]) : null;
+          const filledValue = await fillCardField(page, fieldRef, resolveEeoCandidates(normalizedLabel, profile?.eeoAnswers));
           if (filledValue != null) {
             submittedAnswers[label] = filledValue;
             continue;

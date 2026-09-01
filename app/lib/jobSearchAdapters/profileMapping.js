@@ -205,19 +205,159 @@ export function resolveStandardField(label, profile, rawLabel = label) {
 // work-auth profile data) an ordinary question that just happens to contain
 // one of these as a substring, instead of ever reaching it with the LLM.
 export function isEeoLabel(label) {
-  return /\b(gender|race|ethnicity|hispanic|latino|veteran|disability)\b/.test(label);
+  return /\b(gender|sex|race|ethnicity|hispanic|latino|veteran|disability)\b/.test(label);
 }
 
 export function isWorkAuthLabel(label) {
   return /\bsponsorship\b|require.*immigration|\bvisa\b|authorized to work|work authorization/.test(label);
 }
 
-export function resolveEeoValue(label, eeoAnswers) {
+function uniqueStrings(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values || []) {
+    const clean = String(value || "").trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+}
+
+const EEO_DECLINE_CANDIDATES = [
+  "Decline to self-identify",
+  "I don't wish to answer",
+  "I do not wish to answer",
+  "I don't want to answer",
+  "I do not want to answer",
+  "Prefer not to answer",
+  "Prefer not to say",
+  "Choose not to disclose",
+  "I choose not to disclose"
+];
+
+function isDeclineEeoAnswer(value) {
+  const normalized = normalizeLabel(value);
+  return /\bdecline\b/.test(normalized)
+    || /\bprefer not\b/.test(normalized)
+    || /\bdo not want to answer\b/.test(normalized)
+    || /\bdon t want to answer\b/.test(normalized)
+    || /\bdo not wish to answer\b/.test(normalized)
+    || /\bdon t wish to answer\b/.test(normalized)
+    || /\bchoose not to disclose\b/.test(normalized);
+}
+
+function genderCandidates(value) {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return [];
+  if (isDeclineEeoAnswer(value)) return uniqueStrings([value, ...EEO_DECLINE_CANDIDATES]);
+  if (normalized === "male" || normalized === "man") return uniqueStrings([value, "Male", "Man"]);
+  if (normalized === "female" || normalized === "woman") return uniqueStrings([value, "Female", "Woman"]);
+  return [String(value).trim()];
+}
+
+function raceEthnicityCandidates(label, value) {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return [];
+  if (isDeclineEeoAnswer(value)) return uniqueStrings([value, ...EEO_DECLINE_CANDIDATES]);
+
+  const asksHispanicLatino = /\b(hispanic|latino)\b/.test(label);
+  const asksEthnicity = /\bethnicity\b/.test(label);
+  const isHispanicLatino = /\b(hispanic|latino)\b/.test(normalized);
+  const candidates = [];
+
+  if (asksHispanicLatino) {
+    candidates.push(
+      ...(isHispanicLatino
+        ? ["Yes", "Yes, Hispanic or Latino", "Hispanic or Latino"]
+        : ["No", "No, not Hispanic or Latino", "Not Hispanic or Latino", "No, I am not Hispanic or Latino"])
+    );
+  }
+
+  const nonHispanicVariants = [
+    `${value} (Not Hispanic or Latino)`,
+    `${value} (Not Hispanic/Latino)`,
+    `${value} (Not Hispanic or Latinx)`
+  ];
+
+  const raceVariants = {
+    "hispanic or latino": ["Hispanic or Latino", "Hispanic/Latino", "Latino", "Latina/o/x"],
+    white: ["White", "White (Not Hispanic or Latino)", "White (Not Hispanic/Latino)"],
+    "black or african american": [
+      "Black or African American",
+      "Black or African American (Not Hispanic or Latino)",
+      "Black or African-American",
+      "Black / African American"
+    ],
+    "native hawaiian or other pacific islander": [
+      "Native Hawaiian or Other Pacific Islander",
+      "Native Hawaiian or Other Pacific Islander (Not Hispanic or Latino)"
+    ],
+    asian: ["Asian", "Asian (Not Hispanic or Latino)", "Asian (Not Hispanic/Latino)"],
+    "american indian or alaska native": [
+      "American Indian or Alaska Native",
+      "American Indian or Alaska Native (Not Hispanic or Latino)"
+    ],
+    "two or more races": ["Two or More Races", "Two or More Races (Not Hispanic or Latino)"]
+  };
+
+  candidates.push(...(raceVariants[normalized] || [value]));
+  if (!isHispanicLatino) {
+    candidates.push(...nonHispanicVariants);
+    if (asksEthnicity) candidates.push("Not Hispanic or Latino", "No, not Hispanic or Latino", "No");
+  }
+  return uniqueStrings(candidates);
+}
+
+function veteranCandidates(value) {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return [];
+  if (isDeclineEeoAnswer(value)) {
+    return uniqueStrings([value, ...EEO_DECLINE_CANDIDATES, "I decline to self-identify for protected veteran status"]);
+  }
+  if (/\bnot\b.*\bprotected veteran\b/.test(normalized)) {
+    return uniqueStrings([value, "I am not a protected veteran", "Not a protected veteran", "No"]);
+  }
+  if (/\bprotected veteran\b/.test(normalized) || /\bclassifications\b.*\bprotected veteran\b/.test(normalized)) {
+    return uniqueStrings([
+      value,
+      "I identify as one or more of the classifications of a protected veteran",
+      "I identify as one or more of the classifications of protected veteran listed above",
+      "I am a protected veteran",
+      "Protected veteran",
+      "Yes"
+    ]);
+  }
+  return [String(value).trim()];
+}
+
+function disabilityCandidates(value) {
+  const normalized = normalizeLabel(value);
+  if (!normalized) return [];
+  if (isDeclineEeoAnswer(value)) return uniqueStrings([value, ...EEO_DECLINE_CANDIDATES]);
+  if (/^yes\b/.test(normalized)) {
+    return uniqueStrings([value, "Yes, I have a disability", "Yes"]);
+  }
+  if (/^no\b/.test(normalized)) {
+    return uniqueStrings([value, "No, I do not have a disability", "No"]);
+  }
+  return [String(value).trim()];
+}
+
+export function resolveEeoCandidates(label, eeoAnswers) {
   const eeo = eeoAnswers || {};
-  if (/\bgender\b/.test(label)) return eeo.gender || null;
-  if (/\b(race|ethnicity|hispanic|latino)\b/.test(label)) return eeo.raceEthnicity || null;
-  if (/\bveteran\b/.test(label)) return eeo.veteranStatus || null;
-  if (/\bdisability\b/.test(label)) return eeo.disabilityStatus || null;
+  if (/\b(gender|sex)\b/.test(label)) return genderCandidates(eeo.gender);
+  if (/\b(race|ethnicity|hispanic|latino)\b/.test(label)) return raceEthnicityCandidates(label, eeo.raceEthnicity);
+  if (/\bveteran\b/.test(label)) return veteranCandidates(eeo.veteranStatus);
+  if (/\bdisability\b/.test(label)) return disabilityCandidates(eeo.disabilityStatus);
+  return [];
+}
+
+export function resolveEeoValue(label, eeoAnswers) {
+  const candidates = resolveEeoCandidates(label, eeoAnswers);
+  if (candidates.length > 0) return candidates[0];
   return null;
 }
 

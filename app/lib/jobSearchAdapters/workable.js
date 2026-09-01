@@ -21,7 +21,7 @@ import {
   manualOverrideCandidates,
   matchOptionByCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -365,12 +365,14 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
         }
 
         if (isWorkAuthLabel(normalizedLabel) || isEeoLabel(normalizedLabel)) {
-          // These render as radio/checkbox groups on every real Workable form
-          // seen so far, never a plain text field — if one ever did show up
-          // here, guessing free text into it would be worse than flagging it.
-          // Not gated behind q.required — see greenhouse.js's identical
-          // comment on why an EEO/work-auth question needs that regardless
-          // of its visible asterisk.
+          const candidates = isWorkAuthLabel(normalizedLabel)
+            ? [resolveWorkAuthValue(normalizedLabel, profile.workAuthorization)].filter(Boolean)
+            : resolveEeoCandidates(normalizedLabel, profile.eeoAnswers);
+          const filledValue = await fillWorkableFieldValue(page, q, candidates);
+          if (filledValue != null) {
+            submittedAnswers[q.label] = filledValue;
+            continue;
+          }
           if (await tryMemoryAnswer(q)) continue;
           await flagForReview(q.label, q);
           continue;
@@ -442,8 +444,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
           }
         }
         if (isEeoLabel(normalizedLabel)) {
-          const value = resolveEeoValue(normalizedLabel, profile.eeoAnswers);
-          const match = value && q.options.find((o) => o.text.trim().toLowerCase() === value.toLowerCase());
+          const match = matchOptionByCandidates(q.options, resolveEeoCandidates(normalizedLabel, profile.eeoAnswers));
           if (match) {
             const checked = await setCheckedWithBrowserMouse(page, page.locator(`input[type="radio"][name="${q.name}"][value="${match.value}"]`), true).then(() => true).catch(() => false);
             if (checked) {

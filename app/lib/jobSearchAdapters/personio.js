@@ -11,7 +11,7 @@ import {
   isWorkAuthLabel,
   manualOverrideCandidates,
   normalizeLabel,
-  resolveEeoValue,
+  resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
@@ -335,8 +335,7 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
       }
 
       if (isEeoLabel(field.normalizedLabel)) {
-        const value = resolveEeoValue(field.normalizedLabel, profile?.eeoAnswers);
-        filledValue = value ? await fillCandidates(field, [value]) : null;
+        filledValue = await fillCandidates(field, resolveEeoCandidates(field.normalizedLabel, profile?.eeoAnswers));
         if (filledValue != null) {
           submittedAnswers[field.label] = filledValue;
           continue;
