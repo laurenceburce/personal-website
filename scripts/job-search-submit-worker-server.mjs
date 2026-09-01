@@ -38,8 +38,8 @@ if (!isJobSearchDbConfigured()) {
 }
 
 const PORT = Number(process.env.JOB_SEARCH_SUBMIT_WORKER_PORT || 8080);
-const LIVE_FRAME_INTERVAL_MS = Math.max(100, Number(process.env.JOB_SEARCH_LIVE_FRAME_INTERVAL_MS || 250));
-const LIVE_FRAME_JPEG_QUALITY = Math.max(25, Math.min(85, Number(process.env.JOB_SEARCH_LIVE_FRAME_JPEG_QUALITY || 45)));
+const LIVE_FRAME_INTERVAL_MS = Math.max(75, Number(process.env.JOB_SEARCH_LIVE_FRAME_INTERVAL_MS || 125));
+const LIVE_FRAME_JPEG_QUALITY = Math.max(25, Math.min(85, Number(process.env.JOB_SEARCH_LIVE_FRAME_JPEG_QUALITY || 38)));
 // Shared secret the caller must present — Railway's private networking
 // (<service>.railway.internal) already isn't reachable from the public
 // internet by default, so this is defense in depth, not the only thing

@@ -14,6 +14,10 @@ const CAPTCHA_WIDGET_SELECTORS = [
   "iframe[src*=\"recaptcha\"]",
   ".h-captcha",
   "iframe[src*=\"hcaptcha\"]",
+  ".cf-turnstile",
+  "[data-cf-sitekey]",
+  "[name=\"cf-turnstile-response\"]",
+  "iframe[src*=\"challenges.cloudflare.com\"]",
   "iframe[src*=\"turnstile\"]",
   "[data-sitekey]"
 ].join(", ");
@@ -48,6 +52,7 @@ export const CAPTCHA_BLOCKER_REASON = "CAPTCHA widget present on the application
 
 const SECURITY_CODE_TEXT_SIGNALS = /\b(security|verification|confirmation|confirm|one[-\s]?time|authentication|two[-\s]?factor|2fa)\s+(code|passcode|pin)\b|\b(code|passcode|pin|otp)\b.{0,80}\b(security|verification|confirmation|authentication|email)\b|enter (the )?(security|verification|confirmation|one[-\s]?time|authentication)?\s*(code|passcode|pin)\b|(code|passcode|pin) (sent|emailed|mailed) to|sent .{0,100}(code|passcode|pin).{0,100}(email|inbox)|check .{0,100}(email|inbox).{0,100}(code|passcode|pin)|verify .{0,60}(email|identity|application)|confirm .{0,60}(email|identity|application)|verification email/i;
 const ANTI_BOT_TEXT_SIGNALS = /(prove (that )?you('re| are) not a (bot|robot)|not a bot auto-?applying|solve the (following )?(captcha|puzzle|challenge)|human verification|figure out the (correct )?secret)/i;
+const SECURITY_INTERSTITIAL_SIGNALS = /(performing security verification|checking if the site connection is secure|verify you are human|verif(y|ies) you are not a bot|website uses a security service to protect against malicious bots|performance and security by cloudflare|ray id:)/i;
 const LOGIN_WALL_SIGNALS = /(sign in to apply|log in to apply|create an account to apply|please log in to continue)/i;
 
 async function isInteractiveCaptchaWidget(locator) {
@@ -125,6 +130,14 @@ export async function detectSubmissionBlocker(scope) {
 
   if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
     return ANTI_BOT_TEXT_BLOCKER_REASON;
+  }
+
+  // Cloudflare/Turnstile interstitials often expose only a hidden response
+  // input while the visible page says "performing security verification".
+  // Treat that as the same live CAPTCHA class instead of letting adapters
+  // time out waiting for a form that cannot render until the check passes.
+  if (SECURITY_INTERSTITIAL_SIGNALS.test(bodyText)) {
+    return CAPTCHA_BLOCKER_REASON;
   }
 
   // Visibility-gated, not raw DOM presence. Greenhouse/Ashby (among others)

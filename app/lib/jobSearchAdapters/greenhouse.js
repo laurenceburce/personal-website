@@ -10,12 +10,14 @@ import {
   isEeoLabel,
   isWorkAuthLabel,
   manualOverrideCandidates,
+  matchOptionByCandidates,
   normalizeLabel,
   resolveEeoCandidates,
   resolveManualOverride,
   resolveStandardFieldCandidates,
   resolveWorkAuthValue
 } from "./profileMapping.js";
+import { detectUnavailablePosting, hasApplicationFormControls } from "./formReadiness.js";
 import { resumeFilePayload } from "./resumeFilePayload.js";
 
 const NAV_TIMEOUT_MS = 30000;
@@ -51,6 +53,10 @@ const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was
 // required field" legend is present before and after every valid submit click.
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|error submitting|something went wrong)/i;
 
+function cssAttr(value) {
+  return String(value || "").replace(/[\\"]/g, "\\$&");
+}
+
 // Real Greenhouse forms are embedded two ways: inline on boards.greenhouse.io /
 // job-boards.greenhouse.io, or via <iframe src="...greenhouse.io/embed/job_app...">
 // on a company's own branded careers domain (confirmed live against Asana's
@@ -59,24 +65,68 @@ const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|e
 // later. Deciding "page scope" immediately after domcontentloaded races that
 // mount and leaves the worker waiting on top-level labels that will never
 // exist, so this helper waits for a scope that actually contains fields.
+function parseGreenhouseJobParts(url) {
+  try {
+    const parsed = new URL(url);
+    const pathJobId = parsed.pathname.match(/\/jobs\/(\d+)/i)?.[1] || "";
+    const pathBoardToken = /greenhouse\.io$/i.test(parsed.hostname) && !/^\/embed\//i.test(parsed.pathname)
+      ? parsed.pathname.split("/").filter(Boolean)[0] || ""
+      : "";
+    return {
+      boardToken: parsed.searchParams.get("for") || pathBoardToken,
+      jobId: parsed.searchParams.get("token") || parsed.searchParams.get("gh_jid") || pathJobId
+    };
+  } catch {
+    return { boardToken: "", jobId: "" };
+  }
+}
+
+function greenhouseEmbedUrl(posting) {
+  const parsed = parseGreenhouseJobParts(posting.applyUrl);
+  const boardToken = posting.boardToken || parsed.boardToken;
+  const jobId = parsed.jobId;
+  if (!boardToken || !jobId) return "";
+  return `https://boards.greenhouse.io/embed/job_app?for=${encodeURIComponent(boardToken)}&token=${encodeURIComponent(jobId)}`;
+}
+
+function orderedGreenhouseApplicationUrls(posting) {
+  const original = posting.applyUrl;
+  const direct = greenhouseEmbedUrl(posting);
+  if (!direct || direct === original) return [original].filter(Boolean);
+
+  try {
+    const host = new URL(original).hostname;
+    const originalIsHostedGreenhouse = /(^|\.)greenhouse\.io$/i.test(host) && /\/embed\/job_app/i.test(new URL(original).pathname);
+    return originalIsHostedGreenhouse ? [original] : [direct, original].filter(Boolean);
+  } catch {
+    return [direct, original].filter(Boolean);
+  }
+}
+
 async function findFormScope(page) {
   const deadline = Date.now() + FORM_WAIT_TIMEOUT_MS;
+  let unavailableMessage = "";
 
   while (Date.now() < deadline) {
-    if (await page.locator("label[for]").first().isVisible().catch(() => false)) return page;
+    if (await hasApplicationFormControls(page).catch(() => false)) return page;
 
     for (const frame of page.frames()) {
       if (frame === page.mainFrame() || !/greenhouse/i.test(frame.url())) continue;
-      if (await frame.locator("label[for]").first().isVisible().catch(() => false)) return frame;
+      if (await hasApplicationFormControls(frame).catch(() => false)) return frame;
     }
 
     const blockerReason = await detectGreenhouseBlocker(page, page).catch(() => null);
     if (blockerReason) return page;
 
+    unavailableMessage = await detectUnavailablePosting(page).catch(() => "") || unavailableMessage;
+    if (unavailableMessage) {
+      throw new Error(`Greenhouse application is not available: ${unavailableMessage}`);
+    }
+
     await page.waitForTimeout(250);
   }
 
-  throw new Error(`Greenhouse application form did not render within ${FORM_WAIT_TIMEOUT_MS}ms: no visible label[for] found in the page or Greenhouse iframe.`);
+  throw new Error(`Greenhouse application form did not render within ${FORM_WAIT_TIMEOUT_MS}ms: no visible application fields found in the page or Greenhouse iframe.`);
 }
 
 // Confirmed live: standard fields (name/email/phone) are plain <input>, but
@@ -141,6 +191,29 @@ async function fillReactSelect(page, scope, input, value, debugLabel = null) {
   return true;
 }
 
+async function radioOptions(scope, locator) {
+  const name = await locator.getAttribute("name").catch(() => null);
+  if (!name) return [];
+
+  return scope.evaluate((radioName) => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const labelFor = (id) => {
+      if (!id) return "";
+      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      return clean(label?.innerText || label?.textContent || "");
+    };
+
+    return [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(radioName)}"]`)]
+      .map((radio, index) => ({
+        index,
+        id: radio.id || "",
+        value: radio.value || "",
+        text: labelFor(radio.id) || clean(radio.closest("label, li, div")?.innerText || radio.value)
+      }))
+      .filter((option) => option.text || option.value);
+  }, name).catch(() => []);
+}
+
 // Captures a select/react-select field's real available options at the
 // point it's about to be flagged for manual review — only ever called
 // there (never proactively for every field), so it adds no overhead to a
@@ -154,6 +227,10 @@ async function captureFieldOptions(page, scope, locator, widget) {
   if (widget === "native-select") {
     const texts = await locator.locator("option").allInnerTexts().catch(() => []);
     return texts.map((t) => t.trim()).filter(Boolean);
+  }
+  if (widget === "radio") {
+    const options = await radioOptions(scope, locator);
+    return options.map((option) => option.text || option.value).filter(Boolean);
   }
   if (widget === "react-select") {
     await clickWithBrowserMouse(page, locator).catch(() => {});
@@ -200,35 +277,132 @@ async function fillByWidget(page, scope, locator, widget, value, debugLabel = nu
       }
     case "react-select":
       return fillReactSelect(page, scope, locator, value, debugLabel);
+    case "radio": {
+      const name = await locator.getAttribute("name").catch(() => null);
+      if (!name) return false;
+      const match = matchOptionByCandidates(await radioOptions(scope, locator), [value]);
+      if (!match) {
+        if (debugLabel) {
+          const options = await radioOptions(scope, locator).catch(() => []);
+          console.log(`  [fill-debug] radio "${debugLabel}": "${value}" didn't match — options: ${JSON.stringify(options.map((o) => o.text || o.value))}`);
+        }
+        return false;
+      }
+      const radio = match.id
+        ? scope.locator(`[id="${cssAttr(match.id)}"]`).first()
+        : scope.locator(`input[type="radio"][name="${cssAttr(name)}"]`).nth(match.index || 0);
+      await setCheckedWithBrowserMouse(page, radio, true);
+      return true;
+    }
     default:
       if (debugLabel) console.log(`  [fill-debug] "${debugLabel}": widget "${widget}" has no fill path here`);
       return false;
   }
 }
 
-// Collects {label, normalizedLabel, locator, forId, required} for every
-// label[for] pair in the form scope — the only reliable way to associate a
-// field with its meaning, since custom question ids are unique per posting.
+// Collects fields from classic label[for] pairs first, but also accepts the
+// modern shapes seen on branded Greenhouse pages: implicit labels,
+// aria-labelledby/aria-label, placeholders, and grouped native radios.
 async function collectLabeledFields(scope) {
-  const labelHandles = await scope.locator("label[for]").all();
-  const fields = [];
+  const descriptors = await scope.evaluate(() => {
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && Number(style.opacity || "1") !== 0
+        && Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    };
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const textOf = (el) => clean(el?.innerText || el?.textContent || "");
+    const labelById = (id) => {
+      if (!id) return "";
+      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      return textOf(label);
+    };
+    const labelledByText = (el) => clean((el.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .map((id) => textOf(document.getElementById(id)))
+      .filter(Boolean)
+      .join(" "));
+    const fieldContainer = (el) => el.closest("fieldset, .field, .form-field, .custom-question, .custom_question, .application-question, .question, .demographic-question, .demographic_question, [data-testid*='field' i], [class*='field' i], [class*='question' i]");
+    const containerLabel = (el) => {
+      const container = fieldContainer(el);
+      if (!container) return "";
+      return textOf(container.querySelector("legend, label, [class*='label' i], [class*='question' i]"));
+    };
+    const labelForControl = (el) => labelById(el.id)
+      || textOf((el.labels || [])[0])
+      || textOf(el.closest("label"))
+      || labelledByText(el)
+      || clean(el.getAttribute("aria-label"))
+      || clean(el.getAttribute("placeholder"))
+      || containerLabel(el)
+      || clean(el.getAttribute("name"))
+      || clean(el.id);
+    const isRequired = (el, labelText) => Boolean(el.required)
+      || el.getAttribute("aria-required") === "true"
+      || /\*/.test(labelText)
+      || /\brequired\b/i.test(clean(fieldContainer(el)?.innerText || ""));
+    const selectorFor = (el, index) => {
+      el.setAttribute("data-jsf-greenhouse-field", String(index));
+      return `[data-jsf-greenhouse-field="${index}"]`;
+    };
 
-  for (const label of labelHandles) {
-    const forId = await label.getAttribute("for").catch(() => null);
-    if (!forId) continue;
-    const text = (await label.innerText().catch(() => "")) || "";
-    // Attribute selector rather than `#id` — this code runs in the Node/Playwright
-    // context, not the browser, so the DOM's CSS.escape() isn't available here,
-    // and an attribute-value selector sidesteps CSS id-escaping entirely.
-    const locator = scope.locator(`[id="${forId.replace(/"/g, '\\"')}"]`);
-    if (await locator.count().catch(() => 0) === 0) continue;
-    const required = text.includes("*")
-      || await locator.evaluate((el) => Boolean(el.required || el.getAttribute("aria-required") === "true")).catch(() => false);
+    const fields = [];
+    const seen = new Set();
+    const seenRadioNames = new Set();
+    let index = 0;
 
-    fields.push({ label: text, normalizedLabel: normalizeLabel(text), locator, forId, required });
-  }
+    for (const el of document.querySelectorAll("input, textarea, select, [role='combobox'], [role='textbox'], [contenteditable='true']")) {
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      const name = el.getAttribute("name") || "";
+      if (["hidden", "file", "submit", "button", "reset", "image"].includes(type)) continue;
+      if (/honey.?pot/i.test(name) || /honeypot/i.test(el.getAttribute("aria-label") || "")) continue;
+      if (!visible(el) && type !== "radio" && type !== "checkbox") continue;
 
-  return fields;
+      if (type === "radio") {
+        if (!name || seenRadioNames.has(name)) continue;
+        seenRadioNames.add(name);
+        const radios = [...document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)];
+        const container = fieldContainer(el);
+        const label = textOf(container?.querySelector("legend")) || containerLabel(el) || labelForControl(el) || name;
+        const radioIndex = index;
+        index += 1;
+        radios[0]?.setAttribute("data-jsf-greenhouse-field", String(radioIndex));
+        fields.push({
+          label,
+          selector: `[data-jsf-greenhouse-field="${radioIndex}"]`,
+          forId: `radio:${name}`,
+          required: radios.some((radio) => isRequired(radio, label))
+        });
+        continue;
+      }
+
+      const key = el.id ? `id:${el.id}` : name ? `name:${name}` : `field:${index}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const label = labelForControl(el);
+      if (!label) continue;
+
+      fields.push({
+        label,
+        selector: selectorFor(el, index),
+        forId: key,
+        required: isRequired(el, label)
+      });
+      index += 1;
+    }
+
+    return fields;
+  });
+
+  return descriptors.map((field) => ({
+    ...field,
+    normalizedLabel: normalizeLabel(field.label),
+    locator: scope.locator(field.selector).first()
+  }));
 }
 
 // resumeUploadCheck.js's shared check (scan the page for error TEXT) turned
@@ -467,15 +641,30 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
 
   try {
     const page = await newPage();
-    const resumeUploadReady = waitForResumeUploadReady(page);
-    await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+    let scope = null;
+    let resumeUploadReady = null;
+    let lastOpenError = null;
+    let activePosting = posting;
 
-    let scope = await findFormScope(page);
+    for (const applyUrl of orderedGreenhouseApplicationUrls(posting)) {
+      resumeUploadReady = waitForResumeUploadReady(page);
+      await page.goto(applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
+      try {
+        scope = await findFormScope(page);
+        activePosting = { ...posting, applyUrl: page.url() || applyUrl };
+        break;
+      } catch (error) {
+        lastOpenError = error;
+      }
+    }
+
+    if (!scope) throw lastOpenError || new Error("Greenhouse application form did not render.");
+
     let blockerReason = await detectGreenhouseBlocker(page, scope);
     let blockerResolutionCount = 0;
     while (blockerReason && blockerResolutionCount < 2) {
       if (isHeldChallengeBlockerReason(blockerReason)) {
-        const challengeResult = await resolveHeldChallenge({ page, scope, posting, submittedAnswers, blockerReason });
+        const challengeResult = await resolveHeldChallenge({ page, scope, posting: activePosting, submittedAnswers, blockerReason });
         if (!challengeResult.ok) {
           return {
             status: "blocked",
@@ -506,10 +695,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     }
 
     let fields = await collectLabeledFields(scope);
-    // Every field[for] id already processed in an earlier discovery pass —
+    // Every field id already processed in an earlier discovery pass —
     // see MAX_FIELD_DISCOVERY_PASSES above. A re-scan reruns
-    // collectLabeledFields() over the WHOLE form again (cheap; it's just
-    // label[for] pairs), so this is what keeps a pass from redoing work on
+    // collectLabeledFields() over the whole form again, so this is what
+    // keeps a pass from redoing work on
     // fields that already resolved (or were already flagged) in a prior one.
     const processedForIds = new Set();
     // Fetched once, reused for every field below — see
@@ -749,7 +938,7 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
 
       let postSubmitBlockerReason = submitOutcome.blockerReason || await detectGreenhouseBlocker(page, outcomeScope);
       if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
-        const challengeResult = await resolveHeldChallenge({ page, scope: outcomeScope, posting, submittedAnswers, blockerReason: postSubmitBlockerReason });
+        const challengeResult = await resolveHeldChallenge({ page, scope: outcomeScope, posting: activePosting, submittedAnswers, blockerReason: postSubmitBlockerReason });
         if (challengeResult.ok) {
           // outcomeScope/submitButton stay the same locators — Playwright
           // locators re-query live, so this correctly reflects wherever the

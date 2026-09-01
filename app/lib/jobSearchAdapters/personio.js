@@ -4,6 +4,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { ApplicationFormUnavailableError, requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -25,10 +26,6 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|application (has been |was )?(successfully )?(submitted|sent)|we('| ha)ve received your application|your application (has been|was) received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid|upload failed|failed to upload)/i;
-
-function cssAttr(value) {
-  return String(value || "").replace(/"/g, '\\"');
-}
 
 function cleanRequiredLabel(text) {
   return String(text || "")
@@ -55,15 +52,18 @@ function looksLikeExperienceDurationQuestion(options) {
 }
 
 async function waitForForm(page) {
-  await page.locator('form input[name="email"], form #field-email').first()
-    .waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+  return requireApplicationFormReady(page, {
+    platformName: "Personio",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
 }
 
 async function openApplicationForm(page) {
   try {
     await waitForForm(page);
     return;
-  } catch {
+  } catch (error) {
+    if (error instanceof ApplicationFormUnavailableError) throw error;
     // Personio's feed URL lands on the job overview; the real form is behind
     // an "Apply for this job" link that navigates to /apply.
   }
@@ -88,44 +88,84 @@ async function openApplicationForm(page) {
 }
 
 async function collectLabeledFields(page) {
-  const labelHandles = await page.locator("form label[for]").all();
-  const fields = [];
+  const descriptors = await page.evaluate(() => {
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && Number(style.opacity || "1") !== 0
+        && Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    };
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const labelFor = (id) => {
+      if (!id) return "";
+      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      return clean(label?.innerText || label?.textContent || "");
+    };
+    const labelledByText = (el) => clean((el.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .map((id) => clean(document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || ""))
+      .filter(Boolean)
+      .join(" "));
+    const nearbyText = (el) => {
+      const container = el.closest(".form-group, .field, [class*='field' i], [class*='question' i], label");
+      return clean(container?.querySelector("label, legend, [class*='label' i]")?.innerText || container?.innerText || "");
+    };
+    const labelText = (el) => labelFor(el.id)
+      || clean((el.labels || [])[0]?.innerText || "")
+      || labelledByText(el)
+      || clean(el.getAttribute("aria-label"))
+      || clean(el.getAttribute("placeholder"))
+      || nearbyText(el)
+      || clean(el.getAttribute("name"))
+      || clean(el.id);
 
-  for (const label of labelHandles) {
-    const forId = await label.getAttribute("for").catch(() => null);
-    if (!forId) continue;
+    const fields = [];
+    const seen = new Set();
+    let index = 0;
 
-    const locator = page.locator(`form [id="${cssAttr(forId)}"]`).first();
-    if ((await locator.count().catch(() => 0)) === 0) continue;
+    for (const el of document.querySelectorAll("form input, form textarea, form select")) {
+      const tag = el.tagName.toLowerCase();
+      const type = (el.getAttribute("type") || "").toLowerCase();
+      const name = el.getAttribute("name") || "";
+      if (["file", "hidden", "submit", "button", "reset", "image"].includes(type)) continue;
+      if (/honey.?pot/i.test(name) || /honeypot/i.test(el.getAttribute("aria-label") || "")) continue;
+      if (!visible(el) && type !== "radio" && type !== "checkbox") continue;
 
-    const tag = await locator.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
-    const type = ((await locator.getAttribute("type").catch(() => "")) || "").toLowerCase();
-    if (type === "file" || type === "hidden") continue;
+      const key = el.id ? `id:${el.id}` : name ? `name:${name}` : `field:${index}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-    const name = await locator.getAttribute("name").catch(() => "");
-    const rawLabel = ((await label.innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
-    const labelText = name === "first_name"
-      ? "First name"
-      : name === "last_name"
-        ? "Last name"
-        : cleanRequiredLabel(rawLabel || await locator.getAttribute("placeholder").catch(() => "") || name);
-    const required = /\*|\(\s*required\s*\)/i.test(rawLabel)
-      || ["first_name", "last_name", "email"].includes(name)
-      || await locator.evaluate((el) => Boolean(el.required || el.getAttribute("aria-required") === "true")).catch(() => false);
+      const selector = `[data-jsf-personio-field="${index}"]`;
+      el.setAttribute("data-jsf-personio-field", String(index));
+      index += 1;
 
-    fields.push({
-      label: labelText,
-      rawLabel,
-      normalizedLabel: normalizeLabel(labelText || rawLabel),
-      locator,
-      name,
-      tag,
-      type,
-      required
-    });
-  }
+      const rawLabel = labelText(el);
+      const cleanLabelText = name === "first_name"
+        ? "First name"
+        : name === "last_name"
+          ? "Last name"
+          : rawLabel;
+      const required = /\*|\(\s*required\s*\)/i.test(rawLabel)
+        || ["first_name", "last_name", "email"].includes(name)
+        || Boolean(el.required || el.getAttribute("aria-required") === "true");
 
-  return fields;
+      fields.push({ label: cleanLabelText, rawLabel, name, tag, type, required, selector });
+    }
+
+    return fields;
+  });
+
+  return descriptors.map((field) => {
+    const label = cleanRequiredLabel(field.label || field.rawLabel || field.name);
+    return {
+      ...field,
+      label,
+      rawLabel: field.rawLabel || label,
+      normalizedLabel: normalizeLabel(label || field.rawLabel),
+      locator: page.locator(field.selector).first()
+    };
+  });
 }
 
 async function selectOptionByText(locator, candidates) {
@@ -306,6 +346,11 @@ export async function submitPersonioApplication({ posting, profile, resumeBuffer
           submittedAnswers[field.label] = overrideFilled;
           continue;
         }
+      }
+
+      if (field.type === "checkbox" || field.type === "radio") {
+        if (field.required) await flagForReview(field);
+        continue;
       }
 
       let filledValue = await fillCandidates(field, namedCandidates(field, profile));
