@@ -50,7 +50,14 @@ export async function GET() {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive"
+      Connection: "keep-alive",
+      // Without this, Railway's proxy buffers the response instead of
+      // flushing each chunk as it's written, so a "new" event can sit
+      // undelivered for a while — this panel's own 4s poll happened to mask
+      // it here, but submit-progress-events' identical bug (no poll
+      // fallback) made it obvious. Same fix as that route and the live-frame
+      // MJPEG stream in app/api/job-search/live-sessions/[id]/stream/route.js.
+      "X-Accel-Buffering": "no"
     }
   });
 }

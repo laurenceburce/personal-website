@@ -48,7 +48,14 @@ export async function GET() {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
-      Connection: "keep-alive"
+      Connection: "keep-alive",
+      // Without this, Railway's proxy buffers the response instead of
+      // flushing each chunk as it's written — confirmed live: updates during
+      // a run never arrived, then the whole backlog showed up at once once
+      // enough had accumulated (near/at the run finishing). Same fix already
+      // used for the live-frame MJPEG stream in
+      // app/api/job-search/live-sessions/[id]/stream/route.js.
+      "X-Accel-Buffering": "no"
     }
   });
 }
