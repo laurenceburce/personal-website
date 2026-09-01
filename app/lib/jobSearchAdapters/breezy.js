@@ -4,6 +4,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { ApplicationFormUnavailableError, requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -45,15 +46,18 @@ function fullAddress(profile) {
 }
 
 async function waitForForm(page) {
-  await page.locator('form input[name="cName"], form input[placeholder="Full Name"]').first()
-    .waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+  return requireApplicationFormReady(page, {
+    platformName: "Breezy",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
 }
 
 async function openApplicationForm(page) {
   try {
     await waitForForm(page);
     return;
-  } catch {
+  } catch (error) {
+    if (error instanceof ApplicationFormUnavailableError) throw error;
     // Breezy feed URLs point at the job overview; the actual form sits at an
     // /apply route exposed by an Apply/Apply Now/Apply To Position CTA.
   }

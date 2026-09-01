@@ -8,6 +8,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -58,8 +59,10 @@ const STANDARD_FIELDS = [
 ];
 
 async function waitForForm(page) {
-  await page.locator('input[name="name"], form input[name="email"]').first()
-    .waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+  return requireApplicationFormReady(page, {
+    platformName: "Lever",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
 }
 
 async function resolveCurrentBlocker(page, posting, submittedAnswers) {

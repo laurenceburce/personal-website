@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const MOUSE_MOVE_THROTTLE_MS = 30;
+const MOUSE_MOVE_THROTTLE_MS = 16;
 // Relayed events are buffered locally and flushed as one batched request on
 // this cadence, instead of one HTTP round-trip per event — under any real
 // network latency (this call crosses browser -> web app -> the submit-
@@ -12,7 +12,7 @@ const MOUSE_MOVE_THROTTLE_MS = 30;
 // compounding with every event. The worker's /live/:id/input already
 // accepted a batched {events:[...]} body from the start; this is what
 // actually uses it.
-const FLUSH_INTERVAL_MS = 25;
+const FLUSH_INTERVAL_MS = 16;
 
 async function postInputBatch(challengeId, events) {
   if (events.length === 0) return;

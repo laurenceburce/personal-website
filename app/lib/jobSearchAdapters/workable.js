@@ -13,6 +13,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -77,6 +78,13 @@ const STANDARD_NAME_RESOLVERS = {
 
 async function dismissCookieBanner(page) {
   await clickWithBrowserMouse(page, page.locator('button:has-text("Accept all")').first(), { timeout: 3000 }).catch(() => {});
+}
+
+async function waitForForm(page) {
+  return requireApplicationFormReady(page, {
+    platformName: "Workable",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
 }
 
 // Standard/label-matched "field" questions were always filled with a plain
@@ -231,7 +239,7 @@ export async function submitWorkableApplication({ posting, profile, resumeBuffer
   try {
     const page = await newPage();
     await page.goto(posting.applyUrl, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT_MS });
-    await page.locator('input[name="firstname"]').first().waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+    await waitForForm(page);
     await dismissCookieBanner(page);
 
     const blockerReason = await detectSubmissionBlocker(page);

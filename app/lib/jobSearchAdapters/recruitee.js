@@ -7,6 +7,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -51,8 +52,10 @@ function isCandidateLogisticsLabel(label, name) {
 }
 
 async function waitForForm(page) {
-  await page.locator('form input[name="candidate.name"], form input[name="candidate.email"], form button[type="submit"]').first()
-    .waitFor({ state: "visible", timeout: FORM_WAIT_TIMEOUT_MS });
+  return requireApplicationFormReady(page, {
+    platformName: "Recruitee",
+    timeoutMs: FORM_WAIT_TIMEOUT_MS
+  });
 }
 
 async function resolveCurrentBlocker(page, posting, submittedAnswers) {

@@ -181,7 +181,7 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
                   value={code}
                   onChange={(event) => setCodes((current) => ({ ...current, [challenge.id]: event.target.value }))}
                   autoComplete="one-time-code"
-                  inputMode={kind === "security_code" ? "numeric" : "text"}
+                  inputMode="text"
                   placeholder={kind === "anti_bot_text" ? "Your answer" : "Security code"}
                 />
                 {lookupMessage ? <small className="job-search-security-email-status">{lookupMessage}</small> : null}
