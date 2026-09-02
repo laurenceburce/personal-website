@@ -102,7 +102,16 @@ async function collectLabeledFields(page) {
       || containerText(el)
       || clean(el.getAttribute("name"))
       || clean(el.id);
-    const requiredFor = (el, labelText) => Boolean(el.required || el.getAttribute("aria-required") === "true" || /\*/.test(labelText));
+    const labelLooksRequired = (label) => {
+      const text = typeof label === "string" ? clean(label) : clean(label?.innerText || label?.textContent || "");
+      const className = typeof label === "string" ? "" : String(label?.className || "");
+      return /\*/.test(text) || /(?:^|\s|_)required(?:_|\s|$)/i.test(className);
+    };
+    const requiredFor = (el, label) => Boolean(
+      el?.required
+        || el?.getAttribute("aria-required") === "true"
+        || labelLooksRequired(label)
+    );
 
     const fields = [];
     const seenTargets = new Set();
@@ -134,11 +143,57 @@ async function collectLabeledFields(page) {
         selectorKind,
         selectorValue: forId,
         forId: key,
-        required: Boolean(target.required || target.getAttribute("aria-required") === "true" || /\*/.test(text))
+        required: requiredFor(target, label)
       });
     }
 
     const seenRadioNames = new Set();
+    let groupIndex = 0;
+    for (const group of document.querySelectorAll("fieldset.ashby-application-form-input-radio-group, fieldset.ashby-application-form-input-checkbox-group")) {
+      if (!visible(group)) continue;
+
+      const questionLabel = group.querySelector("label.ashby-application-form-question-title, label[for]");
+      const label = clean(questionLabel?.innerText || questionLabel?.textContent || "");
+      if (!label) continue;
+
+      const inputs = [...group.querySelectorAll('input[type="radio"], input[type="checkbox"]')];
+      if (inputs.length === 0) continue;
+
+      const kind = inputs.some((input) => (input.getAttribute("type") || "").toLowerCase() === "radio") ? "radio" : "checkbox-group";
+      const radioName = kind === "radio" ? (inputs.find((input) => input.getAttribute("name"))?.getAttribute("name") || "") : "";
+      if (radioName && seenRadioNames.has(radioName)) continue;
+
+      const fieldPath = group.closest("[data-field-path]")?.getAttribute("data-field-path") || questionLabel?.getAttribute("for") || "";
+      const selectorValue = fieldPath || `group-${groupIndex}`;
+      const key = `${kind}:${selectorValue}`;
+      if (seenTargets.has(key)) continue;
+
+      group.setAttribute("data-jsf-ashby-group", selectorValue);
+      groupIndex += 1;
+      seenTargets.add(key);
+      if (radioName) seenRadioNames.add(radioName);
+
+      const options = inputs
+        .map((input, index) => ({
+          id: input.id || "",
+          value: input.value || input.getAttribute("name") || "",
+          text: optionLabel(input, index)
+        }))
+        .filter((option) => option.text || option.value);
+      if (options.length === 0) continue;
+
+      fields.push({
+        kind,
+        label: label.replace(/\*\s*$/, "").trim(),
+        selectorKind: "group",
+        selectorValue,
+        radioName,
+        forId: key,
+        required: requiredFor(inputs[0], questionLabel),
+        options
+      });
+    }
+
     for (const radio of document.querySelectorAll('input[type="radio"][name]')) {
       const name = radio.getAttribute("name") || "";
       if (!name || seenRadioNames.has(name)) continue;
@@ -175,6 +230,7 @@ async function collectLabeledFields(page) {
       const id = target.id || "";
       const name = target.getAttribute("name") || "";
       if (["hidden", "file", "submit", "button", "reset", "image"].includes(type)) continue;
+      if (target.closest("fieldset.ashby-application-form-input-radio-group, fieldset.ashby-application-form-input-checkbox-group")) continue;
       if (/honey.?pot/i.test(name) || /honeypot/i.test(target.getAttribute("aria-label") || "")) continue;
       if (!visible(target) && type !== "checkbox") continue;
       if (type === "radio") continue;
@@ -211,6 +267,8 @@ async function collectLabeledFields(page) {
     normalizedLabel: normalizeLabel(field.label),
     locator: field.kind === "radio"
       ? page.locator(`input[type="radio"][name="${cssAttr(field.radioName)}"]`).first()
+      : field.kind === "checkbox-group"
+        ? page.locator(`[data-jsf-ashby-group="${cssAttr(field.selectorValue)}"] input[type="checkbox"]`).first()
       : field.selectorKind === "data"
         ? page.locator(`[data-jsf-ashby-field="${cssAttr(field.selectorValue)}"]`).first()
         : field.selectorKind === "name"
@@ -238,7 +296,10 @@ async function classifyWidget(locator) {
   if (tag === "textarea") return "textarea";
   const type = (await locator.getAttribute("type").catch(() => "")) || "";
   if (type === "file") return "file";
-  if (type === "checkbox") return "yesno"; // Ashby's yes/no widget, confirmed live
+  if (type === "checkbox") {
+    const isCheckboxGroup = await locator.evaluate((el) => Boolean(el.closest("fieldset.ashby-application-form-input-checkbox-group"))).catch(() => false);
+    return isCheckboxGroup ? "checkbox-group" : "yesno";
+  }
   if (type === "radio") return "radio";
   const role = (await locator.getAttribute("role").catch(() => "")) || "";
   if (role === "combobox") return "autocomplete";
@@ -319,6 +380,61 @@ async function radioOptions(page, locator) {
   }, name).catch(() => []);
 }
 
+async function checkboxGroupOptions(locator) {
+  return locator.evaluate((input) => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const group = input.closest("fieldset.ashby-application-form-input-checkbox-group, [data-jsf-ashby-group]");
+    if (!group) return [];
+
+    return [...group.querySelectorAll('input[type="checkbox"]')]
+      .map((checkbox, index) => {
+        const label = checkbox.id
+          ? [...document.querySelectorAll("label[for]")].find((candidate) => candidate.getAttribute("for") === checkbox.id)
+          : null;
+        return {
+          id: checkbox.id || "",
+          index,
+          value: checkbox.value || "",
+          name: checkbox.getAttribute("name") || "",
+          text: clean(label?.innerText || label?.textContent || checkbox.closest("label, li, div")?.innerText || checkbox.getAttribute("name") || checkbox.value),
+          checked: Boolean(checkbox.checked)
+        };
+      })
+      .filter((option) => option.text || option.name || option.value);
+  }).catch(() => []);
+}
+
+async function clickInputOption(page, input, option, checked = true) {
+  if (option.id) {
+    const label = page.locator(`label[for="${cssAttr(option.id)}"]`).first();
+    if (await label.isVisible().catch(() => false)) {
+      await clickWithBrowserMouse(page, label);
+      const updated = await input.isChecked().catch(() => null);
+      if (updated === Boolean(checked)) return true;
+    }
+  }
+
+  await setCheckedWithBrowserMouse(page, input, checked);
+  return (await input.isChecked().catch(() => null)) === Boolean(checked);
+}
+
+async function fillCheckboxGroup(page, locator, value) {
+  const target = String(value || "").trim().toLowerCase();
+  if (!target) return false;
+
+  const options = await checkboxGroupOptions(locator);
+  const match = options.find((option) => String(option.text || "").trim().toLowerCase() === target)
+    || options.find((option) => String(option.name || "").trim().toLowerCase() === target)
+    || options.find((option) => String(option.value || "").trim().toLowerCase() === target);
+  if (!match) return false;
+
+  const group = locator.locator("xpath=ancestor::*[@data-jsf-ashby-group][1]");
+  const input = match.id
+    ? page.locator(`[id="${cssAttr(match.id)}"]`).first()
+    : group.locator('input[type="checkbox"]').nth(match.index);
+  return clickInputOption(page, input, match, true);
+}
+
 // Captures a field's real available options at the point it's about to be
 // flagged for manual review — see greenhouse.js's identical helper for the
 // full reasoning. "autocomplete" is deliberately excluded: its result list
@@ -336,6 +452,10 @@ async function captureFieldOptions(locator, widget, page) {
   if (widget === "radio") {
     const options = await radioOptions(page, locator);
     return options.map((option) => option.text || option.value).filter(Boolean);
+  }
+  if (widget === "checkbox-group") {
+    const options = await checkboxGroupOptions(locator);
+    return options.map((option) => option.text || option.name || option.value).filter(Boolean);
   }
   return [];
 }
@@ -365,6 +485,8 @@ async function fillByWidget(page, locator, widget, value) {
       }
     case "yesno":
       return fillYesNo(page, locator, value);
+    case "checkbox-group":
+      return fillCheckboxGroup(page, locator, value);
     case "autocomplete":
       return fillAutocomplete(page, locator, value);
     case "radio": {
@@ -379,12 +501,54 @@ async function fillByWidget(page, locator, widget, value) {
       const radio = match.id
         ? page.locator(`[id="${cssAttr(match.id)}"]`).first()
         : page.locator(`input[type="radio"][name="${cssAttr(name)}"]`).nth(match.index);
-      await setCheckedWithBrowserMouse(page, radio, true);
-      return true;
+      return clickInputOption(page, radio, match, true);
     }
     default:
       return false;
   }
+}
+
+async function fieldHasAnswer(locator, widget) {
+  switch (widget) {
+    case "text":
+    case "textarea":
+    case "autocomplete":
+      return locator.evaluate((el) => Boolean(String(el.value || el.textContent || "").trim())).catch(() => false);
+    case "native-select":
+      return locator.evaluate((el) => Boolean(String(el.value || "").trim())).catch(() => false);
+    case "yesno":
+      return locator.evaluate((el) => {
+        const root = el.closest(".ashby-application-form-input-yesno, .ashby-application-form-field-entry") || el.parentElement;
+        return Boolean(root?.querySelector('button[aria-pressed="true"], input:checked'));
+      }).catch(() => false);
+    case "radio":
+      return locator.evaluate((el) => {
+        const name = el.getAttribute("name");
+        return Boolean(name && document.querySelector(`input[type="radio"][name="${CSS.escape(name)}"]:checked`));
+      }).catch(() => false);
+    case "checkbox-group":
+      return locator.evaluate((el) => {
+        const group = el.closest("fieldset.ashby-application-form-input-checkbox-group, [data-jsf-ashby-group]");
+        return Boolean(group?.querySelector('input[type="checkbox"]:checked'));
+      }).catch(() => false);
+    default:
+      return true;
+  }
+}
+
+async function collectUnansweredRequiredFields(page) {
+  const fields = await collectSettledLabeledFields(page);
+  const unanswered = [];
+
+  for (const field of fields) {
+    if (!field.required) continue;
+    const widget = await classifyWidget(field.locator);
+    if (widget === "file") continue;
+    if (await fieldHasAnswer(field.locator, widget)) continue;
+    unanswered.push({ ...field, widget });
+  }
+
+  return unanswered;
 }
 
 const RESUME_UPLOAD_CONFIRM_TIMEOUT_MS = 15000;
@@ -565,6 +729,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
     const memoryRows = await listAnswerMemoryForMatching().catch(() => []);
 
     async function flagForReview(label, locator, widget) {
+      if (manualReviewFields.some((existing) => normalizeLabel(existing) === normalizeLabel(label))) return;
       manualReviewFields.push(label);
       const options = await captureFieldOptions(locator, widget, page).catch(() => []);
       if (options.length > 0) fieldOptions[label] = options;
@@ -754,6 +919,10 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       if (field.required) await flagForReview(field.label, field.locator, widget);
     }
 
+    for (const field of await collectUnansweredRequiredFields(page)) {
+      await flagForReview(field.label, field.locator, field.widget);
+    }
+
     if (manualReviewFields.length > 0) {
       status = "needs_manual_review";
     } else if (dryRun) {
@@ -850,9 +1019,19 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
             status = "failed";
             errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Ashby to finish processing the submission. Review the posting manually before retrying.`;
           } else if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
-            status = "failed";
-            errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
-              + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
+            const unansweredRequiredFields = await collectUnansweredRequiredFields(page);
+            for (const field of unansweredRequiredFields) {
+              await flagForReview(field.label, field.locator, field.widget);
+            }
+
+            if (manualReviewFields.length > 0) {
+              status = "needs_manual_review";
+              errorMessage = "";
+            } else {
+              status = "failed";
+              errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
+                + "the submit button or a validation error. Review the posting manually before assuming this was submitted.";
+            }
           } else {
             status = "submitted";
           }
