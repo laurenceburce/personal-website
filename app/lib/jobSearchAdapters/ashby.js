@@ -144,7 +144,10 @@ function createAshbySubmitObserver(page) {
       const body = await response.text().catch(() => "");
       const diagnostic = extractAshbyResponseDiagnosticText(body, status);
       const text = diagnostic.text;
-      if (!text && status < 400) return;
+      if (!text && status < 400) {
+        events.push({ kind: "activity", status, url: cleanResponseUrl(url), text: "" });
+        return;
+      }
 
       if (SUCCESS_TEXT_SIGNALS.test(text)) {
         events.push({ kind: "success", status, url: cleanResponseUrl(url), text: compactText(text, 700) });
@@ -154,6 +157,8 @@ function createAshbySubmitObserver(page) {
       const hasErrorSignal = diagnostic.hasStructuredError || status >= 400 || ASHBY_SUBMIT_RESPONSE_SIGNALS.test(text);
       if (hasErrorSignal) {
         events.push({ kind: "error", status, url: cleanResponseUrl(url), text: compactText(text || `HTTP ${status}`, 700) });
+      } else {
+        events.push({ kind: "activity", status, url: cleanResponseUrl(url), text: "" });
       }
     })().catch(() => {});
 
@@ -176,7 +181,7 @@ function createAshbySubmitObserver(page) {
 }
 
 function ashbySubmitDiagnosticText(diagnostics) {
-  return (diagnostics || []).map((event) => event.text).filter(Boolean).join("\n");
+  return (diagnostics || []).filter((event) => event.kind !== "activity").map((event) => event.text).filter(Boolean).join("\n");
 }
 
 function ashbyPostSubmitFailureMessage(pageText, diagnostics) {
@@ -258,6 +263,14 @@ async function collectLabeledFields(page) {
     const fields = [];
     const seenTargets = new Set();
 
+    const assignSyntheticSelector = (target, base) => {
+      const existing = target.getAttribute("data-jsf-ashby-field");
+      if (existing) return existing;
+      const value = base || `synthetic-${seenTargets.size}`;
+      target.setAttribute("data-jsf-ashby-field", value);
+      return value;
+    };
+
     for (const label of document.querySelectorAll("label[for]")) {
       const forId = label.getAttribute("for");
       if (!forId) continue;
@@ -266,16 +279,28 @@ async function collectLabeledFields(page) {
 
       let target = document.getElementById(forId);
       let selectorKind = "id";
+      let selectorValue = forId;
       if (!target) {
         target = document.querySelector(`[name="${CSS.escape(forId)}"]`);
         selectorKind = "name";
       }
+
+      if (!target) {
+        const fieldEntry = label.closest("[data-field-path], .ashby-application-form-field-entry");
+        target = fieldEntry?.querySelector("input:not([type='hidden']), textarea, select, [role='combobox'], [role='textbox'], [contenteditable='true']") || null;
+        if (target) {
+          selectorKind = "data";
+          selectorValue = assignSyntheticSelector(target, fieldEntry?.getAttribute("data-field-path") || forId);
+        }
+      }
+
       if (!target) continue;
+      if (selectorKind !== "data") selectorValue = forId;
 
       const type = (target.getAttribute("type") || "").toLowerCase();
       if (type === "radio") continue;
 
-      const key = `${selectorKind}:${forId}`;
+      const key = `${selectorKind}:${selectorValue}`;
       if (seenTargets.has(key)) continue;
       seenTargets.add(key);
 
@@ -283,7 +308,7 @@ async function collectLabeledFields(page) {
         kind: "field",
         label: text.replace(/\*\s*$/, "").trim(),
         selectorKind,
-        selectorValue: forId,
+        selectorValue,
         forId: key,
         required: requiredFor(target, label)
       });
@@ -378,17 +403,19 @@ async function collectLabeledFields(page) {
       if (type === "radio") continue;
 
       const selectorKind = id ? "id" : name ? "name" : "data";
-      const selectorValue = id || name || `fallback-${fallbackIndex}`;
+      let selectorValue = id || name || target.getAttribute("data-jsf-ashby-field") || `fallback-${fallbackIndex}`;
+      if (selectorKind === "data") {
+        selectorValue = assignSyntheticSelector(target, selectorValue);
+      }
       const key = `${selectorKind}:${selectorValue}`;
       if (seenTargets.has(key)) continue;
 
-      const label = labelForControl(target).replace(/\*\s*$/, "").trim();
+      const fieldEntry = target.closest("[data-field-path], .ashby-application-form-field-entry");
+      const containerLabel = clean(fieldEntry?.querySelector("label.ashby-application-form-question-title, label, [class*='label' i], [class*='question' i]")?.innerText || "");
+      const label = (containerLabel || labelForControl(target)).replace(/\*\s*$/, "").trim();
       if (!label) continue;
 
-      if (selectorKind === "data") {
-        target.setAttribute("data-jsf-ashby-field", selectorValue);
-        fallbackIndex += 1;
-      }
+      if (selectorKind === "data") fallbackIndex += 1;
 
       seenTargets.add(key);
       fields.push({
@@ -799,8 +826,7 @@ function submissionTextExcerpt(text) {
   const signalIndexes = [
     source.search(SUCCESS_TEXT_SIGNALS),
     source.search(ERROR_TEXT_SIGNALS),
-    source.search(ASHBY_PLATFORM_REJECTION_SIGNALS),
-    source.search(ASHBY_SUBMIT_RESPONSE_SIGNALS)
+    source.search(ASHBY_PLATFORM_REJECTION_SIGNALS)
   ].filter((index) => index >= 0);
   const start = signalIndexes.length > 0 ? Math.max(0, Math.min(...signalIndexes) - 160) : 0;
   return source.slice(start, start + 500);
@@ -824,6 +850,17 @@ async function clickSubmitOrReadBlocker(page, submitButton) {
     const blockerReason = await detectSubmissionBlocker(page).catch(() => null);
     if (blockerReason) return { ok: false, blockerReason };
     return { ok: false, blockerReason: "", errorMessage: `Ashby submit button could not be clicked: ${compactErrorMessage(error)}` };
+  }
+}
+
+async function clickSubmitNativelyOrReadBlocker(page, submitButton) {
+  try {
+    await submitButton.click({ timeout: 5000 });
+    return { ok: true, blockerReason: "" };
+  } catch (error) {
+    const blockerReason = await detectSubmissionBlocker(page).catch(() => null);
+    if (blockerReason) return { ok: false, blockerReason };
+    return { ok: false, blockerReason: "", errorMessage: `Ashby submit button could not be clicked with Playwright fallback: ${compactErrorMessage(error)}` };
   }
 }
 
@@ -1205,14 +1242,43 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           errorMessage = postSubmitBlockerReason;
         }
 
-        const pageText = submitOutcome?.text || await readSubmissionText(page);
+        let pageText = submitOutcome?.text || await readSubmissionText(page);
         submitDiagnostics = await readSubmitDiagnostics();
-        const diagnosticText = ashbySubmitDiagnosticText(submitDiagnostics);
-        const combinedText = `${pageText || ""}\n${diagnosticText}`.trim();
+        let diagnosticText = ashbySubmitDiagnosticText(submitDiagnostics);
+        let combinedText = `${pageText || ""}\n${diagnosticText}`.trim();
+
+        let stillOnFormPage = submitButton ? await submitButton.isVisible().catch(() => false) : false;
+        const noSubmitActivity = submitDiagnostics.length === 0;
+        if (
+          status !== "blocked"
+            && status !== "submitted"
+            && noSubmitActivity
+            && stillOnFormPage
+            && !postSubmitBlockerReason
+            && !SUCCESS_TEXT_SIGNALS.test(combinedText)
+            && !ERROR_TEXT_SIGNALS.test(combinedText)
+            && submitOutcome?.state !== "timeout"
+        ) {
+          const fallbackObserver = createAshbySubmitObserver(page);
+          const fallbackClickResult = await clickSubmitNativelyOrReadBlocker(page, submitButton);
+          if (fallbackClickResult.ok) {
+            submitOutcome = await waitForAshbySubmitOutcome(page, submitButton);
+            postSubmitBlockerReason = await detectSubmissionBlocker(page).catch(() => null);
+            pageText = submitOutcome?.text || await readSubmissionText(page);
+            submitDiagnostics = await fallbackObserver.stop();
+            diagnosticText = ashbySubmitDiagnosticText(submitDiagnostics);
+            combinedText = `${pageText || ""}\n${diagnosticText}`.trim();
+            stillOnFormPage = submitButton ? await submitButton.isVisible().catch(() => false) : false;
+          } else {
+            await fallbackObserver.stop();
+            status = fallbackClickResult.blockerReason ? "blocked" : "failed";
+            errorMessage = fallbackClickResult.blockerReason || fallbackClickResult.errorMessage || "Ashby submit button was not visible after the fallback click. Review the posting manually before retrying.";
+          }
+        }
+
         if (status !== "submitted") confirmationText = submissionTextExcerpt(combinedText || pageText);
 
         if (status !== "blocked" && status !== "submitted") {
-          const stillOnFormPage = submitButton ? await submitButton.isVisible().catch(() => false) : false;
           const hasErrorSignal = ERROR_TEXT_SIGNALS.test(combinedText);
           const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(combinedText);
           const platformFailureMessage = ashbyPostSubmitFailureMessage(pageText, submitDiagnostics);
