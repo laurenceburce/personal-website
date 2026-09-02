@@ -164,30 +164,36 @@ pair is set (`auth.js`).
 ### 7. Job search's Gmail security-code lookup
 
 For the private job-search dashboard's security-code lookup, enable the Gmail
-API for the same OAuth client and store a refresh token with the
-`https://www.googleapis.com/auth/gmail.readonly` scope. The submit worker uses
-this automatically when a supported emailed code prompt appears, and the
-dashboard's "Check Email" button remains available as a manual fallback. The
-dedicated `JOB_SEARCH_GMAIL_*` client values are optional if `AUTH_GOOGLE_ID`
-and `AUTH_GOOGLE_SECRET` already point at that Gmail-enabled client.
-In production, set these Gmail variables on the submit-worker service for
-automatic entry, and on the web app service too if you want the dashboard
-button fallback.
+API for the Google OAuth client, then connect Gmail from Job Search -> User
+Settings. The dashboard stores an encrypted refresh token in the job-search DB;
+the submit worker uses it automatically when a supported emailed code prompt
+appears, and the dashboard's "Check Email" button remains available as a manual
+fallback.
+
+You can still provide a deployment-level refresh token instead. The dedicated
+`JOB_SEARCH_GMAIL_*` client values are optional if `AUTH_GOOGLE_ID` and
+`AUTH_GOOGLE_SECRET` already point at the Gmail-enabled client.
 
 ```env
 JOB_SEARCH_EMAIL_PROVIDER=gmail
-JOB_SEARCH_GMAIL_REFRESH_TOKEN=your_gmail_refresh_token
+JOB_SEARCH_GMAIL_REFRESH_TOKEN=optional_env_refresh_token
 JOB_SEARCH_GMAIL_CLIENT_ID=optional_if_AUTH_GOOGLE_ID_is_the_same_client
 JOB_SEARCH_GMAIL_CLIENT_SECRET=optional_if_AUTH_GOOGLE_SECRET_is_the_same_client
+JOB_SEARCH_TOKEN_SECRET=optional_if_AUTH_SECRET_is_set
 JOB_SEARCH_EMAIL_LOOKBACK_MINUTES=30
 JOB_SEARCH_EMAIL_MAX_RESULTS=30
+JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS=30000
+JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS=90000
 JOB_SEARCH_GMAIL_LABEL_IDS=INBOX
 JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE=true
 ```
 
 Optional: set `JOB_SEARCH_EMAIL_SEARCH_QUERY` to add Gmail search filters such
 as `from:no-reply@example.com`, or set `JOB_SEARCH_GMAIL_LABEL_IDS=*` to search
-recent mail across labels instead of only `INBOX`. Set
+recent mail across labels instead of only `INBOX`. Security-code lookup starts
+at the challenge timestamp minus `JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS` and,
+when several code emails match, prefers the newest message within
+`JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS`. Set
 `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE=false` to keep security-code prompts fully
 manual. Keep the refresh token server-side only; never expose it with a
 `NEXT_PUBLIC_` prefix.

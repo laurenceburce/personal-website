@@ -8,6 +8,7 @@ import { getCompanyDirectoryStats } from "../lib/jobSearchCompanyDirectory";
 import { getDatabaseSizeMb } from "../lib/jobSearchDb";
 import { isAdzunaConfigured } from "../lib/jobSearchDiscovery";
 import { listRecentDiscoveryRuns } from "../lib/jobSearchDiscoveryRunStore";
+import { getGmailConnectionStatus } from "../lib/jobSearchEmailConnectionStore";
 import { listOracleSessions } from "../lib/jobSearchOracleSessionStore";
 import { countPostingsByStatus, listPostingsByStatus } from "../lib/jobSearchPostingsStore";
 import { listPendingSecurityChallenges } from "../lib/jobSearchSecurityChallengeStore";
@@ -48,7 +49,8 @@ async function getDashboardSnapshot() {
     companyDirectoryStats,
     workerStatus,
     answerMemory,
-    securityChallenges
+    securityChallenges,
+    gmailConnection
   ] = await Promise.all([
     getProfile(),
     getFindSettings(),
@@ -80,7 +82,8 @@ async function getDashboardSnapshot() {
     getCompanyDirectoryStats(),
     getAllWorkerStatus(),
     listAnswerMemory(),
-    listPendingSecurityChallenges({ limit: 20 })
+    listPendingSecurityChallenges({ limit: 20 }),
+    getGmailConnectionStatus()
   ]);
 
   // Postings that would actually be attempted on the NEXT submit-worker run
@@ -102,7 +105,7 @@ async function getDashboardSnapshot() {
   return {
     profile, findSettings, resumes, defaultResume, oracleSessions, reviewQueue, scoredLow, autoApplySkipped, approvedWaiting,
     needsManualReview, failedPostings, autoApplyQueue, applications,
-    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus, answerMemory, securityChallenges,
+    statusCounts, discoveryRuns, submitRuns, llmUsage, dbSizeMb, companyDirectoryStats, workerStatus, answerMemory, securityChallenges, gmailConnection,
     adzunaConfigured: isAdzunaConfigured()
   };
 }
@@ -110,6 +113,8 @@ async function getDashboardSnapshot() {
 export default async function JobSearchPage({ searchParams }) {
   const params = await searchParams;
   const tab = typeof params?.tab === "string" ? params.tab : "overview";
+  const gmailNotice = typeof params?.gmail === "string" ? params.gmail : "";
+  const gmailError = typeof params?.gmailError === "string" ? params.gmailError : "";
   const access = await getJobSearchAccess();
 
   if (!access.session) {
@@ -131,5 +136,5 @@ export default async function JobSearchPage({ searchParams }) {
 
   const snapshot = await getDashboardSnapshot();
 
-  return <JobSearchAppClient snapshot={snapshot} initialTab={tab} />;
+  return <JobSearchAppClient snapshot={snapshot} initialTab={tab} gmailNotice={gmailNotice} gmailError={gmailError} />;
 }

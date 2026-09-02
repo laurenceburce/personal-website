@@ -537,6 +537,24 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
+      // Optional Gmail OAuth connection for automatic security-code lookup.
+      // JOB_SEARCH_GMAIL_REFRESH_TOKEN still works as a deployment-level
+      // override, but this table lets the owner connect Gmail from the
+      // dashboard without hand-copying a refresh token into Railway. The
+      // refresh token is encrypted by jobSearchEmailConnectionStore.js and
+      // never returned to the browser.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_email_connections (
+          id TINYINT UNSIGNED PRIMARY KEY,
+          provider VARCHAR(24) NOT NULL DEFAULT 'gmail',
+          email VARCHAR(160) NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL,
+          scopes TEXT NOT NULL,
+          connected_at DATETIME(3) NOT NULL,
+          updated_at DATETIME(3) NOT NULL
+        )
+      `);
+
       // Cross-posting "answer memory" (see jobSearchAnswerMemoryStore.js) —
       // every answer typed into the Review Queue's "Answer & Retry" popup is
       // saved here, one row per DISTINCT remembered question, so a similar

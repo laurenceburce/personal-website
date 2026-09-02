@@ -43,12 +43,18 @@ function liveChallengeFromProgress(progress) {
   };
 }
 
-export default function JobSearchAppClient({ snapshot, initialTab }) {
+function initialGmailNotice(status) {
+  if (status === "connected") return "Gmail connected for automatic security-code lookup.";
+  if (status === "disconnected") return "Gmail connection removed.";
+  return "";
+}
+
+export default function JobSearchAppClient({ snapshot, initialTab, gmailNotice = "", gmailError = "" }) {
   const router = useRouter();
   const [tab, setTab] = useState(initialTab || "overview");
   const [saving, setSaving] = useState("");
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [notice, setNotice] = useState(() => initialGmailNotice(gmailNotice));
+  const [error, setError] = useState(() => (gmailNotice === "error" ? gmailError || "Gmail connection failed." : ""));
   const [heldToast, setHeldToast] = useState("");
   const [toolbarLiveChallenge, setToolbarLiveChallenge] = useState(null);
   // null until the first poll lands. Lives here (not in OverviewPanel, which
@@ -515,11 +521,13 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             <ProfileSettingsPanel
               profile={snapshot.profile}
               resumes={snapshot.resumes}
+              gmailConnection={snapshot.gmailConnection}
               saving={saving}
               onSaveProfile={(data) => runAction("/api/job-search/settings", "updateProfile", data, "Profile saved.")}
               onUploadResume={uploadResume}
               onSetDefaultResume={(id) => runAction("/api/job-search/resumes", "setDefaultResume", { id }, "Default resume updated.")}
               onDeleteResume={(id) => runAction("/api/job-search/resumes", "deleteResume", { id }, "Resume deleted.")}
+              onDisconnectGmail={() => runAction("/api/job-search/gmail", "disconnect", {}, "Gmail connection removed.")}
             />
             <OracleSessionsPanel
               sessions={snapshot.oracleSessions}

@@ -58,13 +58,20 @@ that triggered it) or the next service restart.
 - `JOB_SEARCH_SUBMIT_TRIGGER_SECRET` — the exact same value set on the
   submit-worker service above.
 - `JOB_SEARCH_EMAIL_PROVIDER=gmail` — enables Gmail lookup for held
-  security-code prompts. Set this on the submit-worker service for automatic
-  entry, and on the main app service for the dashboard fallback button.
-- `JOB_SEARCH_GMAIL_REFRESH_TOKEN` — Gmail OAuth refresh token with
-  `https://www.googleapis.com/auth/gmail.readonly`.
+  security-code prompts. This defaults to Gmail because it is the only
+  supported provider today, but setting it explicitly is clearer.
+- Connect Gmail from Job Search -> User Settings to store an encrypted refresh
+  token in the job-search DB. The web app and submit-worker service must share
+  the same DB and `AUTH_SECRET`/`JOB_SEARCH_TOKEN_SECRET`.
+- `JOB_SEARCH_GMAIL_REFRESH_TOKEN` — optional deployment-level Gmail OAuth
+  refresh token with `https://www.googleapis.com/auth/gmail.readonly`. If set,
+  it overrides the DB-stored connection.
 - `JOB_SEARCH_GMAIL_CLIENT_ID` / `JOB_SEARCH_GMAIL_CLIENT_SECRET` — optional
   when `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` already belong to the
   Gmail-enabled OAuth client.
+- `JOB_SEARCH_TOKEN_SECRET` — optional when `AUTH_SECRET` is already shared
+  by the web app and submit-worker service; used to encrypt/decrypt the
+  DB-stored Gmail refresh token.
 - `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE` — optional, defaults to `true`; set
   `false` to require dashboard-entered security codes.
 - `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_WAIT_MS` — optional, defaults to the
@@ -75,6 +82,12 @@ that triggered it) or the next service restart.
   `60`.
 - `JOB_SEARCH_EMAIL_MAX_RESULTS` — optional, defaults to `30`, capped at
   `100`.
+- `JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS` — optional, defaults to `30000`;
+  email lookup ignores code messages older than the challenge by more than
+  this window, which prevents rapid same-company Greenhouse retries from
+  reusing the previous code.
+- `JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS` — optional, defaults to `90000`;
+  when multiple code emails match, the newest message in this window wins.
 - `JOB_SEARCH_GMAIL_LABEL_IDS` — optional, defaults to `INBOX`; use `*` to
   search recent mail across labels.
 - `JOB_SEARCH_EMAIL_SEARCH_QUERY` — optional extra Gmail search filter, such
