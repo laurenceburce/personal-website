@@ -44,8 +44,10 @@ const FIELD_COLLECTION_MAX_WAIT_MS = 4000;
 // arbitrary early-caution number, not a real cost/rate-limit ceiling).
 const MAX_LLM_ANSWERED_FIELDS = 15;
 
-const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|thank you for your application|thanks for your application|application (has been |was |is )?(successfully )?(submitted|received|sent)|we('| ha)ve received your application|we received your application|we got your application|your application (has been|was|is) received|application received)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
+const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|thank you for your application|thanks for your application|application (has been |was |is )?(successfully )?(submitted|received|sent)|we('| ha)ve received your application|we received your application|we got your application|your application (has been|was|is) received|application received|you(?:'ve| have)? already applied|you have already submitted|application (has )?already (been )?submitted|already received your application)/i;
+const ASHBY_PLATFORM_REJECTION_SIGNALS = /(we couldn['’]?t submit your application|could not submit your application|application submission was flagged|flagged as possible spam|legitimate applications are occasionally flagged|turn off your vpn|use your regular network|pause browser extensions|too many applications|application limit (?:reached|exceeded))/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed|we couldn['’]?t submit your application|could not submit your application|application submission was flagged|flagged as possible spam|legitimate applications are occasionally flagged|too many applications|application limit (?:reached|exceeded))/i;
+const ASHBY_SUBMIT_RESPONSE_SIGNALS = /(this field is required|please (enter|select|fill)|validation|invalid|captcha|security code|verification code|spam|couldn['’]?t submit|could not submit|not accepting|application limit|too many applications|too many requests|rate limit|server error|internal server error)/i;
 const PROCESSING_TEXT_SIGNALS = /(we('| a)re updating your application|updating your application|submitting|processing|please wait)/i;
 
 function cssAttr(value) {
@@ -54,6 +56,146 @@ function cssAttr(value) {
 
 function compactErrorMessage(error) {
   return String(error?.message || error || "unknown error").replace(/\s+/g, " ").slice(0, 240);
+}
+
+function compactText(value, max = 500) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function cleanResponseUrl(url) {
+  return String(url || "").split("?")[0].slice(0, 240);
+}
+
+function hasErrorEnvelope(value) {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((item) => hasErrorEnvelope(item));
+  return Object.keys(value).some((key) => /errors?|errorMessage|validation|violations|issues/i.test(key));
+}
+
+function collectJsonErrorMessages(value, messages = [], insideErrorEnvelope = false) {
+  if (messages.length >= 8 || value == null) return messages;
+
+  if (typeof value === "string") {
+    if (insideErrorEnvelope && value.trim()) messages.push(value.trim());
+    return messages;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonErrorMessages(item, messages, insideErrorEnvelope);
+    return messages;
+  }
+
+  if (typeof value !== "object") return messages;
+
+  for (const [key, child] of Object.entries(value)) {
+    const keyLooksErrorish = /errors?|errorMessage|validation|violations|issues/i.test(key);
+    const childIsMessage = /message|detail|reason|title|description/i.test(key);
+    const childInsideError = insideErrorEnvelope || keyLooksErrorish;
+
+    if (typeof child === "string") {
+      if ((childInsideError || (insideErrorEnvelope && childIsMessage)) && child.trim()) {
+        messages.push(child.trim());
+      }
+      continue;
+    }
+
+    collectJsonErrorMessages(child, messages, childInsideError);
+  }
+
+  return messages;
+}
+
+function extractAshbyResponseDiagnosticText(body, status) {
+  const raw = String(body || "");
+  const source = compactText(raw, 1200);
+  if (!source) return { text: "", hasStructuredError: false };
+
+  try {
+    const parsed = JSON.parse(raw);
+    const collectMessages = status >= 400 || hasErrorEnvelope(parsed);
+    const messages = collectMessages ? collectJsonErrorMessages(parsed) : [];
+    if (messages.length > 0) {
+      return { text: compactText(messages.join("; "), 900), hasStructuredError: true };
+    }
+  } catch {
+    // Non-JSON response bodies are still useful diagnostics below.
+  }
+
+  return { text: source, hasStructuredError: false };
+}
+
+function createAshbySubmitObserver(page) {
+  const events = [];
+  const pending = new Set();
+  let stopped = false;
+
+  const handler = (response) => {
+    const task = (async () => {
+      const url = response.url();
+      if (!/ashby/i.test(url)) return;
+
+      const request = response.request();
+      const method = request.method();
+      const status = response.status();
+      const relevantEndpoint = /(graphql|non-user|application|candidate|submit|jobApplication)/i.test(url);
+      if (!relevantEndpoint && status < 400) return;
+      if (method === "GET" && status < 400) return;
+
+      const body = await response.text().catch(() => "");
+      const diagnostic = extractAshbyResponseDiagnosticText(body, status);
+      const text = diagnostic.text;
+      if (!text && status < 400) return;
+
+      if (SUCCESS_TEXT_SIGNALS.test(text)) {
+        events.push({ kind: "success", status, url: cleanResponseUrl(url), text: compactText(text, 700) });
+        return;
+      }
+
+      const hasErrorSignal = diagnostic.hasStructuredError || status >= 400 || ASHBY_SUBMIT_RESPONSE_SIGNALS.test(text);
+      if (hasErrorSignal) {
+        events.push({ kind: "error", status, url: cleanResponseUrl(url), text: compactText(text || `HTTP ${status}`, 700) });
+      }
+    })().catch(() => {});
+
+    pending.add(task);
+    task.finally(() => pending.delete(task));
+  };
+
+  page.on("response", handler);
+
+  return {
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        page.off("response", handler);
+      }
+      await Promise.allSettled([...pending]);
+      return events;
+    }
+  };
+}
+
+function ashbySubmitDiagnosticText(diagnostics) {
+  return (diagnostics || []).map((event) => event.text).filter(Boolean).join("\n");
+}
+
+function ashbyPostSubmitFailureMessage(pageText, diagnostics) {
+  const diagnosticText = ashbySubmitDiagnosticText(diagnostics);
+  const combinedText = `${pageText || ""}\n${diagnosticText}`.trim();
+  if (!combinedText || SUCCESS_TEXT_SIGNALS.test(combinedText)) return "";
+
+  if (ASHBY_PLATFORM_REJECTION_SIGNALS.test(combinedText)) {
+    return `Ashby rejected the submission after submit: ${submissionTextExcerpt(combinedText) || compactText(combinedText, 420)}`.slice(0, 500);
+  }
+
+  const diagnostic = (diagnostics || []).find((event) => event.kind === "error");
+  if (!diagnostic) return "";
+
+  const excerpt = submissionTextExcerpt(diagnostic.text) || compactText(diagnostic.text || diagnostic.url, 420);
+  const prefix = diagnostic.status >= 400
+    ? `Ashby submit request returned HTTP ${diagnostic.status}`
+    : "Ashby submit request returned an error";
+  return `${prefix}: ${excerpt || cleanResponseUrl(diagnostic.url)}`.slice(0, 500);
 }
 
 async function waitForAshbyForm(page) {
@@ -551,6 +693,60 @@ async function collectUnansweredRequiredFields(page) {
   return unanswered;
 }
 
+async function collectVisibleValidationMessages(page) {
+  return page.evaluate(() => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const visible = (el) => {
+      const style = window.getComputedStyle(el);
+      return style.display !== "none"
+        && style.visibility !== "hidden"
+        && Number(style.opacity || "1") !== 0
+        && Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    };
+    const signal = /(this field is required|is required\b|please (enter|select|fill)|invalid|error|failed|we couldn['’]?t submit|could not submit|flagged as possible spam|application limit|too many applications)/i;
+    const out = [];
+    const seen = new Set();
+    const push = (value) => {
+      const text = clean(value);
+      if (!text || text.length > 500 || !signal.test(text)) return;
+      const normalized = text.toLowerCase();
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      out.push(text.slice(0, 220));
+    };
+
+    const selectors = [
+      '[role="alert"]',
+      '[aria-live]:not([aria-live="off"])',
+      '[class*="error" i]',
+      '[class*="invalid" i]',
+      '[class*="validation" i]',
+      '[data-testid*="error" i]',
+      '[id*="error" i]',
+      '[aria-invalid="true"]'
+    ].join(", ");
+
+    for (const el of document.querySelectorAll(selectors)) {
+      if (!visible(el)) continue;
+      let text = clean(el.innerText || el.textContent);
+
+      if (!text && el.getAttribute("aria-invalid") === "true") {
+        const label = el.id
+          ? [...document.querySelectorAll("label[for]")]
+            .find((candidate) => candidate.getAttribute("for") === el.id)
+          : null;
+        const field = el.closest("fieldset, [data-field-path], .ashby-application-form-field-entry");
+        text = clean([label?.innerText || label?.textContent || "", field?.innerText || field?.textContent || ""].join(" "));
+      }
+
+      push(text);
+      if (out.length >= 6) break;
+    }
+
+    return out;
+  }).catch(() => []);
+}
+
 const RESUME_UPLOAD_CONFIRM_TIMEOUT_MS = 15000;
 const RESUME_UPLOAD_ERROR_TEXT = /failed to upload/i;
 
@@ -600,7 +796,12 @@ async function readSubmissionText(page) {
 
 function submissionTextExcerpt(text) {
   const source = String(text || "");
-  const signalIndexes = [source.search(SUCCESS_TEXT_SIGNALS), source.search(ERROR_TEXT_SIGNALS)].filter((index) => index >= 0);
+  const signalIndexes = [
+    source.search(SUCCESS_TEXT_SIGNALS),
+    source.search(ERROR_TEXT_SIGNALS),
+    source.search(ASHBY_PLATFORM_REJECTION_SIGNALS),
+    source.search(ASHBY_SUBMIT_RESPONSE_SIGNALS)
+  ].filter((index) => index >= 0);
   const start = signalIndexes.length > 0 ? Math.max(0, Math.min(...signalIndexes) - 160) : 0;
   return source.slice(start, start + 500);
 }
@@ -940,6 +1141,12 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         errorMessage = "";
         return true;
       };
+      const submitObserver = createAshbySubmitObserver(page);
+      let submitDiagnostics = [];
+      const readSubmitDiagnostics = async () => {
+        submitDiagnostics = await submitObserver.stop();
+        return submitDiagnostics;
+      };
       let clickResult = submitButton
         ? await clickSubmitOrReadBlocker(page, submitButton)
         : { ok: false, blockerReason: await detectSubmissionBlocker(page).catch(() => null) };
@@ -999,12 +1206,16 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         }
 
         const pageText = submitOutcome?.text || await readSubmissionText(page);
-        if (status !== "submitted") confirmationText = submissionTextExcerpt(pageText);
+        submitDiagnostics = await readSubmitDiagnostics();
+        const diagnosticText = ashbySubmitDiagnosticText(submitDiagnostics);
+        const combinedText = `${pageText || ""}\n${diagnosticText}`.trim();
+        if (status !== "submitted") confirmationText = submissionTextExcerpt(combinedText || pageText);
 
         if (status !== "blocked" && status !== "submitted") {
           const stillOnFormPage = submitButton ? await submitButton.isVisible().catch(() => false) : false;
-          const hasErrorSignal = ERROR_TEXT_SIGNALS.test(pageText);
-          const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(pageText);
+          const hasErrorSignal = ERROR_TEXT_SIGNALS.test(combinedText);
+          const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(combinedText);
+          const platformFailureMessage = ashbyPostSubmitFailureMessage(pageText, submitDiagnostics);
           const ambiguousPostSubmitState = submitOutcome?.state === "timeout" || (stillOnFormPage && !hasSuccessSignal);
 
           if (ambiguousPostSubmitState) {
@@ -1015,10 +1226,14 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
             // Confirmed by a fresh submission email.
           } else if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome?.state !== "timeout")) {
             status = "submitted";
+          } else if (platformFailureMessage) {
+            status = "blocked";
+            errorMessage = platformFailureMessage;
           } else if (submitOutcome?.state === "timeout") {
             status = "failed";
             errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Ashby to finish processing the submission. Review the posting manually before retrying.`;
           } else if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
+            const validationMessages = await collectVisibleValidationMessages(page);
             const unansweredRequiredFields = await collectUnansweredRequiredFields(page);
             for (const field of unansweredRequiredFields) {
               await flagForReview(field.label, field.locator, field.widget);
@@ -1027,6 +1242,12 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
             if (manualReviewFields.length > 0) {
               status = "needs_manual_review";
               errorMessage = "";
+            } else if (platformFailureMessage) {
+              status = "blocked";
+              errorMessage = platformFailureMessage;
+            } else if (validationMessages.length > 0) {
+              status = "blocked";
+              errorMessage = `Ashby showed validation after submit: ${validationMessages.join("; ")}`.slice(0, 500);
             } else {
               status = "failed";
               errorMessage = "Clicking submit did not produce a recognized confirmation — the form may still be showing "
@@ -1037,6 +1258,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           }
         }
       }
+      await readSubmitDiagnostics();
     }
   } catch (error) {
     errorMessage = error?.message || String(error);
