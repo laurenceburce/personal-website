@@ -19,6 +19,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { findSubmissionConfirmationEmailText } from "./emailConfirmationFallback.js";
 import { requireApplicationFormReady } from "./formReadiness.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
@@ -43,7 +44,7 @@ const FIELD_COLLECTION_MAX_WAIT_MS = 4000;
 // arbitrary early-caution number, not a real cost/rate-limit ceiling).
 const MAX_LLM_ANSWERED_FIELDS = 15;
 
-const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
+const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|thank you for your application|thanks for your application|application (has been |was |is )?(successfully )?(submitted|received|sent)|we('| ha)ve received your application|we received your application|we got your application|your application (has been|was|is) received|application received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
 const PROCESSING_TEXT_SIGNALS = /(we('| a)re updating your application|updating your application|submitting|processing|please wait)/i;
 
@@ -759,6 +760,17 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
       status = "dry_run_ok";
     } else {
       let submitButton = await findVisibleSubmitButton(page);
+      let submitAttemptedAt = submitButton ? Date.now() : 0;
+      let emailConfirmationText = "";
+      const confirmSubmittedByEmail = async () => {
+        if (emailConfirmationText) return true;
+        emailConfirmationText = await findSubmissionConfirmationEmailText(posting, submitAttemptedAt);
+        if (!emailConfirmationText) return false;
+        confirmationText = emailConfirmationText;
+        status = "submitted";
+        errorMessage = "";
+        return true;
+      };
       let clickResult = submitButton
         ? await clickSubmitOrReadBlocker(page, submitButton)
         : { ok: false, blockerReason: await detectSubmissionBlocker(page).catch(() => null) };
@@ -767,6 +779,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
         const challengeResult = await resolveHeldChallenge({ page, scope: page, posting, submittedAnswers, blockerReason: clickResult.blockerReason });
         if (challengeResult.ok) {
           submitButton = await findVisibleSubmitButton(page);
+          submitAttemptedAt = submitButton ? Date.now() : submitAttemptedAt;
           clickResult = submitButton
             ? await clickSubmitOrReadBlocker(page, submitButton)
             : {
@@ -795,6 +808,7 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
             status = "blocked";
             errorMessage = challengeResult.errorMessage;
           } else if (await submitButton.isVisible().catch(() => false)) {
+            submitAttemptedAt = Date.now();
             const retryClickResult = await clickSubmitOrReadBlocker(page, submitButton);
             if (retryClickResult.ok) {
               submitOutcome = await waitForAshbySubmitOutcome(page, submitButton);
@@ -806,20 +820,31 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           }
         }
 
-        if (status !== "blocked" && postSubmitBlockerReason) {
+        if (status !== "submitted" && postSubmitBlockerReason) {
+          await confirmSubmittedByEmail();
+        }
+
+        if (status !== "submitted" && status !== "blocked" && postSubmitBlockerReason) {
           status = "blocked";
           errorMessage = postSubmitBlockerReason;
         }
 
         const pageText = submitOutcome?.text || await readSubmissionText(page);
-        confirmationText = submissionTextExcerpt(pageText);
+        if (status !== "submitted") confirmationText = submissionTextExcerpt(pageText);
 
-        if (status !== "blocked") {
+        if (status !== "blocked" && status !== "submitted") {
           const stillOnFormPage = submitButton ? await submitButton.isVisible().catch(() => false) : false;
           const hasErrorSignal = ERROR_TEXT_SIGNALS.test(pageText);
           const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(pageText);
+          const ambiguousPostSubmitState = submitOutcome?.state === "timeout" || (stillOnFormPage && !hasSuccessSignal);
 
-          if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome?.state !== "timeout")) {
+          if (ambiguousPostSubmitState) {
+            await confirmSubmittedByEmail();
+          }
+
+          if (status === "submitted") {
+            // Confirmed by a fresh submission email.
+          } else if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome?.state !== "timeout")) {
             status = "submitted";
           } else if (submitOutcome?.state === "timeout") {
             status = "failed";

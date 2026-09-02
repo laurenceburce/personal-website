@@ -4,13 +4,17 @@ const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const DEFAULT_LOOKBACK_MINUTES = 30;
 const DEFAULT_MAX_RESULTS = 30;
+const DEFAULT_CONFIRMATION_LOOKBACK_MINUTES = 30;
 const MAX_LOOKBACK_MINUTES = 60;
+const MAX_CONFIRMATION_LOOKBACK_MINUTES = 120;
 const MAX_RESULTS_CAP = 100;
 
 const SECURITY_TERMS = /\b(security|verification|verify|one[-\s]?time|authentication|login|sign[-\s]?in|passcode|otp|confirm|validate|code)\b/i;
 const CODE_CONTEXT_TERMS = /\b(code|passcode|otp|pin|verification|security|authentication|one[-\s]?time)\b/i;
 const CODE_MARKER_TERMS = "(?:code|passcode|otp|pin|verification|security|authentication|confirmation)";
 const CODE_VALUE_MARKER_TERMS = "(?:(?:security|verification|authentication|confirmation|one[-\\s]?time)\\s+)?(?:code|passcode|otp|pin)";
+const SUBMISSION_CONFIRMATION_TERMS = /(thank you for applying|thanks for applying|thank you for your application|thanks for your application|application (?:has been |was |is )?(?:successfully )?(?:submitted|received|sent)|we(?:'ve| have) received your application|we received your application|we got your application|your application (?:has been|was|is) received|application received)/i;
+const NON_CONFIRMATION_EMAIL_TERMS = /(?:security|verification|authentication|one[-\s]?time)\s+(?:code|passcode|pin)|enter .{0,80}\b(?:code|passcode|pin|otp)\b|confirm you(?:'re| are) human|verify .{0,40}(?:identity|email)|complete your application|finish your application|action required/i;
 const CODE_TOKEN_STOPWORDS = new Set([
   "application",
   "authentication",
@@ -323,6 +327,14 @@ function challengeSearchTerms(challenge) {
   ].slice(0, 10);
 }
 
+function postingSearchTerms(posting) {
+  return [
+    ...companyTokens(posting?.companyName),
+    ...tokensFromText(posting?.title || posting?.jobTitle, COMPANY_STOPWORDS).slice(0, 6),
+    ...hostTokens(posting?.applyUrl)
+  ].slice(0, 12);
+}
+
 function buildGmailSearchQueries(challenge, lookbackMinutes) {
   const customQuery = env("JOB_SEARCH_EMAIL_SEARCH_QUERY");
   const lookbackClause = `newer_than:${lookbackMinutes}m`;
@@ -340,6 +352,51 @@ function buildGmailSearchQueries(challenge, lookbackMinutes) {
   add(`"confirm you're human" ${lookbackClause}`);
   add(`"confirm you are human" ${lookbackClause}`);
   for (const token of challengeSearchTerms(challenge).slice(0, 4)) {
+    add(`${token} ${lookbackClause}`);
+  }
+  add(lookbackClause);
+
+  return queries;
+}
+
+function confirmationSenderQueries(applyUrl, lookbackClause) {
+  let hostname = "";
+  try {
+    hostname = new URL(applyUrl || "").hostname.toLowerCase();
+  } catch {
+    hostname = "";
+  }
+
+  if (/greenhouse/.test(hostname)) return [`from:greenhouse-mail.io ${lookbackClause}`, `from:greenhouse.io ${lookbackClause}`];
+  if (/ashby/.test(hostname)) return [`from:ashbyhq.com ${lookbackClause}`, `from:ashbyhq.io ${lookbackClause}`];
+  if (/lever/.test(hostname)) return [`from:lever.co ${lookbackClause}`];
+  if (/workable/.test(hostname)) return [`from:workablemail.com ${lookbackClause}`, `from:workable.com ${lookbackClause}`];
+  if (/recruitee/.test(hostname)) return [`from:recruitee.com ${lookbackClause}`];
+  if (/personio/.test(hostname)) return [`from:personio.de ${lookbackClause}`, `from:personio.com ${lookbackClause}`];
+  if (/breezy/.test(hostname)) return [`from:breezy.hr ${lookbackClause}`];
+  if (/oraclecloud|myworkdayjobs|workday/.test(hostname)) return [`from:oraclecloud.com ${lookbackClause}`];
+  return [];
+}
+
+function buildGmailSubmissionConfirmationQueries(posting, lookbackMinutes) {
+  const customQuery = env("JOB_SEARCH_CONFIRMATION_EMAIL_SEARCH_QUERY");
+  const lookbackClause = `newer_than:${lookbackMinutes}m`;
+  const queries = [];
+  const add = (query) => {
+    const clean = String(query || "").replace(/\s+/g, " ").trim();
+    if (clean && !queries.includes(clean)) queries.push(clean);
+  };
+
+  if (customQuery) add(`${customQuery} ${lookbackClause}`);
+  for (const query of confirmationSenderQueries(posting?.applyUrl, lookbackClause)) add(query);
+  add(`"thank you for applying" ${lookbackClause}`);
+  add(`"thanks for applying" ${lookbackClause}`);
+  add(`"thank you for your application" ${lookbackClause}`);
+  add(`"application received" ${lookbackClause}`);
+  add(`"received your application" ${lookbackClause}`);
+  add(`"application submitted" ${lookbackClause}`);
+  add(`"your application" ${lookbackClause}`);
+  for (const token of postingSearchTerms(posting).slice(0, 5)) {
     add(`${token} ${lookbackClause}`);
   }
   add(lookbackClause);
@@ -413,21 +470,11 @@ async function gmailRequest(path, accessToken, params = {}) {
   );
 }
 
-async function findGmailSecurityCode(challenge) {
-  const accessToken = await refreshGmailAccessToken();
-  const userId = env("JOB_SEARCH_GMAIL_USER") || "me";
-  const lookbackMinutes = intEnv("JOB_SEARCH_EMAIL_LOOKBACK_MINUTES", DEFAULT_LOOKBACK_MINUTES, { min: 1, max: MAX_LOOKBACK_MINUTES });
-  const maxResults = intEnv("JOB_SEARCH_EMAIL_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: MAX_RESULTS_CAP });
-  const now = Date.now();
-  const lookbackMs = lookbackMinutes * 60_000;
-  const expectedLengths = expectedCodeLengthsFromChallenge(challenge);
-
+async function listGmailMessageRefs({ accessToken, userId, searchQueries, maxResults, includeSpamTrash }) {
   const configuredLabels = gmailLabelIds();
-  const includeSpamTrash = env("JOB_SEARCH_EMAIL_INCLUDE_SPAM_TRASH") === "true";
+  const labelPlans = configuredLabels.length > 0 ? [configuredLabels, []] : [[]];
   const messageRefs = [];
   const seenMessageIds = new Set();
-  const searchQueries = buildGmailSearchQueries(challenge, lookbackMinutes);
-  const labelPlans = configuredLabels.length > 0 ? [configuredLabels, []] : [[]];
 
   for (const query of searchQueries) {
     for (const labelIds of labelPlans) {
@@ -446,6 +493,26 @@ async function findGmailSecurityCode(challenge) {
     }
     if (messageRefs.length >= MAX_RESULTS_CAP) break;
   }
+
+  return messageRefs;
+}
+
+async function findGmailSecurityCode(challenge) {
+  const accessToken = await refreshGmailAccessToken();
+  const userId = env("JOB_SEARCH_GMAIL_USER") || "me";
+  const lookbackMinutes = intEnv("JOB_SEARCH_EMAIL_LOOKBACK_MINUTES", DEFAULT_LOOKBACK_MINUTES, { min: 1, max: MAX_LOOKBACK_MINUTES });
+  const maxResults = intEnv("JOB_SEARCH_EMAIL_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: MAX_RESULTS_CAP });
+  const now = Date.now();
+  const lookbackMs = lookbackMinutes * 60_000;
+  const expectedLengths = expectedCodeLengthsFromChallenge(challenge);
+
+  const messageRefs = await listGmailMessageRefs({
+    accessToken,
+    userId,
+    searchQueries: buildGmailSearchQueries(challenge, lookbackMinutes),
+    maxResults,
+    includeSpamTrash: env("JOB_SEARCH_EMAIL_INCLUDE_SPAM_TRASH") === "true"
+  });
 
   if (messageRefs.length === 0) {
     throw appError("No recent email messages were found for security-code lookup.", 404);
@@ -486,6 +553,97 @@ async function findGmailSecurityCode(challenge) {
   };
 }
 
+function submissionConfirmationScore({ posting, message, now, lookbackMs, sinceMs }) {
+  const subject = message.subject || "";
+  const text = message.text || "";
+  const source = [message.from, subject, text].filter(Boolean).join(" ");
+  const hasConfirmationSignal = SUBMISSION_CONFIRMATION_TERMS.test(source);
+  if (!hasConfirmationSignal) return null;
+
+  // Security-code and "finish your application" emails are not proof that
+  // the final application was accepted. A true confirmation usually contains
+  // one of the positive phrases above without any action-required wording.
+  if (NON_CONFIRMATION_EMAIL_TERMS.test(source) && !/(thank you for applying|thanks for applying|application received|received your application|your application (?:has been|was|is) received)/i.test(source)) {
+    return null;
+  }
+
+  const minReceivedAt = Number(sinceMs || 0) - 120_000;
+  if (message.receivedAt && minReceivedAt > 0 && message.receivedAt < minReceivedAt) return null;
+
+  const companyMatches = scoreContextMatches(source, companyTokens(posting?.companyName), 1, 99);
+  const jobMatches = scoreContextMatches(source, tokensFromText(posting?.title || posting?.jobTitle, COMPANY_STOPWORDS).slice(0, 7), 1, 99);
+  const hostMatches = scoreContextMatches([message.from, source].join(" "), hostTokens(posting?.applyUrl), 1, 99);
+  const hasCompanyTokens = companyTokens(posting?.companyName).length > 0;
+
+  // Avoid crediting a different employer's confirmation email from the same
+  // submit-worker run. Company match is the strongest evidence; absent that,
+  // require multiple title tokens or an ATS sender/domain match.
+  if (hasCompanyTokens && companyMatches === 0 && jobMatches < 2 && hostMatches === 0) return null;
+  if (!hasCompanyTokens && jobMatches < 2 && hostMatches === 0) return null;
+
+  let score = SUBMISSION_CONFIRMATION_TERMS.test(subject) ? 45 : 30;
+  score += Math.min(60, companyMatches * 20);
+  score += Math.min(36, jobMatches * 6);
+  score += Math.min(24, hostMatches * 8);
+  if (message.receivedAt) {
+    const ageMs = Math.max(0, now - message.receivedAt);
+    if (ageMs <= lookbackMs) score += Math.max(0, 20 - Math.floor(ageMs / 60_000) * 2);
+  }
+  return score;
+}
+
+async function findGmailSubmissionConfirmation(posting, { sinceMs } = {}) {
+  const accessToken = await refreshGmailAccessToken();
+  const userId = env("JOB_SEARCH_GMAIL_USER") || "me";
+  const lookbackMinutes = intEnv(
+    "JOB_SEARCH_EMAIL_CONFIRMATION_LOOKBACK_MINUTES",
+    DEFAULT_CONFIRMATION_LOOKBACK_MINUTES,
+    { min: 1, max: MAX_CONFIRMATION_LOOKBACK_MINUTES }
+  );
+  const maxResults = intEnv("JOB_SEARCH_EMAIL_CONFIRMATION_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: MAX_RESULTS_CAP });
+  const now = Date.now();
+  const lookbackMs = lookbackMinutes * 60_000;
+  const messageRefs = await listGmailMessageRefs({
+    accessToken,
+    userId,
+    searchQueries: buildGmailSubmissionConfirmationQueries(posting, lookbackMinutes),
+    maxResults,
+    includeSpamTrash: env("JOB_SEARCH_EMAIL_INCLUDE_SPAM_TRASH") === "true"
+  });
+
+  if (messageRefs.length === 0) {
+    throw appError("No recent email messages were found for submission-confirmation lookup.", 404);
+  }
+
+  const confirmations = [];
+  for (const ref of messageRefs.slice(0, MAX_RESULTS_CAP)) {
+    if (!ref?.id) continue;
+    const rawMessage = await gmailRequest(`/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(ref.id)}`, accessToken, {
+      format: "full"
+    });
+    const message = parseMessage(rawMessage);
+    if (message.receivedAt && now - message.receivedAt > lookbackMs) continue;
+
+    const score = submissionConfirmationScore({ posting, message, now, lookbackMs, sinceMs });
+    if (score == null) continue;
+    confirmations.push({ message, score });
+  }
+
+  confirmations.sort((a, b) => (b.score - a.score) || ((b.message.receivedAt || 0) - (a.message.receivedAt || 0)));
+  const best = confirmations[0];
+  if (!best) {
+    throw appError("No recent submission confirmation email was found.", 404);
+  }
+
+  return {
+    provider: "gmail",
+    subject: best.message.subject,
+    from: best.message.from,
+    receivedAt: best.message.receivedAt ? new Date(best.message.receivedAt).toISOString() : "",
+    messageId: best.message.id
+  };
+}
+
 export async function findEmailSecurityCode(challenge) {
   if ((challenge?.challengeKind || "security_code") !== "security_code") {
     throw appError("Email lookup is only available for security-code prompts.");
@@ -500,4 +658,16 @@ export async function findEmailSecurityCode(challenge) {
   }
 
   return findGmailSecurityCode(challenge);
+}
+
+export async function findEmailSubmissionConfirmation(posting, options = {}) {
+  const provider = getEmailProvider();
+  if (!provider) {
+    throw appError("Email confirmation lookup is not configured. Set JOB_SEARCH_EMAIL_PROVIDER=gmail and Gmail credentials.", 503);
+  }
+  if (provider !== "gmail") {
+    throw appError(`Email provider "${provider}" is not supported yet. Use JOB_SEARCH_EMAIL_PROVIDER=gmail.`, 503);
+  }
+
+  return findGmailSubmissionConfirmation(posting, options);
 }

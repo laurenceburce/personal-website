@@ -39,7 +39,7 @@ const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
 // Codurance posting had exactly 5 genuinely-answerable custom questions.
 const MAX_LLM_ANSWERED_FIELDS = 15;
 
-const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
+const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|thank you for your application|thanks for your application|application (has been |was |is )?(successfully )?(submitted|received|sent)|we('| ha)ve received your application|we received your application|we got your application|your application (has been|was|is) received|application received)/i;
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
 
 // Confirmed live as a real, common form pattern: "years of experience with

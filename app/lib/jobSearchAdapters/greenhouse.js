@@ -4,6 +4,7 @@ import { getFindSettings } from "../jobSearchSettingsStore.js";
 import { getTodayLlmUsage, incrementLlmUsage } from "../jobSearchUsageStore.js";
 import { clickWithBrowserMouse, setCheckedWithBrowserMouse } from "./browserEngineClick.js";
 import { detectSubmissionBlocker, isHeldChallengeBlockerReason } from "./blockerDetection.js";
+import { findSubmissionConfirmationEmailText } from "./emailConfirmationFallback.js";
 import { resolveHeldChallenge } from "./heldChallengeRelay.js";
 import { launchJobSearchBrowser } from "./jobSearchBrowser.js";
 import {
@@ -48,7 +49,7 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 // Confirmed against Greenhouse's own confirmation-page/inline-validation
 // copy. Deliberately conservative — an unmatched confirmation page falls
 // through to "still on the form" below rather than being guessed as success.
-const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
+const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|thank you for your application|thanks for your application|application (has been |was |is )?(successfully )?(submitted|received|sent)|we('| ha)ve received your application|we received your application|we got your application|your application (has been|was|is) received|application received)/i;
 // Do not match bare "required field": Greenhouse's static "* indicates a
 // required field" legend is present before and after every valid submit click.
 const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
@@ -980,6 +981,17 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
     } else {
       let outcomeScope = scope;
       let submitButton = scope.locator('button[type="submit"], input[type="submit"]').first();
+      const submitAttemptedAt = Date.now();
+      let emailConfirmationText = "";
+      const confirmSubmittedByEmail = async () => {
+        if (emailConfirmationText) return true;
+        emailConfirmationText = await findSubmissionConfirmationEmailText(activePosting, submitAttemptedAt);
+        if (!emailConfirmationText) return false;
+        confirmationText = emailConfirmationText;
+        status = "submitted";
+        errorMessage = "";
+        return true;
+      };
       await clickWithBrowserMouse(page, submitButton);
 
       // Greenhouse can leave the submit button in a loading state well after
@@ -1001,8 +1013,10 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
           confirmationText = submissionTextExcerpt(submitOutcome.text);
           postSubmitBlockerReason = submitOutcome.blockerReason || await detectGreenhouseBlocker(page, outcomeScope);
           if (isHeldChallengeBlockerReason(postSubmitBlockerReason)) {
-            status = "blocked";
-            errorMessage = "A held challenge was resolved, but the form is still asking for one. Check the answer and retry.";
+            if (!(await confirmSubmittedByEmail())) {
+              status = "blocked";
+              errorMessage = "A held challenge was resolved, but the form is still asking for one. Check the answer and retry.";
+            }
           }
         } else {
           status = "blocked";
@@ -1013,8 +1027,17 @@ export async function submitGreenhouseApplication({ posting, profile, resumeBuff
       const stillOnFormPage = await submitButton.isVisible().catch(() => false);
       const hasErrorSignal = ERROR_TEXT_SIGNALS.test(submitOutcome.text || "");
       const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(submitOutcome.text || "");
+      const ambiguousPostSubmitState = postSubmitBlockerReason
+        || submitOutcome.state === "timeout"
+        || (stillOnFormPage && !hasSuccessSignal);
 
-      if (postSubmitBlockerReason) {
+      if (status !== "submitted" && ambiguousPostSubmitState) {
+        await confirmSubmittedByEmail();
+      }
+
+      if (status === "submitted") {
+        // Confirmed by page text, navigation, or a fresh confirmation email.
+      } else if (postSubmitBlockerReason) {
         status = "blocked";
         errorMessage = errorMessage || postSubmitBlockerReason;
       } else if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome.state !== "timeout")) {
