@@ -38,6 +38,11 @@ const MAX_FIELD_DISCOVERY_PASSES = 5;
 // as a side effect of the answer just filled in, before re-scanning for it —
 // scanning immediately risks missing a field that's still mid-render.
 const FIELD_DISCOVERY_SETTLE_MS = 400;
+// Greenhouse sometimes transitions from the application form to an emailed-
+// code verification step after final submit. A too-eager validation scan can
+// win that race and read stale/native-invalid controls from the old form
+// before the code prompt gets a chance to render.
+const POST_SUBMIT_VALIDATION_GRACE_MS = 2500;
 // Raised from 5 after an audit pass: daily LLM usage sits at ~120 calls
 // against a 5000/day cap (jobSearchUsageStore.js), so 5 was an arbitrary
 // early-caution number, not a cost/rate-limit necessity — and a form with
@@ -140,7 +145,15 @@ async function classifyWidget(locator) {
   if (tag === "select") return "native-select";
   if (tag === "textarea") return "textarea";
   const type = (await locator.getAttribute("type").catch(() => "")) || "";
-  if (type === "checkbox") return "checkbox";
+  if (type === "checkbox") {
+    const isGroup = await locator.evaluate((el) => {
+      const name = el.getAttribute("name") || "";
+      if (name && document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`).length > 1) return true;
+      const container = el.closest("fieldset, [role='group']");
+      return container ? container.querySelectorAll('input[type="checkbox"]').length > 1 : false;
+    }).catch(() => false);
+    return isGroup ? "checkbox-group" : "checkbox";
+  }
   if (type === "radio") return "radio";
   if (type === "file") return "file";
   const role = (await locator.getAttribute("role").catch(() => "")) || "";
@@ -240,6 +253,30 @@ async function radioOptions(scope, locator) {
   }, name).catch(() => []);
 }
 
+async function checkboxGroupOptions(scope, locator) {
+  const name = await locator.getAttribute("name").catch(() => null);
+  if (!name) return [];
+
+  return scope.evaluate((checkboxName) => {
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const labelFor = (id) => {
+      if (!id) return "";
+      const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+      return clean(label?.innerText || label?.textContent || "");
+    };
+
+    return [...document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(checkboxName)}"]`)]
+      .map((checkbox, index) => ({
+        index,
+        id: checkbox.id || "",
+        name: checkbox.getAttribute("name") || "",
+        value: checkbox.value || "",
+        text: labelFor(checkbox.id) || clean(checkbox.closest("label, li, div")?.innerText || checkbox.value)
+      }))
+      .filter((option) => option.text || option.value);
+  }, name).catch(() => []);
+}
+
 // Captures a select/react-select field's real available options at the
 // point it's about to be flagged for manual review — only ever called
 // there (never proactively for every field), so it adds no overhead to a
@@ -256,6 +293,10 @@ async function captureFieldOptions(page, scope, locator, widget) {
   }
   if (widget === "radio") {
     const options = await radioOptions(scope, locator);
+    return options.map((option) => option.text || option.value).filter(Boolean);
+  }
+  if (widget === "checkbox-group") {
+    const options = await checkboxGroupOptions(scope, locator);
     return options.map((option) => option.text || option.value).filter(Boolean);
   }
   if (widget === "react-select") {
@@ -290,6 +331,23 @@ async function fillByWidget(page, scope, locator, widget, value, debugLabel = nu
     case "checkbox":
       await setCheckedWithBrowserMouse(page, locator, Boolean(value));
       return true;
+    case "checkbox-group": {
+      const name = await locator.getAttribute("name").catch(() => null);
+      if (!name) return false;
+      const match = matchOptionByCandidates(await checkboxGroupOptions(scope, locator), [value]);
+      if (!match) {
+        if (debugLabel) {
+          const options = await checkboxGroupOptions(scope, locator).catch(() => []);
+          console.log(`  [fill-debug] checkbox-group "${debugLabel}": "${value}" didn't match — options: ${JSON.stringify(options.map((o) => o.text || o.value))}`);
+        }
+        return false;
+      }
+      const checkbox = match.id
+        ? scope.locator(`[id="${cssAttr(match.id)}"]`).first()
+        : scope.locator(`input[type="checkbox"][name="${cssAttr(name)}"]`).nth(match.index || 0);
+      await setCheckedWithBrowserMouse(page, checkbox, true);
+      return true;
+    }
     case "native-select":
       try {
         await locator.selectOption({ label: String(value) });
@@ -395,6 +453,7 @@ async function collectLabeledFields(scope) {
     const fields = [];
     const seen = new Set();
     const seenRadioNames = new Set();
+    const seenCheckboxGroupNames = new Set();
     let index = 0;
 
     document.querySelectorAll("[data-jsf-greenhouse-field]").forEach((el) => {
@@ -408,6 +467,28 @@ async function collectLabeledFields(scope) {
       if (["hidden", "file", "submit", "button", "reset", "image"].includes(type)) continue;
       if (/honey.?pot/i.test(name) || /honeypot/i.test(el.getAttribute("aria-label") || "")) continue;
       if (!visible(el) && type !== "radio" && type !== "checkbox") continue;
+
+      if (type === "checkbox" && name) {
+        const checkboxes = [...document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`)];
+        if (checkboxes.length > 1) {
+          if (seenCheckboxGroupNames.has(name)) continue;
+          seenCheckboxGroupNames.add(name);
+          const container = fieldContainer(el);
+          const label = textOf(container?.querySelector("legend")) || containerLabel(el) || name;
+          const checkboxIndex = index;
+          index += 1;
+          checkboxes[0]?.setAttribute("data-jsf-greenhouse-field", String(checkboxIndex));
+          fields.push({
+            label,
+            selector: `[data-jsf-greenhouse-field="${checkboxIndex}"]`,
+            forId: `checkbox-group:${name}`,
+            order: checkboxIndex,
+            resolutionText: resolutionTextFor(el, label),
+            required: checkboxes.some((checkbox) => isRequired(checkbox, label))
+          });
+          continue;
+        }
+      }
 
       if (type === "radio") {
         if (!name || seenRadioNames.has(name)) continue;
@@ -602,20 +683,13 @@ async function waitForSubmitOutcome(page, scope, submitButton) {
   const deadline = startedAt + SUBMIT_OUTCOME_TIMEOUT_MS;
   let lastText = await readSubmissionText(page, scope);
   let sawBusyState = false;
-  let lastValidationCheckAt = 0;
+  let lastValidationCheckAt = startedAt;
 
   while (Date.now() < deadline) {
     if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
 
     const blockerReason = await detectGreenhouseBlocker(page, scope).catch(() => null);
     if (blockerReason) return { state: "blocker", text: lastText, blockerReason };
-
-    if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
-    if (Date.now() - lastValidationCheckAt > 1000) {
-      lastValidationCheckAt = Date.now();
-      const invalidFields = await collectPostSubmitValidationFields(scope).catch(() => []);
-      if (invalidFields.length > 0) return { state: "validation", text: lastText };
-    }
 
     const stillOnFormPage = await submitButton.isVisible().catch(() => false);
     if (!stillOnFormPage) return { state: "changed", text: lastText };
@@ -627,11 +701,42 @@ async function waitForSubmitOutcome(page, scope, submitButton) {
       sawBusyState = false;
     }
 
+    const canDeclareValidation = !busy && Date.now() - startedAt >= POST_SUBMIT_VALIDATION_GRACE_MS;
+    if (canDeclareValidation && ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+    if (canDeclareValidation && Date.now() - lastValidationCheckAt > 1000) {
+      lastValidationCheckAt = Date.now();
+      const invalidFields = await collectPostSubmitValidationFields(scope).catch(() => []);
+      if (invalidFields.length > 0) return { state: "validation", text: lastText };
+    }
+
     await page.waitForTimeout(500);
     lastText = await readSubmissionText(page, scope);
   }
 
   return { state: "timeout", text: lastText };
+}
+
+async function isPostSubmitFieldInvalid(field, widget) {
+  if (widget === "checkbox-group") {
+    return field.locator.evaluate((el, required) => {
+      const name = el.getAttribute("name") || "";
+      const container = el.closest("fieldset, [role='group']");
+      const checkboxes = name
+        ? [...document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`)]
+        : [...(container?.querySelectorAll('input[type="checkbox"]') || [el])];
+      if (checkboxes.some((checkbox) => checkbox.checked)) return false;
+
+      const groupInvalid = container?.getAttribute("aria-invalid") === "true"
+        || checkboxes.some((checkbox) => checkbox.getAttribute("aria-invalid") === "true");
+      return Boolean(required || groupInvalid);
+    }, Boolean(field.required)).catch(() => false);
+  }
+
+  return field.locator.evaluate((el) => {
+    const ariaInvalid = el.getAttribute("aria-invalid") === "true";
+    const nativeInvalid = Boolean(el.willValidate && el.validity && !el.validity.valid);
+    return ariaInvalid || nativeInvalid;
+  }).catch(() => false);
 }
 
 async function collectPostSubmitValidationFields(scope) {
@@ -640,11 +745,7 @@ async function collectPostSubmitValidationFields(scope) {
 
   for (const field of fields) {
     const widget = await classifyWidget(field.locator).catch(() => "");
-    const invalid = await field.locator.evaluate((el) => {
-      const ariaInvalid = el.getAttribute("aria-invalid") === "true";
-      const nativeInvalid = Boolean(el.willValidate && el.validity && !el.validity.valid);
-      return ariaInvalid || nativeInvalid;
-    }).catch(() => false);
+    const invalid = await isPostSubmitFieldInvalid(field, widget);
 
     if (invalid) invalidFields.push({ ...field, widget });
   }
@@ -673,8 +774,8 @@ async function detectGreenhouseBlocker(page, scope) {
   return null;
 }
 
-export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const { browser, newPage } = await launchJobSearchBrowser({ headless });
+export async function submitGreenhouseApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true, liveSessionId = "" }) {
+  const { browser, newPage } = await launchJobSearchBrowser({ headless, liveSessionId });
   const submittedAnswers = {};
   const manualReviewFields = [];
   // Real available options for a select/react-select field, keyed by label

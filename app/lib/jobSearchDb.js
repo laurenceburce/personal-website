@@ -509,11 +509,12 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
-      // Human-in-the-loop one-time-code prompts raised by submit adapters.
-      // These are NOT email-scraped or auto-bypassed: the worker creates a
-      // short-lived pending row, keeps its browser session open, and the
-      // dashboard lets the owner type the code they received. The code is
-      // blanked once used/expired; list queries intentionally omit it.
+      // One-time-code / challenge prompts raised by submit adapters. The
+      // worker creates a short-lived pending row and keeps its browser
+      // session open. Security-code rows may be answered automatically from
+      // the configured Gmail inbox; anti-bot text and CAPTCHA rows stay
+      // dashboard/live-session driven. The code is blanked once used/expired;
+      // list queries intentionally omit it.
       await pool.query(`
         CREATE TABLE IF NOT EXISTS job_search_security_challenges (
           id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -533,6 +534,24 @@ export const ensureJobSearchSchema = async () => {
           updated_at DATETIME(3) NOT NULL,
           INDEX job_search_security_challenges_status_idx (status, expires_at),
           INDEX job_search_security_challenges_posting_idx (posting_id)
+        )
+      `);
+
+      // Optional Gmail OAuth connection for automatic security-code lookup.
+      // JOB_SEARCH_GMAIL_REFRESH_TOKEN still works as a deployment-level
+      // override, but this table lets the owner connect Gmail from the
+      // dashboard without hand-copying a refresh token into Railway. The
+      // refresh token is encrypted by jobSearchEmailConnectionStore.js and
+      // never returned to the browser.
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS job_search_email_connections (
+          id TINYINT UNSIGNED PRIMARY KEY,
+          provider VARCHAR(24) NOT NULL DEFAULT 'gmail',
+          email VARCHAR(160) NOT NULL DEFAULT '',
+          encrypted_refresh_token TEXT NOT NULL,
+          scopes TEXT NOT NULL,
+          connected_at DATETIME(3) NOT NULL,
+          updated_at DATETIME(3) NOT NULL
         )
       `);
 

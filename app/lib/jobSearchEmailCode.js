@@ -1,4 +1,5 @@
 import { appError } from "./jobSearchDb.js";
+import { getStoredGmailRefreshToken } from "./jobSearchEmailConnectionStore.js";
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -8,6 +9,10 @@ const DEFAULT_CONFIRMATION_LOOKBACK_MINUTES = 30;
 const MAX_LOOKBACK_MINUTES = 60;
 const MAX_CONFIRMATION_LOOKBACK_MINUTES = 120;
 const MAX_RESULTS_CAP = 100;
+const DEFAULT_SECURITY_CODE_PRE_CHALLENGE_GRACE_MS = 30 * 1000;
+const MAX_SECURITY_CODE_PRE_CHALLENGE_GRACE_MS = 2 * 60 * 1000;
+const DEFAULT_LATEST_SECURITY_MESSAGE_WINDOW_MS = 90 * 1000;
+const MAX_LATEST_SECURITY_MESSAGE_WINDOW_MS = 5 * 60 * 1000;
 
 const SECURITY_TERMS = /\b(security|verification|verify|one[-\s]?time|authentication|login|sign[-\s]?in|passcode|otp|confirm|validate|code)\b/i;
 const CODE_CONTEXT_TERMS = /\b(code|passcode|otp|pin|verification|security|authentication|one[-\s]?time)\b/i;
@@ -70,13 +75,23 @@ function env(name) {
 }
 
 function intEnv(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
-  const value = Number(env(name));
+  const raw = env(name);
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function durationEnvMs(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const raw = env(name);
+  if (!raw) return fallback;
+  const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
 function getEmailProvider() {
-  return env("JOB_SEARCH_EMAIL_PROVIDER").toLowerCase() || (env("JOB_SEARCH_GMAIL_REFRESH_TOKEN") ? "gmail" : "");
+  return env("JOB_SEARCH_EMAIL_PROVIDER").toLowerCase() || "gmail";
 }
 
 function getGmailCredential(name, fallbackName) {
@@ -185,7 +200,9 @@ function candidateLooksLikeNoise(code, { rawCode, directContext, expectedLengths
 
   // All-letter tokens are common in sender names, company names, subjects,
   // and legal footer text. Only accept them when the surrounding sentence is
-  // explicitly presenting the token as the code.
+  // explicitly presenting the token as the code. If the page told us the exact
+  // code length, trust that strong clue even when the email rendered lowercase.
+  if (directContext && hasExpectedLength) return false;
   return !directContext || raw !== raw.toUpperCase();
 }
 
@@ -220,6 +237,30 @@ function extractCodes(text, { expectedLengths = new Set() } = {}) {
 
     candidates.push({ code, score, context });
   };
+
+  const markerPattern = new RegExp(`\\b${CODE_VALUE_MARKER_TERMS}\\b`, "gi");
+  const markerWindowPatterns = [
+    /(^|[^a-z0-9])([a-z0-9]{2,6}(?:\s*-\s*[a-z0-9]{2,6}){1,3})(?![a-z0-9])/gi,
+    /(^|[^a-z0-9])([a-z0-9](?:\s+[a-z0-9]){3,11})(?![a-z0-9])/gi,
+    /(^|[^\d])(\d(?:[\s-]?\d){3,7})(?!\d)/g,
+    /(^|[^a-z0-9])([a-z0-9]{4,12})(?![a-z0-9])/gi
+  ];
+
+  let markerMatch;
+  while ((markerMatch = markerPattern.exec(source))) {
+    const windowStart = Math.max(0, markerMatch.index - 140);
+    const windowText = source.slice(windowStart, Math.min(source.length, markerMatch.index + 260));
+
+    for (const pattern of markerWindowPatterns) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(windowText))) {
+        const rawCode = match[2];
+        const start = windowStart + match.index + String(match[1] || "").length;
+        addCandidate({ rawCode, start, directContextHint: true });
+      }
+    }
+  }
 
   // Greenhouse and similar systems sometimes render an 8-character code as
   // `ABCD-EFGH` or as separate styled characters. The generic token scan
@@ -301,6 +342,46 @@ function parseMessage(message) {
   };
 }
 
+function securityCodePreChallengeGraceMs() {
+  return durationEnvMs(
+    "JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS",
+    DEFAULT_SECURITY_CODE_PRE_CHALLENGE_GRACE_MS,
+    { min: 0, max: MAX_SECURITY_CODE_PRE_CHALLENGE_GRACE_MS }
+  );
+}
+
+function latestSecurityMessageWindowMs() {
+  return durationEnvMs(
+    "JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS",
+    DEFAULT_LATEST_SECURITY_MESSAGE_WINDOW_MS,
+    { min: 0, max: MAX_LATEST_SECURITY_MESSAGE_WINDOW_MS }
+  );
+}
+
+function challengeCreatedAtMs(challenge) {
+  const createdAtMs = new Date(challenge?.createdAt || 0).getTime();
+  return Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : 0;
+}
+
+function securityCodeSearchSinceMs(challenge) {
+  const createdAtMs = challengeCreatedAtMs(challenge);
+  if (!createdAtMs) return 0;
+  return Math.max(0, createdAtMs - securityCodePreChallengeGraceMs());
+}
+
+function timingScoreForChallenge({ challenge, message }) {
+  const createdAtMs = challengeCreatedAtMs(challenge);
+  const receivedAt = Number(message?.receivedAt || 0);
+  if (!createdAtMs || !receivedAt) return 0;
+
+  const deltaMs = receivedAt - createdAtMs;
+  if (deltaMs >= 0) return Math.max(30, 70 - Math.floor(deltaMs / 30_000) * 5);
+
+  const beforeMs = Math.abs(deltaMs);
+  if (beforeMs <= securityCodePreChallengeGraceMs()) return Math.max(10, 40 - Math.floor(beforeMs / 1000));
+  return -80;
+}
+
 function scoreCandidate({ challenge, message, candidate, now, lookbackMs }) {
   const text = message.text || "";
   let score = candidate.score;
@@ -309,7 +390,9 @@ function scoreCandidate({ challenge, message, candidate, now, lookbackMs }) {
   if (SECURITY_TERMS.test(text)) score += 8;
 
   score += scoreContextMatches(text, companyTokens(challenge.companyName), 9, 27);
+  score += scoreContextMatches(text, tokensFromText(challenge.jobTitle, COMPANY_STOPWORDS).slice(0, 6), 5, 20);
   score += scoreContextMatches([message.from, text].join(" "), hostTokens(challenge.applyUrl), 7, 21);
+  score += timingScoreForChallenge({ challenge, message });
 
   if (message.receivedAt) {
     const ageMs = Math.max(0, now - message.receivedAt);
@@ -317,6 +400,27 @@ function scoreCandidate({ challenge, message, candidate, now, lookbackMs }) {
   }
 
   return score;
+}
+
+function pickBestSecurityCodeCandidate(candidates) {
+  if (!candidates.length) return null;
+
+  const receivedTimes = candidates
+    .map((candidate) => Number(candidate?.message?.receivedAt || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const newestReceivedAt = receivedTimes.length ? Math.max(...receivedTimes) : 0;
+  const latestWindowMs = latestSecurityMessageWindowMs();
+  const pool = newestReceivedAt && latestWindowMs > 0
+    ? candidates.filter((candidate) => newestReceivedAt - Number(candidate?.message?.receivedAt || 0) <= latestWindowMs)
+    : candidates;
+
+  pool.sort((a, b) => {
+    const receivedDelta = Number(b?.message?.receivedAt || 0) - Number(a?.message?.receivedAt || 0);
+    if (receivedDelta !== 0) return receivedDelta;
+    return b.score - a.score;
+  });
+
+  return pool[0] || null;
 }
 
 function challengeSearchTerms(challenge) {
@@ -420,14 +524,20 @@ async function fetchJson(url, options, errorMessage) {
   return payload;
 }
 
+async function resolveGmailRefreshToken() {
+  const envRefreshToken = env("JOB_SEARCH_GMAIL_REFRESH_TOKEN");
+  if (envRefreshToken) return envRefreshToken;
+  return getStoredGmailRefreshToken();
+}
+
 async function refreshGmailAccessToken() {
   const clientId = getGmailCredential("JOB_SEARCH_GMAIL_CLIENT_ID", "AUTH_GOOGLE_ID");
   const clientSecret = getGmailCredential("JOB_SEARCH_GMAIL_CLIENT_SECRET", "AUTH_GOOGLE_SECRET");
-  const refreshToken = env("JOB_SEARCH_GMAIL_REFRESH_TOKEN");
+  const refreshToken = await resolveGmailRefreshToken();
 
   if (!clientId || !clientSecret || !refreshToken) {
     throw appError(
-      "Gmail code lookup is not configured. Set JOB_SEARCH_GMAIL_REFRESH_TOKEN and either JOB_SEARCH_GMAIL_CLIENT_ID/JOB_SEARCH_GMAIL_CLIENT_SECRET or AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET.",
+      "Gmail code lookup is not configured. Connect Gmail in Job Search settings, or set JOB_SEARCH_GMAIL_REFRESH_TOKEN and either JOB_SEARCH_GMAIL_CLIENT_ID/JOB_SEARCH_GMAIL_CLIENT_SECRET or AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET.",
       503
     );
   }
@@ -504,6 +614,7 @@ async function findGmailSecurityCode(challenge) {
   const maxResults = intEnv("JOB_SEARCH_EMAIL_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: MAX_RESULTS_CAP });
   const now = Date.now();
   const lookbackMs = lookbackMinutes * 60_000;
+  const sinceMs = securityCodeSearchSinceMs(challenge);
   const expectedLengths = expectedCodeLengthsFromChallenge(challenge);
 
   const messageRefs = await listGmailMessageRefs({
@@ -526,6 +637,7 @@ async function findGmailSecurityCode(challenge) {
     });
     const message = parseMessage(rawMessage);
     if (message.receivedAt && now - message.receivedAt > lookbackMs) continue;
+    if (message.receivedAt && sinceMs > 0 && message.receivedAt < sinceMs) continue;
     if (!SECURITY_TERMS.test(message.text)) continue;
 
     for (const candidate of extractCodes(message.text, { expectedLengths })) {
@@ -537,8 +649,7 @@ async function findGmailSecurityCode(challenge) {
     }
   }
 
-  candidates.sort((a, b) => (b.score - a.score) || ((b.message.receivedAt || 0) - (a.message.receivedAt || 0)));
-  const best = candidates[0];
+  const best = pickBestSecurityCodeCandidate(candidates);
   if (!best) {
     throw appError("No recent email security code was found. Wait a few seconds and try again.", 404);
   }
@@ -650,9 +761,6 @@ export async function findEmailSecurityCode(challenge) {
   }
 
   const provider = getEmailProvider();
-  if (!provider) {
-    throw appError("Email code lookup is not configured. Set JOB_SEARCH_EMAIL_PROVIDER=gmail and Gmail credentials.", 503);
-  }
   if (provider !== "gmail") {
     throw appError(`Email provider "${provider}" is not supported yet. Use JOB_SEARCH_EMAIL_PROVIDER=gmail.`, 503);
   }
@@ -662,12 +770,16 @@ export async function findEmailSecurityCode(challenge) {
 
 export async function findEmailSubmissionConfirmation(posting, options = {}) {
   const provider = getEmailProvider();
-  if (!provider) {
-    throw appError("Email confirmation lookup is not configured. Set JOB_SEARCH_EMAIL_PROVIDER=gmail and Gmail credentials.", 503);
-  }
   if (provider !== "gmail") {
     throw appError(`Email provider "${provider}" is not supported yet. Use JOB_SEARCH_EMAIL_PROVIDER=gmail.`, 503);
   }
 
   return findGmailSubmissionConfirmation(posting, options);
 }
+
+export const __jobSearchEmailCodeTest = {
+  extractCodes,
+  expectedCodeLengthsFromChallenge,
+  pickBestSecurityCodeCandidate,
+  securityCodeSearchSinceMs
+};

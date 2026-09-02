@@ -15,6 +15,36 @@ export function normalizeLabel(text) {
     .trim();
 }
 
+const CONTEXTLESS_OPTION_LABELS = new Set([
+  "yes",
+  "no",
+  "none",
+  "n a",
+  "na",
+  "not applicable",
+  "none of these apply to me",
+  "none of the above",
+  "prefer not to answer",
+  "prefer not to say",
+  "decline to self identify",
+  "i decline to self identify",
+  "i don t wish to answer",
+  "i do not wish to answer",
+  "i don t want to answer",
+  "i do not want to answer",
+  "choose not to disclose",
+  "i choose not to disclose"
+]);
+
+export function isContextlessOptionLabel(label) {
+  const normalized = normalizeLabel(label);
+  return CONTEXTLESS_OPTION_LABELS.has(normalized)
+    || /^none of (these|the above) apply\b/.test(normalized)
+    || /^not applicable\b/.test(normalized)
+    || /^prefer not to\b/.test(normalized)
+    || /\bselected none of the above\b/.test(normalized);
+}
+
 // Same country, wildly different expected spelling depending on the form —
 // confirmed as a real recurring problem: some ask for "United States of
 // America" (the profile's own stored form), others want "US"/"USA"/"United

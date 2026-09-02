@@ -20,7 +20,7 @@ export { AUTO_APPLY_SKIP_REASONS };
 // 'skipped_auto_apply'. Writes an applications-table row (auto_applied = true)
 // whenever an adapter was actually invoked — never for the cheap-gate or
 // unresolved-ATS skips, since nothing was attempted.
-export async function evaluateAutoApply({ posting, findSettings, profile }) {
+export async function evaluateAutoApply({ posting, findSettings, profile, liveSessionId = "" }) {
   const cheapSkip = evaluateCheapGates(posting, findSettings);
   if (cheapSkip) {
     return { status: "skipped_auto_apply", skipReason: cheapSkip.reason, skipDetail: cheapSkip.detail };
@@ -60,7 +60,8 @@ export async function evaluateAutoApply({ posting, findSettings, profile }) {
     // see the resume's own skills/summary text, not just structured
     // work-history entries (see answerFreeText's own comment).
     resumeText: resumeWithBlob?.parsedText || "",
-    headless: process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false"
+    headless: process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false",
+    liveSessionId
   });
 
   const skipReason = adapterStatusToSkipReason(result.status);

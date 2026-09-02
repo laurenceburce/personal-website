@@ -26,23 +26,36 @@ const SECURITY_CODE_INPUT_SELECTORS = [
   'input[autocomplete="one-time-code"]',
   'input[name*="security" i]',
   'input[id*="security" i]',
+  'input[aria-label*="security" i]',
   'input[placeholder*="security" i]',
   'input[name*="verification" i]',
   'input[id*="verification" i]',
+  'input[aria-label*="verification" i]',
   'input[placeholder*="verification" i]',
   'input[name*="confirmation" i]',
   'input[id*="confirmation" i]',
+  'input[aria-label*="confirmation" i]',
   'input[placeholder*="confirmation" i]',
   'input[name*="passcode" i]',
   'input[id*="passcode" i]',
+  'input[aria-label*="passcode" i]',
   'input[placeholder*="passcode" i]',
   'input[name*="pin" i]',
   'input[id*="pin" i]',
+  'input[aria-label*="pin" i]',
   'input[placeholder*="pin" i]',
   'input[name*="otp" i]',
   'input[id*="otp" i]',
+  'input[aria-label*="otp" i]',
+  'input[placeholder*="otp" i]',
   'input[name*="code" i][inputmode="numeric"]',
   'input[id*="code" i][inputmode="numeric"]',
+  'input[aria-label*="code" i]',
+  'input[placeholder*="code" i]',
+  'input[name*="token" i]',
+  'input[id*="token" i]',
+  'input[aria-label*="token" i]',
+  'input[placeholder*="token" i]',
   'input[inputmode="numeric"][autocomplete="one-time-code"]'
 ].join(", ");
 
@@ -115,7 +128,7 @@ async function hasVisibleSplitCodeBoxes(scope) {
   return visibleCount >= 2 && emptyCount > 0;
 }
 
-async function hasTargetedSecurityCodeInput(scope) {
+async function hasTargetedSecurityCodeInput(scope, { allowContextualToken = false } = {}) {
   const codeInputs = scope.locator(SECURITY_CODE_INPUT_SELECTORS);
   const codeInputCount = await codeInputs.count().catch(() => 0);
   for (let i = 0; i < codeInputCount; i += 1) {
@@ -130,6 +143,9 @@ async function hasTargetedSecurityCodeInput(scope) {
       el.getAttribute("id")
     ].filter(Boolean).join(" ")).catch(() => "");
     if (/one[-\s]?time|security|verification|confirmation|authentication|passcode|\bpin\b|\botp\b/i.test(descriptor)) {
+      return true;
+    }
+    if (allowContextualToken && /\btoken\b/i.test(descriptor.replace(/[_-]+/g, " "))) {
       return true;
     }
   }
@@ -153,8 +169,19 @@ async function hasSingleVisibleTextEntry(scope) {
 
 async function hasActionableSecurityCodeEntry(scope, { allowSingleTextFallback = false } = {}) {
   if (allowSingleTextFallback && await hasVisibleSplitCodeBoxes(scope)) return true;
-  if (await hasTargetedSecurityCodeInput(scope)) return true;
+  if (await hasTargetedSecurityCodeInput(scope, { allowContextualToken: allowSingleTextFallback })) return true;
   return allowSingleTextFallback ? hasSingleVisibleTextEntry(scope) : false;
+}
+
+async function hasInteractiveCaptchaWidget(scope) {
+  const captchaWidgets = scope.locator(CAPTCHA_WIDGET_SELECTORS);
+  const captchaCount = await captchaWidgets.count().catch(() => 0);
+  for (let i = 0; i < captchaCount; i += 1) {
+    if (await isInteractiveCaptchaWidget(captchaWidgets.nth(i))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Returns a short human-readable reason string if this application should be
@@ -175,10 +202,6 @@ export async function detectSubmissionBlocker(scope) {
     return SECURITY_CODE_BLOCKER_REASON;
   }
 
-  if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
-    return ANTI_BOT_TEXT_BLOCKER_REASON;
-  }
-
   // Cloudflare/Turnstile interstitials often expose only a hidden response
   // input while the visible page says "performing security verification".
   // Treat that as the same live CAPTCHA class instead of letting adapters
@@ -187,7 +210,11 @@ export async function detectSubmissionBlocker(scope) {
     return CAPTCHA_BLOCKER_REASON;
   }
 
-  // Visibility-gated, not raw DOM presence. Greenhouse/Ashby (among others)
+  // Visibility-gated, not raw DOM presence. Checked before generic anti-bot
+  // text because real CAPTCHA widgets commonly sit next to copy like "human
+  // verification"; that should open the live relay, not a typed-answer prompt.
+  //
+  // Greenhouse/Ashby (among others)
   // embed an invisible reCAPTCHA v3 badge on essentially every form as
   // boilerplate anti-spam — present in the DOM whether or not it ever
   // actually challenges the visitor. Matching on count() alone flagged those
@@ -197,12 +224,12 @@ export async function detectSubmissionBlocker(scope) {
   // sometimes not. Requiring at least one matched element to actually be
   // visible keeps catching a real interactive challenge (checkbox iframe,
   // hCaptcha, Turnstile) while dropping that false positive.
-  const captchaWidgets = scope.locator(CAPTCHA_WIDGET_SELECTORS);
-  const captchaCount = await captchaWidgets.count().catch(() => 0);
-  for (let i = 0; i < captchaCount; i += 1) {
-    if (await isInteractiveCaptchaWidget(captchaWidgets.nth(i))) {
-      return CAPTCHA_BLOCKER_REASON;
-    }
+  if (await hasInteractiveCaptchaWidget(scope)) {
+    return CAPTCHA_BLOCKER_REASON;
+  }
+
+  if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
+    return ANTI_BOT_TEXT_BLOCKER_REASON;
   }
 
   if (LOGIN_WALL_SIGNALS.test(bodyText)) {

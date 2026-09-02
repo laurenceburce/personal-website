@@ -7,6 +7,7 @@ import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
 import HeldSubmissionsPanel from "./HeldSubmissionsPanel";
+import LiveCaptchaModal from "./LiveCaptchaModal";
 import NotificationsBell from "./NotificationsBell";
 import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
@@ -23,13 +24,39 @@ const TABS = [
   { id: "find", label: "Job Find Settings" }
 ];
 
-export default function JobSearchAppClient({ snapshot, initialTab }) {
+function isCaptchaChallenge(challenge) {
+  return (challenge?.challengeKind || "security_code") === "captcha";
+}
+
+function liveChallengeFromProgress(progress) {
+  const item = progress?.currentItem;
+  if (!item?.postingId) return null;
+  return {
+    id: item.liveSessionId || `submit-${item.postingId}`,
+    postingId: item.postingId,
+    companyName: item.companyName || "",
+    jobTitle: item.title || "Current submission",
+    atsType: item.atsType || "",
+    applyUrl: "",
+    challengeKind: "submit_live",
+    promptText: ""
+  };
+}
+
+function initialGmailNotice(status) {
+  if (status === "connected") return "Gmail connected for automatic security-code lookup.";
+  if (status === "disconnected") return "Gmail connection removed.";
+  return "";
+}
+
+export default function JobSearchAppClient({ snapshot, initialTab, gmailNotice = "", gmailError = "" }) {
   const router = useRouter();
   const [tab, setTab] = useState(initialTab || "overview");
   const [saving, setSaving] = useState("");
-  const [notice, setNotice] = useState("");
-  const [error, setError] = useState("");
+  const [notice, setNotice] = useState(() => initialGmailNotice(gmailNotice));
+  const [error, setError] = useState(() => (gmailNotice === "error" ? gmailError || "Gmail connection failed." : ""));
   const [heldToast, setHeldToast] = useState("");
+  const [toolbarLiveChallenge, setToolbarLiveChallenge] = useState(null);
   // null until the first poll lands. Lives here (not in OverviewPanel, which
   // only mounts on the Overview tab) so the topbar's SubmitWorkerBanner and
   // OverviewPanel's own live-progress block share one poll loop instead of
@@ -48,13 +75,38 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   // The panel below still does the actual polling/rendering; this only
   // raises a toast and nudges it via router.refresh() so a currently-open
   // tab doesn't sit for up to 4s showing a stale count.
+  const seenHeldChallengeIdsRef = useRef(new Set((snapshot?.securityChallenges || []).map((challenge) => challenge.id)));
   useEffect(() => {
     const source = new EventSource("/api/job-search/held-events");
+    function rememberChallenges(challenges, { toast = false } = {}) {
+      const list = Array.isArray(challenges) ? challenges : [challenges].filter(Boolean);
+      const fresh = list.filter((challenge) => (
+        challenge?.id && !seenHeldChallengeIdsRef.current.has(challenge.id)
+      ));
+      if (fresh.length === 0) return;
+
+      for (const challenge of fresh) {
+        seenHeldChallengeIdsRef.current.add(challenge.id);
+      }
+      if (toast) {
+        const challenge = fresh[fresh.length - 1];
+        setHeldToast(`Action needed: ${challenge.jobTitle} at ${challenge.companyName}.`);
+      }
+      router.refresh();
+    }
+
+    source.addEventListener("snapshot", (event) => {
+      try {
+        rememberChallenges(JSON.parse(event.data));
+      } catch {
+        // Malformed event payload — ignore rather than crash the listener.
+      }
+    });
+
     source.addEventListener("new", (event) => {
       try {
         const challenge = JSON.parse(event.data);
-        setHeldToast(`Action needed: ${challenge.jobTitle} at ${challenge.companyName}.`);
-        router.refresh();
+        rememberChallenges(challenge, { toast: true });
       } catch {
         // Malformed event payload — ignore rather than crash the listener.
       }
@@ -269,16 +321,65 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   const uploadResume = (formData) => uploadFile("/api/job-search/resumes", formData, "uploadResume", "Resume uploaded.");
   const uploadOracleSession = (formData) => uploadFile("/api/job-search/oracle-session", formData, "uploadOracleSession", "Oracle session connected.");
 
+  async function openToolbarLiveRelay(progress) {
+    const currentProgress = progress || submitProgress;
+    if (currentProgress?.status !== "running") return false;
+
+    try {
+      const response = await fetch("/api/job-search/security-challenges", { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      const challenges = Array.isArray(payload?.challenges) ? payload.challenges : [];
+      if (response.ok && challenges.length > 0) {
+        const currentPostingId = Number(currentProgress?.currentItem?.postingId);
+        const matchingCaptcha = challenges.find((challenge) => (
+          isCaptchaChallenge(challenge)
+          && (!Number.isFinite(currentPostingId) || Number(challenge.postingId) === currentPostingId)
+        )) || challenges.find(isCaptchaChallenge);
+        if (matchingCaptcha) {
+          setToolbarLiveChallenge(matchingCaptcha);
+          return true;
+        }
+      }
+    } catch {
+      // Best-effort. The generic submit-page live session below can still
+      // open even if this lookup misses.
+    }
+
+    const challenge = liveChallengeFromProgress(currentProgress);
+    if (!challenge) return false;
+    setToolbarLiveChallenge(challenge);
+    return true;
+  }
+
   return (
     <div className="job-search-app">
       <header className="job-search-topbar">
         <h1>Job Search</h1>
         <div className="job-search-topbar-actions">
-          <SubmitWorkerBanner progress={submitProgress} />
+          <SubmitWorkerBanner progress={submitProgress} onOpenLiveRelay={openToolbarLiveRelay} />
           <NotificationsBell />
           <button type="button" className="job-search-header-home" onClick={() => router.push("/")}>Home</button>
         </div>
       </header>
+
+      {toolbarLiveChallenge ? (
+        <LiveCaptchaModal
+          challenge={toolbarLiveChallenge}
+          saving={saving}
+          onClose={() => setToolbarLiveChallenge(null)}
+          onResolve={isCaptchaChallenge(toolbarLiveChallenge)
+            ? async () => {
+              await runAction(
+                "/api/job-search/security-challenges",
+                "resolveLiveCaptcha",
+                { id: toolbarLiveChallenge.id },
+                "Submission resumed."
+              );
+              setToolbarLiveChallenge(null);
+            }
+            : null}
+        />
+      ) : null}
 
       <nav className="job-search-tabs">
         {TABS.map((t) => (
@@ -420,11 +521,13 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
             <ProfileSettingsPanel
               profile={snapshot.profile}
               resumes={snapshot.resumes}
+              gmailConnection={snapshot.gmailConnection}
               saving={saving}
               onSaveProfile={(data) => runAction("/api/job-search/settings", "updateProfile", data, "Profile saved.")}
               onUploadResume={uploadResume}
               onSetDefaultResume={(id) => runAction("/api/job-search/resumes", "setDefaultResume", { id }, "Default resume updated.")}
               onDeleteResume={(id) => runAction("/api/job-search/resumes", "deleteResume", { id }, "Resume deleted.")}
+              onDisconnectGmail={() => runAction("/api/job-search/gmail", "disconnect", {}, "Gmail connection removed.")}
             />
             <OracleSessionsPanel
               sessions={snapshot.oracleSessions}

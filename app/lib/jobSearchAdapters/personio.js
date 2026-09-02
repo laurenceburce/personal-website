@@ -247,8 +247,8 @@ async function shouldUseLlm(getLlmFindSettings) {
   return usage.totalCalls < llmSettings.maxLlmCallsPerDay;
 }
 
-export async function submitPersonioApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const { browser, newPage } = await launchJobSearchBrowser({ headless });
+export async function submitPersonioApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true, liveSessionId = "" }) {
+  const { browser, newPage } = await launchJobSearchBrowser({ headless, liveSessionId });
   const submittedAnswers = {};
   const manualReviewFields = [];
   // Real available options for a select field, keyed by label — see

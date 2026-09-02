@@ -77,7 +77,37 @@ function formatBytes(bytes) {
   return `${Math.round(bytes / 1024)} KB`;
 }
 
-export default function ProfileSettingsPanel({ profile, resumes, saving, onSaveProfile, onUploadResume, onSetDefaultResume, onDeleteResume }) {
+function GmailConnectionPanel({ connection, isBusy, onDisconnect }) {
+  const connected = Boolean(connection?.connected);
+  const source = connection?.source || "none";
+
+  return (
+    <Panel title="Gmail security-code lookup" className="job-search-gmail-panel">
+      <p className="job-search-panel-hint">
+        Connect Gmail so the submit worker can read Greenhouse verification-code emails and enter them automatically.
+      </p>
+      <div className="job-search-resume-row">
+        <div>
+          <strong>{connected ? (connection.email || "Gmail connected") : "Not connected"}</strong>
+          <span className="job-search-cell-note">
+            {connected
+              ? (source === "environment" ? "Configured from environment variables" : "Encrypted refresh token stored for the submit worker")
+              : "The worker will wait for manual code entry until Gmail is connected."}
+          </span>
+        </div>
+        <Badge text={connected ? "Connected" : "Not connected"} tone={connected ? "success" : "warn"} />
+        <a className="job-search-link-button" href="/api/job-search/gmail/connect">
+          {connected ? "Reconnect Gmail" : "Connect Gmail"}
+        </a>
+        {connected && source !== "environment" ? (
+          <button type="button" disabled={isBusy} onClick={onDisconnect}>Disconnect</button>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
+export default function ProfileSettingsPanel({ profile, resumes, gmailConnection, saving, onSaveProfile, onUploadResume, onSetDefaultResume, onDeleteResume, onDisconnectGmail }) {
   const [form, setForm] = useState(() => toFormState(profile));
   const [resumeLabel, setResumeLabel] = useState("");
   const fileInputRef = useRef(null);
@@ -165,6 +195,8 @@ export default function ProfileSettingsPanel({ profile, resumes, saving, onSaveP
           <button type="submit" disabled={isBusy}>Upload resume</button>
         </form>
       </Panel>
+
+      <GmailConnectionPanel connection={gmailConnection} isBusy={isBusy} onDisconnect={onDisconnectGmail} />
 
       <Panel title="Profile / Autofill Fields" className="job-search-profile-panel">
         <form onSubmit={handleSubmit} className="job-search-form">

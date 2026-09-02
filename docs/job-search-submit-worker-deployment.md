@@ -43,6 +43,9 @@ that triggered it) or the next service restart.
    - `JOB_SEARCH_SUBMIT_WORKER_PORT` — optional, defaults to `8080` (already
      set in the Dockerfile). Only change this if `8080` conflicts with
      something else on the service.
+   - For automatic security-code entry, set the Gmail lookup variables below
+     on this submit-worker service too. The worker process reads the inbox
+     itself when it hits an emailed-code prompt.
    - Everything else the worker needs regardless of shape (DB connection
      vars, `JOB_SEARCH_PLAYWRIGHT_HEADLESS=true`, etc.) stays the same.
 
@@ -54,16 +57,39 @@ that triggered it) or the next service restart.
   whatever port it's listening on if you changed it from the default).
 - `JOB_SEARCH_SUBMIT_TRIGGER_SECRET` — the exact same value set on the
   submit-worker service above.
-- `JOB_SEARCH_EMAIL_PROVIDER=gmail` — enables the dashboard's "Check Email"
-  button for held security-code prompts.
-- `JOB_SEARCH_GMAIL_REFRESH_TOKEN` — Gmail OAuth refresh token with
-  `https://www.googleapis.com/auth/gmail.readonly`.
+- `JOB_SEARCH_EMAIL_PROVIDER=gmail` — enables Gmail lookup for held
+  security-code prompts. This defaults to Gmail because it is the only
+  supported provider today, but setting it explicitly is clearer.
+- Connect Gmail from Job Search -> User Settings to store an encrypted refresh
+  token in the job-search DB. The web app and submit-worker service must share
+  the same DB and `AUTH_SECRET`/`JOB_SEARCH_TOKEN_SECRET`.
+- `JOB_SEARCH_GMAIL_REFRESH_TOKEN` — optional deployment-level Gmail OAuth
+  refresh token with `https://www.googleapis.com/auth/gmail.readonly`. If set,
+  it overrides the DB-stored connection.
 - `JOB_SEARCH_GMAIL_CLIENT_ID` / `JOB_SEARCH_GMAIL_CLIENT_SECRET` — optional
   when `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` already belong to the
   Gmail-enabled OAuth client.
-- `JOB_SEARCH_EMAIL_LOOKBACK_MINUTES` — optional, defaults to `10`, capped at
+- `JOB_SEARCH_TOKEN_SECRET` — optional when `AUTH_SECRET` is already shared
+  by the web app and submit-worker service; used to encrypt/decrypt the
+  DB-stored Gmail refresh token.
+- `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE` — optional, defaults to `true`; set
+  `false` to require dashboard-entered security codes.
+- `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_WAIT_MS` — optional, defaults to the
+  same value as `JOB_SEARCH_SECURITY_CODE_WAIT_MS`; for security-code-only
+  blockers, the worker waits this long for Gmail before surfacing a manual
+  Held For You prompt.
+- `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_POLL_MS` — optional, defaults to
+  `5000`.
+- `JOB_SEARCH_EMAIL_LOOKBACK_MINUTES` — optional, defaults to `30`, capped at
   `60`.
-- `JOB_SEARCH_EMAIL_MAX_RESULTS` — optional, defaults to `20`, capped at `50`.
+- `JOB_SEARCH_EMAIL_MAX_RESULTS` — optional, defaults to `30`, capped at
+  `100`.
+- `JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS` — optional, defaults to `30000`;
+  email lookup ignores code messages older than the challenge by more than
+  this window, which prevents rapid same-company Greenhouse retries from
+  reusing the previous code.
+- `JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS` — optional, defaults to `90000`;
+  when multiple code emails match, the newest message in this window wins.
 - `JOB_SEARCH_GMAIL_LABEL_IDS` — optional, defaults to `INBOX`; use `*` to
   search recent mail across labels.
 - `JOB_SEARCH_EMAIL_SEARCH_QUERY` — optional extra Gmail search filter, such

@@ -229,8 +229,8 @@ async function collectQuestions(page) {
   }, Object.keys(STANDARD_NAME_RESOLVERS));
 }
 
-export async function submitWorkableApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const { browser, newPage } = await launchJobSearchBrowser({ headless });
+export async function submitWorkableApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true, liveSessionId = "" }) {
+  const { browser, newPage } = await launchJobSearchBrowser({ headless, liveSessionId });
   const submittedAnswers = {};
   const manualReviewFields = [];
   // Real available options for a select/radio-group/checkbox-group question,

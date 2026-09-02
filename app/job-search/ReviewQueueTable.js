@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useState } from "react";
-import { manualOverrideCandidates, normalizeLabel, resolveStandardFieldCandidates, resolveWorkAuthValue } from "../lib/jobSearchAdapters/profileMapping";
+import { isContextlessOptionLabel, manualOverrideCandidates, normalizeLabel, resolveStandardFieldCandidates, resolveWorkAuthValue } from "../lib/jobSearchAdapters/profileMapping";
 import { atsTypeLabel, Badge, Field, scamBadgeTone, useIsNewSince } from "./JobSearchUi";
 
 // "Have you seen this posting before" cutoff for the "New" highlight —
@@ -68,7 +68,8 @@ function ReviewQueueRow({ posting, selected, isNew, onToggleSelect, onApprove, o
   // The targeted alternative to plain "Retry" — only makes sense once there's
   // an actual structured field list to answer (older postings from before
   // this existed only ever got the flattened decisionNote string).
-  const hasAnswerableFields = posting.status === "needs_manual_review" && posting.manualReviewFields?.length > 0;
+  const hasAnswerableFields = posting.status === "needs_manual_review"
+    && (posting.manualReviewFields || []).some((field) => !isNonAnswerableManualReviewFlag(field.label));
 
   return (
     <>
@@ -213,6 +214,10 @@ function isResumeUploadFlag(label) {
   return /^(resume(\/cv)?|cv)\s+upload\b/i.test(label || "");
 }
 
+function isNonAnswerableManualReviewFlag(label) {
+  return isResumeUploadFlag(label) || isContextlessOptionLabel(label);
+}
+
 function asAnswerCandidates(value) {
   if (value === true) return ["Yes", "true"];
   if (value === false) return ["No", "false"];
@@ -314,9 +319,12 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
   // see isResumeUploadFlag's own comment for why nothing typed there could
   // ever do anything, so it can't be allowed to block Save & Retry the same
   // way a real blank question does.
-  const answerableFields = fields.filter((f) => !isResumeUploadFlag(f.label));
+  const answerableFields = fields.filter((f) => !isNonAnswerableManualReviewFlag(f.label));
   const blankLabels = answerableFields.map((f) => f.label).filter((label) => !(answers[label] || "").trim());
   const allAnswered = blankLabels.length === 0;
+  const hasOnlyContextlessOptions = fields.length > 0
+    && answerableFields.length === 0
+    && fields.every((field) => isContextlessOptionLabel(field.label));
 
   // Fields with captured options are excluded below — no free-text draft to
   // polish, and hiding the whole button (further down) when nothing left is
@@ -326,7 +334,7 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
   // isResumeUploadFlag above — no textarea is even rendered for one) has a
   // free-text draft to polish — used below to hide "Polish all with AI"
   // entirely when nothing in this popup actually qualifies.
-  const polishableFieldCount = fields.filter((f) => !hasCapturedOptions(f) && !isResumeUploadFlag(f.label)).length;
+  const polishableFieldCount = fields.filter((f) => !hasCapturedOptions(f) && !isNonAnswerableManualReviewFlag(f.label)).length;
 
   // One button polishes every field with a draft in it, one request at a
   // time (not concurrently — this shares the same daily LLM-call budget as
@@ -370,7 +378,10 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
       return;
     }
     setSaveError("");
-    const payload = Object.entries(answers).map(([label, answer]) => ({ label, answer: answer.trim() }));
+    const payload = answerableFields.map((field) => ({
+      label: field.label,
+      answer: String(answers[field.label] || "").trim()
+    }));
     await onSaveAndRetry(posting.id, payload);
     onClose();
   }
@@ -387,6 +398,8 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
           its own {answerableFields.length > 0
             ? `(${answerableFields.length - blankLabels.length}/${answerableFields.length} answered — every one is `
               + "required, scroll down if that count looks off). "
+            : hasOnlyContextlessOptions
+              ? "— this saved field list only has orphaned option labels from an older parser. Use Retry & Recapture to re-read the form and rebuild the answerable prompts. "
             : "— nothing here needs an answer from you (see below). "}
           A dropdown was a real widget on the page, so it only offers its actual options — pick one rather than
           typing. "Polish all with AI" refines every free-text draft's wording without inventing anything you didn't
@@ -402,6 +415,17 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
                   to type here; retrying re-attempts the upload itself, and that alone might just work this time.
                   If it keeps landing back here, something about this posting's upload widget may need a closer
                   look.
+                </p>
+              </Field>
+            );
+          }
+          if (isContextlessOptionLabel(field.label)) {
+            return (
+              <Field key={field.label} label={`ℹ Captured option: ${field.label}`}>
+                <p className="job-search-panel-hint">
+                  Not a standalone question — the ATS parser captured an answer option without its parent prompt.
+                  Retry will re-read the form with the fixed parser; if it comes back here again, open the posting
+                  and answer that option group manually.
                 </p>
               </Field>
             );
@@ -446,7 +470,9 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
               {polishingAll ? "Polishing..." : "Polish all with AI"}
             </button>
           ) : null}
-          <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>Save &amp; Retry</button>
+          <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>
+            {answerableFields.length > 0 ? "Save & Retry" : "Retry & Recapture"}
+          </button>
           <button type="button" disabled={isBusy} onClick={onClose}>Cancel</button>
         </div>
       </div>

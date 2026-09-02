@@ -28,6 +28,10 @@ import { isWorkerEnabled, recordHeartbeat, recordWorkerRunResult } from "./jobSe
 const headless = process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false";
 const SUBMIT_BATCH_LIMIT = 20;
 
+function submitLiveSessionId(postingId) {
+  return `submit-${postingId}`;
+}
+
 function toApplicationStatus(adapterStatus) {
   if (adapterStatus === "submitted") return "submitted";
   // 'blocked' (CAPTCHA/anti-bot puzzle/login wall — see blockerDetection.js)
@@ -58,7 +62,7 @@ function structuredManualReviewFields({ labels, fieldOptions, posting, submitted
   }));
 }
 
-export async function runSubmitWorkerPass() {
+export async function runSubmitWorkerPass({ includeAutoApply = true } = {}) {
   // Written unconditionally, before the enabled check — this is what lets the
   // dashboard tell "the worker stopped running" apart from "deliberately
   // turned off" (see jobSearchWorkerStatusStore.js).
@@ -93,6 +97,7 @@ export async function runSubmitWorkerPass() {
     const resumeWithBlob = defaultResume ? await getResumeById(defaultResume.id, { includeBlob: true }) : null;
 
     for (const posting of approved) {
+      const liveSessionId = submitLiveSessionId(posting.id);
       // Isolated per posting — matches scoreNewPostings' own pattern. Without
       // this, a single bad posting (a browser-launch failure, which happens
       // outside every adapter's own try/catch, or a transient DB error on the
@@ -100,7 +105,7 @@ export async function runSubmitWorkerPass() {
       // leaving every remaining approved posting this run untouched.
       await beginProgressItem({
         postingId: posting.id, title: posting.title, companyName: posting.companyName,
-        atsType: posting.atsType, phase: "submitting"
+        atsType: posting.atsType, phase: "submitting", liveSessionId
       }).catch(() => {});
 
       try {
@@ -120,7 +125,8 @@ export async function runSubmitWorkerPass() {
           resumeBuffer: resumeWithBlob?.fileBlob || null,
           resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
           resumeText: resumeWithBlob?.parsedText || "",
-          headless
+          headless,
+          liveSessionId
         });
 
         const applicationStatus = toApplicationStatus(result.status);
@@ -185,8 +191,10 @@ export async function runSubmitWorkerPass() {
           // Carries WHY onto the posting itself (not just the application
           // row) so it can actually show up somewhere a human would act on
           // it again — see the Review Queue's Needs Manual Review/Failed
-          // tabs. Only worth setting when it's not a plain success.
-          ...(applicationStatus !== "submitted" ? { submissionNote: outcomeMessage } : {}),
+          // tabs. Include an empty note on success too: otherwise a posting
+          // that fails once and then succeeds on retry keeps displaying the
+          // stale failure reason even though the latest state is submitted.
+          submissionNote: applicationStatus === "submitted" ? "" : outcomeMessage,
           manualReviewFields: manualReviewFieldsForPosting
         });
         console.log(`  -> ${applicationStatus}`);
@@ -205,7 +213,11 @@ export async function runSubmitWorkerPass() {
   // be attached before handing it to evaluateAutoApply().
   const findSettings = await getFindSettings();
   let pendingReviewCount = 0;
-  if (findSettings.autoApplyEnabled) {
+  const autoApplyWillRun = includeAutoApply && findSettings.autoApplyEnabled;
+  if (!includeAutoApply && findSettings.autoApplyEnabled) {
+    console.log("Auto-apply enabled, but this trigger is approved-only — skipping auto-apply sweep for this pass.");
+  }
+  if (autoApplyWillRun) {
     const pendingReview = await listPostingsByStatus("pending_review", { limit: SUBMIT_BATCH_LIMIT, orderBy: "score" });
     pendingReviewCount = pendingReview.length;
     console.log(`Auto-apply enabled — evaluating ${pendingReview.length} pending-review posting(s).`);
@@ -215,13 +227,14 @@ export async function runSubmitWorkerPass() {
     if (pendingReview.length > 0) {
       const profile = await getProfile();
       for (const posting of pendingReview) {
+        const liveSessionId = submitLiveSessionId(posting.id);
         await beginProgressItem({
           postingId: posting.id, title: posting.title, companyName: posting.companyName,
-          atsType: posting.atsType, phase: "auto_apply"
+          atsType: posting.atsType, phase: "auto_apply", liveSessionId
         }).catch(() => {});
 
         try {
-          const result = await evaluateAutoApply({ posting, findSettings, profile });
+          const result = await evaluateAutoApply({ posting, findSettings, profile, liveSessionId });
           if (result.status === "submitted") autoAppliedCount += 1;
           else autoSkippedCount += 1;
 
@@ -261,7 +274,7 @@ export async function runSubmitWorkerPass() {
 
   await recordSubmitRun({
     approvedTotal: approved.length, submittedCount, manualReviewCount, failedCount,
-    autoApplyEnabled: findSettings.autoApplyEnabled, autoApplyEvaluated: pendingReviewCount,
+    autoApplyEnabled: autoApplyWillRun, autoApplyEvaluated: pendingReviewCount,
     autoAppliedCount, autoSkippedCount, ok: true
   }).catch((error) => console.error("[submit-run] Failed to record run history:", error?.message || error));
 
