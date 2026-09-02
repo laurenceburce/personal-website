@@ -49,10 +49,13 @@ export async function createSecurityChallenge({
   applyUrl,
   challengeKind = "security_code",
   promptText = "",
+  createdAt = null,
   timeoutMs = DEFAULT_WAIT_TIMEOUT_MS
 }) {
   const pool = requirePool(await ensureJobSearchSchema());
   const now = new Date();
+  const requestedCreatedAt = createdAt ? new Date(createdAt) : null;
+  const rowCreatedAt = requestedCreatedAt && Number.isFinite(requestedCreatedAt.getTime()) ? requestedCreatedAt : now;
   const expiresAt = new Date(now.getTime() + Math.max(30_000, Number(timeoutMs) || DEFAULT_WAIT_TIMEOUT_MS));
   const cleanPostingId = cleanId(postingId, "Posting");
 
@@ -77,7 +80,7 @@ export async function createSecurityChallenge({
       cleanText(applyUrl, 600),
       cleanText(challengeKind, 40, "security_code"),
       cleanText(promptText, 500),
-      now,
+      rowCreatedAt,
       expiresAt,
       now
     ]

@@ -75,7 +75,9 @@ that triggered it) or the next service restart.
 - `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE` — optional, defaults to `true`; set
   `false` to require dashboard-entered security codes.
 - `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_WAIT_MS` — optional, defaults to the
-  same value as `JOB_SEARCH_SECURITY_CODE_WAIT_MS`.
+  same value as `JOB_SEARCH_SECURITY_CODE_WAIT_MS`; for security-code-only
+  blockers, the worker waits this long for Gmail before surfacing a manual
+  Held For You prompt.
 - `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_POLL_MS` — optional, defaults to
   `5000`.
 - `JOB_SEARCH_EMAIL_LOOKBACK_MINUTES` — optional, defaults to `30`, capped at

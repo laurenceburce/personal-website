@@ -193,7 +193,9 @@ as `from:no-reply@example.com`, or set `JOB_SEARCH_GMAIL_LABEL_IDS=*` to search
 recent mail across labels instead of only `INBOX`. Security-code lookup starts
 at the challenge timestamp minus `JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS` and,
 when several code emails match, prefers the newest message within
-`JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS`. Set
+`JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS`. When automatic lookup is enabled,
+the submit worker waits up to `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_WAIT_MS`
+before surfacing a manual Held For You prompt. Set
 `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE=false` to keep security-code prompts fully
 manual. Keep the refresh token server-side only; never expose it with a
 `NEXT_PUBLIC_` prefix.
