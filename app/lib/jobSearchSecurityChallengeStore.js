@@ -203,7 +203,7 @@ async function getSecurityChallengeForWorker(id) {
   return rows[0] ? mapChallengeRow(rows[0], { includeCode: true }) : null;
 }
 
-export async function waitForSecurityChallengeCode(id, { timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, pollMs = DEFAULT_POLL_MS } = {}) {
+export async function waitForSecurityChallengeCode(id, { timeoutMs = DEFAULT_WAIT_TIMEOUT_MS, pollMs = DEFAULT_POLL_MS, onPending = null } = {}) {
   const startedAt = Date.now();
   const waitMs = Math.max(30_000, Number(timeoutMs) || DEFAULT_WAIT_TIMEOUT_MS);
   const intervalMs = Math.max(500, Number(pollMs) || DEFAULT_POLL_MS);
@@ -216,6 +216,12 @@ export async function waitForSecurityChallengeCode(id, { timeoutMs = DEFAULT_WAI
     if (challenge.expiresAt && new Date(challenge.expiresAt).getTime() <= Date.now()) {
       await markSecurityChallengeExpired(id);
       return { status: "expired", code: "" };
+    }
+    if (typeof onPending === "function") {
+      const resolved = await onPending(challenge);
+      if (resolved?.status === "answered" && resolved.code) {
+        return { status: "answered", code: resolved.code, source: resolved.source || "" };
+      }
     }
     await sleep(intervalMs);
   }

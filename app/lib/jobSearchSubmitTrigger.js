@@ -20,7 +20,7 @@
 // ever seem to sit at 'approved' without being picked up.
 const TRIGGER_TIMEOUT_MS = 3000;
 
-export async function triggerSubmitWorker(reason) {
+export async function triggerSubmitWorker(reason, { includeAutoApply = true } = {}) {
   const url = process.env.JOB_SEARCH_SUBMIT_WORKER_URL;
   if (!url) return;
 
@@ -36,7 +36,10 @@ export async function triggerSubmitWorker(reason) {
           ? { "X-Trigger-Secret": process.env.JOB_SEARCH_SUBMIT_TRIGGER_SECRET }
           : {})
       },
-      body: JSON.stringify({ reason: String(reason || "unknown").slice(0, 100) })
+      body: JSON.stringify({
+        reason: String(reason || "unknown").slice(0, 100),
+        includeAutoApply: includeAutoApply !== false
+      })
     });
   } catch (error) {
     // Never throw — a human clicking "Approve" should never see an error

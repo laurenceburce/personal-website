@@ -14,7 +14,7 @@
 // questions instead.
 import { cleanId, cleanText, ensureJobSearchSchema, parseJsonColumn, requirePool, toJsonParam } from "./jobSearchDb.js";
 import { cosineSimilarity, embedText, getEmbeddingModel, isJobSearchLlmConfigured } from "./jobSearchLlm.js";
-import { normalizeLabel } from "./jobSearchAdapters/profileMapping.js";
+import { isContextlessOptionLabel, normalizeLabel } from "./jobSearchAdapters/profileMapping.js";
 import { incrementLlmUsage } from "./jobSearchUsageStore.js";
 
 // A conservative starting point, not derived from any live corpus (none
@@ -82,7 +82,7 @@ export async function listAnswerMemoryForMatching() {
     normalizedLabel: row.normalized_label,
     answer: row.answer,
     embedding: parseJsonColumn(row.embedding)
-  }));
+  })).filter((row) => !isContextlessOptionLabel(row.questionLabel));
 }
 
 // Called once per non-empty answered field from saveManualAnswersAndRetryOne
@@ -98,6 +98,7 @@ export async function upsertAnswerMemory({ label, answer, postingCompanyName, so
 
   const rawLabel = cleanText(label, LABEL_MAX_LENGTH);
   if (!rawLabel) return { saved: false, reason: "empty label" };
+  if (isContextlessOptionLabel(rawLabel)) return { saved: false, reason: "contextless option label" };
 
   if (isCompanySpecific(rawLabel, postingCompanyName)) {
     return { saved: false, reason: "company-specific question" };
@@ -148,6 +149,7 @@ export async function upsertAnswerMemory({ label, answer, postingCompanyName, so
 export function findExactMemoryMatch(label, postingCompanyName, memoryRows) {
   const rawLabel = cleanText(label, LABEL_MAX_LENGTH);
   if (!rawLabel || !memoryRows?.length) return null;
+  if (isContextlessOptionLabel(rawLabel)) return null;
   if (isCompanySpecific(rawLabel, postingCompanyName)) return null;
 
   const normalized = normalizeLabel(rawLabel);
@@ -160,6 +162,7 @@ export function findExactMemoryMatch(label, postingCompanyName, memoryRows) {
 export async function findBestMemoryMatch(label, postingCompanyName, memoryRows, { includeExact = true } = {}) {
   const rawLabel = cleanText(label, LABEL_MAX_LENGTH);
   if (!rawLabel || !memoryRows?.length) return null;
+  if (isContextlessOptionLabel(rawLabel)) return null;
   if (isCompanySpecific(rawLabel, postingCompanyName)) return null;
 
   if (includeExact) {

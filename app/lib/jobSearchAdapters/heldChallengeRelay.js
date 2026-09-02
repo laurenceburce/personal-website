@@ -1,15 +1,14 @@
 // Shared by every submission adapter (greenhouse/ashby/breezy/personio/
 // workable/oracleFusion) — the one place that knows how to pause a
 // submission on a security-code / anti-bot-text / CAPTCHA blocker
-// (blockerDetection.js), hand it to the dashboard, and resume once the
-// account owner has answered it themselves. Nothing here guesses an answer
-// or drives a challenge on its own — see blockerDetection.js's own header
-// comment for why that boundary matters.
+// (blockerDetection.js), hand it to the dashboard, and resume once it has an
+// answer. Security codes can be read from the configured Gmail inbox; anti-
+// bot text and CAPTCHA challenges stay human-controlled.
 //
 // Two relay mechanisms, chosen by blocker kind:
 //  - security_code / anti_bot_text: a typed-answer relay. Find the input,
-//    create a DB row, wait for the dashboard to fill in an answer, type it
-//    in, click the continue/verify button.
+//    create a DB row, wait for either Gmail automation or the dashboard to
+//    fill in an answer, type it in, click the continue/verify button.
 //  - captcha: a LIVE relay. There's no text to type — solving means seeing
 //    and clicking/dragging the actual widget — so this opens a CDP session
 //    on the page and holds it open (via jobSearchLiveSessionRegistry.js) for
@@ -17,8 +16,10 @@
 //    until the dashboard says it's been solved.
 import { detectSubmissionBlocker, isAntiBotTextBlockerReason, isCaptchaBlockerReason, isSecurityCodeBlockerReason } from "./blockerDetection.js";
 import { clickWithBrowserMouse } from "./browserEngineClick.js";
+import { findEmailSecurityCode } from "../jobSearchEmailCode.js";
 import { registerLiveSession, unregisterLiveSession } from "../jobSearchLiveSessionRegistry.js";
 import {
+  answerSecurityChallenge,
   createSecurityChallenge,
   getChallengeStatus,
   markSecurityChallengeExpired,
@@ -29,9 +30,31 @@ import {
 const TEXT_RELAY_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_SECURITY_CODE_WAIT_MS || 5 * 60 * 1000));
 const CAPTCHA_WAIT_TIMEOUT_MS = Math.max(30_000, Number(process.env.JOB_SEARCH_CAPTCHA_WAIT_MS || 5 * 60 * 1000));
 const CAPTCHA_PAGE_CHECK_INTERVAL_MS = Math.max(250, Number(process.env.JOB_SEARCH_CAPTCHA_PAGE_CHECK_INTERVAL_MS || 500));
+const AUTO_EMAIL_SECURITY_CODE_WAIT_MS = durationEnvMs("JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_WAIT_MS", TEXT_RELAY_WAIT_TIMEOUT_MS, { min: 0 });
+const AUTO_EMAIL_SECURITY_CODE_POLL_MS = durationEnvMs("JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_POLL_MS", 5000, { min: 1000 });
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function durationEnvMs(name, fallback, { min = 0 } = {}) {
+  const raw = String(process.env[name] || "").trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.floor(value));
+}
+
+function boolEnv(name, fallback) {
+  const value = String(process.env[name] || "").trim().toLowerCase();
+  if (!value) return fallback;
+  return !["0", "false", "no", "off"].includes(value);
+}
+
+function shouldRetryEmailLookup(error) {
+  const status = Number(error?.status || 0);
+  if (status === 400 || status === 401 || status === 403 || status === 503) return false;
+  return status === 0 || status === 404 || status === 408 || status === 429 || status >= 500;
 }
 
 // Broader than blockerDetection.js's own signals on purpose — this only
@@ -282,6 +305,61 @@ function describeUnresolvedChallenge(label, status, timeoutMs) {
   return `${label} required; timed out waiting for dashboard input after ${Math.round(timeoutMs / 1000)}s.`;
 }
 
+function createAutoEmailSecurityCodeResolver() {
+  if (!boolEnv("JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE", true) || AUTO_EMAIL_SECURITY_CODE_WAIT_MS <= 0) return null;
+
+  const deadline = Date.now() + AUTO_EMAIL_SECURITY_CODE_WAIT_MS;
+  let nextLookupAt = 0;
+  let disabled = false;
+  let loggedStart = false;
+  let loggedWaiting = false;
+  let loggedTimeout = false;
+
+  return async function autoEmailSecurityCode(challenge) {
+    if (disabled) return null;
+
+    const now = Date.now();
+    if (now > deadline) {
+      if (!loggedTimeout) {
+        console.log(`  [held-challenge] Automatic Gmail code lookup timed out for challenge ${challenge.id}; still waiting for dashboard input.`);
+        loggedTimeout = true;
+      }
+      disabled = true;
+      return null;
+    }
+    if (now < nextLookupAt) return null;
+    nextLookupAt = now + AUTO_EMAIL_SECURITY_CODE_POLL_MS;
+
+    if (!loggedStart) {
+      console.log(`  [held-challenge] Checking Gmail automatically for security code challenge ${challenge.id}.`);
+      loggedStart = true;
+    }
+
+    try {
+      const result = await findEmailSecurityCode(challenge);
+      const code = String(result?.code || "").trim();
+      if (!code) throw new Error("No code was returned from email lookup.");
+
+      await answerSecurityChallenge(challenge.id, code);
+      console.log(`  [held-challenge] Gmail security code found for challenge ${challenge.id}${result?.from ? ` from ${result.from}` : ""}; resuming submission.`);
+      return { status: "answered", code, source: "email" };
+    } catch (error) {
+      const message = error?.message || "Email lookup failed.";
+      if (shouldRetryEmailLookup(error)) {
+        if (!loggedWaiting) {
+          console.log(`  [held-challenge] Gmail security code not found yet for challenge ${challenge.id}; retrying while dashboard input remains available. (${message})`);
+          loggedWaiting = true;
+        }
+        return null;
+      }
+
+      console.log(`  [held-challenge] Automatic Gmail code lookup unavailable for challenge ${challenge.id}; waiting for dashboard input. (${message})`);
+      disabled = true;
+      return null;
+    }
+  };
+}
+
 async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswers, kind }) {
   const challenge = await findChallengeChallenge(page, scope);
   if (!challenge) {
@@ -298,9 +376,13 @@ async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswer
     promptText: challenge.promptText,
     timeoutMs: TEXT_RELAY_WAIT_TIMEOUT_MS
   });
-  console.log(`  [held-challenge] Waiting for dashboard answer for "${posting.title}" at ${posting.companyName} (${kind}, challenge ${pendingChallenge.id}).`);
+  const answerSourceLabel = kind === "security_code" ? "Gmail/dashboard answer" : "dashboard answer";
+  console.log(`  [held-challenge] Waiting for ${answerSourceLabel} for "${posting.title}" at ${posting.companyName} (${kind}, challenge ${pendingChallenge.id}).`);
 
-  const answerResult = await waitForSecurityChallengeCode(pendingChallenge.id, { timeoutMs: TEXT_RELAY_WAIT_TIMEOUT_MS });
+  const answerResult = await waitForSecurityChallengeCode(pendingChallenge.id, {
+    timeoutMs: TEXT_RELAY_WAIT_TIMEOUT_MS,
+    onPending: kind === "security_code" ? createAutoEmailSecurityCodeResolver() : null
+  });
   if (answerResult.status !== "answered" || !answerResult.code) {
     return { ok: false, errorMessage: describeUnresolvedChallenge(challengeKindLabel(kind), answerResult.status, TEXT_RELAY_WAIT_TIMEOUT_MS) };
   }
@@ -311,7 +393,7 @@ async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswer
     await markSecurityChallengeUsed(pendingChallenge.id).catch(() => {});
   }
 
-  submittedAnswers[challengeKindLabel(kind)] = "[entered by user]";
+  submittedAnswers[challengeKindLabel(kind)] = answerResult.source === "email" ? "[entered from email]" : "[entered by user]";
 
   const continueButton = await findContinueButton(challenge.scope);
   if (continueButton) {

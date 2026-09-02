@@ -58,7 +58,7 @@ function structuredManualReviewFields({ labels, fieldOptions, posting, submitted
   }));
 }
 
-export async function runSubmitWorkerPass() {
+export async function runSubmitWorkerPass({ includeAutoApply = true } = {}) {
   // Written unconditionally, before the enabled check — this is what lets the
   // dashboard tell "the worker stopped running" apart from "deliberately
   // turned off" (see jobSearchWorkerStatusStore.js).
@@ -207,7 +207,11 @@ export async function runSubmitWorkerPass() {
   // be attached before handing it to evaluateAutoApply().
   const findSettings = await getFindSettings();
   let pendingReviewCount = 0;
-  if (findSettings.autoApplyEnabled) {
+  const autoApplyWillRun = includeAutoApply && findSettings.autoApplyEnabled;
+  if (!includeAutoApply && findSettings.autoApplyEnabled) {
+    console.log("Auto-apply enabled, but this trigger is approved-only — skipping auto-apply sweep for this pass.");
+  }
+  if (autoApplyWillRun) {
     const pendingReview = await listPostingsByStatus("pending_review", { limit: SUBMIT_BATCH_LIMIT, orderBy: "score" });
     pendingReviewCount = pendingReview.length;
     console.log(`Auto-apply enabled — evaluating ${pendingReview.length} pending-review posting(s).`);
@@ -263,7 +267,7 @@ export async function runSubmitWorkerPass() {
 
   await recordSubmitRun({
     approvedTotal: approved.length, submittedCount, manualReviewCount, failedCount,
-    autoApplyEnabled: findSettings.autoApplyEnabled, autoApplyEvaluated: pendingReviewCount,
+    autoApplyEnabled: autoApplyWillRun, autoApplyEvaluated: pendingReviewCount,
     autoAppliedCount, autoSkippedCount, ok: true
   }).catch((error) => console.error("[submit-run] Failed to record run history:", error?.message || error));
 

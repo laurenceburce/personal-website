@@ -3,6 +3,7 @@ import { upsertAnswerMemory } from "../../../lib/jobSearchAnswerMemoryStore";
 import { insertApplicationAttempt } from "../../../lib/jobSearchApplicationStore";
 import { jsonError, requireAccessOrRespond } from "../../../lib/jobSearchApiHelpers";
 import { polishFreeTextAnswer } from "../../../lib/jobSearchLlm";
+import { isContextlessOptionLabel } from "../../../lib/jobSearchAdapters/profileMapping";
 import { decidePosting, getPostingById, updatePostingScore } from "../../../lib/jobSearchPostingsStore";
 import { scorePosting } from "../../../lib/jobSearchScoringPipeline";
 import { getDefaultResume, getFindSettings, getProfile } from "../../../lib/jobSearchSettingsStore";
@@ -117,7 +118,7 @@ async function saveManualAnswersAndRetryOne(id, answers, email) {
   // unrelated posting.
   await Promise.all(
     merged
-      .filter((f) => submitted.has(f.label) && f.answer)
+      .filter((f) => submitted.has(f.label) && f.answer && !isContextlessOptionLabel(f.label))
       .map((f) => upsertAnswerMemory({
         label: f.label,
         answer: f.answer,
@@ -146,7 +147,7 @@ export async function POST(request) {
         // There's no fallback timer on the submit-worker side, so this call
         // landing is actually what gets this posting picked up promptly; see
         // that file's header comment for the failure mode if it doesn't.
-        await triggerSubmitWorker("approve");
+        await triggerSubmitWorker("approve", { includeAutoApply: false });
         return NextResponse.json({ ok: true, result });
       }
       case "reject":
@@ -175,7 +176,7 @@ export async function POST(request) {
         // submit-worker's own coalescing already handles overlapping
         // triggers fine, but there's no reason to make N network calls when
         // one wake-up covers everything this batch just approved.
-        if (succeeded > 0) await triggerSubmitWorker("batchApprove");
+        if (succeeded > 0) await triggerSubmitWorker("batchApprove", { includeAutoApply: false });
         return NextResponse.json({ ok: true, result: { count: succeeded, failed } });
       }
       case "batchReject": {
@@ -205,7 +206,7 @@ export async function POST(request) {
         // Same reasoning as the plain "approve" case above — no fallback
         // timer on the submit-worker side, so this call landing is what
         // actually gets the posting picked up promptly.
-        await triggerSubmitWorker("answerManualReview");
+        await triggerSubmitWorker("answerManualReview", { includeAutoApply: false });
         return NextResponse.json({ ok: true, result });
       }
       default:

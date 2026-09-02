@@ -509,11 +509,12 @@ export const ensureJobSearchSchema = async () => {
         )
       `);
 
-      // Human-in-the-loop one-time-code prompts raised by submit adapters.
-      // These are NOT email-scraped or auto-bypassed: the worker creates a
-      // short-lived pending row, keeps its browser session open, and the
-      // dashboard lets the owner type the code they received. The code is
-      // blanked once used/expired; list queries intentionally omit it.
+      // One-time-code / challenge prompts raised by submit adapters. The
+      // worker creates a short-lived pending row and keeps its browser
+      // session open. Security-code rows may be answered automatically from
+      // the configured Gmail inbox; anti-bot text and CAPTCHA rows stay
+      // dashboard/live-session driven. The code is blanked once used/expired;
+      // list queries intentionally omit it.
       await pool.query(`
         CREATE TABLE IF NOT EXISTS job_search_security_challenges (
           id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

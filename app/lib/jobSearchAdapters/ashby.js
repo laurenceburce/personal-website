@@ -255,6 +255,10 @@ async function collectLabeledFields(page) {
       .map((id) => clean(document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || ""))
       .filter(Boolean)
       .join(" "));
+    const humanizeFieldPath = (value) => {
+      const tail = String(value || "").split(".").pop() || "";
+      return clean(tail.replace(/\[[^\]]+\]/g, " ").replace(/[_-]+/g, " "));
+    };
     const containerText = (el) => {
       const container = el.closest("fieldset, [role='group'], [role='radiogroup'], [class*='field' i], [class*='question' i]");
       if (!container) return "";
@@ -319,6 +323,7 @@ async function collectLabeledFields(page) {
 
       const type = (target.getAttribute("type") || "").toLowerCase();
       if (type === "radio") continue;
+      if (target.closest("fieldset.ashby-application-form-input-radio-group, fieldset.ashby-application-form-input-checkbox-group")) continue;
 
       const key = `${selectorKind}:${selectorValue}`;
       if (seenTargets.has(key)) continue;
@@ -350,7 +355,8 @@ async function collectLabeledFields(page) {
       const radioName = kind === "radio" ? (inputs.find((input) => input.getAttribute("name"))?.getAttribute("name") || "") : "";
       if (radioName && seenRadioNames.has(radioName)) continue;
 
-      const fieldPath = group.closest("[data-field-path]")?.getAttribute("data-field-path") || questionLabel?.getAttribute("for") || "";
+      const fieldEntry = group.closest("[data-field-path], .ashby-application-form-field-entry");
+      const fieldPath = fieldEntry?.getAttribute("data-field-path") || questionLabel?.getAttribute("for") || "";
       const selectorValue = fieldPath || `group-${groupIndex}`;
       const key = `${kind}:${selectorValue}`;
       if (seenTargets.has(key)) continue;
@@ -369,9 +375,21 @@ async function collectLabeledFields(page) {
         .filter((option) => option.text || option.value);
       if (options.length === 0) continue;
 
+      const optionLabels = new Set(options.map((option) => clean(option.text || option.value).toLowerCase()).filter(Boolean));
+      let groupLabel = label;
+      if (!groupLabel || optionLabels.has(groupLabel.toLowerCase())) {
+        groupLabel = clean(
+          fieldEntry?.querySelector("label.ashby-application-form-question-title, [class*='question-title' i], legend")?.innerText
+            || labelledByText(group)
+            || group.getAttribute("aria-label")
+            || humanizeFieldPath(fieldPath)
+        );
+      }
+      if (!groupLabel || optionLabels.has(groupLabel.toLowerCase())) continue;
+
       fields.push({
         kind,
-        label: label.replace(/\*\s*$/, "").trim(),
+        label: groupLabel.replace(/\*\s*$/, "").trim(),
         selectorKind: "group",
         selectorValue,
         radioName,

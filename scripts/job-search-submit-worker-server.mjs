@@ -60,6 +60,7 @@ if (!TRIGGER_SECRET) {
 
 let isRunning = false;
 let rerunRequested = false;
+let queuedRunOptions = null;
 let lastRunSummary = null;
 let lastRunError = null;
 
@@ -71,9 +72,21 @@ let lastRunError = null;
 // (e.g. jobSearchCompanyDirectory.js's discoverNewCompanies limit).
 const MAX_CONSECUTIVE_RERUNS = 10;
 
-async function triggerRun(reason) {
+function normalizeRunOptions(options = {}) {
+  return { includeAutoApply: options.includeAutoApply !== false };
+}
+
+function mergeRunOptions(a, b) {
+  const left = normalizeRunOptions(a);
+  const right = normalizeRunOptions(b);
+  return { includeAutoApply: left.includeAutoApply || right.includeAutoApply };
+}
+
+async function triggerRun(reason, options = {}) {
+  const initialRunOptions = normalizeRunOptions(options);
   if (isRunning) {
     rerunRequested = true;
+    queuedRunOptions = queuedRunOptions ? mergeRunOptions(queuedRunOptions, initialRunOptions) : initialRunOptions;
     console.log(`[trigger] Pass already in progress — queued exactly one follow-up run (reason: ${reason}).`);
     return { started: false, queued: true };
   }
@@ -86,15 +99,18 @@ async function triggerRun(reason) {
   // Playwright.
   (async () => {
     let consecutiveReruns = 0;
+    let runOptions = initialRunOptions;
     try {
       do {
         rerunRequested = false;
-        console.log(`[run] Starting submit-worker pass (reason: ${reason}).`);
+        queuedRunOptions = null;
+        console.log(`[run] Starting submit-worker pass (reason: ${reason}, includeAutoApply: ${runOptions.includeAutoApply}).`);
         try {
-          lastRunSummary = await runSubmitWorkerPass();
+          lastRunSummary = await runSubmitWorkerPass(runOptions);
           lastRunError = null;
           if (lastRunSummary?.needsRerun) {
             rerunRequested = true;
+            queuedRunOptions = queuedRunOptions ? mergeRunOptions(queuedRunOptions, runOptions) : runOptions;
             console.log("[run] Submit-worker pass hit its batch cap — queued a follow-up pass to drain remaining work.");
           }
         } catch (error) {
@@ -108,6 +124,8 @@ async function triggerRun(reason) {
           if (consecutiveReruns >= MAX_CONSECUTIVE_RERUNS) {
             console.warn(`[run] Hit ${MAX_CONSECUTIVE_RERUNS} consecutive immediate reruns — yielding to the next scheduled/triggered run instead of looping further.`);
             rerunRequested = false;
+          } else {
+            runOptions = queuedRunOptions || normalizeRunOptions();
           }
         }
       } while (rerunRequested);
@@ -405,14 +423,16 @@ const server = createServer(async (req, res) => {
 
       const rawBody = await readBody(req).catch(() => "");
       let reason = "http-trigger";
+      let runOptions = normalizeRunOptions();
       try {
         const parsed = JSON.parse(rawBody || "{}");
         if (parsed?.reason) reason = String(parsed.reason).slice(0, 100);
+        runOptions = normalizeRunOptions({ includeAutoApply: parsed?.includeAutoApply });
       } catch {
         // A non-JSON or empty body is fine — reason just stays the default.
       }
 
-      const outcome = await triggerRun(reason);
+      const outcome = await triggerRun(reason, runOptions);
       sendJson(res, 202, outcome);
       return;
     }

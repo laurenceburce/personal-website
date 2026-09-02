@@ -8,6 +8,7 @@ const DEFAULT_CONFIRMATION_LOOKBACK_MINUTES = 30;
 const MAX_LOOKBACK_MINUTES = 60;
 const MAX_CONFIRMATION_LOOKBACK_MINUTES = 120;
 const MAX_RESULTS_CAP = 100;
+const SECURITY_CODE_CREATED_GRACE_MS = 2 * 60 * 1000;
 
 const SECURITY_TERMS = /\b(security|verification|verify|one[-\s]?time|authentication|login|sign[-\s]?in|passcode|otp|confirm|validate|code)\b/i;
 const CODE_CONTEXT_TERMS = /\b(code|passcode|otp|pin|verification|security|authentication|one[-\s]?time)\b/i;
@@ -301,6 +302,12 @@ function parseMessage(message) {
   };
 }
 
+function securityCodeSearchSinceMs(challenge) {
+  const createdAtMs = new Date(challenge?.createdAt || 0).getTime();
+  if (!Number.isFinite(createdAtMs) || createdAtMs <= 0) return 0;
+  return Math.max(0, createdAtMs - SECURITY_CODE_CREATED_GRACE_MS);
+}
+
 function scoreCandidate({ challenge, message, candidate, now, lookbackMs }) {
   const text = message.text || "";
   let score = candidate.score;
@@ -504,6 +511,7 @@ async function findGmailSecurityCode(challenge) {
   const maxResults = intEnv("JOB_SEARCH_EMAIL_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: MAX_RESULTS_CAP });
   const now = Date.now();
   const lookbackMs = lookbackMinutes * 60_000;
+  const sinceMs = securityCodeSearchSinceMs(challenge);
   const expectedLengths = expectedCodeLengthsFromChallenge(challenge);
 
   const messageRefs = await listGmailMessageRefs({
@@ -526,6 +534,7 @@ async function findGmailSecurityCode(challenge) {
     });
     const message = parseMessage(rawMessage);
     if (message.receivedAt && now - message.receivedAt > lookbackMs) continue;
+    if (message.receivedAt && sinceMs > 0 && message.receivedAt < sinceMs) continue;
     if (!SECURITY_TERMS.test(message.text)) continue;
 
     for (const candidate of extractCodes(message.text, { expectedLengths })) {
