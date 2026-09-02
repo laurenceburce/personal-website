@@ -953,8 +953,8 @@ async function waitForAshbySubmitOutcome(page, submitButton) {
   return { state: "timeout", text: lastText };
 }
 
-export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const { browser, newPage } = await launchJobSearchBrowser({ headless });
+export async function submitAshbyApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true, liveSessionId = "" }) {
+  const { browser, newPage } = await launchJobSearchBrowser({ headless, liveSessionId });
   const submittedAnswers = {};
   const manualReviewFields = [];
   // Real available options for a select/yesno/radio field, keyed by label —

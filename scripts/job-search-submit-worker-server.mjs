@@ -165,9 +165,9 @@ function hasValidTriggerSecret(req) {
   return (req.headers["x-trigger-secret"] || "") === TRIGGER_SECRET;
 }
 
-// The three routes behind a live CAPTCHA-solve session (see
-// app/lib/jobSearchAdapters/heldChallengeRelay.js's captcha branch and
-// app/lib/jobSearchLiveSessionRegistry.js). Same auth posture as /run —
+// The three routes behind live submit-page relay sessions (including live
+// CAPTCHA-solve pauses; see app/lib/jobSearchAdapters/heldChallengeRelay.js
+// and app/lib/jobSearchLiveSessionRegistry.js). Same auth posture as /run —
 // private networking plus this shared secret, never reachable from the
 // browser directly. The web app's own /api/job-search/live-sessions/[id]/*
 // routes are the only caller, and they authenticate the real dashboard user
@@ -182,10 +182,10 @@ async function captureLiveFrame(session) {
   return Buffer.from(result.data, "base64");
 }
 
-async function handleLiveFrame(res, challengeId) {
-  const session = getLiveSession(challengeId);
+async function handleLiveFrame(res, sessionId) {
+  const session = getLiveSession(sessionId);
   if (!session) {
-    sendJson(res, 404, { error: "No live session for that challenge — it may have already resolved, timed out, or this server restarted." });
+    sendJson(res, 404, { error: "No live session for that page — it may not be ready yet, may have already resolved, timed out, or this server restarted." });
     return;
   }
 
@@ -203,10 +203,10 @@ async function handleLiveFrame(res, challengeId) {
   }
 }
 
-async function handleLiveStream(req, res, challengeId) {
-  const session = getLiveSession(challengeId);
+async function handleLiveStream(req, res, sessionId) {
+  const session = getLiveSession(sessionId);
   if (!session) {
-    sendJson(res, 404, { error: "No live session for that challenge — it may have already resolved, timed out, or this server restarted." });
+    sendJson(res, 404, { error: "No live session for that page — it may not be ready yet, may have already resolved, timed out, or this server restarted." });
     return;
   }
 
@@ -222,7 +222,7 @@ async function handleLiveStream(req, res, challengeId) {
     "x-live-viewport-height": String(session.viewport.height || "")
   });
 
-  while (!closed && !res.destroyed && getLiveSession(challengeId) === session) {
+  while (!closed && !res.destroyed && getLiveSession(sessionId) === session) {
     try {
       const buffer = await captureLiveFrame(session);
       res.write(`--${boundary}\r\n`);
@@ -231,7 +231,7 @@ async function handleLiveStream(req, res, challengeId) {
       res.write(buffer);
       res.write("\r\n");
     } catch (error) {
-      console.error(`[live-stream] Failed to capture frame for challenge ${challengeId}:`, error?.message || error);
+      console.error(`[live-stream] Failed to capture frame for session ${sessionId}:`, error?.message || error);
       break;
     }
     await sleep(LIVE_FRAME_INTERVAL_MS);
@@ -373,10 +373,10 @@ async function dispatchLiveInputEvent(cdpSession, evt) {
   }
 }
 
-async function handleLiveInput(res, challengeId, rawBody) {
-  const session = getLiveSession(challengeId);
+async function handleLiveInput(res, sessionId, rawBody) {
+  const session = getLiveSession(sessionId);
   if (!session) {
-    sendJson(res, 404, { error: "No live session for that challenge — it may have already resolved, timed out, or this server restarted." });
+    sendJson(res, 404, { error: "No live session for that page — it may not be ready yet, may have already resolved, timed out, or this server restarted." });
     return;
   }
 
@@ -447,31 +447,41 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    const liveMatch = (req.url || "").match(/^\/live\/(\d+)\/(frame|stream|input|resolve)$/);
+    const liveMatch = (req.url || "").match(/^\/live\/([^/]+)\/(frame|stream|input|resolve)$/);
     if (liveMatch) {
       if (!hasValidTriggerSecret(req)) {
         sendJson(res, 401, { error: "Invalid trigger secret." });
         return;
       }
 
-      const challengeId = Number(liveMatch[1]);
+      let sessionId = "";
+      try {
+        sessionId = decodeURIComponent(liveMatch[1]);
+      } catch {
+        sendJson(res, 400, { error: "Invalid live-session id." });
+        return;
+      }
       const action = liveMatch[2];
 
       if (req.method === "GET" && action === "frame") {
-        await handleLiveFrame(res, challengeId);
+        await handleLiveFrame(res, sessionId);
         return;
       }
       if (req.method === "GET" && action === "stream") {
-        await handleLiveStream(req, res, challengeId);
+        await handleLiveStream(req, res, sessionId);
         return;
       }
       if (req.method === "POST" && action === "input") {
         const rawBody = await readBody(req).catch(() => "");
-        await handleLiveInput(res, challengeId, rawBody);
+        await handleLiveInput(res, sessionId, rawBody);
         return;
       }
       if (req.method === "POST" && action === "resolve") {
-        await handleLiveResolve(res, challengeId);
+        if (!/^\d+$/.test(sessionId)) {
+          sendJson(res, 400, { error: "Only CAPTCHA challenge sessions can be resolved." });
+          return;
+        }
+        await handleLiveResolve(res, Number(sessionId));
         return;
       }
     }

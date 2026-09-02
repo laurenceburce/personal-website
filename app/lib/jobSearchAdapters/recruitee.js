@@ -262,8 +262,8 @@ async function readOutcomeAfterSubmit({ page, submitButton, posting, submittedAn
   return { status: "submitted", confirmationText, errorMessage: "" };
 }
 
-export async function submitRecruiteeApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
-  const { browser, newPage } = await launchJobSearchBrowser({ headless });
+export async function submitRecruiteeApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true, liveSessionId = "" }) {
+  const { browser, newPage } = await launchJobSearchBrowser({ headless, liveSessionId });
   const submittedAnswers = {};
   const manualReviewFields = [];
   const manualReviewSet = new Set();

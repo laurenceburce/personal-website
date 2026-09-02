@@ -13,14 +13,19 @@ const MOUSE_MOVE_THROTTLE_MS = 16;
 // accepted a batched {events:[...]} body from the start; this is what
 // actually uses it.
 const FLUSH_INTERVAL_MS = 16;
+const STREAM_RETRY_MS = 1200;
 
 async function postInputBatch(challengeId, events) {
   if (events.length === 0) return;
-  await fetch(`/api/job-search/live-sessions/${challengeId}/input`, {
+  await fetch(`/api/job-search/live-sessions/${encodeURIComponent(challengeId)}/input`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ events })
   }).catch(() => {});
+}
+
+function streamUrl(challengeId) {
+  return `/api/job-search/live-sessions/${encodeURIComponent(challengeId)}/stream?t=${Date.now()}`;
 }
 
 function collapseInputEvents(events) {
@@ -41,6 +46,7 @@ function collapseInputEvents(events) {
 // the real page viewport captured by the submit worker.
 export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve }) {
   const imgRef = useRef(null);
+  const retryTimerRef = useRef(null);
   const [streamSrc, setStreamSrc] = useState("");
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [error, setError] = useState("");
@@ -58,10 +64,26 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
   }
 
   useEffect(() => {
+    clearTimeout(retryTimerRef.current);
     setFrameLoaded(false);
     setError("");
-    setStreamSrc(`/api/job-search/live-sessions/${challenge.id}/stream?t=${Date.now()}`);
+    setStreamSrc(streamUrl(challenge.id));
+
+    return () => clearTimeout(retryTimerRef.current);
   }, [challenge.id]);
+
+  const isCaptcha = (challenge?.challengeKind || "security_code") === "captcha";
+  const canResolve = isCaptcha && typeof onResolve === "function";
+
+  function scheduleStreamRetry() {
+    clearTimeout(retryTimerRef.current);
+    setFrameLoaded(false);
+    setError("Live stream is not ready yet or disconnected. Retrying...");
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      setStreamSrc(streamUrl(challenge.id));
+    }, STREAM_RETRY_MS);
+  }
 
   const flushInputBuffer = useCallback(() => {
     if (bufferRef.current.length === 0) return;
@@ -160,8 +182,9 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
         </header>
 
         <p className="job-search-panel-hint">
-          This is the live employer page. Click into it first, then click, drag, and type
-          directly on it to solve the CAPTCHA, then press Continue Submission below.
+          {isCaptcha
+            ? "This is the live employer page. Click into it first, then click, drag, and type directly on it to solve the CAPTCHA, then press Continue Submission below."
+            : "This is the live employer page the submit worker is using. Click into it first, then click, scroll, and type directly on it if you need to help it through a prompt."}
         </p>
 
         {error ? <p className="job-search-alert job-search-alert-error">{error}</p> : null}
@@ -184,10 +207,11 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
               alt="Live employer application page"
               draggable={false}
               onLoad={() => {
+                clearTimeout(retryTimerRef.current);
                 setFrameLoaded(true);
                 setError("");
               }}
-              onError={() => setError("Live stream disconnected. Close and reopen Solve Now if the session is still waiting.")}
+              onError={scheduleStreamRetry}
             />
           ) : null}
           {!frameLoaded ? (
@@ -196,10 +220,12 @@ export default function LiveCaptchaModal({ challenge, saving, onClose, onResolve
         </div>
 
         <div className="job-search-live-actions">
-          <button type="button" onClick={onClose} disabled={isBusy}>Cancel</button>
-          <button type="button" onClick={onResolve} disabled={isBusy}>
-            {saving === "resolveLiveCaptcha" ? "Continuing..." : "Continue Submission"}
-          </button>
+          <button type="button" onClick={onClose} disabled={isBusy}>{canResolve ? "Cancel" : "Close"}</button>
+          {canResolve ? (
+            <button type="button" onClick={onResolve} disabled={isBusy}>
+              {saving === "resolveLiveCaptcha" ? "Continuing..." : "Continue Submission"}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

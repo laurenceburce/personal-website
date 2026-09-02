@@ -28,6 +28,10 @@ import { isWorkerEnabled, recordHeartbeat, recordWorkerRunResult } from "./jobSe
 const headless = process.env.JOB_SEARCH_PLAYWRIGHT_HEADLESS !== "false";
 const SUBMIT_BATCH_LIMIT = 20;
 
+function submitLiveSessionId(postingId) {
+  return `submit-${postingId}`;
+}
+
 function toApplicationStatus(adapterStatus) {
   if (adapterStatus === "submitted") return "submitted";
   // 'blocked' (CAPTCHA/anti-bot puzzle/login wall — see blockerDetection.js)
@@ -93,6 +97,7 @@ export async function runSubmitWorkerPass({ includeAutoApply = true } = {}) {
     const resumeWithBlob = defaultResume ? await getResumeById(defaultResume.id, { includeBlob: true }) : null;
 
     for (const posting of approved) {
+      const liveSessionId = submitLiveSessionId(posting.id);
       // Isolated per posting — matches scoreNewPostings' own pattern. Without
       // this, a single bad posting (a browser-launch failure, which happens
       // outside every adapter's own try/catch, or a transient DB error on the
@@ -100,7 +105,7 @@ export async function runSubmitWorkerPass({ includeAutoApply = true } = {}) {
       // leaving every remaining approved posting this run untouched.
       await beginProgressItem({
         postingId: posting.id, title: posting.title, companyName: posting.companyName,
-        atsType: posting.atsType, phase: "submitting"
+        atsType: posting.atsType, phase: "submitting", liveSessionId
       }).catch(() => {});
 
       try {
@@ -120,7 +125,8 @@ export async function runSubmitWorkerPass({ includeAutoApply = true } = {}) {
           resumeBuffer: resumeWithBlob?.fileBlob || null,
           resumeFileName: resumeWithBlob?.fileName || "resume.pdf",
           resumeText: resumeWithBlob?.parsedText || "",
-          headless
+          headless,
+          liveSessionId
         });
 
         const applicationStatus = toApplicationStatus(result.status);
@@ -221,13 +227,14 @@ export async function runSubmitWorkerPass({ includeAutoApply = true } = {}) {
     if (pendingReview.length > 0) {
       const profile = await getProfile();
       for (const posting of pendingReview) {
+        const liveSessionId = submitLiveSessionId(posting.id);
         await beginProgressItem({
           postingId: posting.id, title: posting.title, companyName: posting.companyName,
-          atsType: posting.atsType, phase: "auto_apply"
+          atsType: posting.atsType, phase: "auto_apply", liveSessionId
         }).catch(() => {});
 
         try {
-          const result = await evaluateAutoApply({ posting, findSettings, profile });
+          const result = await evaluateAutoApply({ posting, findSettings, profile, liveSessionId });
           if (result.status === "submitted") autoAppliedCount += 1;
           else autoSkippedCount += 1;
 

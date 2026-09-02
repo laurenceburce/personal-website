@@ -68,7 +68,8 @@ function ReviewQueueRow({ posting, selected, isNew, onToggleSelect, onApprove, o
   // The targeted alternative to plain "Retry" — only makes sense once there's
   // an actual structured field list to answer (older postings from before
   // this existed only ever got the flattened decisionNote string).
-  const hasAnswerableFields = posting.status === "needs_manual_review" && posting.manualReviewFields?.length > 0;
+  const hasAnswerableFields = posting.status === "needs_manual_review"
+    && (posting.manualReviewFields || []).some((field) => !isNonAnswerableManualReviewFlag(field.label));
 
   return (
     <>
@@ -321,6 +322,9 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
   const answerableFields = fields.filter((f) => !isNonAnswerableManualReviewFlag(f.label));
   const blankLabels = answerableFields.map((f) => f.label).filter((label) => !(answers[label] || "").trim());
   const allAnswered = blankLabels.length === 0;
+  const hasOnlyContextlessOptions = fields.length > 0
+    && answerableFields.length === 0
+    && fields.every((field) => isContextlessOptionLabel(field.label));
 
   // Fields with captured options are excluded below — no free-text draft to
   // polish, and hiding the whole button (further down) when nothing left is
@@ -394,6 +398,8 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
           its own {answerableFields.length > 0
             ? `(${answerableFields.length - blankLabels.length}/${answerableFields.length} answered — every one is `
               + "required, scroll down if that count looks off). "
+            : hasOnlyContextlessOptions
+              ? "— this saved field list only has orphaned option labels from an older parser. Use Retry & Recapture to re-read the form and rebuild the answerable prompts. "
             : "— nothing here needs an answer from you (see below). "}
           A dropdown was a real widget on the page, so it only offers its actual options — pick one rather than
           typing. "Polish all with AI" refines every free-text draft's wording without inventing anything you didn't
@@ -464,7 +470,9 @@ function ManualAnswerModal({ posting, profile, answerMemory, applications, savin
               {polishingAll ? "Polishing..." : "Polish all with AI"}
             </button>
           ) : null}
-          <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>Save &amp; Retry</button>
+          <button type="button" disabled={isBusy} onClick={handleSaveAndRetry}>
+            {answerableFields.length > 0 ? "Save & Retry" : "Retry & Recapture"}
+          </button>
           <button type="button" disabled={isBusy} onClick={onClose}>Cancel</button>
         </div>
       </div>

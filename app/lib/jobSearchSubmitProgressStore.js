@@ -100,11 +100,12 @@ export async function setAutoApplyTotal(total) {
 // Marks one posting as "currently being worked on" — appended to the run's
 // item log AND set as current_item (the latter is just a convenience so a
 // client doesn't have to scan the log for whatever's in_progress).
-export async function beginProgressItem({ postingId, title, companyName, atsType, phase }) {
+export async function beginProgressItem({ postingId, title, companyName, atsType, phase, liveSessionId = "" }) {
   const pool = requirePool(await ensureJobSearchSchema());
   const current = await getSubmitProgress();
   const item = {
     postingId, title, companyName, atsType: atsType || null, phase,
+    liveSessionId: liveSessionId || null,
     status: "in_progress", startedAt: new Date().toISOString(), finishedAt: null
   };
   const items = [...(current.items || []), item].slice(-MAX_ITEMS);

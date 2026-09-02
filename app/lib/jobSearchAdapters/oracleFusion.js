@@ -587,9 +587,9 @@ async function pollForSubmissionOutcome(page, submitButtonLocator) {
   return { result: "timeout", text: lastText };
 }
 
-export async function submitOracleFusionApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true }) {
+export async function submitOracleFusionApplication({ posting, profile, resumeBuffer, resumeFileName, resumeText = "", dryRun = false, headless = true, liveSessionId = "" }) {
   const session = await resolveOracleSession(posting.applyUrl).catch(() => null);
-  const { browser, newPage } = await launchJobSearchBrowser({ headless });
+  const { browser, newPage } = await launchJobSearchBrowser({ headless, liveSessionId });
   const submittedAnswers = {};
   const manualReviewFields = [];
   // Real available options for a select/radio-group field, keyed by label —

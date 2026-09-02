@@ -7,6 +7,7 @@ import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
 import FindSettingsPanel from "./FindSettingsPanel";
 import HeldSubmissionsPanel from "./HeldSubmissionsPanel";
+import LiveCaptchaModal from "./LiveCaptchaModal";
 import NotificationsBell from "./NotificationsBell";
 import OracleSessionsPanel from "./OracleSessionsPanel";
 import OverviewPanel from "./OverviewPanel";
@@ -23,6 +24,25 @@ const TABS = [
   { id: "find", label: "Job Find Settings" }
 ];
 
+function isCaptchaChallenge(challenge) {
+  return (challenge?.challengeKind || "security_code") === "captcha";
+}
+
+function liveChallengeFromProgress(progress) {
+  const item = progress?.currentItem;
+  if (!item?.postingId) return null;
+  return {
+    id: item.liveSessionId || `submit-${item.postingId}`,
+    postingId: item.postingId,
+    companyName: item.companyName || "",
+    jobTitle: item.title || "Current submission",
+    atsType: item.atsType || "",
+    applyUrl: "",
+    challengeKind: "submit_live",
+    promptText: ""
+  };
+}
+
 export default function JobSearchAppClient({ snapshot, initialTab }) {
   const router = useRouter();
   const [tab, setTab] = useState(initialTab || "overview");
@@ -30,6 +50,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [heldToast, setHeldToast] = useState("");
+  const [toolbarLiveChallenge, setToolbarLiveChallenge] = useState(null);
   // null until the first poll lands. Lives here (not in OverviewPanel, which
   // only mounts on the Overview tab) so the topbar's SubmitWorkerBanner and
   // OverviewPanel's own live-progress block share one poll loop instead of
@@ -294,16 +315,65 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   const uploadResume = (formData) => uploadFile("/api/job-search/resumes", formData, "uploadResume", "Resume uploaded.");
   const uploadOracleSession = (formData) => uploadFile("/api/job-search/oracle-session", formData, "uploadOracleSession", "Oracle session connected.");
 
+  async function openToolbarLiveRelay(progress) {
+    const currentProgress = progress || submitProgress;
+    if (currentProgress?.status !== "running") return false;
+
+    try {
+      const response = await fetch("/api/job-search/security-challenges", { cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      const challenges = Array.isArray(payload?.challenges) ? payload.challenges : [];
+      if (response.ok && challenges.length > 0) {
+        const currentPostingId = Number(currentProgress?.currentItem?.postingId);
+        const matchingCaptcha = challenges.find((challenge) => (
+          isCaptchaChallenge(challenge)
+          && (!Number.isFinite(currentPostingId) || Number(challenge.postingId) === currentPostingId)
+        )) || challenges.find(isCaptchaChallenge);
+        if (matchingCaptcha) {
+          setToolbarLiveChallenge(matchingCaptcha);
+          return true;
+        }
+      }
+    } catch {
+      // Best-effort. The generic submit-page live session below can still
+      // open even if this lookup misses.
+    }
+
+    const challenge = liveChallengeFromProgress(currentProgress);
+    if (!challenge) return false;
+    setToolbarLiveChallenge(challenge);
+    return true;
+  }
+
   return (
     <div className="job-search-app">
       <header className="job-search-topbar">
         <h1>Job Search</h1>
         <div className="job-search-topbar-actions">
-          <SubmitWorkerBanner progress={submitProgress} />
+          <SubmitWorkerBanner progress={submitProgress} onOpenLiveRelay={openToolbarLiveRelay} />
           <NotificationsBell />
           <button type="button" className="job-search-header-home" onClick={() => router.push("/")}>Home</button>
         </div>
       </header>
+
+      {toolbarLiveChallenge ? (
+        <LiveCaptchaModal
+          challenge={toolbarLiveChallenge}
+          saving={saving}
+          onClose={() => setToolbarLiveChallenge(null)}
+          onResolve={isCaptchaChallenge(toolbarLiveChallenge)
+            ? async () => {
+              await runAction(
+                "/api/job-search/security-challenges",
+                "resolveLiveCaptcha",
+                { id: toolbarLiveChallenge.id },
+                "Submission resumed."
+              );
+              setToolbarLiveChallenge(null);
+            }
+            : null}
+        />
+      ) : null}
 
       <nav className="job-search-tabs">
         {TABS.map((t) => (

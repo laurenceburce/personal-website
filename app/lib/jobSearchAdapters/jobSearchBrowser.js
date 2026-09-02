@@ -1,4 +1,5 @@
 import { chromium } from "playwright";
+import { registerLiveSession, unregisterLiveSession } from "../jobSearchLiveSessionRegistry.js";
 
 const DEFAULT_REMOTE_CDP_TIMEOUT_MS = 30000;
 
@@ -33,14 +34,59 @@ async function newRemoteCdpPage(browser, options = {}) {
   return context.newPage();
 }
 
-export async function launchJobSearchBrowser({ headless = true } = {}) {
+async function registerPageForLiveRelay(sessionId, page) {
+  const key = clean(sessionId);
+  if (!key) return null;
+
+  const cdpSession = await page.context().newCDPSession(page);
+  const viewport = page.viewportSize() || { width: 1280, height: 800 };
+  registerLiveSession(key, { page, cdpSession, viewport });
+
+  let cleaned = false;
+  return async () => {
+    if (cleaned) return;
+    cleaned = true;
+    unregisterLiveSession(key);
+    await cdpSession.detach().catch(() => {});
+  };
+}
+
+function withLiveRelayPages(browser, createPage, sessionId) {
+  const cleanups = new Set();
+  const originalClose = browser.close.bind(browser);
+  browser.close = async (...args) => {
+    for (const cleanup of cleanups) {
+      await cleanup().catch(() => {});
+    }
+    cleanups.clear();
+    return originalClose(...args);
+  };
+
+  return async (options) => {
+    const page = await createPage(options);
+    const cleanup = await registerPageForLiveRelay(sessionId, page).catch((error) => {
+      console.error(`[live-relay] Failed to register session "${sessionId}":`, error?.message || error);
+      return null;
+    });
+    if (cleanup) {
+      cleanups.add(cleanup);
+      page.once("close", () => {
+        cleanup().catch(() => {});
+        cleanups.delete(cleanup);
+      });
+    }
+    return page;
+  };
+}
+
+export async function launchJobSearchBrowser({ headless = true, liveSessionId = "" } = {}) {
   const endpoint = remoteCdpEndpoint();
   if (!endpoint) {
     const browser = await chromium.launch({ headless });
     return {
       browser,
       provider: "local",
-      newPage: (options) => browser.newPage(options),
+      newPage: withLiveRelayPages(browser, (options) => browser.newPage(options), liveSessionId),
       close: () => browser.close()
     };
   }
@@ -49,7 +95,7 @@ export async function launchJobSearchBrowser({ headless = true } = {}) {
   return {
     browser,
     provider: "remote-cdp",
-    newPage: (options) => newRemoteCdpPage(browser, options),
+    newPage: withLiveRelayPages(browser, (options) => newRemoteCdpPage(browser, options), liveSessionId),
     close: () => browser.close()
   };
 }

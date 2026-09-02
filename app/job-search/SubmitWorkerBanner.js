@@ -32,8 +32,9 @@ function timeAgo(value) {
 // updating live too (same shared `progress` object), and deliberately stays
 // open through the run finishing rather than disappearing out from under
 // whoever's reading it the moment the last job wraps up.
-export default function SubmitWorkerBanner({ progress }) {
+export default function SubmitWorkerBanner({ progress, onOpenLiveRelay }) {
   const [open, setOpen] = useState(false);
+  const [openingRelay, setOpeningRelay] = useState(false);
   const isRunning = progress?.status === "running";
 
   if (!isRunning && !open) return null;
@@ -58,10 +59,24 @@ export default function SubmitWorkerBanner({ progress }) {
   const pct = total > 0 ? Math.min(100, Math.round(((progress?.processedCount || 0) / total) * 100)) : 0;
   const items = progress?.items || [];
 
+  async function handleBannerClick() {
+    if (openingRelay) return;
+    if (typeof onOpenLiveRelay === "function") {
+      setOpeningRelay(true);
+      try {
+        const opened = await onOpenLiveRelay(progress);
+        if (opened) return;
+      } finally {
+        setOpeningRelay(false);
+      }
+    }
+    setOpen(true);
+  }
+
   return (
     <>
       {isRunning ? (
-        <button type="button" className="job-search-submit-banner" onClick={() => setOpen(true)}>
+        <button type="button" className="job-search-submit-banner" onClick={handleBannerClick} aria-busy={openingRelay ? "true" : undefined}>
           <span className="job-search-submit-banner-dot" aria-hidden="true" />
           Working{total > 0 ? ` — ${progress.processedCount}/${total}` : ""}
           <span className="job-search-submit-banner-bar" style={{ width: `${pct}%` }} aria-hidden="true" />
