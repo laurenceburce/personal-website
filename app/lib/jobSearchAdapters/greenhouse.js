@@ -51,7 +51,7 @@ const MAX_LLM_ANSWERED_FIELDS = 15;
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
 // Do not match bare "required field": Greenhouse's static "* indicates a
 // required field" legend is present before and after every valid submit click.
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|error submitting|something went wrong)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
 
 function cssAttr(value) {
   return String(value || "").replace(/[\\"]/g, "\\$&");

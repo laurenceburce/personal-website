@@ -26,7 +26,7 @@ const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
 const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|application (has been |was )?(successfully )?(submitted|sent)|we('| ha)ve received your application|your application (has been|was) received)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid|upload failed|failed to upload)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid|upload failed|failed to upload|invalid code|incorrect code|expired code|verification failed)/i;
 
 function cssAttr(value) {
   return String(value || "").replace(/"/g, '\\"');

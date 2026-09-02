@@ -40,7 +40,7 @@ const SUBMIT_SETTLE_TIMEOUT_MS = 10000;
 const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
 
 // Confirmed live as a real, common form pattern: "years of experience with
 // X" rendered as a RADIO group with numeric-range choices ("0-1", "1-3",

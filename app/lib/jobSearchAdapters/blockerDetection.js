@@ -96,14 +96,23 @@ async function isVisibleEnabled(locator) {
   return await locator.isVisible().catch(() => false) && await locator.isEnabled().catch(() => false);
 }
 
+async function hasNoEnteredValue(locator) {
+  return locator.evaluate((el) => {
+    if (el.matches("input, textarea")) return !String(el.value || "").trim();
+    return true;
+  }).catch(() => true);
+}
+
 async function hasVisibleSplitCodeBoxes(scope) {
   const boxes = await scope.locator('input[maxlength="1"]').all().catch(() => []);
   let visibleCount = 0;
+  let emptyCount = 0;
   for (const box of boxes) {
-    if (await isVisibleEnabled(box)) visibleCount += 1;
-    if (visibleCount >= 2) return true;
+    if (!(await isVisibleEnabled(box))) continue;
+    visibleCount += 1;
+    if (await hasNoEnteredValue(box)) emptyCount += 1;
   }
-  return false;
+  return visibleCount >= 2 && emptyCount > 0;
 }
 
 async function hasTargetedSecurityCodeInput(scope) {
@@ -112,6 +121,7 @@ async function hasTargetedSecurityCodeInput(scope) {
   for (let i = 0; i < codeInputCount; i += 1) {
     const input = codeInputs.nth(i);
     if (!(await isVisibleEnabled(input))) continue;
+    if (!(await hasNoEnteredValue(input))) continue;
     const descriptor = await input.evaluate((el) => [
       el.getAttribute("autocomplete"),
       el.getAttribute("aria-label"),
@@ -131,11 +141,14 @@ async function hasSingleVisibleTextEntry(scope) {
     'input:not([type]), input[type="text"], input[type="tel"], input[type="number"], input[type="password"], textarea'
   ).all().catch(() => []);
   let visibleCount = 0;
+  let emptyCount = 0;
   for (const input of inputs) {
-    if (await isVisibleEnabled(input)) visibleCount += 1;
+    if (!(await isVisibleEnabled(input))) continue;
+    visibleCount += 1;
+    if (await hasNoEnteredValue(input)) emptyCount += 1;
     if (visibleCount > 1) return false;
   }
-  return visibleCount === 1;
+  return visibleCount === 1 && emptyCount === 1;
 }
 
 async function hasActionableSecurityCodeEntry(scope, { allowSingleTextFallback = false } = {}) {

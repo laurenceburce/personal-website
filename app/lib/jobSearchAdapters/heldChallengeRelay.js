@@ -220,12 +220,17 @@ async function findChallengeChallenge(page, preferredScope) {
   return null;
 }
 
-async function findContinueButton(scope) {
-  const roleButton = scope.getByRole("button", { name: /verify|continue|submit|next|confirm/i }).first();
-  if (await isVisibleEnabled(roleButton)) return roleButton;
+async function findContinueButton(scope, { timeoutMs = 3000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const roleButton = scope.getByRole("button", { name: /verify|continue|submit|next|confirm/i }).first();
+    if (await isVisibleEnabled(roleButton)) return roleButton;
 
-  const submitButton = scope.locator('button[type="submit"], input[type="submit"], input[type="button"]').first();
-  if (await isVisibleEnabled(submitButton)) return submitButton;
+    const submitButton = scope.locator('button[type="submit"], input[type="submit"], input[type="button"]').first();
+    if (await isVisibleEnabled(submitButton)) return submitButton;
+
+    await sleep(100);
+  }
 
   return null;
 }
@@ -242,6 +247,25 @@ async function settleAfterClick(page, button) {
     if (!(await button.isVisible().catch(() => false))) return;
     await page.waitForTimeout(250);
   }
+}
+
+async function enterTextChallengeAnswer(page, challenge, answer) {
+  const cleanAnswer = String(answer || "").trim();
+  if (!cleanAnswer) return;
+
+  if (challenge.found.mode === "split") {
+    const characters = cleanAnswer.replace(/[\s-]/g, "").split("");
+    for (let i = 0; i < challenge.found.locators.length && characters[i] != null; i += 1) {
+      await challenge.found.locators[i].fill(characters[i]);
+    }
+    return;
+  }
+
+  const input = challenge.found.locator;
+  await clickWithBrowserMouse(page, input).catch(() => {});
+  await input.fill("");
+  const typed = await input.pressSequentially(cleanAnswer, { delay: 20 }).then(() => true).catch(() => false);
+  if (!typed) await input.fill(cleanAnswer);
 }
 
 function challengeKindLabel(kind) {
@@ -282,14 +306,7 @@ async function resolveTextRelayChallenge({ page, scope, posting, submittedAnswer
   }
 
   try {
-    if (challenge.found.mode === "split") {
-      const digits = String(answerResult.code).replace(/\s+/g, "").split("");
-      for (let i = 0; i < challenge.found.locators.length && digits[i] != null; i += 1) {
-        await challenge.found.locators[i].fill(digits[i]);
-      }
-    } else {
-      await challenge.found.locator.fill(answerResult.code);
-    }
+    await enterTextChallengeAnswer(page, challenge, answerResult.code);
   } finally {
     await markSecurityChallengeUsed(pendingChallenge.id).catch(() => {});
   }

@@ -2,14 +2,15 @@ import { appError } from "./jobSearchDb.js";
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
 const GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const DEFAULT_LOOKBACK_MINUTES = 10;
-const DEFAULT_MAX_RESULTS = 20;
+const DEFAULT_LOOKBACK_MINUTES = 30;
+const DEFAULT_MAX_RESULTS = 30;
 const MAX_LOOKBACK_MINUTES = 60;
-const MAX_RESULTS_CAP = 50;
+const MAX_RESULTS_CAP = 100;
 
 const SECURITY_TERMS = /\b(security|verification|verify|one[-\s]?time|authentication|login|sign[-\s]?in|passcode|otp|confirm|validate|code)\b/i;
 const CODE_CONTEXT_TERMS = /\b(code|passcode|otp|pin|verification|security|authentication|one[-\s]?time)\b/i;
 const CODE_MARKER_TERMS = "(?:code|passcode|otp|pin|verification|security|authentication|confirmation)";
+const CODE_VALUE_MARKER_TERMS = "(?:(?:security|verification|authentication|confirmation|one[-\\s]?time)\\s+)?(?:code|passcode|otp|pin)";
 const CODE_TOKEN_STOPWORDS = new Set([
   "application",
   "authentication",
@@ -89,6 +90,8 @@ function stripHtml(html) {
     .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
     .replace(/\s+/g, " ")
     .trim();
@@ -134,6 +137,10 @@ function codeCharactersPattern(code) {
   return String(code).split("").map(escapeRegExp).join("[\\s-]*");
 }
 
+function normalizeCodeToken(value) {
+  return String(value || "").replace(/[\s-]/g, "").trim();
+}
+
 function expectedCodeLengthsFromChallenge(challenge) {
   const text = normalizeText([
     challenge?.promptText,
@@ -142,8 +149,8 @@ function expectedCodeLengthsFromChallenge(challenge) {
   ].filter(Boolean).join(" "));
   const lengths = new Set();
   const patterns = [
-    /\b(\d{1,2})\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\s+(?:code|passcode|otp|pin)\b/gi,
-    /\b(?:code|passcode|otp|pin)\b\D{0,40}\b(\d{1,2})\s*[- ]?\s*(?:character|characters|char|chars|digit|digits)\b/gi
+    /\b(\d{1,2})\s*[-–—‑]?\s*(?:character|characters|char|chars|digit|digits)\s+(?:code|passcode|otp|pin)\b/gi,
+    /\b(?:code|passcode|otp|pin)\b\D{0,40}\b(\d{1,2})\s*[-–—‑]?\s*(?:character|characters|char|chars|digit|digits)\b/gi
   ];
 
   for (const pattern of patterns) {
@@ -160,11 +167,12 @@ function expectedCodeLengthsFromChallenge(challenge) {
 function candidateLooksLikeNoise(code, { rawCode, directContext, expectedLengths }) {
   const normalized = String(code || "").trim();
   const raw = String(rawCode || "").trim();
+  const hasExpectedLength = expectedLengths.has(normalized.length);
   if (!normalized) return true;
   if (/^20[2-3]\d$/.test(normalized)) return true;
-  if (/^[01]+$/.test(normalized) && normalized.length >= 6) return true;
+  if (/^[01]+$/.test(normalized) && normalized.length >= 6 && !directContext && !hasExpectedLength) return true;
   if (CODE_TOKEN_STOPWORDS.has(normalized.toLowerCase())) return true;
-  if (expectedLengths.size > 0 && !expectedLengths.has(normalized.length)) return true;
+  if (expectedLengths.size > 0 && !hasExpectedLength) return true;
 
   const hasDigit = /\d/.test(normalized);
   const hasLetter = /[a-z]/i.test(normalized);
@@ -181,6 +189,52 @@ function extractCodes(text, { expectedLengths = new Set() } = {}) {
   const source = normalizeText(text);
   const candidates = [];
   const seen = new Set();
+  const addCandidate = ({ rawCode, start, directContextHint = false }) => {
+    const code = normalizeCodeToken(rawCode);
+    if (code.length < 4 || code.length > 12) return;
+
+    const context = source.slice(Math.max(0, start - 120), Math.min(source.length, start + String(rawCode).length + 160));
+    if (!CODE_CONTEXT_TERMS.test(context)) return;
+
+    const flexibleCode = codeCharactersPattern(code);
+    const before = new RegExp(`\\b${CODE_MARKER_TERMS}\\b\\D{0,90}${flexibleCode}`, "i");
+    const after = new RegExp(`${flexibleCode}\\D{0,90}\\b${CODE_MARKER_TERMS}\\b`, "i");
+    const directContext = directContextHint || before.test(context) || after.test(context);
+    if (candidateLooksLikeNoise(code, { rawCode, directContext, expectedLengths })) return;
+
+    const key = code.toUpperCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    let score = directContext ? 40 : 18;
+    if (expectedLengths.has(code.length)) score += 35;
+    else if (expectedLengths.size === 0 && code.length === 6) score += 10;
+    else if (expectedLengths.size === 0 && (code.length === 5 || code.length === 7 || code.length === 8)) score += 4;
+    if (code.length === 4) score -= 5;
+    if (/[a-z]/i.test(code) && /\d/.test(code)) score += 8;
+    if (/^\d+$/.test(code) && code.length < 6) score -= 8;
+
+    candidates.push({ code, score, context });
+  };
+
+  // Greenhouse and similar systems sometimes render an 8-character code as
+  // `ABCD-EFGH` or as separate styled characters. The generic token scan
+  // below would see that as two 4-character tokens and reject both when the
+  // prompt asks for an 8-character code, so scan marker-adjacent windows for
+  // grouped alphanumeric tokens first.
+  const groupedPatterns = [
+    new RegExp(`\\b${CODE_VALUE_MARKER_TERMS}\\b(?:\\s+(?:is|are|was|will be|below))?[^a-z0-9]{0,80}([a-z0-9](?:[\\s-]*[a-z0-9]){3,11})(?![a-z0-9])`, "gi"),
+    new RegExp(`(^|[^a-z0-9])([a-z0-9](?:[\\s-]*[a-z0-9]){3,11})[^a-z0-9]{0,80}\\b${CODE_VALUE_MARKER_TERMS}\\b`, "gi")
+  ];
+  for (const pattern of groupedPatterns) {
+    let match;
+    while ((match = pattern.exec(source))) {
+      const rawCode = match[2] || match[1];
+      const leading = match[2] ? String(match[1] || "").length : 0;
+      addCandidate({ rawCode, start: match.index + leading, directContextHint: true });
+    }
+  }
+
   const codePatterns = [
     /(^|[^a-z0-9])([a-z0-9]{4,12})(?![a-z0-9])/gi,
     /(^|[^\d])(\d(?:[\s-]?\d){3,7})(?!\d)/g
@@ -190,32 +244,8 @@ function extractCodes(text, { expectedLengths = new Set() } = {}) {
     let match;
     while ((match = codePattern.exec(source))) {
       const rawCode = match[2];
-      const code = rawCode.replace(/[\s-]/g, "");
-      if (code.length < 4 || code.length > 12) continue;
-
       const start = match.index + match[1].length;
-      const context = source.slice(Math.max(0, start - 120), Math.min(source.length, start + rawCode.length + 160));
-      if (!CODE_CONTEXT_TERMS.test(context)) continue;
-
-      const flexibleCode = codeCharactersPattern(code);
-      const before = new RegExp(`\\b${CODE_MARKER_TERMS}\\b\\D{0,90}${flexibleCode}`, "i");
-      const after = new RegExp(`${flexibleCode}\\D{0,90}\\b${CODE_MARKER_TERMS}\\b`, "i");
-      const directContext = before.test(context) || after.test(context);
-      if (candidateLooksLikeNoise(code, { rawCode, directContext, expectedLengths })) continue;
-
-      const key = code.toUpperCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      let score = directContext ? 40 : 18;
-      if (expectedLengths.has(code.length)) score += 35;
-      else if (expectedLengths.size === 0 && code.length === 6) score += 10;
-      else if (expectedLengths.size === 0 && (code.length === 5 || code.length === 7 || code.length === 8)) score += 4;
-      if (code.length === 4) score -= 5;
-      if (/[a-z]/i.test(code) && /\d/.test(code)) score += 8;
-      if (/^\d+$/.test(code) && code.length < 6) score -= 8;
-
-      candidates.push({ code, score, context });
+      addCandidate({ rawCode, start });
     }
   }
 
@@ -285,10 +315,36 @@ function scoreCandidate({ challenge, message, candidate, now, lookbackMs }) {
   return score;
 }
 
-function buildGmailSearchQuery(lookbackMinutes) {
+function challengeSearchTerms(challenge) {
+  return [
+    ...companyTokens(challenge?.companyName),
+    ...tokensFromText(challenge?.jobTitle, COMPANY_STOPWORDS).slice(0, 4),
+    ...hostTokens(challenge?.applyUrl)
+  ].slice(0, 10);
+}
+
+function buildGmailSearchQueries(challenge, lookbackMinutes) {
   const customQuery = env("JOB_SEARCH_EMAIL_SEARCH_QUERY");
   const lookbackClause = `newer_than:${lookbackMinutes}m`;
-  return customQuery ? `${customQuery} ${lookbackClause}` : lookbackClause;
+  const queries = [];
+  const add = (query) => {
+    const clean = String(query || "").replace(/\s+/g, " ").trim();
+    if (clean && !queries.includes(clean)) queries.push(clean);
+  };
+
+  if (customQuery) add(`${customQuery} ${lookbackClause}`);
+  add(`from:greenhouse-mail.io ${lookbackClause}`);
+  add(`from:greenhouse.io ${lookbackClause}`);
+  add(`"verification code" ${lookbackClause}`);
+  add(`"security code" ${lookbackClause}`);
+  add(`"confirm you're human" ${lookbackClause}`);
+  add(`"confirm you are human" ${lookbackClause}`);
+  for (const token of challengeSearchTerms(challenge).slice(0, 4)) {
+    add(`${token} ${lookbackClause}`);
+  }
+  add(lookbackClause);
+
+  return queries;
 }
 
 function gmailLabelIds() {
@@ -366,20 +422,37 @@ async function findGmailSecurityCode(challenge) {
   const lookbackMs = lookbackMinutes * 60_000;
   const expectedLengths = expectedCodeLengthsFromChallenge(challenge);
 
-  const listParams = {
-    q: buildGmailSearchQuery(lookbackMinutes),
-    maxResults,
-    includeSpamTrash: env("JOB_SEARCH_EMAIL_INCLUDE_SPAM_TRASH") === "true",
-    labelIds: gmailLabelIds()
-  };
-  const list = await gmailRequest(`/users/${encodeURIComponent(userId)}/messages`, accessToken, listParams);
-  const messageRefs = Array.isArray(list.messages) ? list.messages : [];
+  const configuredLabels = gmailLabelIds();
+  const includeSpamTrash = env("JOB_SEARCH_EMAIL_INCLUDE_SPAM_TRASH") === "true";
+  const messageRefs = [];
+  const seenMessageIds = new Set();
+  const searchQueries = buildGmailSearchQueries(challenge, lookbackMinutes);
+  const labelPlans = configuredLabels.length > 0 ? [configuredLabels, []] : [[]];
+
+  for (const query of searchQueries) {
+    for (const labelIds of labelPlans) {
+      const list = await gmailRequest(`/users/${encodeURIComponent(userId)}/messages`, accessToken, {
+        q: query,
+        maxResults,
+        includeSpamTrash,
+        labelIds
+      });
+      for (const ref of Array.isArray(list.messages) ? list.messages : []) {
+        if (!ref?.id || seenMessageIds.has(ref.id)) continue;
+        seenMessageIds.add(ref.id);
+        messageRefs.push(ref);
+      }
+      if (messageRefs.length >= MAX_RESULTS_CAP) break;
+    }
+    if (messageRefs.length >= MAX_RESULTS_CAP) break;
+  }
+
   if (messageRefs.length === 0) {
     throw appError("No recent email messages were found for security-code lookup.", 404);
   }
 
   const candidates = [];
-  for (const ref of messageRefs) {
+  for (const ref of messageRefs.slice(0, MAX_RESULTS_CAP)) {
     if (!ref?.id) continue;
     const rawMessage = await gmailRequest(`/users/${encodeURIComponent(userId)}/messages/${encodeURIComponent(ref.id)}`, accessToken, {
       format: "full"

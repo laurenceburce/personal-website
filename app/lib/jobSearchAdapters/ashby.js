@@ -44,7 +44,7 @@ const FIELD_COLLECTION_MAX_WAIT_MS = 4000;
 const MAX_LLM_ANSWERED_FIELDS = 15;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|application (has been |was )?(successfully )?submitted|we('| ha)ve received your application|your application (has been|was) received)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid code|incorrect code|expired code|verification failed)/i;
 const PROCESSING_TEXT_SIGNALS = /(we('| a)re updating your application|updating your application|submitting|processing|please wait)/i;
 
 function cssAttr(value) {

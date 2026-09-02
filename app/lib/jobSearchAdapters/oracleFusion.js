@@ -75,7 +75,7 @@ const POLL_INTERVAL_MS = 1500;
 const POLL_MAX_MS = 30000;
 
 const SUCCESS_TEXT_SIGNALS = /(thank you for applying|thanks for applying|application (has been |was )?(successfully )?(submitted|sent)|we('| ha)ve received your application|your application (has been|was) received|your application (has been|was) successfully submitted)/i;
-const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid|upload failed|failed to upload)/i;
+const ERROR_TEXT_SIGNALS = /(this field is required|please (enter|select|fill)|is required\b|error submitting|something went wrong|invalid|upload failed|failed to upload|invalid code|incorrect code|expired code|verification failed)/i;
 // Confirmed-live exact wording from the auth screen (see this file's header)
 // — matched here rather than relying on blockerDetection.js's
 // LOGIN_WALL_SIGNALS, which was written for "sign in to apply"-style
