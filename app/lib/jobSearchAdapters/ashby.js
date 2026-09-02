@@ -58,6 +58,26 @@ function compactErrorMessage(error) {
   return String(error?.message || error || "unknown error").replace(/\s+/g, " ").slice(0, 240);
 }
 
+function isTargetClosedError(error) {
+  return /target page, context or browser has been closed|browser has been closed|page has been closed|context has been closed/i
+    .test(String(error?.message || error || ""));
+}
+
+function pageIsClosed(page) {
+  return typeof page?.isClosed === "function" && page.isClosed();
+}
+
+async function waitIfPageOpen(page, timeoutMs) {
+  if (pageIsClosed(page)) return false;
+  try {
+    await page.waitForTimeout(timeoutMs);
+    return !pageIsClosed(page);
+  } catch (error) {
+    if (isTargetClosedError(error)) return false;
+    throw error;
+  }
+}
+
 function compactText(value, max = 500) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
@@ -453,7 +473,7 @@ async function collectSettledLabeledFields(page) {
   while (Date.now() < deadline) {
     const fields = await collectLabeledFields(page);
     if (fields.length >= bestFields.length) bestFields = fields;
-    await page.waitForTimeout(400);
+    if (!(await waitIfPageOpen(page, 400))) break;
   }
 
   return bestFields;
@@ -884,12 +904,13 @@ async function waitForAshbySubmitOutcome(page, submitButton) {
   let sawProcessingState = PROCESSING_TEXT_SIGNALS.test(lastText);
 
   while (Date.now() < deadline) {
+    if (pageIsClosed(page)) return { state: "closed", text: lastText };
     if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
     if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
 
     const stillOnFormPage = await submitButton.isVisible().catch(() => false);
     if (!stillOnFormPage) {
-      await page.waitForTimeout(1000);
+      if (!(await waitIfPageOpen(page, 1000))) return { state: "closed", text: lastText };
       lastText = await readSubmissionText(page);
       if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
       if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
@@ -900,14 +921,14 @@ async function waitForAshbySubmitOutcome(page, submitButton) {
     if (busy || PROCESSING_TEXT_SIGNALS.test(lastText)) {
       sawProcessingState = true;
     } else if (sawProcessingState || Date.now() - startedAt > 5000) {
-      await page.waitForTimeout(1000);
+      if (!(await waitIfPageOpen(page, 1000))) return { state: "closed", text: lastText };
       lastText = await readSubmissionText(page);
       if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
       if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
       if (!PROCESSING_TEXT_SIGNALS.test(lastText)) return { state: "settled_on_form", text: lastText };
     }
 
-    await page.waitForTimeout(500);
+    if (!(await waitIfPageOpen(page, 500))) return { state: "closed", text: lastText };
     lastText = await readSubmissionText(page);
   }
 
@@ -1282,7 +1303,10 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
           const hasErrorSignal = ERROR_TEXT_SIGNALS.test(combinedText);
           const hasSuccessSignal = SUCCESS_TEXT_SIGNALS.test(combinedText);
           const platformFailureMessage = ashbyPostSubmitFailureMessage(pageText, submitDiagnostics);
-          const ambiguousPostSubmitState = submitOutcome?.state === "timeout" || (stillOnFormPage && !hasSuccessSignal);
+          const submitWaitState = submitOutcome?.state || "";
+          const pageClosedDuringSubmit = submitWaitState === "closed";
+          const ambiguousPostSubmitState = submitWaitState === "timeout" || pageClosedDuringSubmit || (stillOnFormPage && !hasSuccessSignal);
+          const changedAwayFromForm = !stillOnFormPage && !hasErrorSignal && !["timeout", "closed"].includes(submitWaitState);
 
           if (ambiguousPostSubmitState) {
             await confirmSubmittedByEmail();
@@ -1290,14 +1314,17 @@ export async function submitAshbyApplication({ posting, profile, resumeBuffer, r
 
           if (status === "submitted") {
             // Confirmed by a fresh submission email.
-          } else if (hasSuccessSignal || (!stillOnFormPage && !hasErrorSignal && submitOutcome?.state !== "timeout")) {
+          } else if (hasSuccessSignal || changedAwayFromForm) {
             status = "submitted";
           } else if (platformFailureMessage) {
             status = "blocked";
             errorMessage = platformFailureMessage;
-          } else if (submitOutcome?.state === "timeout") {
+          } else if (submitWaitState === "timeout") {
             status = "failed";
             errorMessage = `Timed out after ${SUBMIT_OUTCOME_TIMEOUT_MS}ms waiting for Ashby to finish processing the submission. Review the posting manually before retrying.`;
+          } else if (pageClosedDuringSubmit) {
+            status = "failed";
+            errorMessage = "Ashby page/context closed before a submission confirmation could be read. Retry once the worker is stable; if Ashby already received it, the retry should be recognized as already submitted.";
           } else if (hasErrorSignal || (stillOnFormPage && !hasSuccessSignal)) {
             const validationMessages = await collectVisibleValidationMessages(page);
             const unansweredRequiredFields = await collectUnansweredRequiredFields(page);

@@ -185,8 +185,10 @@ export async function runSubmitWorkerPass() {
           // Carries WHY onto the posting itself (not just the application
           // row) so it can actually show up somewhere a human would act on
           // it again — see the Review Queue's Needs Manual Review/Failed
-          // tabs. Only worth setting when it's not a plain success.
-          ...(applicationStatus !== "submitted" ? { submissionNote: outcomeMessage } : {}),
+          // tabs. Include an empty note on success too: otherwise a posting
+          // that fails once and then succeeds on retry keeps displaying the
+          // stale failure reason even though the latest state is submitted.
+          submissionNote: applicationStatus === "submitted" ? "" : outcomeMessage,
           manualReviewFields: manualReviewFieldsForPosting
         });
         console.log(`  -> ${applicationStatus}`);
