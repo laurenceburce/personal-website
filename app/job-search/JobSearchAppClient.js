@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import AnswerMemoryPanel from "./AnswerMemoryPanel";
 import AppliedJobsTable from "./AppliedJobsTable";
 import { callJobSearchAction } from "./JobSearchUi";
@@ -62,20 +62,39 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
     return () => source.close();
   }, [router]);
 
-  // Live-ish (2s poll, not a push) feed for the submit worker's progress —
-  // powers both SubmitWorkerBanner (below) and OverviewPanel's own Submit
-  // Worker card. This used to be an SSE push, which turned out to be
-  // silently buffered by Railway's proxy in production (updates never
-  // arrived until the connection closed) — a plain poll is less elegant but
-  // is the mechanism actually proven to work in this deployment (same as
+  // Shared by both the poll below and the push stream further down — either
+  // one just hands this a fresh snapshot whenever it gets one. Also the
+  // thing that keeps the REST of the dashboard in sync with what the worker
+  // is doing in the background: whenever processedCount moves (the worker
+  // just finished a posting — queue counts, Applied Jobs, and Review's In
+  // Queue list all just changed as a result), this calls router.refresh()
+  // so those pick it up immediately instead of only ever updating when the
+  // user happens to trigger some other action in this tab. Wrapped in
+  // useCallback so its identity stays stable across the frequent re-renders
+  // setSubmitProgress itself causes — the push-stream effect below depends
+  // on this function, and a fresh identity every render would tear down and
+  // reopen that connection on every single poll tick.
+  const applyProgress = useCallback((progress) => {
+    setSubmitProgress(progress);
+
+    const processedCount = progress.processedCount ?? 0;
+    if (lastProcessedCountRef.current !== null && processedCount !== lastProcessedCountRef.current) {
+      router.refresh();
+    }
+    lastProcessedCountRef.current = processedCount;
+  }, [router]);
+
+  // Baseline feed for the submit worker's progress — powers both
+  // SubmitWorkerBanner (below) and OverviewPanel's own Submit Worker card.
+  // This used to be an SSE push, which turned out to be silently buffered by
+  // Railway's proxy in production even after the fix held-events/route.js's
+  // own SSE still relies on today (see submit-progress/stream/route.js's own
+  // comment for the full story) — a plain poll is less elegant but is the
+  // mechanism actually proven to work in this deployment (same as
   // NotificationsBell's poll and OverviewPanel's own worker-status poll).
-  //
-  // Also the thing that keeps the REST of the dashboard in sync with what
-  // the worker is doing in the background: whenever processedCount moves
-  // (the worker just finished a posting — queue counts, Applied Jobs, and
-  // Review's In Queue list all just changed as a result), this calls
-  // router.refresh() so those pick it up immediately instead of only ever
-  // updating when the user happens to trigger some other action in this tab.
+  // Kept running unconditionally, even once the push stream below is also
+  // connected, as the fallback that needs no cooperation from anything else
+  // to keep working.
   useEffect(() => {
     let cancelled = false;
 
@@ -85,14 +104,7 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
         if (!response.ok) return;
         const payload = await response.json().catch(() => null);
         if (cancelled || !payload?.progress) return;
-
-        setSubmitProgress(payload.progress);
-
-        const processedCount = payload.progress.processedCount ?? 0;
-        if (lastProcessedCountRef.current !== null && processedCount !== lastProcessedCountRef.current) {
-          router.refresh();
-        }
-        lastProcessedCountRef.current = processedCount;
+        applyProgress(payload.progress);
       } catch {
         // Best-effort — a missed poll just means the next one catches up.
       }
@@ -104,7 +116,90 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [router]);
+  }, [applyProgress]);
+
+  // Latency upgrade layered on top of the poll above, not a replacement for
+  // it: only opens while a pass is actually running (an idle dashboard costs
+  // nothing extra here) and parses the multipart JSON stream from
+  // submit-progress/stream/route.js for near-instant updates instead of
+  // waiting up to 2s. If this connection fails or the stream turns out to be
+  // silently buffered in production exactly like the earlier SSE attempts,
+  // the poll above notices nothing and keeps the dashboard working exactly
+  // as before — this effect only ever adds, never gates, real functionality.
+  const isSubmitRunning = submitProgress?.status === "running";
+  useEffect(() => {
+    if (!isSubmitRunning) return;
+
+    let cancelled = false;
+    let reader = null;
+
+    async function connect() {
+      try {
+        const response = await fetch("/api/job-search/submit-progress/stream", { cache: "no-store" });
+        if (!response.ok || !response.body) return;
+
+        reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let streamDone = false;
+        const BOUNDARY_MARKER = "--submit-progress\r\n";
+        const HEADER_END = "\r\n\r\n";
+
+        // Same framing as the live-frame MJPEG stream, minus a declared
+        // Content-Length: a JSON part can't contain a raw CRLF, so the NEXT
+        // part's boundary marker safely doubles as this part's own closing
+        // delimiter — except for the very last part the server ever writes
+        // (right before it closes the connection, e.g. the finished-run
+        // state), which has no "next" boundary to close it out. `finalFlush`
+        // treats end-of-stream itself as that closing delimiter so that part
+        // isn't silently dropped; otherwise a still-open part just waits for
+        // more data. Either way this stays at most one part behind reality,
+        // invisible at this stream's ~350ms cadence for a progress banner
+        // (unlike a video frame, nothing here needs sub-tick precision).
+        function consumeParts(finalFlush) {
+          for (;;) {
+            const start = buffer.indexOf(BOUNDARY_MARKER);
+            if (start === -1) return;
+            const headerEndIndex = buffer.indexOf(HEADER_END, start);
+            if (headerEndIndex === -1) return;
+            const bodyStart = headerEndIndex + HEADER_END.length;
+            const nextStart = buffer.indexOf(BOUNDARY_MARKER, bodyStart);
+            const partEnd = nextStart === -1 ? (finalFlush ? buffer.length : -1) : nextStart;
+            if (partEnd === -1) return;
+
+            const body = buffer.slice(bodyStart, partEnd).replace(/\r\n$/, "");
+            buffer = buffer.slice(partEnd);
+
+            try {
+              applyProgress(JSON.parse(body));
+            } catch {
+              // Malformed part — ignore rather than crash the reader loop.
+            }
+          }
+        }
+
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) { streamDone = true; break; }
+          buffer += decoder.decode(value, { stream: true });
+          consumeParts(false);
+        }
+
+        if (streamDone) consumeParts(true);
+      } catch {
+        // Best-effort — the poll above is running independently and covers
+        // for a dropped/failed stream connection.
+      } finally {
+        reader?.cancel().catch(() => {});
+      }
+    }
+
+    connect();
+    return () => {
+      cancelled = true;
+      reader?.cancel().catch(() => {});
+    };
+  }, [isSubmitRunning, applyProgress]);
 
   function setTabAndUrl(nextTab) {
     setTab(nextTab);
