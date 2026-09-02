@@ -138,7 +138,17 @@ const PROGRESS_ITEM_META = {
 function SubmitLiveProgress({ progress }) {
   if (!progress) return null;
   const isRunning = progress.status === "running";
-  const total = (progress.submittingTotal || 0) + (progress.autoApplyTotal || 0);
+  // See the identical comment in SubmitWorkerBanner.js: submittingTotal/
+  // autoApplyTotal are frozen at the start of each phase, so a posting
+  // approved after this pass's batch was already fetched never gets folded
+  // back into the total. Use the live approved/pending-review counts while
+  // running so it keeps up; once finished, show the frozen totals for that
+  // completed pass.
+  const total = isRunning
+    ? (progress.processedCount || 0)
+      + (progress.approvedWaitingCount || 0)
+      + ((progress.autoApplyTotal || 0) > 0 ? (progress.pendingReviewCount || 0) : 0)
+    : (progress.submittingTotal || 0) + (progress.autoApplyTotal || 0);
   const pct = total > 0 ? Math.min(100, Math.round((progress.processedCount / total) * 100)) : 0;
   const items = progress.items || [];
 
