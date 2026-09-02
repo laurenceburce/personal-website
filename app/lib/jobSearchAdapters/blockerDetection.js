@@ -157,6 +157,17 @@ async function hasActionableSecurityCodeEntry(scope, { allowSingleTextFallback =
   return allowSingleTextFallback ? hasSingleVisibleTextEntry(scope) : false;
 }
 
+async function hasInteractiveCaptchaWidget(scope) {
+  const captchaWidgets = scope.locator(CAPTCHA_WIDGET_SELECTORS);
+  const captchaCount = await captchaWidgets.count().catch(() => 0);
+  for (let i = 0; i < captchaCount; i += 1) {
+    if (await isInteractiveCaptchaWidget(captchaWidgets.nth(i))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Returns a short human-readable reason string if this application should be
 // treated as blocked, or null if nothing was detected. Deliberately checked
 // BEFORE any field is filled — no point answering nine questions only to
@@ -175,10 +186,6 @@ export async function detectSubmissionBlocker(scope) {
     return SECURITY_CODE_BLOCKER_REASON;
   }
 
-  if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
-    return ANTI_BOT_TEXT_BLOCKER_REASON;
-  }
-
   // Cloudflare/Turnstile interstitials often expose only a hidden response
   // input while the visible page says "performing security verification".
   // Treat that as the same live CAPTCHA class instead of letting adapters
@@ -187,7 +194,11 @@ export async function detectSubmissionBlocker(scope) {
     return CAPTCHA_BLOCKER_REASON;
   }
 
-  // Visibility-gated, not raw DOM presence. Greenhouse/Ashby (among others)
+  // Visibility-gated, not raw DOM presence. Checked before generic anti-bot
+  // text because real CAPTCHA widgets commonly sit next to copy like "human
+  // verification"; that should open the live relay, not a typed-answer prompt.
+  //
+  // Greenhouse/Ashby (among others)
   // embed an invisible reCAPTCHA v3 badge on essentially every form as
   // boilerplate anti-spam — present in the DOM whether or not it ever
   // actually challenges the visitor. Matching on count() alone flagged those
@@ -197,12 +208,12 @@ export async function detectSubmissionBlocker(scope) {
   // sometimes not. Requiring at least one matched element to actually be
   // visible keeps catching a real interactive challenge (checkbox iframe,
   // hCaptcha, Turnstile) while dropping that false positive.
-  const captchaWidgets = scope.locator(CAPTCHA_WIDGET_SELECTORS);
-  const captchaCount = await captchaWidgets.count().catch(() => 0);
-  for (let i = 0; i < captchaCount; i += 1) {
-    if (await isInteractiveCaptchaWidget(captchaWidgets.nth(i))) {
-      return CAPTCHA_BLOCKER_REASON;
-    }
+  if (await hasInteractiveCaptchaWidget(scope)) {
+    return CAPTCHA_BLOCKER_REASON;
+  }
+
+  if (ANTI_BOT_TEXT_SIGNALS.test(bodyText)) {
+    return ANTI_BOT_TEXT_BLOCKER_REASON;
   }
 
   if (LOGIN_WALL_SIGNALS.test(bodyText)) {

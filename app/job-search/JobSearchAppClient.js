@@ -48,13 +48,38 @@ export default function JobSearchAppClient({ snapshot, initialTab }) {
   // The panel below still does the actual polling/rendering; this only
   // raises a toast and nudges it via router.refresh() so a currently-open
   // tab doesn't sit for up to 4s showing a stale count.
+  const seenHeldChallengeIdsRef = useRef(new Set((snapshot?.securityChallenges || []).map((challenge) => challenge.id)));
   useEffect(() => {
     const source = new EventSource("/api/job-search/held-events");
+    function rememberChallenges(challenges, { toast = false } = {}) {
+      const list = Array.isArray(challenges) ? challenges : [challenges].filter(Boolean);
+      const fresh = list.filter((challenge) => (
+        challenge?.id && !seenHeldChallengeIdsRef.current.has(challenge.id)
+      ));
+      if (fresh.length === 0) return;
+
+      for (const challenge of fresh) {
+        seenHeldChallengeIdsRef.current.add(challenge.id);
+      }
+      if (toast) {
+        const challenge = fresh[fresh.length - 1];
+        setHeldToast(`Action needed: ${challenge.jobTitle} at ${challenge.companyName}.`);
+      }
+      router.refresh();
+    }
+
+    source.addEventListener("snapshot", (event) => {
+      try {
+        rememberChallenges(JSON.parse(event.data));
+      } catch {
+        // Malformed event payload — ignore rather than crash the listener.
+      }
+    });
+
     source.addEventListener("new", (event) => {
       try {
         const challenge = JSON.parse(event.data);
-        setHeldToast(`Action needed: ${challenge.jobTitle} at ${challenge.companyName}.`);
-        router.refresh();
+        rememberChallenges(challenge, { toast: true });
       } catch {
         // Malformed event payload — ignore rather than crash the listener.
       }

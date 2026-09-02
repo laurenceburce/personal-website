@@ -27,6 +27,10 @@ function kindLabel(kind) {
   return "Security Code";
 }
 
+function isCaptchaChallenge(challenge) {
+  return (challenge?.challengeKind || "security_code") === "captcha";
+}
+
 export default function HeldSubmissionsPanel({ initialChallenges = [], saving, onSubmitCode, onFetchEmailCode, onResolveLiveCaptcha, onCancelChallenge }) {
   const [challenges, setChallenges] = useState(initialChallenges || []);
   const [codes, setCodes] = useState({});
@@ -34,6 +38,7 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
   const [pollError, setPollError] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [liveChallenge, setLiveChallenge] = useState(null);
+  const [dismissedLiveChallengeIds, setDismissedLiveChallengeIds] = useState([]);
 
   useEffect(() => {
     setChallenges(initialChallenges || []);
@@ -72,8 +77,36 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
     return () => clearInterval(tick);
   }, []);
 
+  useEffect(() => {
+    if (liveChallenge) {
+      if (!challenges.some((challenge) => challenge.id === liveChallenge.id)) {
+        setLiveChallenge(null);
+      }
+      return;
+    }
+
+    const nextCaptcha = challenges.find((challenge) => (
+      isCaptchaChallenge(challenge) && !dismissedLiveChallengeIds.includes(challenge.id)
+    ));
+    if (nextCaptcha) setLiveChallenge(nextCaptcha);
+  }, [challenges, dismissedLiveChallengeIds, liveChallenge]);
+
   function removeChallenge(id) {
     setChallenges((current) => current.filter((item) => item.id !== id));
+  }
+
+  function openLiveChallenge(challenge) {
+    setDismissedLiveChallengeIds((current) => current.filter((id) => id !== challenge.id));
+    setLiveChallenge(challenge);
+  }
+
+  function closeLiveChallenge() {
+    if (liveChallenge) {
+      setDismissedLiveChallengeIds((current) => (
+        current.includes(liveChallenge.id) ? current : [...current, liveChallenge.id]
+      ));
+    }
+    setLiveChallenge(null);
   }
 
   async function submitCode(event, challenge) {
@@ -114,11 +147,13 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
   async function handleLiveResolve(challenge) {
     await onResolveLiveCaptcha(challenge.id);
     setLiveChallenge(null);
+    setDismissedLiveChallengeIds((current) => current.filter((id) => id !== challenge.id));
     removeChallenge(challenge.id);
   }
 
   async function handleCancel(challenge) {
     if (liveChallenge?.id === challenge.id) setLiveChallenge(null);
+    setDismissedLiveChallengeIds((current) => current.filter((id) => id !== challenge.id));
     await onCancelChallenge(challenge.id);
     removeChallenge(challenge.id);
   }
@@ -156,8 +191,8 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
                   <button type="button" className="job-search-btn-ghost" disabled={isBusy} onClick={() => handleCancel(challenge)}>
                     Cancel
                   </button>
-                  <button type="button" disabled={isBusy} onClick={() => setLiveChallenge(challenge)}>
-                    Solve Now
+                  <button type="button" disabled={isBusy} onClick={() => openLiveChallenge(challenge)}>
+                    Open Live Relay
                   </button>
                 </div>
               </div>
@@ -209,7 +244,7 @@ export default function HeldSubmissionsPanel({ initialChallenges = [], saving, o
         <LiveCaptchaModal
           challenge={liveChallenge}
           saving={saving}
-          onClose={() => setLiveChallenge(null)}
+          onClose={closeLiveChallenge}
           onResolve={() => handleLiveResolve(liveChallenge)}
         />
       ) : null}
