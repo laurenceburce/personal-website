@@ -38,6 +38,11 @@ const MAX_FIELD_DISCOVERY_PASSES = 5;
 // as a side effect of the answer just filled in, before re-scanning for it —
 // scanning immediately risks missing a field that's still mid-render.
 const FIELD_DISCOVERY_SETTLE_MS = 400;
+// Greenhouse sometimes transitions from the application form to an emailed-
+// code verification step after final submit. A too-eager validation scan can
+// win that race and read stale/native-invalid controls from the old form
+// before the code prompt gets a chance to render.
+const POST_SUBMIT_VALIDATION_GRACE_MS = 2500;
 // Raised from 5 after an audit pass: daily LLM usage sits at ~120 calls
 // against a 5000/day cap (jobSearchUsageStore.js), so 5 was an arbitrary
 // early-caution number, not a cost/rate-limit necessity — and a form with
@@ -678,20 +683,13 @@ async function waitForSubmitOutcome(page, scope, submitButton) {
   const deadline = startedAt + SUBMIT_OUTCOME_TIMEOUT_MS;
   let lastText = await readSubmissionText(page, scope);
   let sawBusyState = false;
-  let lastValidationCheckAt = 0;
+  let lastValidationCheckAt = startedAt;
 
   while (Date.now() < deadline) {
     if (SUCCESS_TEXT_SIGNALS.test(lastText)) return { state: "success", text: lastText };
 
     const blockerReason = await detectGreenhouseBlocker(page, scope).catch(() => null);
     if (blockerReason) return { state: "blocker", text: lastText, blockerReason };
-
-    if (ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
-    if (Date.now() - lastValidationCheckAt > 1000) {
-      lastValidationCheckAt = Date.now();
-      const invalidFields = await collectPostSubmitValidationFields(scope).catch(() => []);
-      if (invalidFields.length > 0) return { state: "validation", text: lastText };
-    }
 
     const stillOnFormPage = await submitButton.isVisible().catch(() => false);
     if (!stillOnFormPage) return { state: "changed", text: lastText };
@@ -703,11 +701,42 @@ async function waitForSubmitOutcome(page, scope, submitButton) {
       sawBusyState = false;
     }
 
+    const canDeclareValidation = !busy && Date.now() - startedAt >= POST_SUBMIT_VALIDATION_GRACE_MS;
+    if (canDeclareValidation && ERROR_TEXT_SIGNALS.test(lastText)) return { state: "validation", text: lastText };
+    if (canDeclareValidation && Date.now() - lastValidationCheckAt > 1000) {
+      lastValidationCheckAt = Date.now();
+      const invalidFields = await collectPostSubmitValidationFields(scope).catch(() => []);
+      if (invalidFields.length > 0) return { state: "validation", text: lastText };
+    }
+
     await page.waitForTimeout(500);
     lastText = await readSubmissionText(page, scope);
   }
 
   return { state: "timeout", text: lastText };
+}
+
+async function isPostSubmitFieldInvalid(field, widget) {
+  if (widget === "checkbox-group") {
+    return field.locator.evaluate((el, required) => {
+      const name = el.getAttribute("name") || "";
+      const container = el.closest("fieldset, [role='group']");
+      const checkboxes = name
+        ? [...document.querySelectorAll(`input[type="checkbox"][name="${CSS.escape(name)}"]`)]
+        : [...(container?.querySelectorAll('input[type="checkbox"]') || [el])];
+      if (checkboxes.some((checkbox) => checkbox.checked)) return false;
+
+      const groupInvalid = container?.getAttribute("aria-invalid") === "true"
+        || checkboxes.some((checkbox) => checkbox.getAttribute("aria-invalid") === "true");
+      return Boolean(required || groupInvalid);
+    }, Boolean(field.required)).catch(() => false);
+  }
+
+  return field.locator.evaluate((el) => {
+    const ariaInvalid = el.getAttribute("aria-invalid") === "true";
+    const nativeInvalid = Boolean(el.willValidate && el.validity && !el.validity.valid);
+    return ariaInvalid || nativeInvalid;
+  }).catch(() => false);
 }
 
 async function collectPostSubmitValidationFields(scope) {
@@ -716,11 +745,7 @@ async function collectPostSubmitValidationFields(scope) {
 
   for (const field of fields) {
     const widget = await classifyWidget(field.locator).catch(() => "");
-    const invalid = await field.locator.evaluate((el) => {
-      const ariaInvalid = el.getAttribute("aria-invalid") === "true";
-      const nativeInvalid = Boolean(el.willValidate && el.validity && !el.validity.valid);
-      return ariaInvalid || nativeInvalid;
-    }).catch(() => false);
+    const invalid = await isPostSubmitFieldInvalid(field, widget);
 
     if (invalid) invalidFields.push({ ...field, widget });
   }
