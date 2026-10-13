@@ -3,7 +3,7 @@ export default function robots() {
     rules: {
       userAgent: "*",
       allow: "/",
-      disallow: ["/admin", "/api/admin", "/finance", "/api/finance", "/job-search", "/api/job-search"]
+      disallow: ["/admin", "/api/admin", "/finance", "/api/finance"]
     },
     sitemap: "https://laurenceburce.com/sitemap.xml"
   };

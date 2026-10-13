@@ -1240,10 +1240,6 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   const status = saving ? "Saving..." : notice || error;
 
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
-    }
-
     const handleBeforeInstallPrompt = (event) => {
       event.preventDefault();
       setInstallPrompt(event);

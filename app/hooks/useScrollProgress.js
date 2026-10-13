@@ -1,63 +1,45 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-
-// Lerp factor: how quickly the displayed progress catches up to the real scroll.
-// 0.12 gives a smooth, slightly springy follow that still feels responsive.
-const LERP = 0.12;
+import { useMotionValue } from "framer-motion";
+import { useEffect } from "react";
 
 export default function useScrollProgress() {
-  const [scrollProgress, setScrollProgress] = useState(0);
-  const displayedRef = useRef(0);
-  const targetRef    = useRef(0);
-  const frameRef     = useRef(0);
-  const runningRef   = useRef(false);
+  // Motion values update the indicator without rerendering the portfolio.
+  const scrollProgress = useMotionValue(0);
 
   useEffect(() => {
-    const getTarget = () => {
+    let frameId = 0;
+
+    const updateProgress = () => {
+      frameId = 0;
       const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-      return maxScroll > 0 ? Math.min(1, Math.max(0, window.scrollY / maxScroll)) : 0;
+      scrollProgress.set(
+        maxScroll > 0 ? Math.min(1, Math.max(0, window.scrollY / maxScroll)) : 0
+      );
     };
 
-    const animate = () => {
-      const target   = targetRef.current;
-      const current  = displayedRef.current;
-      const next     = current + (target - current) * LERP;
-      const snapped  = Math.abs(next - target) < 0.0005 ? target : next;
-
-      if (Math.abs(snapped - current) > 0.0001) {
-        displayedRef.current = snapped;
-        setScrollProgress(snapped);
-        frameRef.current = requestAnimationFrame(animate);
-      } else {
-        runningRef.current = false;
+    const requestUpdate = () => {
+      if (!frameId) {
+        frameId = window.requestAnimationFrame(updateProgress);
       }
     };
 
-    const handleScroll = () => {
-      targetRef.current = getTarget();
+    updateProgress();
+    window.addEventListener("scroll", requestUpdate, { passive: true });
+    window.addEventListener("resize", requestUpdate);
 
-      if (!runningRef.current) {
-        runningRef.current = true;
-        frameRef.current   = requestAnimationFrame(animate);
-      }
-    };
-
-    // Seed initial value without animation (no lerp on first paint)
-    const initial = getTarget();
-    displayedRef.current = initial;
-    targetRef.current    = initial;
-    setScrollProgress(initial);
-
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    window.addEventListener("resize", handleScroll,  { passive: true });
+    // Expanded details and loaded assets can change progress even while idle.
+    const resizeObserver = new ResizeObserver(requestUpdate);
+    resizeObserver.observe(document.documentElement);
+    resizeObserver.observe(document.body);
 
     return () => {
-      cancelAnimationFrame(frameRef.current);
-      window.removeEventListener("scroll", handleScroll);
-      window.removeEventListener("resize", handleScroll);
+      window.cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+      window.removeEventListener("scroll", requestUpdate);
+      window.removeEventListener("resize", requestUpdate);
     };
-  }, []);
+  }, [scrollProgress]);
 
   return scrollProgress;
 }

@@ -1,11 +1,10 @@
-# Local-only MySQL for analytics, the finance tracker, and the job-search
-# dashboard — the same role Railway's MySQL plugin plays in production. Not
-# used in production; nothing here is read by the app itself, only by
+# Local-only MySQL for analytics and the finance tracker — the same role
+# Railway's MySQL plugin plays in production. Not used in production;
+# nothing here is read by the app itself, only by
 # whatever DATABASE_URL you point at it.
 #
 #   npm run db:up      # start it (first run creates the volume + database)
 #   npm run db:init:finance       # create finance tables (add -- --seed for sample data)
-#   npm run db:init:job-search    # create job-search tables
 #   npm run db:down     # stop it (data persists in the named volume)
 services:
   mysql:

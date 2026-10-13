@@ -1,6 +1,8 @@
 "use client";
 
+import { motion, useTransform } from "framer-motion";
 import { forwardRef } from "react";
+import useScrollProgress from "../../hooks/useScrollProgress";
 import DownloadGate from "./DownloadGate";
 import { IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
 import { downloadLinks } from "./navigationLinks";
@@ -10,12 +12,14 @@ import ThemeSwitch from "./ThemeSwitch";
 const SidebarNavigation = forwardRef(function SidebarNavigation({
   navItems,
   activeSectionId,
-  scrollProgress,
   sidebarOffset,
   theme,
   onThemeChange,
   analytics
 }, ref) {
+  const scrollProgress = useScrollProgress();
+  const thumbY = useTransform(scrollProgress, [0, 1], ["0%", "100%"]);
+
   return (
     <aside
       ref={ref}
@@ -99,14 +103,13 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
           <span />
         </div>
         <div className="indicator-track">
-          <div
+          <motion.div
             className="indicator-progress"
-            style={{ height: `${Math.max(3, scrollProgress * 100)}%` }}
+            style={{ scaleY: scrollProgress }}
           />
-          <div
-            className="indicator-thumb"
-            style={{ top: `${scrollProgress * 100}%` }}
-          />
+          <motion.div className="indicator-thumb-position" style={{ y: thumbY }}>
+            <div className="indicator-thumb" />
+          </motion.div>
         </div>
       </div>
     </aside>

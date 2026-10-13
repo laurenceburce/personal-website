@@ -16,7 +16,6 @@ import useActiveSection from "./hooks/useActiveSection";
 import useBoundedSidebarOffset from "./hooks/useBoundedSidebarOffset";
 import usePortfolioAnalytics from "./hooks/usePortfolioAnalytics";
 import useRevealAnimations from "./hooks/useRevealAnimations";
-import useScrollProgress from "./hooks/useScrollProgress";
 import useThemePreference from "./hooks/useThemePreference";
 import { trackAnalyticsEvent } from "./utils/analyticsClient";
 
@@ -26,7 +25,6 @@ export default function Home() {
   const sidebarRef = useRef(null);
   const { theme, setTheme } = useThemePreference();
   const activeSectionId = useActiveSection(navItems);
-  const scrollProgress = useScrollProgress();
   const sidebarOffset = useBoundedSidebarOffset(contentLayoutRef, sidebarRef);
   const analytics = usePortfolioAnalytics();
 
@@ -127,7 +125,6 @@ export default function Home() {
             ref={sidebarRef}
             navItems={navItems}
             activeSectionId={activeSectionId}
-            scrollProgress={scrollProgress}
             sidebarOffset={sidebarOffset}
             theme={theme}
             onThemeChange={handleThemeSwitchChange}

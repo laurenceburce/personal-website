@@ -26,12 +26,12 @@ A responsive personal portfolio with dark/light theming, an AI-powered chat assi
 - `app/finance/` — private owner-only finance tracker
 - `app/globals.css` — theme, layout, responsive behavior, and animations
 - `.env.example` — every environment variable this app reads, grouped by feature
-- `docker-compose.yml` — local MySQL for analytics/finance/job-search (see "Run locally")
+- `docker-compose.yml` — local MySQL for analytics/finance (see "Run locally")
 
 ## Run locally
 
-Every feature past the portfolio itself (analytics, admin, chat, finance, job
-search) degrades gracefully when its own config is missing — the site still
+Every feature past the portfolio itself (analytics, admin, chat, finance)
+degrades gracefully when its own config is missing — the site still
 renders and those routes just report "not configured" or redirect to a login
 page instead of erroring. So step 1 already gets you a working site; the rest
 is opt-in per feature, cheapest first.
@@ -44,17 +44,17 @@ npm run dev
 ```
 
 Open `http://localhost:3000`. The portfolio, chat widget UI, and contact form
-all render; `/admin` returns 503 (no admin token yet) and `/finance` /
-`/job-search` redirect to their login pages (no database or auth yet) — all
+all render; `/admin` returns 503 (no admin token yet) and `/finance`
+redirects to its login page (no database or auth yet) — all
 expected, not bugs.
 
 Copy `.env.example` to `.env.local` as you enable pieces below — it documents
 every variable this app reads, grouped by feature, with the same guidance as
 this section.
 
-### 2. Local database (analytics, admin panel, finance, job search)
+### 2. Local database (analytics, admin panel, finance)
 
-All three share one MySQL database via `DATABASE_URL`. `docker-compose.yml`
+These features share one MySQL database via `DATABASE_URL`. `docker-compose.yml`
 starts one with Docker:
 
 ```powershell
@@ -67,12 +67,10 @@ Then in `.env.local`:
 DATABASE_URL=mysql://root:devpassword@localhost:3306/portfolio
 ```
 
-Restart `npm run dev`, then create each feature's tables (safe to re-run —
-both are idempotent):
+Restart `npm run dev`, then create the finance tables (safe to re-run):
 
 ```powershell
 npm run db:init:finance          # add -- --seed for sample bills/goals
-npm run db:init:job-search
 ```
 
 `npm run db:down` stops the container; the data stays in a named Docker
@@ -96,32 +94,22 @@ Sign in at `/admin/login` with that string as the password.
 `GET /api/analytics/identified` also accepts it as
 `Authorization: Bearer ANALYTICS_ADMIN_TOKEN`.
 
-### 4. Finance tracker (`/finance`) and job search dashboard (`/job-search`)
+### 4. Finance tracker (`/finance`)
 
-Both are gated to one owner email (`FINANCE_ALLOWED_EMAILS` /
-`JOB_SEARCH_ALLOWED_EMAILS`, defaulting to `laurenceburce@gmail.com`) via
-OAuth sign-in — real visitors never see them. For local testing, skip OAuth
-entirely with a dev-only bypass instead of registering an OAuth app (each is
+The tracker is gated to one owner email (`FINANCE_ALLOWED_EMAILS`,
+defaulting to `laurenceburce@gmail.com`) via OAuth sign-in. For local testing, skip OAuth
+entirely with a dev-only bypass instead of registering an OAuth app (it is
 ignored whenever `NODE_ENV=production`):
 
 ```env
 FINANCE_DEV_BYPASS=true
-JOB_SEARCH_DEV_BYPASS=true
 ```
 
-Both need the local database from step 2 (`npm run db:init:finance` /
-`npm run db:init:job-search`) to hold real data — without it they still load,
-just empty.
+The tracker needs the local database from step 2 (`npm run db:init:finance`)
+to hold real data — without it, it still loads, just empty.
 
-Finance's linked-bank-account sync (Plaid, Brankas) and the job-search
-dashboard's live posting discovery / LLM scoring / Playwright-driven ATS
-submission are real integrations against live third-party services — see
-`.env.example` for their variables. The submission side in particular drives
-real applications to real companies, so there's no meaningful "local test
-mode" for it beyond the dashboard/API/database layer above; treat it as a
-production-only feature you configure once you mean to actually run it (see
-`docs/job-search-submit-worker-deployment.md` for its separate always-on
-worker service).
+Finance's linked-bank-account sync (Plaid, Brankas) integrates with
+third-party services — see `.env.example` for their variables.
 
 ### 5. Contact form (Resend)
 
@@ -160,45 +148,6 @@ AUTH_GITHUB_SECRET=...
 Google, LinkedIn, and Microsoft Entra ID work the same way (see
 `.env.example`) — NextAuth only registers a provider once its own ID+secret
 pair is set (`auth.js`).
-
-### 7. Job search's Gmail security-code lookup
-
-For the private job-search dashboard's security-code lookup, enable the Gmail
-API for the Google OAuth client, then connect Gmail from Job Search -> User
-Settings. The dashboard stores an encrypted refresh token in the job-search DB;
-the submit worker uses it automatically when a supported emailed code prompt
-appears, and the dashboard's "Check Email" button remains available as a manual
-fallback.
-
-You can still provide a deployment-level refresh token instead. The dedicated
-`JOB_SEARCH_GMAIL_*` client values are optional if `AUTH_GOOGLE_ID` and
-`AUTH_GOOGLE_SECRET` already point at the Gmail-enabled client.
-
-```env
-JOB_SEARCH_EMAIL_PROVIDER=gmail
-JOB_SEARCH_GMAIL_REFRESH_TOKEN=optional_env_refresh_token
-JOB_SEARCH_GMAIL_CLIENT_ID=optional_if_AUTH_GOOGLE_ID_is_the_same_client
-JOB_SEARCH_GMAIL_CLIENT_SECRET=optional_if_AUTH_GOOGLE_SECRET_is_the_same_client
-JOB_SEARCH_TOKEN_SECRET=optional_if_AUTH_SECRET_is_set
-JOB_SEARCH_EMAIL_LOOKBACK_MINUTES=30
-JOB_SEARCH_EMAIL_MAX_RESULTS=30
-JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS=30000
-JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS=90000
-JOB_SEARCH_GMAIL_LABEL_IDS=INBOX
-JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE=true
-```
-
-Optional: set `JOB_SEARCH_EMAIL_SEARCH_QUERY` to add Gmail search filters such
-as `from:no-reply@example.com`, or set `JOB_SEARCH_GMAIL_LABEL_IDS=*` to search
-recent mail across labels instead of only `INBOX`. Security-code lookup starts
-at the challenge timestamp minus `JOB_SEARCH_EMAIL_PRE_CHALLENGE_GRACE_MS` and,
-when several code emails match, prefers the newest message within
-`JOB_SEARCH_EMAIL_LATEST_MESSAGE_WINDOW_MS`. When automatic lookup is enabled,
-the submit worker waits up to `JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE_WAIT_MS`
-before surfacing a manual Held For You prompt. Set
-`JOB_SEARCH_AUTO_EMAIL_SECURITY_CODE=false` to keep security-code prompts fully
-manual. Keep the refresh token server-side only; never expose it with a
-`NEXT_PUBLIC_` prefix.
 
 ### Production
 

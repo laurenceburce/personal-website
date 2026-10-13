@@ -5,7 +5,7 @@ import AuthSessionTracker from "./auth/AuthSessionTracker";
 import AuthWelcome from "./auth/AuthWelcome";
 import ChatWidget from "./chat/ChatWidget";
 
-const PRIVATE_PREFIXES = ["/admin", "/finance", "/job-search"];
+const PRIVATE_PREFIXES = ["/admin", "/finance"];
 
 export default function PublicWidgets() {
   const pathname = usePathname() || "";
