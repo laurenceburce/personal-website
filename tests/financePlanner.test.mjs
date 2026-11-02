@@ -19,6 +19,190 @@ import {
 const getSummary = (document, rate, asOf = "2026-11-02") =>
   summarize(document, rate, asOf);
 
+function transferFixture() {
+  return {
+    document: {
+      salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-06", accountId: 1 },
+      bills: [],
+      allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 500, currency: "USD", sourceAccountId: 1, accountId: 2 }],
+    },
+    plan: {
+      startDate: "2026-11-06", endDate: "2026-11-30", openingUsd: 921.4, openingPhp: 0,
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, includeTransactions: false,
+      entries: [{ id: "move", date: "2026-11-27", description: "Transfer", kind: "transfer", amount: 96.73, currency: "USD", fromAccountId: 2, toAccountId: 1 }],
+    },
+    accounts: [
+      { id: 1, name: "Checking", currency: "USD", type: "checking", nativeCurrentBalance: 921.4 },
+      { id: 2, name: "Savings", currency: "USD", type: "savings", nativeCurrentBalance: 246.73 },
+    ],
+  };
+}
+
+test("a manual transfer releases general savings into available cash and the reverse earmarks cash", () => {
+  const { document, plan, accounts } = transferFixture();
+  for (const [fromAccountId, toAccountId, delta, ending] of [[2, 1, 96.73, 1018.13], [1, 2, -96.73, 824.67]]) {
+    const row = buildPlanRows({ ...plan, entries: [{ ...plan.entries[0], fromAccountId, toAccountId }] }, document, 63,
+      { accounts, today: "2026-11-02" })[0];
+    assert.equal(row.amount, 96.73);
+    assert.equal(row.usd, delta);
+    assert.equal(row.balanceAppliedUsd, delta);
+    assert.equal(row.balanceUsd, ending);
+    assert.equal(row.reserveUsd, 0);
+  }
+});
+
+test("selected savings opening funds cannot become available twice but later earmarks can be released", () => {
+  const { document, plan, accounts } = transferFixture();
+  const selected = { ...plan, startingAccounts: [{ accountId: 2, percentage: 100 }] };
+  let row = buildPlanRows(selected, document, 63, { accounts, today: "2026-11-02" })[0];
+  assert.equal(row.usd, 0);
+  assert.equal(row.balanceUsd, 1168.13);
+  const rows = buildPlanRows({ ...selected, includeAllocations: true }, document, 63, { accounts, today: "2026-11-02" });
+  row = rows.find((item) => item.entryId === "move");
+  assert.equal(row.usd, 96.73);
+  assert.equal(row.balanceUsd, 264.86);
+  const partial = buildPlanRows({ ...plan, openingUsd: 0, startingAccounts: [{ accountId: 2, percentage: 80 }],
+    entries: [{ ...plan.entries[0], amount: 300 }] }, document, 63,
+  { accounts: [accounts[0], { ...accounts[1], nativeCurrentBalance: 1000 }], today: "2026-11-02" })[0];
+  assert.equal(partial.usd, 200);
+  assert.equal(partial.balanceUsd, 1000);
+});
+
+test("moving available-owned funds through another savings account cannot release them a second time", () => {
+  const { document, plan, accounts } = transferFixture();
+  const rows = buildPlanRows({ ...plan, openingUsd: 0, startingAccounts: [{ accountId: 2, percentage: 100 }],
+    entries: [
+      { ...plan.entries[0], id: "between", date: "2026-11-26", amount: 100, fromAccountId: 2, toAccountId: 3 },
+      { ...plan.entries[0], amount: 100, fromAccountId: 3 },
+    ] }, { ...document, allocations: [...document.allocations,
+    { ...document.allocations[0], id: "other", accountId: 3 }] }, 63,
+  { accounts: [accounts[0], { ...accounts[1], nativeCurrentBalance: 100 },
+    { ...accounts[1], id: 3, nativeCurrentBalance: 0 }], today: "2026-11-02" });
+  assert.deepEqual(rows.map((row) => row.usd), [0, 0]);
+  assert.equal(rows.at(-1).balanceUsd, 100);
+});
+
+test("shared annual savings excludes each earmark once when releasing only uncounted savings", () => {
+  const { document, plan, accounts } = transferFixture();
+  const annual = { id: "annual", name: "Annual", cadence: "annual", amount: 100, savedAmount: 100,
+    currency: "USD", dueDay: 28, dueMonths: [12], reserveAccountId: 2 };
+  const row = buildPlanRows({ ...plan, openingUsd: 0, startingAccounts: [{ accountId: 2, percentage: 80 }],
+    entries: [{ ...plan.entries[0], amount: 40 }] }, { ...document, bills: [annual] }, 63,
+  { accounts: [accounts[0], { ...accounts[1], nativeCurrentBalance: 150 }], today: "2026-11-02" })[0];
+  assert.equal(row.usd, 30);
+  assert.equal(row.balanceUsd, 50);
+  assert.equal(row.reserveUsd, 100);
+});
+
+test("manual transfers do not release annual earmarks or turn card payments and invalid accounts into income", () => {
+  const { document, plan, accounts } = transferFixture();
+  const annual = { id: "annual", name: "Annual", cadence: "annual", amount: 246.73, savedAmount: 246.73,
+    currency: "USD", dueDay: 28, dueMonths: [12], reserveAccountId: 2 };
+  const annualOnly = buildPlanRows(plan, { ...document, allocations: [], bills: [annual] }, 63,
+    { accounts, today: "2026-11-02" })[0];
+  assert.equal(annualOnly.usd, 0);
+  assert.equal(annualOnly.reserveUsd, 246.73);
+  for (const target of [
+    { ...accounts[0], type: "credit" },
+    { ...accounts[0], type: "loan" },
+    { ...accounts[0], isArchived: true },
+    { ...accounts[0], currency: "PHP" },
+    null,
+  ]) {
+    const row = buildPlanRows(plan, document, 63, { accounts: [accounts[1], ...(target ? [target] : [])], today: "2026-11-02" })[0];
+    assert.equal(row.usd, 0);
+    assert.equal(row.balanceUsd, 921.4);
+  }
+});
+
+test("posted manual transfer legs reflect their pocket shift once for dated and live openings", () => {
+  const { document, plan, accounts } = transferFixture();
+  const transactions = [
+    { id: 101, date: "2026-11-27", amount: 96.73, currency: "USD", kind: "expense", accountId: 2, category: "Transfer" },
+    { id: 102, date: "2026-11-27", amount: 96.73, currency: "USD", kind: "income", accountId: 1, category: "Transfer" },
+  ];
+  const bank = [{ ...accounts[0], nativeCurrentBalance: 1018.13 }, { ...accounts[1], nativeCurrentBalance: 150 }];
+  for (const live of [false, true]) {
+    const rows = buildPlanRows({ ...plan, includeTransactions: true,
+      ...(live ? { openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }] } : {}) }, document, 63,
+    { accounts: bank, transactions, today: "2026-11-27" });
+    const task = rows.find((row) => row.kind === "transfer");
+    assert.equal(task.completed, true);
+    assert.equal(task.usd, 96.73);
+    assert.equal(task.reflectedInRecordedTransactions, true);
+    assert.equal(task.balanceAppliedUsd, 0);
+    assert.equal(rows.find((row) => row.transactionId === 101).usd, 0);
+    assert.equal(rows.at(-1).balanceUsd, 1018.13);
+  }
+  const hidden = buildPlanRows(plan, document, 63, { accounts: bank, transactions, today: "2026-11-27" });
+  assert.equal(hidden.length, 1);
+  assert.equal(hidden[0].completed, true);
+  assert.equal(hidden[0].balanceUsd, 1018.13);
+});
+
+test("a single posted transfer leg affects available cash once without completing the two-leg task", () => {
+  const { document, plan, accounts } = transferFixture();
+  const credit = { id: 102, date: "2026-11-27", amount: 96.73, currency: "USD", kind: "income", accountId: 1, category: "Transfer" };
+  for (const live of [false, true]) {
+    const rows = buildPlanRows({ ...plan, includeTransactions: true,
+      ...(live ? { openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }] } : {}) }, document, 63,
+    { accounts: [{ ...accounts[0], nativeCurrentBalance: 1018.13 }, accounts[1]], transactions: [credit], today: "2026-11-27" });
+    const task = rows.find((row) => row.kind === "transfer");
+    assert.equal(task.completed, false);
+    assert.equal(task.balanceAppliedUsd, 0);
+    assert.equal(rows.at(-1).balanceUsd, 1018.13);
+  }
+  const sourceOnly = buildPlanRows({ ...plan, includeTransactions: true }, document, 63,
+    { accounts, transactions: [{ ...credit, id: 101, kind: "expense", accountId: 2 }], today: "2026-11-27" });
+  assert.equal(sourceOnly.find((row) => row.source === "transaction").usd, 0);
+  assert.equal(sourceOnly.find((row) => row.kind === "transfer").completed, false);
+  assert.equal(sourceOnly.at(-1).balanceUsd, 1018.13);
+});
+
+test("one partial posted leg cannot satisfy or financially suppress two manual transfers", () => {
+  const { document, plan, accounts } = transferFixture();
+  const rows = buildPlanRows({ ...plan, includeTransactions: true, entries: [plan.entries[0], { ...plan.entries[0], id: "second" }] }, document, 63,
+    { accounts, transactions: [{ id: 102, date: "2026-11-27", amount: 96.73, currency: "USD", kind: "income", accountId: 1, category: "Transfer" }], today: "2026-11-27" });
+  assert.equal(rows.filter((row) => row.kind === "transfer" && row.reflectedInRecordedTransactions).length, 1);
+  assert.ok(rows.filter((row) => row.kind === "transfer").every((row) => !row.completed));
+  assert.equal(rows.at(-1).balanceUsd, 1114.86);
+});
+
+test("a posted savings withdrawal remains money in transit even when the current savings balance is zero", () => {
+  const { document, plan, accounts } = transferFixture();
+  const debit = { id: 101, date: "2026-11-27", amount: 96.73, currency: "USD", kind: "expense", accountId: 2, category: "Transfer" };
+  const credit = { ...debit, id: 102, kind: "income", accountId: 1 };
+  const bank = [accounts[0], { ...accounts[1], nativeCurrentBalance: 0 }];
+  for (const includeTransactions of [false, true]) {
+    for (const transactions of [[debit], [debit, credit]]) {
+      const rows = buildPlanRows({ ...plan, includeTransactions }, document, 63,
+        { accounts: bank, transactions, today: "2026-11-27" });
+      assert.equal(rows.find((row) => row.kind === "transfer").usd, 96.73);
+      assert.equal(rows.at(-1).balanceUsd, 1018.13);
+    }
+  }
+});
+
+test("dated savings opening ownership uses its historical balance rather than its now-empty bank balance", () => {
+  const { document, plan, accounts } = transferFixture();
+  const rows = buildPlanRows({ ...plan, accountOpeningBalances: [{ accountId: 2, balance: 96.73 }] }, document, 63,
+    { accounts: [accounts[0], { ...accounts[1], nativeCurrentBalance: 0 }], today: "2026-11-28" });
+  assert.equal(rows[0].usd, 96.73);
+  assert.equal(rows[0].balanceUsd, 1018.13);
+});
+
+test("posted-source reconstruction preserves annual reserve deficits instead of releasing earmarked funds", () => {
+  const { document, plan, accounts } = transferFixture();
+  const annual = { id: "annual", name: "Annual", cadence: "annual", amount: 100, savedAmount: 100,
+    currency: "USD", dueDay: 28, dueMonths: [12], reserveAccountId: 2 };
+  const rows = buildPlanRows({ ...plan, entries: [{ ...plan.entries[0], amount: 50 }] }, { ...document, bills: [annual] }, 63,
+    { accounts: [accounts[0], { ...accounts[1], nativeCurrentBalance: 50 }],
+      transactions: [{ id: 101, date: "2026-11-27", amount: 50, currency: "USD", kind: "expense", accountId: 2, category: "Transfer" }], today: "2026-11-27" });
+  assert.equal(rows[0].usd, 0);
+  assert.equal(rows[0].balanceUsd, 921.4);
+  assert.equal(rows[0].reserveUsd, 100);
+});
+
 test("editing one savings occurrence preserves recurring amounts and stable completion identity", () => {
   const doc = {
     salary: { amount: 2000, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-06", accountId: 1 },

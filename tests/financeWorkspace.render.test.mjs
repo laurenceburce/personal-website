@@ -385,6 +385,38 @@ function workspaceHarness(props) {
   };
 }
 
+test("a savings withdrawal updates available funds, savings, and the ledger flow together", () => {
+  const base = fixture("plans", 0).snapshot.document;
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 921.4 },
+    { id: 2, name: "Annual savings", type: "savings", currency: "USD", nativeCurrentBalance: 549.48 },
+    { id: 28, name: "Smartly Savings", type: "savings", currency: "USD", nativeCurrentBalance: 246.73 },
+  ];
+  const props = fixture("plans", 0, {
+    salary: { ...base.salary, accountId: 1 },
+    bills: [{ ...base.bills[0], amount: 600, savedAmount: 549.48, dueMonths: [12], reserveAccountId: 2 }],
+    allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 500, currency: "USD", accountId: 28, sourceAccountId: 1 }],
+    plans: [{
+      ...base.plans[0],
+      startDate: "2026-11-27",
+      endDate: "2026-11-27",
+      openingUsd: 0,
+      openingPhp: 0,
+      startingAccounts: [{ accountId: 1, percentage: 100 }, { accountId: 2, percentage: 100 }],
+      entries: [{ id: "withdraw", date: "2026-11-27", description: "Transfer", kind: "transfer", amount: 96.73, currency: "USD", fromAccountId: 28, toAccountId: 1 }],
+    }],
+  }, { accounts });
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  assert.ok(plain(html).includes("Available funds · USD$1,018.13"));
+  assert.ok(plain(html).includes("Moved from savings to available funds."));
+  const transfer = html.match(/class="fpl-row fpl-row-manual[^>]*>([\s\S]*?)<\/tr>/)?.[1];
+  assert.ok(transfer);
+  assert.ok(plain(transfer).includes("+$96.73"));
+  assert.ok(plain(transfer).includes("$1,018.13"));
+  assert.ok(plain(transfer).includes("$150.00"));
+  assert.ok(plain(transfer).includes("$549.48"));
+});
+
 test("editing one payday savings row persists its exception and updates balances without changing recurrence", async () => {
   const base = fixture("plans", 0).snapshot.document;
   const allocation = {

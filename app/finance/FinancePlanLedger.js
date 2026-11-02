@@ -131,6 +131,14 @@ function SourceLabel({ row }) {
       {row.isOverride && (
         <small className="fpl-override-note">Edited for this plan</small>
       )}
+      {row.source === "manual" && row.kind === "transfer" &&
+        Boolean(row.usd || row.php) && (
+          <small className="fpl-account-label">
+            {row.usd > 0 || row.php > 0
+              ? "Moved from savings to available funds."
+              : "Moved from available funds to savings."}
+          </small>
+        )}
       {row.source === "transaction" &&
         (row.matchedForecast || row.scheduledSource) && (
           <small className="fpl-match-note">

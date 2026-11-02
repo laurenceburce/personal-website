@@ -1279,19 +1279,140 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     append(row);
   }
   const completed = planCompletion(result, plan, completionActual, document, rate, today);
+  // General savings are outside the spending pocket, while a selected opening
+  // share of the same account can already be available. Keep that ownership as
+  // later savings allocations and transfers move funds between the pockets.
+  const savingsAccounts = new Set((document.allocations || [])
+    .filter((allocation) => allocation.kind === "savings" && allocation.accountId != null)
+    .map((allocation) => `${Number(allocation.accountId)}:${allocation.currency}`));
+  const annualByAccount = new Map();
+  for (const bill of annualBills) {
+    if (bill.reserveAccountId == null) continue;
+    const key = `${Number(bill.reserveAccountId)}:${bill.currency}`;
+    annualByAccount.set(key, roundMoney((annualByAccount.get(key) || 0) + getAnnualBillFunding(bill).savedAmount));
+  }
+  const accountsById = new Map((options.accounts || []).map((account) => [Number(account.id), account]));
+  const holdsFunds = (accountId, currency) => {
+    const account = accountsById.get(Number(accountId));
+    return account && account.currency === currency && !account.isArchived && !account.is_archived &&
+      !account.mergedIntoAccountId && !account.merged_into_account_id &&
+      !["credit", "loan"].includes(account.type || account.account_type);
+  };
+  const selectedAvailable = new Map(opening.contributions.map((contribution) =>
+    [`${contribution.accountId}:${contribution.currency}`, contribution.availableAmount]));
+  const datedSavingsOpening = new Map((plan.accountOpeningBalances || [])
+    .filter((selected) => {
+      const key = `${Number(selected.accountId)}:${accountsById.get(Number(selected.accountId))?.currency}`;
+      return !selectedAvailable.has(key);
+    })
+    .map((selected) => [`${Number(selected.accountId)}:${accountsById.get(Number(selected.accountId))?.currency}`, roundMoney(selected.balance)]));
+  const outsideSavings = new Map();
+  for (const key of savingsAccounts) {
+    const account = accountsById.get(Number(key.split(":")[0]));
+    const value = datedSavingsOpening.has(key) ? datedSavingsOpening.get(key)
+      : account && (Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance);
+    const known = ["number", "string"].includes(typeof value) && String(value).trim() && Number.isFinite(Number(value));
+    outsideSavings.set(key, known
+      ? roundMoney(Number(value) - (annualByAccount.get(key) || 0) - (selectedAvailable.get(key) || 0))
+      : 0);
+  }
+  const releaseSavings = (key, amount, postedDebit) => {
+    // Current bank balances already include a posted withdrawal. Reconstruct
+    // the money in transit for this transfer without debiting that balance
+    // again. Preserve a reserve deficit so it cannot be released as spare cash.
+    const capacity = (outsideSavings.get(key) || 0) +
+      (!datedSavingsOpening.has(key) && postedDebit ? amount : 0);
+    return Math.min(amount, Math.max(0, capacity));
+  };
+  const transferFlows = new Map();
+  const postedTransferFlows = new Map();
+  const transferActuals = completionActual.filter((row) => !row.scheduled && row.date <= today && transferTransaction(row));
+  const usedTransferActuals = new Set(completed.filter((row) => row.source !== "transaction")
+    .flatMap((row) => row.matchedTransactionIds).map(String));
+  for (const row of completed) {
+    const future = row.date >= today && row.completionSource !== "transaction";
+    if (row.source === "allocation" && row.allocationKind === "savings") {
+      const key = `${Number(row.accountId)}:${row.currency}`;
+      if (savingsAccounts.has(key) && (future || datedSavingsOpening.has(key)))
+        outsideSavings.set(key, roundMoney((outsideSavings.get(key) || 0) + row.amount));
+    }
+    if (row.source !== "manual" || row.kind !== "transfer") continue;
+    const from = `${Number(row.fromAccountId)}:${row.currency}`;
+    const to = `${Number(row.toAccountId)}:${row.currency}`;
+    const fromSavings = savingsAccounts.has(from);
+    const toSavings = savingsAccounts.has(to);
+    const matchedLegs = row.completionSource === "transaction"
+      ? transferActuals.filter((actual) => row.matchedTransactionIds.some((transactionId) => String(transactionId) === String(actual.transactionId)))
+      : [];
+    for (const [accountId, kind] of [[row.fromAccountId, "expense"], [row.toAccountId, "income"]]) {
+      if (matchedLegs.some((actual) => Number(actual.accountId) === Number(accountId) && actual.kind === kind)) continue;
+      const match = transferActuals.find((actual) => !usedTransferActuals.has(String(actual.transactionId)) &&
+        Number(actual.accountId) === Number(accountId) && actual.kind === kind && actual.currency === row.currency &&
+        Math.abs(actual.amount - row.amount) < 0.005 && Math.abs(dateTime(actual.date) - dateTime(row.date)) <= 3 * DAY_MS);
+      if (match) {
+        matchedLegs.push(match);
+        usedTransferActuals.add(String(match.transactionId));
+      }
+    }
+    const fromPosted = matchedLegs.some((actual) => Number(actual.accountId) === Number(row.fromAccountId) && actual.kind === "expense");
+    const toPosted = matchedLegs.some((actual) => Number(actual.accountId) === Number(row.toAccountId) && actual.kind === "income");
+    // A bank transfer does not release an annual bill's earmark. Its reserve
+    // assignment must be changed explicitly rather than counted as spare cash.
+    const annualOnly = (annualByAccount.has(from) && !fromSavings) || (annualByAccount.has(to) && !toSavings);
+    let delta = 0;
+    let availableAccountId = null;
+    if (Number(row.fromAccountId) !== Number(row.toAccountId) && !annualOnly &&
+        holdsFunds(row.fromAccountId, row.currency) && holdsFunds(row.toAccountId, row.currency)) {
+      const released = fromSavings ? releaseSavings(from, row.amount, fromPosted) : 0;
+      const replaySource = datedSavingsOpening.has(from) || (future && !fromPosted);
+      const replayDestination = datedSavingsOpening.has(to) || (future && !toPosted);
+      if (fromSavings && !toSavings) {
+        delta = released;
+        availableAccountId = Number(row.toAccountId);
+        if (replaySource) outsideSavings.set(from, roundMoney((outsideSavings.get(from) || 0) - released));
+      } else if (!fromSavings && toSavings) {
+        delta = -row.amount;
+        availableAccountId = Number(row.fromAccountId);
+        if (replayDestination) outsideSavings.set(to, roundMoney((outsideSavings.get(to) || 0) + row.amount));
+      } else if (fromSavings && toSavings) {
+        if (replaySource) outsideSavings.set(from, roundMoney((outsideSavings.get(from) || 0) - released));
+        if (replayDestination) outsideSavings.set(to, roundMoney((outsideSavings.get(to) || 0) + released));
+      }
+    }
+    const availablePosted = matchedLegs.some((actual) => Number(actual.accountId) === availableAccountId);
+    transferFlows.set(row.id, { delta, availableAccountId, availablePosted,
+      postedAccountIds: [...new Set(matchedLegs.map((actual) => Number(actual.accountId)))],
+    });
+    if (plan.includeTransactions !== false) {
+      for (const transaction of matchedLegs) {
+        postedTransferFlows.set(String(transaction.transactionId),
+          Number(transaction.accountId) === availableAccountId ? delta : 0);
+      }
+    }
+  }
   // A matched conversion or expense allocation is represented by its posted
   // transactions. Keep the task visible without counting the same cash twice.
   let reconciledUsd = opening.usd;
   let reconciledPhp = opening.php;
   return completed.map((row) => {
-    const recordedFlow = plan.includeTransactions !== false && row.completionSource === "transaction" && row.source !== "transaction" &&
-      (row.kind === "conversion" || (row.source === "allocation" && row.allocationKind === "expense"));
-    const balanceAppliedUsd = recordedFlow ? 0 : row.balanceAppliedUsd;
-    const balanceAppliedPhp = recordedFlow ? 0 : row.balanceAppliedPhp;
+    const transfer = transferFlows.get(row.id);
+    const postedTransfer = row.source === "transaction" && postedTransferFlows.has(String(row.transactionId));
+    const nativeTransfer = transfer?.delta ?? (postedTransfer ? postedTransferFlows.get(String(row.transactionId)) : null);
+    const usd = nativeTransfer === null ? row.usd : row.currency === "USD" ? nativeTransfer : 0;
+    const php = nativeTransfer === null ? row.php : row.currency === "PHP" ? nativeTransfer : 0;
+    const recordedFlow = plan.includeTransactions !== false && ((row.completionSource === "transaction" && row.source !== "transaction" &&
+      (row.kind === "conversion" || row.kind === "transfer" || (row.source === "allocation" && row.allocationKind === "expense"))) || transfer?.availablePosted);
+    const availableAccountId = transfer?.availableAccountId ?? row.accountId;
+    const bankReflected = nativeTransfer !== null && (isBankReflected(row, availableAccountId) ||
+      (transfer?.availablePosted && liveAccounts.has(Number(availableAccountId))));
+    const balanceAppliedUsd = recordedFlow || bankReflected ? 0 : nativeTransfer === null ? row.balanceAppliedUsd : usd;
+    const balanceAppliedPhp = recordedFlow || bankReflected ? 0 : nativeTransfer === null ? row.balanceAppliedPhp : php;
     reconciledUsd = roundMoney(reconciledUsd + balanceAppliedUsd);
     reconciledPhp = roundMoney(reconciledPhp + balanceAppliedPhp);
     return {
-      ...row, balanceAppliedUsd, balanceAppliedPhp,
+      ...row, usd, php, balanceAppliedUsd, balanceAppliedPhp,
+      ...(transfer ? { postedTransferAccountIds: transfer.postedAccountIds } : {}),
+      ...(nativeTransfer !== null ? { reflectedInStartingBalance: Boolean(bankReflected && nativeTransfer) } : {}),
       ...(recordedFlow ? { reflectedInRecordedTransactions: true } : {}),
       balanceUsd: reconciledUsd, balancePhp: reconciledPhp,
     };

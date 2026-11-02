@@ -833,7 +833,9 @@ function EntryForm({
       {draft.kind === "transfer" && (
         <p className="fp-inline-note">
           This planned transfer moves money between accounts and leaves your
-          total funds unchanged. No bank transfer is initiated.
+          total funds unchanged. Moving linked savings into a spending account
+          increases available funds; moving money into savings sets it aside. No bank
+          transfer is initiated.
         </p>
       )}
       {draft.kind === "conversion" && (

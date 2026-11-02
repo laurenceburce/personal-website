@@ -475,6 +475,14 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       .filter((move) => {
         if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense")
           return false;
+        // Posted legs remain known when recorded ledger rows are hidden.
+        // Current bank balances already include each posted leg; explicitly
+        // dated openings still need those movements replayed.
+        if (plan.includeTransactions === false && row.source === "manual" &&
+            row.kind === "transfer" &&
+            (row.completionSource === "transaction" || row.postedTransferAccountIds?.includes(move.accountId)) &&
+            !opening.has(move.accountId))
+          return false;
         if (
           !["transfer", "conversion"].includes(move.kind) ||
           (row.source === "transaction" && !row.annualPayment)

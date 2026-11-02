@@ -224,7 +224,9 @@ The finance workspace separates recorded activity from your plans:
   Budget plans project native account balances and transfers alongside available
   funds. Selected live starting accounts use their latest percentage allocation;
   already-posted history is excluded from that account forecast. Manual transfers
-  preserve total funds; cross-currency
+  preserve total funds. Moving general savings into a spending account releases
+  those funds into the available balance, and the reverse sets them aside.
+  Transfers within the same pocket stay neutral. Cross-currency
   moves require an explicit conversion. Assignments and projections never move
   bank funds or change synced balances.
 
