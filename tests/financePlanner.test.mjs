@@ -19,6 +19,149 @@ import {
 const getSummary = (document, rate, asOf = "2026-11-02") =>
   summarize(document, rate, asOf);
 
+test("editing one savings occurrence preserves recurring amounts and stable completion identity", () => {
+  const doc = {
+    salary: { amount: 2000, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-06", accountId: 1 },
+    bills: [],
+    allocations: [{ id: "save", name: "Savings", kind: "savings", amount: 500, currency: "USD", accountId: 2 }],
+  };
+  const plan = {
+    startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000, openingPhp: 0,
+    includeIncome: false, includeAnnualReserve: false, entries: [],
+    completedRows: [{ rowId: "allocation:save:2026-11-06", completedAt: "2026-11-07T12:00:00.000Z" }],
+    rowOverrides: [{ rowId: "allocation:save:2026-11-06", date: "2026-11-07", description: "Smaller savings this payday", amount: 125.5 }],
+  };
+  const before = JSON.stringify({ doc, plan });
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].id, "allocation:save:2026-11-06");
+  assert.equal(rows[0].date, "2026-11-07");
+  assert.equal(rows[0].description, "Smaller savings this payday");
+  assert.equal(rows[0].amount, 125.5);
+  assert.equal(rows[0].usd, -125.5);
+  assert.equal(rows[0].completed, true);
+  assert.equal(rows[0].completionKey, "allocation:save:2026-11-06");
+  assert.equal(rows[0].originalAmount, 500);
+  assert.equal(rows[0].originalDate, "2026-11-06");
+  assert.equal(rows[0].editable, true);
+  assert.equal(rows[0].isOverride, true);
+  assert.equal(rows[1].amount, 500);
+  assert.equal(rows[1].isOverride, false);
+  assert.equal(rows[1].balanceUsd, 374.5);
+  assert.equal(JSON.stringify({ doc, plan }), before);
+  assert.equal(buildPlanRows({ ...plan, rowOverrides: [] }, doc, 63)[0].amount, 500);
+  const paused = buildPlanRows(plan, { ...doc, allocations: [{ ...doc.allocations[0], amount: 0 }] }, 63);
+  assert.equal(paused.length, 1);
+  assert.equal(paused[0].amount, 125.5);
+  assert.equal(paused[0].originalAmount, 0);
+});
+
+test("one-off salary and bill amounts and dates are used before posted matching", () => {
+  const doc = {
+    salary: { amount: 2000, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-06", accountId: 1 },
+    bills: [{ id: "subscription", name: "Subscription", amount: 20, currency: "USD", cadence: "monthly", dueDay: 6, accountId: 1 }],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+    includeIncome: true, includeAnnualReserve: false, entries: [],
+    rowOverrides: [
+      { rowId: "salary:2026-11-06", date: "2026-11-07", description: "Adjusted paycheck", amount: 900 },
+      { rowId: "bill:subscription:2026-11-06", date: "2026-11-08", description: "Subscription special", amount: 15 },
+    ],
+  };
+  const transactions = [
+    { id: 1, accountId: 1, date: "2026-11-07", merchant: "Payroll", kind: "income", currency: "USD", amount: 900 },
+    { id: 2, accountId: 1, date: "2026-11-08", merchant: "Subscription special", kind: "expense", currency: "USD", amount: 15 },
+  ];
+  const rows = buildPlanRows(plan, doc, 63, { transactions, today: "2026-11-10" });
+  assert.equal(rows.filter((row) => row.date < "2026-11-20").length, 2);
+  assert.equal(rows[0].completionKey, "salary:2026-11-06");
+  assert.equal(rows[1].completionKey, "bill:subscription:2026-11-06");
+  assert.ok(rows.slice(0, 2).every((row) => row.completed && row.source === "transaction" && !row.editable));
+  assert.equal(rows[1].balanceUsd, 885);
+  assert.equal(rows[2].amount, 923.08);
+});
+
+test("an edited expense allocation matches its edited merchant and amount", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-06" }, bills: [],
+    allocations: [{ id: "expense", name: "Default expense", kind: "expense", amount: 100, currency: "USD", accountId: 1 }] };
+  const plan = { startDate: "2026-11-06", endDate: "2026-11-06", openingUsd: 100, includeIncome: false, entries: [],
+    rowOverrides: [{ rowId: "allocation:expense:2026-11-06", date: "2026-11-06", description: "Gym", amount: 40 }] };
+  const transactions = [{ id: 1, date: "2026-11-06", accountId: 1, merchant: "Gym", kind: "expense", amount: 40, currency: "USD" }];
+  const rows = buildPlanRows(plan, doc, 63, { transactions, today: "2026-11-06" });
+  const allocation = rows.find((row) => row.source === "allocation");
+  assert.equal(allocation.completed, true);
+  assert.equal(allocation.completionSource, "transaction");
+  assert.equal(allocation.reflectedInRecordedTransactions, true);
+  assert.equal(rows.at(-1).balanceUsd, 60);
+});
+
+test("zero and moved occurrences stay addressable without moving neighboring recurrences", () => {
+  const doc = {
+    salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-10-23" },
+    bills: [], allocations: [{ id: "save", name: "Savings", kind: "savings", currency: "USD", amount: 500 }],
+  };
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-20", includeIncome: false, includeAnnualReserve: false, entries: [],
+    rowOverrides: [{ rowId: "allocation:save:2026-10-23", date: "2026-11-02", description: "Skipped old payday", amount: 0 }] };
+  const rows = buildPlanRows(plan, doc, 63);
+  assert.deepEqual(rows.map((row) => [row.date, row.amount]), [["2026-11-02", 0], ["2026-11-06", 500], ["2026-11-20", 500]]);
+  assert.equal(rows[0].editable, true);
+});
+
+test("an overridden annual charge recomputes its shortfall from gross cost and existing reserve", () => {
+  const doc = { salary: {}, allocations: [], bills: [{ id: "fee", name: "Annual fee", amount: 395, savedAmount: 100, currency: "USD", cadence: "annual", dueMonths: [11], dueDay: 28 }] };
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000, includeIncome: false, includeAnnualReserve: false, entries: [],
+    rowOverrides: [{ rowId: "bill:fee:2026-11-28", date: "2026-11-29", description: "Annual fee after discount", amount: 300 }] };
+  const [row] = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  assert.equal(row.originalAmount, 395);
+  assert.equal(row.grossAmount, 300);
+  assert.equal(row.reserveUsed, 100);
+  assert.equal(row.reserveShortfall, 200);
+  assert.equal(row.usd, -200);
+  assert.equal(row.balanceUsd, 800);
+  assert.equal(row.reserveUsd, 0);
+});
+
+test("moving an annual charge earlier consumes its original installment before funding the next cycle", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-13" }, allocations: [],
+    bills: [{ id: "fee", name: "Annual fee", amount: 100, savedAmount: 100, currency: "USD", cadence: "annual", dueMonths: [11], dueDay: 28 }] };
+  const plan = { startDate: "2026-11-13", endDate: "2026-11-30", openingUsd: 1000, includeIncome: false, entries: [],
+    rowOverrides: [{ rowId: "bill:fee:2026-11-28", date: "2026-11-20", description: "Annual fee", amount: 100 }] };
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  assert.equal(rows.filter((row) => row.annualPayment).length, 1);
+  assert.equal(rows.find((row) => row.annualPayment).reserveShortfall, 0);
+  const next = rows.find((row) => row.id === "reserve:USD:2026-11-27");
+  assert.ok(next.amount < 5, "later funding must target the next year, not fund the paid original date again");
+  const posted = buildPlanRows(plan, doc, 63, { today: "2026-11-20", transactions: [
+    { id: 1, date: "2026-11-20", kind: "expense", amount: 100, currency: "USD", merchant: "Annual fee" },
+  ] });
+  assert.equal(posted.find((row) => row.source === "transaction").originalDate, "2026-11-28");
+  assert.ok(posted.find((row) => row.id === "reserve:USD:2026-11-27").amount < 5);
+});
+
+test("reserve occurrence overrides split cents, cap at funding left, and leave later funding adaptive", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-06" }, allocations: [],
+    bills: [1, 2].map((amount, i) => ({ id: `fee${i}`, name: `Fee ${i}`, amount, savedAmount: 0, currency: "USD", cadence: "annual", dueMonths: [11], dueDay: 28 })) };
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 10, includeIncome: false, entries: [],
+    rowOverrides: [{ rowId: "reserve:USD:2026-11-06", date: "2026-11-06", description: "Extra annual funding", amount: 2.01 }] };
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  const reserves = rows.filter((row) => row.source === "reserve");
+  assert.equal(reserves[0].amount, 2.01);
+  assert.equal(reserves[0].originalAmount, 1.5);
+  assert.deepEqual(reserves[0].reserveAllocations.map((allocation) => allocation.amount), [0.67, 1.34]);
+  assert.equal(reserves[1].amount, 0.99);
+  assert.equal(rows.at(-1).balanceUsd, 7);
+  assert.equal(rows.at(-1).reserveUsd, 0);
+  const capped = buildPlanRows({ ...plan, rowOverrides: [{ ...plan.rowOverrides[0], amount: 100 }] }, doc, 63);
+  assert.equal(capped[0].amount, 3);
+  assert.equal(capped[0].overrideRequestedAmount, 100);
+  const zero = buildPlanRows({ ...plan, rowOverrides: [{ ...plan.rowOverrides[0], amount: 0 }] }, doc, 63);
+  assert.equal(zero[0].amount, 0);
+  assert.equal(zero[0].editable, true);
+  assert.equal(zero.find((row) => row.id === "reserve:USD:2026-11-20").amount, 3);
+});
+
 test("live plan openings add flat amounts to current native account percentages", () => {
   const plan = { openingUsd: 25, openingPhp: 10, startingAccounts: [
     { accountId: 1, percentage: 80 }, { accountId: 2, percentage: 100 },

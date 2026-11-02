@@ -1,5 +1,5 @@
 .fp-app .fpl-table {
-  min-width: 1370px;
+  min-width: 1640px;
   table-layout: auto;
 }
 .fp-app .fpl-table th,
@@ -25,12 +25,12 @@
   line-height: 1.65;
   margin-top: 3px;
 }
-.fp-app .fpl-table td:nth-child(n + 3):nth-child(-n + 8) {
+.fp-app .fpl-table td:nth-child(n + 3):nth-child(-n + 10) {
   font-variant-numeric: tabular-nums;
   text-align: right;
   min-width: 111px;
 }
-.fp-app .fpl-table th:nth-child(n + 3):nth-child(-n + 8) {
+.fp-app .fpl-table th:nth-child(n + 3):nth-child(-n + 10) {
   text-align: right;
 }
 .fp-app .fpl-table th:nth-child(5),
@@ -45,6 +45,23 @@
 .fp-app .fpl-table th.fpl-reserve-balance {
   background: #e5f2eb;
   color: #376349;
+}
+.fp-app .fpl-table .fpl-savings-balance {
+  background: #f0f6f9;
+  border-left: 1px solid #e0e9ee;
+  color: #426878;
+}
+.fp-app .fpl-table th.fpl-savings-balance {
+  background: #e8f1f5;
+  color: #3d6273;
+}
+.fp-app .fpl-table .fpl-override-note {
+  color: #426878;
+}
+.fp-app .fpl-table .fpl-reset-occurrence {
+  min-height: 30px;
+  padding: 5px 8px;
+  font-size: 10px;
 }
 .fp-app .fpl-table .fpl-reserve-change {
   margin-top: 5px;
@@ -156,7 +173,7 @@
 }
 @media (max-width: 760px) {
   .fp-app .fpl-table {
-    min-width: 1370px;
+    min-width: 1640px;
   }
   .fp-app .fpl-table th,
   .fp-app .fpl-table td {

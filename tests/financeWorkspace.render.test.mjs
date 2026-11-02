@@ -385,6 +385,80 @@ function workspaceHarness(props) {
   };
 }
 
+test("editing one payday savings row persists its exception and updates balances without changing recurrence", async () => {
+  const base = fixture("plans", 0).snapshot.document;
+  const allocation = {
+    id: "saving",
+    name: "Savings",
+    kind: "savings",
+    amount: 500,
+    currency: "USD",
+    accountId: 28,
+    sourceAccountId: 1,
+  };
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 28, name: "Savings", type: "savings", currency: "USD", nativeCurrentBalance: 246.73 },
+  ];
+  const props = fixture("plans", 0, {
+    salary: { ...base.salary, accountId: 1 },
+    bills: [],
+    allocations: [allocation],
+    plans: [{
+      ...base.plans[0],
+      includeAllocations: true,
+      completedRows: [{ rowId: "allocation:saving:2026-11-06", completedAt: "2026-11-02T12:00:00.000Z" }],
+    }],
+  }, { accounts });
+  const renderWorkspace = workspaceHarness(props);
+  const ledger = (tree) => findElement(tree, (node) => node.type?.name === "Ledger");
+  let tree = renderWorkspace();
+  let table = ledger(tree);
+  const original = table.props.rows.find((row) => row.id === "allocation:saving:2026-11-06");
+  assert.equal(original.amount, 500);
+  assert.equal(table.props.openingSavings.usd, 246.73);
+  table.props.onEditOccurrence(original);
+  tree = renderWorkspace();
+  const form = findElement(tree, (node) => node.type?.name === "FinancePlanOccurrenceForm");
+  assert.ok(form);
+  assert.equal(form.props.row.id, original.id);
+  const originalFetch = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "/api/finance/planner");
+    assert.equal(options.method, "PUT");
+    saved = JSON.parse(options.body).document;
+    return { ok: true, json: async () => ({ ...props.snapshot, revision: 2, document: saved }) };
+  };
+  try {
+    await form.props.onSave({ rowId: original.id, date: "2026-11-07", description: "November 6 savings", amount: 275 });
+    assert.deepEqual(saved.allocations, [allocation]);
+    assert.deepEqual(saved.plans[0].rowOverrides, [{ rowId: original.id, date: "2026-11-07", description: "November 6 savings", amount: 275 }]);
+    assert.deepEqual(saved.plans[0].completedRows, []);
+    tree = renderWorkspace();
+    assert.equal(findElement(tree, (node) => node.type?.name === "FinancePlanOccurrenceForm"), null);
+    table = ledger(tree);
+    const changed = table.props.rows.find((row) => row.id === original.id);
+    assert.equal(changed.date, "2026-11-07");
+    assert.equal(changed.amount, 275);
+    assert.equal(changed.savingsUsd, 521.73);
+    assert.equal(changed.completed, false);
+    const following = table.props.rows.find((row) => row.id === "allocation:saving:2026-11-20");
+    assert.equal(following.amount, 500);
+    assert.equal(following.savingsUsd, 1021.73);
+    assert.equal(following.isOverride, false);
+    await table.props.onResetOccurrence(changed);
+    assert.deepEqual(saved.plans[0].rowOverrides, []);
+    const restored = ledger(renderWorkspace()).props.rows.find((row) => row.id === original.id);
+    assert.equal(restored.amount, 500);
+    assert.equal(restored.date, "2026-11-06");
+    assert.equal(restored.savingsUsd, 746.73);
+    assert.deepEqual(saved.allocations, [allocation]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("live percentages and flat starting amounts reach the ledger and summary after balances change", () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const overrides = {

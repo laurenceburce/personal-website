@@ -116,6 +116,75 @@ const project = (planner = plan, doc = document, extra = {}) =>
 const byId = (result, accountId) =>
   result.accounts.find((account) => account.accountId === accountId);
 
+test("running savings starts with the linked bank balance and only a single edited payday changes", () => {
+  const currentAccounts = structuredClone(accounts);
+  currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = 246.73;
+  const doc = { ...document, bills: [], salary: { ...salary, payFrequency: "biweekly" } };
+  const current = { ...plan, accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false,
+    rowOverrides: [{ rowId: "allocation:save:2026-11-06", date: "2026-11-07", description: "One-off savings", amount: 275 }] };
+  const projection = project(current, doc, { accounts: currentAccounts });
+  assert.equal(projection.openingSavings.usd, 246.73);
+  assert.equal(projection.openingSavings.php, 0);
+  assert.deepEqual(projection.openingSavings.accountIds, [3]);
+  assert.equal(projection.rows[0].date, "2026-11-07");
+  assert.equal(projection.rows[0].savingsUsd, 521.73);
+  assert.equal(projection.rows[1].amount, 500);
+  assert.equal(projection.rows[1].savingsUsd, 1021.73);
+  assert.equal(doc.allocations[0].amount, 500);
+  currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = 300;
+  assert.equal(project(current, doc, { accounts: currentAccounts }).rows[0].savingsUsd, 575);
+});
+
+test("savings totals count distinct native destinations and keep annual funds separate", () => {
+  const currentAccounts = structuredClone(accounts);
+  currentAccounts.find((account) => account.id === 2).nativeCurrentBalance = 150;
+  const doc = { salary: { ...salary, amount: 0 }, bills: document.bills.slice(0, 1), allocations: [
+    { id: "one", name: "One", kind: "savings", amount: 10, currency: "USD", accountId: 2 },
+    { id: "two", name: "Two", kind: "savings", amount: 20, currency: "USD", accountId: 2 },
+    { id: "pesos", name: "Pesos", kind: "savings", amount: 100, currency: "PHP", accountId: 5, sourceAccountId: 5 },
+  ] };
+  const current = { ...plan, endDate: "2026-11-06", accountOpeningBalances: [], includeIncome: false };
+  const projection = project(current, doc, { accounts: currentAccounts });
+  assert.equal(projection.openingSavings.usd, 50);
+  assert.equal(projection.openingSavings.php, 10000);
+  assert.deepEqual(projection.openingSavings.accountIds, [2, 5]);
+  assert.equal(projection.rows.find((row) => row.source === "reserve").savingsUsd, 50);
+  assert.equal(projection.rows.at(-1).savingsUsd, 80);
+  assert.equal(projection.rows.at(-1).savingsPhp, 10000);
+});
+
+test("unassigned savings accumulate from zero while unavailable assigned balances stay unknown", () => {
+  const doc = { salary: { ...salary, amount: 0 }, bills: [], allocations: [
+    { id: "unassigned", name: "Cash savings", kind: "savings", amount: 10, currency: "PHP" },
+    { id: "unknown", name: "Unknown bank", kind: "savings", amount: 20, currency: "USD", accountId: 3 },
+  ] };
+  const currentAccounts = structuredClone(accounts);
+  currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = null;
+  const projection = project({ ...plan, accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false }, doc, { accounts: currentAccounts });
+  assert.equal(projection.openingSavings.usd, null);
+  assert.equal(projection.openingSavings.php, 0);
+  assert.equal(projection.rows.at(-1).savingsUsd, null);
+  assert.equal(projection.rows.at(-1).savingsPhp, 20);
+  assert.ok(projection.warnings.some((warning) => warning.includes("savings balance is unavailable")));
+});
+
+test("posted transfers and historical live activity do not add a savings deposit twice", () => {
+  const currentAccounts = structuredClone(accounts);
+  currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = 500;
+  const doc = { ...document, salary: { ...salary, amount: 0 }, bills: [] };
+  const current = { ...plan, accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false,
+    rowOverrides: [{ rowId: "allocation:save:2026-11-06", date: "2026-11-07", description: "Savings this payday", amount: 275 }] };
+  const transactions = [
+    { id: 101, date: "2026-11-07", accountId: 1, kind: "expense", currency: "USD", amount: 275, category: "Transfer" },
+    { id: 102, date: "2026-11-07", accountId: 3, kind: "income", currency: "USD", amount: 275, category: "Transfer" },
+  ];
+  const projection = project(current, doc, { accounts: currentAccounts, transactions, today: "2026-11-07" });
+  const first = projection.rows.find((row) => row.id === "allocation:save:2026-11-06");
+  assert.equal(first.completed, true);
+  assert.equal(first.savingsUsd, 500);
+  assert.equal(projection.rows.at(-1).savingsUsd, 1000);
+});
+
 test("live selected percentages override old account snapshots and follow refreshed balances", () => {
   const current = { ...plan, startingAccounts: [{ accountId: 1, percentage: 80 }], includeIncome: false, includeAnnualReserve: false, includeAllocations: false };
   const doc = { salary, bills: [], allocations: [] };

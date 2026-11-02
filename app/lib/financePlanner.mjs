@@ -672,6 +672,38 @@ const transferTransaction = (row) =>
     String(row.category || "").trim(),
   );
 
+// Allocate a one-off reserve total in cents while respecting each next payment's
+// remaining funding. Repeating the weighted split after a cap is reached keeps
+// larger overrides useful without overfunding an individual annual bill.
+function overriddenReserveAllocations(candidates, requested) {
+  const allocations = candidates.map((candidate) => ({ ...candidate, amount: 0 }));
+  let remaining = Math.min(
+    Math.max(0, Math.round(number(requested) * 100)),
+    candidates.reduce((total, candidate) => total + Math.round(candidate.capacity * 100), 0),
+  );
+  while (remaining > 0) {
+    const active = allocations.filter((allocation) => Math.round((allocation.capacity - allocation.amount) * 100) > 0);
+    if (!active.length) break;
+    const weight = (allocation) => allocation.defaultAmount || allocation.capacity;
+    const totalWeight = active.reduce((total, allocation) => total + weight(allocation), 0);
+    const shares = active.map((allocation, index) => {
+      const exact = remaining * weight(allocation) / totalWeight;
+      const capacity = Math.round((allocation.capacity - allocation.amount) * 100);
+      return { allocation, index, exact, cents: Math.min(capacity, Math.floor(exact)), capacity };
+    });
+    let applied = shares.reduce((total, share) => total + share.cents, 0);
+    for (const share of [...shares].sort((a, b) => (b.exact - Math.floor(b.exact)) - (a.exact - Math.floor(a.exact)) || a.index - b.index)) {
+      if (applied >= remaining) break;
+      if (share.cents < share.capacity) { share.cents += 1; applied += 1; }
+    }
+    if (!applied) break;
+    for (const share of shares)
+      share.allocation.amount = roundMoney(share.allocation.amount + share.cents / 100);
+    remaining -= applied;
+  }
+  return allocations;
+}
+
 function planCompletion(rows, plan, actual, document, rate, today) {
   const manual = new Map((plan.completedRows || []).map((row) => [row.rowId, row.completedAt]));
   const posted = actual.filter((row) => !row.scheduled && row.date <= today);
@@ -740,7 +772,7 @@ function planCompletion(rows, plan, actual, document, rate, today) {
         const allocation = document.allocations?.find((allocation) => allocation.id === row.allocationId);
         const match = posted.find((transaction) =>
           !consumed.has(transaction.id) && forecastMatchesTransaction(
-            { ...row, source: "bill", description: allocation?.name || row.description }, transaction,
+            { ...row, source: "bill", description: row.isOverride ? row.description : allocation?.name || row.description }, transaction,
           ),
         );
         if (match) matches = [match];
@@ -769,13 +801,37 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   if (!validRange(plan.startDate, plan.endDate)) return [];
   const forecasts = [];
   const salary = document.salary || {};
-  const matchingStart = addDays(plan.startDate, -3);
-  const matchingEnd = addDays(plan.endDate, 3);
+  const overrides = new Map((plan.rowOverrides || []).map((row) => [row.rowId, row]));
+  // Keep an occurrence addressable when its date is moved across a plan boundary.
+  const originalDates = [...overrides.keys()]
+    .map((rowId) => String(rowId).slice(-10))
+    .filter((date) => Number.isFinite(dateTime(date)) &&
+      date >= addDays(plan.startDate, -731) && date <= addDays(plan.endDate, 731));
+  const matchingStart = [addDays(plan.startDate, -3), ...originalDates].sort()[0];
+  const matchingEnd = [addDays(plan.endDate, 3), ...originalDates].sort().at(-1);
+  const applyOverride = (row) => {
+    const override = overrides.get(row.id);
+    const metadata = {
+      editable: true,
+      isOverride: Boolean(override),
+      originalDate: row.date,
+      originalDescription: row.description,
+      originalAmount: row.amount,
+    };
+    if (!override) return { ...row, ...metadata };
+    return {
+      ...row,
+      ...metadata,
+      date: override.date,
+      description: override.description,
+      ...nativeFlow(override.amount, row.currency, row.kind),
+    };
+  };
   const paydays = salaryOccurrences(salary, matchingStart, matchingEnd);
   const payPeriods = salary.payFrequency === "biweekly" ? 26 : 24;
   // Keep boundary paydays as matching candidates even when forecast income is off.
   for (const occurrence of paydays)
-    forecasts.push({
+    forecasts.push(applyOverride({
       id: `salary:${occurrence.date}`,
       date: occurrence.date,
       description: "Salary",
@@ -784,7 +840,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       accountId: salary.accountId ?? null,
       paydayDate: occurrence.date,
       ...nativeFlow(occurrence.amount, occurrence.currency, "income"),
-    });
+    }));
   for (const bill of document.bills || []) {
     for (const occurrence of billOccurrences(
       bill,
@@ -792,7 +848,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       matchingEnd,
       salary,
     ))
-      forecasts.push({
+      forecasts.push(applyOverride({
         id: `bill:${bill.id}:${occurrence.date}`,
         billId: bill.id,
         date: occurrence.date,
@@ -804,7 +860,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         reserveAccountId: bill.reserveAccountId ?? null,
         sourceAccountId: bill.sourceAccountId ?? salary.accountId ?? null,
         ...nativeFlow(occurrence.amount, occurrence.currency, "expense"),
-      });
+      }));
   }
   for (const entry of plan.entries || []) {
     if (
@@ -933,9 +989,11 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       transaction.reserveAccountId = matched.reserveAccountId;
     if (matched.sourceAccountId !== undefined)
       transaction.sourceAccountId = matched.sourceAccountId;
+    if (matched.originalDate !== undefined)
+      transaction.originalDate = matched.originalDate;
     transaction.annualPayment = Boolean(matched.annualPayment);
     if (matched.source === "salary")
-      actualPayDates.set(matched.date, transaction.date);
+      actualPayDates.set(matched.paydayDate || matched.originalDate || matched.date, transaction.date);
   }
   const rows = [
     ...forecasts.filter(
@@ -953,7 +1011,6 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   );
   for (const payday of paydays) {
     const date = actualPayDates.get(payday.date) || payday.date;
-    if (date < plan.startDate || date > plan.endDate) continue;
     if (plan.includeAnnualReserve !== false) {
       for (const currency of ["USD", "PHP"]) {
         const reserveAllocations = annualBills
@@ -966,7 +1023,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           }));
         if (!reserveAllocations.length) continue;
         // Keep candidates for funded items: a payment can reopen funding later in the plan.
-        rows.push({
+        const row = applyOverride({
           id: `reserve:${currency}:${payday.date}`,
           date,
           paydayDate: payday.date,
@@ -976,12 +1033,13 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           reserveAllocations,
           ...nativeFlow(0, currency, "expense"),
         });
+        if (row.date >= plan.startDate && row.date <= plan.endDate) rows.push(row);
       }
     }
     if (plan.includeAllocations !== false) {
       for (const allocation of document.allocations || []) {
-        if (number(allocation.amount) <= 0) continue;
-        rows.push({
+        if (number(allocation.amount) <= 0 && !overrides.has(`allocation:${allocation.id}:${payday.date}`)) continue;
+        const row = applyOverride({
           id: `allocation:${allocation.id}:${payday.date}`,
           allocationId: allocation.id,
           date,
@@ -995,6 +1053,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
             allocation.sourceAccountId ?? salary.accountId ?? null,
           ...nativeFlow(allocation.amount, allocation.currency, "expense"),
         });
+        if (row.date >= plan.startDate && row.date <= plan.endDate) rows.push(row);
       }
     }
   }
@@ -1091,7 +1150,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   }
   for (const row of rows) {
     if (row.source === "reserve") {
-      const reserveAllocations = row.reserveAllocations
+      const candidates = row.reserveAllocations
         .map(({ billId, reserveAccountId, sourceAccountId }) => {
           const key = reserveKey(billId, row.currency);
           const state = billFunding.get(key);
@@ -1103,7 +1162,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
             ?.find(
               (payment) =>
                 payment.date >= row.date &&
-                (payment.scheduledDate || payment.date) > state.paidThrough,
+                (payment.originalDate || payment.scheduledDate || payment.date) > state.paidThrough,
             );
           const context = {
             salary,
@@ -1138,23 +1197,35 @@ export function buildPlanRows(plan, document, rate, options = {}) {
             : funding.perPeriodAmount;
           const amount = Math.min(capacity, contribution);
           const reflected = isBankReflected(row, sourceAccountId) || isBankReflected(row, reserveAccountId);
-          if (!reflected) billReserves.set(key, roundMoney((billReserves.get(key) || 0) + amount));
-          return { billId, amount, reserveAccountId, sourceAccountId,
+          return { billId, amount, defaultAmount: amount, capacity, reserveAccountId, sourceAccountId,
             ...(reflected ? { reflectedInStartingBalance: true } : {}),
           };
-        })
-        .filter((allocation) => allocation.amount > 0);
+        });
+      const originalAmount = roundMoney(candidates.reduce((total, allocation) => total + allocation.amount, 0));
+      const reserveAllocations = (row.isOverride
+        ? overriddenReserveAllocations(candidates, row.amount)
+        : candidates)
+        .filter((allocation) => allocation.amount > 0)
+        .map(({ defaultAmount, capacity, ...allocation }) => allocation);
+      for (const allocation of reserveAllocations) {
+        if (!allocation.reflectedInStartingBalance) {
+          const key = reserveKey(allocation.billId, row.currency);
+          billReserves.set(key, roundMoney((billReserves.get(key) || 0) + allocation.amount));
+        }
+      }
       const amount = roundMoney(
         reserveAllocations.reduce(
           (total, allocation) => total + allocation.amount,
           0,
         ),
       );
-      if (amount <= 0) continue;
+      if (amount <= 0 && !row.isOverride) continue;
       const appliedAmount = roundMoney(reserveAllocations.filter((allocation) => !allocation.reflectedInStartingBalance)
         .reduce((total, allocation) => total + allocation.amount, 0));
       append({
         ...row,
+        originalAmount,
+        ...(row.isOverride ? { overrideRequestedAmount: row.amount } : {}),
         reserveAllocations,
         ...nativeFlow(amount, row.currency, "expense"),
         reserveDeltaUsd: row.currency === "USD" ? amount : 0,
@@ -1180,7 +1251,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const funding = billFunding.get(key);
       if (funding && !reserveReflected) {
         funding.base = funding.amount;
-        funding.paidThrough = row.scheduledDate || row.date;
+        funding.paidThrough = row.originalDate || row.scheduledDate || row.date;
       }
       if (!reserveReflected) unassigned[row.currency] = roundMoney((unassigned[row.currency] || 0) - fromUnassigned);
       // Reconciliation keeps the full payment; only its unfunded portion uses available cash.

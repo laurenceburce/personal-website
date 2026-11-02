@@ -28,6 +28,7 @@ import FinanceInstall from "./FinanceInstall";
 import Modal from "./FinanceModal";
 import FinanceNumberInput from "./FinanceNumberInput";
 import PlanForm from "./FinancePlanForm";
+import PlanOccurrenceForm from "./FinancePlanOccurrenceForm";
 import FinanceOverview from "./FinanceOverview";
 import Ledger from "./FinancePlanLedger";
 import { BillForm, BillsTable } from "./FinanceBills";
@@ -1321,6 +1322,39 @@ export default function FinanceAppClient({
   const saveEntry = (row) =>
     savePlan({ ...plan, entries: upsert(plan.entries, row) });
 
+  async function savePlanOccurrence(override) {
+    const target = document.plans.find((item) => item.id === modal?.planId);
+    if (!target) return;
+    await savePlan({
+      ...target,
+      rowOverrides: [
+        ...(target.rowOverrides || []).filter(
+          (item) => item.rowId !== override.rowId,
+        ),
+        override,
+      ],
+      completedRows: (target.completedRows || []).filter(
+        (item) => item.rowId !== override.rowId,
+      ),
+    });
+  }
+
+  async function resetPlanOccurrence(row) {
+    const target = document.plans.find(
+      (item) => item.id === (modal?.planId || plan?.id),
+    );
+    if (!target || busy) return;
+    await savePlan({
+      ...target,
+      rowOverrides: (target.rowOverrides || []).filter(
+        (item) => item.rowId !== row.id,
+      ),
+      completedRows: (target.completedRows || []).filter(
+        (item) => item.rowId !== row.id,
+      ),
+    });
+  }
+
   async function loadExample() {
     const monthly = [
       ["Google", 2, "USD", 18, "US Bank Credit"],
@@ -2204,7 +2238,12 @@ export default function FinanceAppClient({
                         rows={accountPlan?.rows || planRows}
                         openingReserve={planOpeningReserve}
                         openingBalances={planOpening}
+                        openingSavings={accountPlan?.openingSavings}
                         onToggleComplete={togglePlanCompletion}
+                        onEditOccurrence={(row) =>
+                          open({ type: "occurrence", row, planId: plan.id })
+                        }
+                        onResetOccurrence={resetPlanOccurrence}
                         busy={busy}
                         onEdit={(entry) => open({ type: "entry", entry })}
                         onDelete={(row) => open({ type: "deleteEntry", row })}
@@ -2279,13 +2318,15 @@ export default function FinanceAppClient({
                       ? modal.plan
                         ? "Edit budget plan"
                         : "Create a budget plan"
-                      : modal.type === "entry"
-                        ? modal.entry
-                          ? "Edit entry"
-                          : "Add a plan entry"
-                        : modal.type === "example"
-                          ? "Start with your workbook"
-                          : "Delete this item?"
+                      : modal.type === "occurrence"
+                        ? "Edit this plan occurrence"
+                        : modal.type === "entry"
+                          ? modal.entry
+                            ? "Edit entry"
+                            : "Add a plan entry"
+                          : modal.type === "example"
+                            ? "Start with your workbook"
+                            : "Delete this item?"
           }
           onClose={() => setModal(null)}
           busy={busy}
@@ -2381,6 +2422,16 @@ export default function FinanceAppClient({
               busy={busy}
               disabled={!state.configured}
               rate={rate}
+            />
+          )}
+          {modal.type === "occurrence" && (
+            <PlanOccurrenceForm
+              row={modal.row}
+              plan={document.plans.find((item) => item.id === modal.planId)}
+              onSave={savePlanOccurrence}
+              onReset={resetPlanOccurrence}
+              busy={busy}
+              disabled={!state.configured}
             />
           )}
           {(modal.type === "delete" || modal.type === "deleteEntry") && (

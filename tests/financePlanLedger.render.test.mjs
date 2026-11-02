@@ -110,7 +110,7 @@ const completionCheckbox = (record, props = {}) =>
 test("opening balances keep annual reserve pockets distinct from available USD and PHP", () => {
   const html = render();
   const opening = cells(findRow(html, "fpl-opening-row"));
-  assert.equal(opening.length, 10);
+  assert.equal(opening.length, 12);
   assert.equal(opening[4], "$750.00");
   assert.equal(opening[5], "₱500.00");
   assert.equal(opening[6], "$200.00");
@@ -120,6 +120,108 @@ test("opening balances keep annual reserve pockets distinct from available USD a
   assert.ok(html.includes('<th scope="col">Status</th>'));
   assert.ok(html.includes('role="region"'));
   assert.ok(html.includes('tabindex="0"'));
+});
+
+test("running savings show both native currencies separately from available funds and annual reserves", () => {
+  const html = render(
+    [
+      row({
+        id: "allocation:savings:2026-11-06",
+        source: "allocation",
+        description: "Savings · Travel",
+        usd: -250,
+        balanceUsd: 500,
+        savingsUsd: 496.73,
+        savingsPhp: 2750,
+      }),
+    ],
+    { openingSavings: { usd: 246.73, php: 2500 } },
+  );
+  const opening = cells(findRow(html, "fpl-opening-row"));
+  const saved = cells(findRow(html, "fpl-row-allocation"));
+  assert.equal(opening[8], "$246.73");
+  assert.equal(opening[9], "₱2,500.00");
+  assert.equal(saved[8], "$496.73");
+  assert.equal(saved[9], "₱2,750.00");
+  assert.equal(saved[4], "$500.00");
+  assert.equal(saved[6], "$200.00");
+  assert.equal(saved[7], "₱12,600.00");
+  assert.match(html, /Savings · USD/);
+  assert.match(html, /Savings · PHP/);
+  assert.match(plain(html), /excluding annual reserves/);
+  assert.match(plain(html), /Unassigned savings accumulate separately/);
+});
+
+test("unknown savings balances stay unavailable rather than displaying a zero balance", () => {
+  const html = render(
+    [row({ savingsUsd: null, savingsPhp: -25 })],
+    { openingSavings: { usd: null, php: 0 } },
+  );
+  const opening = cells(findRow(html, "fpl-opening-row"));
+  const record = cells(findRow(html, "fpl-row-bill"));
+  assert.equal(opening[8], "—");
+  assert.equal(opening[9], "₱0.00");
+  assert.equal(record[8], "—");
+  assert.equal(record[9], "-₱25.00");
+  assert.equal((html.match(/aria-label="Savings balance unavailable in USD"/g) || []).length, 2);
+  assert.match(html, /class="fpl-savings-balance fp-negative">-₱25\.00/);
+});
+
+test("scheduled rows edit only their occurrence and overridden rows offer a reset", () => {
+  for (const source of ["salary", "bill", "allocation", "reserve"]) {
+    const record = row({
+      id: `${source}:example:2026-11-06`,
+      source,
+      description: "Savings · Travel",
+      editable: true,
+      isOverride: true,
+      originalAmount: 500,
+      amount: 250,
+    });
+    const edits = [];
+    const resets = [];
+    const tree = elements(
+      Ledger({
+        plan,
+        rows: [record],
+        onEditOccurrence: (value) => edits.push(value),
+        onResetOccurrence: (value) => resets.push(value),
+      }),
+    );
+    const edit = tree.find((element) => element.props["aria-label"] === "Edit this occurrence: Savings · Travel");
+    const reset = tree.find((element) => element.props["aria-label"] === "Reset this occurrence: Savings · Travel");
+    assert.equal(edit.props.type, "button");
+    assert.equal(edit.props.disabled, false);
+    assert.equal(reset.props.type, "button");
+    assert.equal(reset.props.disabled, false);
+    edit.props.onClick();
+    reset.props.onClick();
+    assert.deepEqual(edits, [record]);
+    assert.deepEqual(resets, [record]);
+    const html = render([record]);
+    assert.match(html, /Edited for this plan/);
+    assert.doesNotMatch(html, /aria-label="Delete Savings/);
+  }
+  const untouched = render([row({ editable: true, source: "allocation" })]);
+  assert.doesNotMatch(untouched, /Reset this occurrence/);
+  assert.doesNotMatch(untouched, /Edited for this plan/);
+});
+
+test("occurrence controls stay disabled during saves and imported rows never expose forecast editing", () => {
+  const record = row({ editable: true, isOverride: true });
+  for (const props of [{}, { busy: true, onEditOccurrence() { throw Error("Must not edit while busy"); }, onResetOccurrence() { throw Error("Must not reset while busy"); } }]) {
+    const controls = elements(Ledger({ plan, rows: [record], ...props })).filter(
+      (element) => element.type === "button",
+    );
+    assert.equal(controls.length, 2);
+    for (const control of controls) {
+      assert.equal(control.props.disabled, true);
+      control.props.onClick();
+    }
+  }
+  const html = render([row({ source: "transaction", editable: true, isOverride: true })]);
+  assert.doesNotMatch(html, /Edit this occurrence/);
+  assert.doesNotMatch(html, /Reset this occurrence/);
 });
 
 test("the starting annual reserve includes item savings supplied by the opening helper", () => {
@@ -256,7 +358,7 @@ test("recorded annual payments retain the full payment detail while showing only
   assert.ok(!html.includes('aria-label="Delete '));
 });
 
-test("only original manual plan entries have edit and delete controls", () => {
+test("manual controls require original entries and noneditable forecast rows remain read-only", () => {
   const html = render([
     row({
       id: "manual-row",
@@ -369,7 +471,7 @@ test("account transfers show both native account movements while aggregate avail
     }),
   ]);
   const cellsInRow = cells(findRow(html, "fpl-row-manual"));
-  assert.equal(cellsInRow.length, 10);
+  assert.equal(cellsInRow.length, 12);
   assert.equal(cellsInRow[2], "—");
   assert.equal(cellsInRow[4], "$750.00");
   assert.match(html, /Planned account transfer/);
@@ -742,7 +844,7 @@ test("marking an annual payment done leaves every cash and reserve value unchang
     ),
   );
   assert.deepEqual(done.slice(0, 8), open.slice(0, 8));
-  assert.match(done[8], /DoneMarked manually/);
+  assert.match(done[10], /DoneMarked manually/);
   assert.match(
     plain(render([payment])),
     /it does not create a transaction or change its planned amount/,
@@ -787,7 +889,7 @@ test("a historical conversion keeps both flow amounts visible and identifies onl
     assert.equal(conversion[3], "+₱630.00");
     assert.equal(conversion[4], accountId === 1 ? "$90.00" : "-$10.00");
     assert.equal(conversion[5], "₱630.00");
-    assert.equal(conversion[8], "To do");
+    assert.equal(conversion[10], "To do");
     assert.match(
       conversion[1],
       accountId === 1
@@ -863,7 +965,7 @@ test("matched conversions explain recorded cash movements while preserving task 
     conversion[1],
     /Cash movement shown in matched recorded transactions/,
   );
-  assert.match(conversion[8], /Done · matched transaction/);
+  assert.match(conversion[10], /Done · matched transaction/);
   assert.equal(records.at(-1).balanceUsd, 90);
   assert.equal(records.at(-1).balancePhp, 630);
 });

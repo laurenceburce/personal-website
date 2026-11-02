@@ -217,6 +217,42 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     savingsAllocated.set(accountId, 0);
   }
   const salary = document.salary || {};
+  const savingsAccounts = new Map();
+  const unknownSavings = new Set();
+  const unassignedSavings = { USD: 0, PHP: 0 };
+  for (const allocation of document.allocations || []) {
+    if (allocation.kind !== "savings" || !["USD", "PHP"].includes(allocation.currency)) continue;
+    const selected = id(allocation.accountId);
+    if (!selected) continue;
+    const account = accountById.get(selected);
+    if (!account || archived(account) || liability(account) || account.currency !== allocation.currency) {
+      unknownSavings.add(allocation.currency);
+      warnings.add(`${allocation.name}: its savings balance is unavailable; choose an active savings destination in ${allocation.currency}.`);
+      continue;
+    }
+    savingsAccounts.set(selected, allocation.currency);
+  }
+  const savingsBalance = () => {
+    const totals = { USD: unassignedSavings.USD, PHP: unassignedSavings.PHP };
+    const unknown = new Set(unknownSavings);
+    for (const [accountId, currency] of savingsAccounts) {
+      const balance = balances.get(accountId);
+      if (balance === null || balance === undefined) {
+        unknown.add(currency);
+        warnings.add(`${accountById.get(accountId)?.name || "Savings account"}: its current savings balance is unavailable.`);
+      } else {
+        totals[currency] = roundMoney(totals[currency] + balance - (annualReserved.get(accountId) || 0));
+      }
+    }
+    return {
+      usd: unknown.has("USD") ? null : totals.USD,
+      php: unknown.has("PHP") ? null : totals.PHP,
+      accountIds: [...savingsAccounts.keys()],
+      unassignedUsd: unassignedSavings.USD,
+      unassignedPhp: unassignedSavings.PHP,
+    };
+  };
+  const openingSavings = savingsBalance();
   const openingSource = live.size ? "live" : opening.size ? "plan" : "bank";
   if (!opening.size && plan.startDate < today)
     warnings.add(
@@ -521,8 +557,15 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
           roundMoney((savingsAllocated.get(selected) || 0) + row.amount),
         );
     }
+    if (row.source === "allocation" && row.allocationKind === "savings" &&
+        !id(row.accountId) && ["USD", "PHP"].includes(row.currency)) {
+      unassignedSavings[row.currency] = roundMoney(unassignedSavings[row.currency] + row.amount);
+    }
+    const savings = savingsBalance();
     return {
       ...row,
+      savingsUsd: savings.usd,
+      savingsPhp: savings.php,
       accountMovements: projected,
       accountNames: [
         ...new Set([
@@ -547,6 +590,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   });
   return {
     openingSource,
+    openingSavings,
     warnings: [...warnings],
     rows,
     accounts: associations.map((account) => {

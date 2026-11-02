@@ -54,6 +54,21 @@ function ReserveBalance({ value = 0, delta = 0, currency }) {
   );
 }
 
+function SavingsBalance({ value = 0, currency }) {
+  const available = Number.isFinite(value);
+  return (
+    <td
+      className={`fpl-savings-balance ${available ? balanceClass(value) : "fp-zero"}`}
+    >
+      {available ? (
+        money(value, currency)
+      ) : (
+        <span aria-label={`Savings balance unavailable in ${currency}`}>—</span>
+      )}
+    </td>
+  );
+}
+
 function SourceLabel({ row }) {
   const labels = {
     salary: "Scheduled income",
@@ -113,6 +128,9 @@ function SourceLabel({ row }) {
         {label}
         {row.source === "transaction" && row.scheduled ? " · future date" : ""}
       </small>
+      {row.isOverride && (
+        <small className="fpl-override-note">Edited for this plan</small>
+      )}
       {row.source === "transaction" &&
         (row.matchedForecast || row.scheduledSource) && (
           <small className="fpl-match-note">
@@ -282,8 +300,11 @@ export default function Ledger({
   rows,
   openingReserve,
   openingBalances,
+  openingSavings,
   onEdit,
   onDelete,
+  onEditOccurrence,
+  onResetOccurrence,
   onToggleComplete,
   busy = false,
 }) {
@@ -294,7 +315,7 @@ export default function Ledger({
       <div
         className="fp-table-wrap fp-ledger-wrap fpl-scroll"
         role="region"
-        aria-label="Budget money flows, available balances, and annual reserves; scroll horizontally for all columns"
+        aria-label="Budget money flows, available balances, annual reserves, and savings; scroll horizontally for all columns"
         tabIndex={0}
       >
         <table className="fp-table fp-ledger fpl-table">
@@ -302,8 +323,8 @@ export default function Ledger({
             Money flows between{" "}
             {formatDate(plan.startDate, { year: "numeric" })} and{" "}
             {formatDate(plan.endDate, { year: "numeric" })}. Available funds and
-            annual reserves are separate balances. Completion tracks progress
-            without changing money flows.
+            annual reserves and savings are separate balances. Completion tracks
+            progress without changing money flows.
           </caption>
           <thead>
             <tr>
@@ -323,6 +344,12 @@ export default function Ledger({
               <th scope="col" className="fpl-reserve-balance">
                 Annual reserve · PHP
               </th>
+              <th scope="col" className="fpl-savings-balance">
+                Savings · USD
+              </th>
+              <th scope="col" className="fpl-savings-balance">
+                Savings · PHP
+              </th>
               <th scope="col">Status</th>
               <th scope="col">
                 <span className="fp-sr-only">Actions</span>
@@ -334,7 +361,7 @@ export default function Ledger({
               <td>{formatDate(plan.startDate, { year: "numeric" })}</td>
               <td>
                 <strong>Starting balances</strong>
-                <small>Available funds + money already reserved</small>
+                <small>Available funds, annual reserves, and savings</small>
                 <OpeningDetails openingBalances={openingBalances} />
               </td>
               <td className="fp-zero">—</td>
@@ -353,6 +380,8 @@ export default function Ledger({
                 value={openingReserve?.php ?? plan.openingReservePhp ?? 0}
                 currency="PHP"
               />
+              <SavingsBalance value={openingSavings?.usd} currency="USD" />
+              <SavingsBalance value={openingSavings?.php} currency="PHP" />
               <td className="fp-zero">—</td>
               <td />
             </tr>
@@ -361,6 +390,9 @@ export default function Ledger({
                 row.source === "manual"
                   ? plan.entries.find((entry) => entry.id === row.entryId)
                   : null;
+              const editableOccurrence =
+                row.editable &&
+                ["salary", "bill", "allocation", "reserve"].includes(row.source);
               return (
                 <tr
                   key={row.id}
@@ -397,6 +429,8 @@ export default function Ledger({
                     delta={row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0}
                     currency="PHP"
                   />
+                  <SavingsBalance value={row.savingsUsd} currency="USD" />
+                  <SavingsBalance value={row.savingsPhp} currency="PHP" />
                   <td className="fpl-status-cell">
                     <CompletionStatus
                       row={row}
@@ -405,24 +439,53 @@ export default function Ledger({
                     />
                   </td>
                   <td>
-                    {manualEntry && (
+                    {(manualEntry || editableOccurrence) && (
                       <div className="fp-row-actions">
                         <button
                           type="button"
                           className="fp-button fp-secondary fp-icon-button"
-                          aria-label={`Edit ${row.description}`}
-                          onClick={() => onEdit(manualEntry)}
+                          aria-label={
+                            manualEntry
+                              ? `Edit ${row.description}`
+                              : `Edit this occurrence: ${row.description}`
+                          }
+                          disabled={
+                            busy || !(manualEntry ? onEdit : onEditOccurrence)
+                          }
+                          onClick={() => {
+                            if (busy) return;
+                            if (manualEntry) onEdit?.(manualEntry);
+                            else onEditOccurrence?.(row);
+                          }}
                         >
                           <ActionIcon kind="edit" />
                         </button>
-                        <button
-                          type="button"
-                          className="fp-button fp-secondary fp-icon-button"
-                          aria-label={`Delete ${row.description}`}
-                          onClick={() => onDelete(manualEntry)}
-                        >
-                          <ActionIcon kind="delete" />
-                        </button>
+                        {manualEntry && (
+                          <button
+                            type="button"
+                            className="fp-button fp-secondary fp-icon-button"
+                            aria-label={`Delete ${row.description}`}
+                            disabled={busy || !onDelete}
+                            onClick={() => {
+                              if (!busy) onDelete?.(manualEntry);
+                            }}
+                          >
+                            <ActionIcon kind="delete" />
+                          </button>
+                        )}
+                        {editableOccurrence && row.isOverride && (
+                          <button
+                            type="button"
+                            className="fp-button fp-secondary fpl-reset-occurrence"
+                            aria-label={`Reset this occurrence: ${row.description}`}
+                            disabled={busy || !onResetOccurrence}
+                            onClick={() => {
+                              if (!busy) onResetOccurrence?.(row);
+                            }}
+                          >
+                            Reset
+                          </button>
+                        )}
                       </div>
                     )}
                   </td>
@@ -437,7 +500,10 @@ export default function Ledger({
         payment is covered by reserves. Saved amounts are earmarked for each
         annual bill. Marking a row done tracks progress; it does not create a
         transaction or change its planned amount. Posted transaction matches are
-        marked done automatically.
+        marked done automatically. Savings balances reflect linked savings
+        accounts and planned movements, excluding annual reserves. Unassigned
+        savings accumulate separately. Editing a scheduled row changes only that
+        date in this plan; Reset restores the recurring value.
       </p>
     </>
   );

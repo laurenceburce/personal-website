@@ -572,6 +572,7 @@ test("payday bills still validate the payment amount, currency, name and autopay
 
 test("legacy plans default to full money flow and distinct zero opening annual reserves", () => {
   const plan = validateFinancePlanner(document()).plans[0];
+  assert.deepEqual(plan.rowOverrides, []);
   assert.equal(plan.includeIncome, true);
   assert.equal(plan.includeTransactions, true);
   assert.equal(plan.includeAllocations, true);
@@ -580,6 +581,81 @@ test("legacy plans default to full money flow and distinct zero opening annual r
   assert.equal(plan.openingReservePhp, 0);
   assert.equal(plan.openingUsd, 750);
   assert.equal(plan.openingPhp, 0);
+});
+
+test("scheduled row overrides round trip per plan without changing recurring values", () => {
+  const planner = document();
+  planner.plans[0].rowOverrides = [
+    { rowId: "allocation:saving-1:2026-11-06", date: "2026-11-07", description: "  Smaller savings this payday  ", amount: 175.126, arbitrary: "discard" },
+    { rowId: "salary:2026-11-06", date: "2026-11-06", description: "Adjusted salary", amount: 1000 },
+    { rowId: "bill:bill-1:2026-11-09", date: "2026-11-10", description: "Single payment", amount: 80 },
+    { rowId: "reserve:PHP:2026-11-06", date: "2026-11-06", description: "Skip reserve once", amount: 0 },
+    // Keep stable IDs when the source schedule or plan date range has changed.
+    { rowId: "allocation:removed-allocation:2026-10-23", date: "2026-11-02", description: "Moved occurrence", amount: 25 },
+  ];
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].rowOverrides, planner.plans[0].rowOverrides.map(({ arbitrary, ...row }, index) => ({
+    ...row,
+    description: row.description.trim(),
+    amount: index === 0 ? 175.13 : row.amount,
+  })));
+  assert.equal(clean.allocations[0].amount, 500);
+  assert.equal(clean.salary.amount, 2000);
+  assert.equal(clean.bills[0].amount, 100);
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  assert.deepEqual(planner, before);
+});
+
+test("row overrides reject duplicate or non-scheduled identifiers and invalid original dates", () => {
+  const override = { rowId: "allocation:saving-1:2026-11-06", date: "2026-11-06", description: "Savings", amount: 250 };
+  for (const rowId of [
+    "entry:conversion-1", "transaction:123", "reserve:EUR:2026-11-06",
+    "allocation:saving-1:2026-02-30", "salary:2026-13-01", "salary:1899-12-31",
+    "bill:bad/id:2026-11-06", "allocation::2026-11-06", "unknown:2026-11-06",
+  ]) {
+    const planner = document();
+    planner.plans[0].rowOverrides = [{ ...override, rowId }];
+    assert.throws(() => validateFinancePlanner(planner), /row ID|row date/);
+  }
+  const planner = document();
+  planner.plans[0].rowOverrides = [override, { ...override, amount: 100 }];
+  assert.throws(() => validateFinancePlanner(planner), /unique scheduled/);
+});
+
+test("occurrence descriptions preserve prefixed allocation labels at the recurring name limit", () => {
+  const planner = document();
+  planner.allocations[0].name = "s".repeat(120);
+  const description = `Savings · ${planner.allocations[0].name}`;
+  planner.plans[0].rowOverrides = [{
+    rowId: "allocation:saving-1:2026-11-06",
+    date: "2026-11-06",
+    description,
+    amount: 250,
+  }];
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.plans[0].rowOverrides[0].description, description);
+  assert.equal(clean.allocations[0].name.length, 120);
+  assert.equal(clean.allocations[0].amount, 500);
+});
+
+test("row overrides validate bounded money, descriptions, edited dates and collection shape", () => {
+  const override = { rowId: "allocation:saving-1:2026-11-06", date: "2026-11-06", description: "Savings", amount: 250 };
+  for (const [field, value] of [
+    ["amount", -1], ["amount", Infinity], ["amount", NaN], ["amount", "250"],
+    ["amount", null], ["amount", 1_000_000_000], ["description", "   "],
+    ["description", "x".repeat(161)], ["description", null],
+    ["date", "2026-02-30"], ["date", "2026-10-31"], ["date", "2026-12-01"],
+  ]) {
+    const planner = document();
+    planner.plans[0].rowOverrides = [{ ...override, [field]: value }];
+    assert.throws(() => validateFinancePlanner(planner), `Invalid override ${field} must be rejected`);
+  }
+  for (const rowOverrides of [null, {}, [null], new Array(10001).fill(0)]) {
+    const planner = document();
+    planner.plans[0].rowOverrides = rowOverrides;
+    assert.throws(() => validateFinancePlanner(planner), /row override|row overrides/);
+  }
 });
 
 test("plans retain selected flow switches and native opening annual reserves", () => {

@@ -169,6 +169,31 @@ function startingAccounts(value) {
   });
 }
 
+function rowOverrides(value, startDate, endDate) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 10000)
+    throw plannerError("A plan can contain at most 10000 row overrides.");
+  const seen = new Set();
+  return value.map((row) => {
+    object(row, "Plan row override");
+    const rowId = text(row.rowId, "Overridden row ID", 240);
+    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2}))$/.exec(rowId);
+    if (!match || seen.has(rowId))
+      throw plannerError("Overridden row IDs must be unique scheduled plan row identifiers.");
+    for (const day of match.slice(1).filter(Boolean)) date(day, "Original row date");
+    seen.add(rowId);
+    const overrideDate = date(row.date, "Overridden row date");
+    if (overrideDate < startDate || overrideDate > endDate)
+      throw plannerError("Overridden row dates must be within the plan's date range.");
+    return {
+      rowId,
+      date: overrideDate,
+      description: text(row.description, "Overridden row description", 160),
+      amount: amount(row.amount, "Overridden row amount"),
+    };
+  });
+}
+
 function completedRows(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 10000)
@@ -340,6 +365,7 @@ export function validateFinancePlanner(value) {
         accountOpeningBalances: openingAccounts(plan.accountOpeningBalances),
         startingAccounts: startingAccounts(plan.startingAccounts),
         completedRows: completedRows(plan.completedRows),
+        rowOverrides: rowOverrides(plan.rowOverrides, startDate, endDate),
         openingReserveUsd: amount(
           plan.openingReserveUsd === undefined ? 0 : plan.openingReserveUsd,
           "Opening annual reserve USD",

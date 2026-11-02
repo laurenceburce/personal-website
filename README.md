@@ -190,6 +190,15 @@ The finance workspace separates recorded activity from your plans:
   focus, and every five minutes while visible. Automatic provider refresh attempts
   share a 60-second cooldown; **Refresh bank data** forces a fresh request. Failures
   keep the last known data with an explicit notice.
+  Edit a scheduled row to change its date, description, or amount for that one
+  occurrence in that plan. Recurring settings and other dates stay unchanged;
+  **Reset** restores the recurring default. Enter zero to skip an occurrence's
+  amount. Annual payment edits use the full payment before reserve coverage;
+  annual set-aside edits are distributed across bills up to their funding need.
+  Running savings columns start with linked savings-account balances and show
+  planned movements, with annual reserves excluded. Accounts are counted once;
+  savings without an assigned account accumulate separately from zero. Unknown
+  bank balances are shown as unavailable.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.

@@ -50,6 +50,7 @@ export default function FinancePlanForm({
     includeAnnualReserve: true,
     entries: [],
     completedRows: [],
+    rowOverrides: [],
     ...plan,
     startingAccounts: (plan?.startingAccounts || []).map((row) => ({
       ...row,
