@@ -144,7 +144,10 @@ The finance workspace separates recorded activity from your plans:
   eligible payday remaining shows its immediate cash shortfall separately.
 - **Spending plan:** automatic per-pay income, USD/PHP bills, annual reserves,
   and custom savings or expense allocations. Twice-monthly pay uses 24 periods;
-  every-two-weeks pay uses 26. Select the schedule and first payday under salary;
+  every-two-weeks pay uses 26. The annual row highlights the total monthly
+  funding and lists the per-payday deduction beneath it. Remaining funds and
+  payday allocations use that deduction. The expanded annual breakdown shows
+  both units for each bill. Select the schedule and first payday under salary;
   the next four paydays preview before saving. New planners default to every
   two weeks, anchored exactly 14 days from the first payday. Twice-monthly pay
   deliberately uses two fixed calendar dates instead.

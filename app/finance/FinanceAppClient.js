@@ -328,7 +328,7 @@ function SpendingTable({
     [
       "Annual bills",
       -summary.annualPerPeriodUsd,
-      "Next payments, funded across the paydays left before each due date",
+      "Monthly funding total for upcoming payments",
       "annual",
     ],
   ];
@@ -341,14 +341,21 @@ function SpendingTable({
             <strong>{label}</strong>
             {!compact && <small>{detail}</small>}
           </div>
-          <b className={value > 0 ? "fp-positive" : ""}>
-            {signed(value, "USD")}
-          </b>
+          {color === "annual" ? (
+            <b className="fp-annual-monthly-total">
+              {money(summary.annualMonthlyUsd)} <span>/ month</span>
+              <small>{signed(value, "USD")} per payday</small>
+            </b>
+          ) : (
+            <b className={value > 0 ? "fp-positive" : ""}>
+              {signed(value, "USD")}
+            </b>
+          )}
         </div>
       ))}
       {!compact && summary.annualFunding?.length > 0 && (
         <details className="fp-annual-funding-details">
-          <summary>Annual funding breakdown</summary>
+          <summary>Annual funding breakdown · monthly totals</summary>
           <ul>
             {summary.annualFunding.map((funding) => (
               <li key={funding.billId}>
@@ -362,8 +369,11 @@ function SpendingTable({
                         : `${funding.paydaysRemaining} payday${funding.paydaysRemaining === 1 ? "" : "s"} left · ${money(funding.remainingForNextPayment, funding.currency)} to fund by ${formatDate(funding.nextDueDate, { year: "numeric" })}`}
                   </small>
                 </div>
-                <b>
-                  {money(funding.perPeriodAmount, funding.currency)} / payday
+                <b className="fp-annual-breakdown-total">
+                  {money(funding.monthlyAmount, funding.currency)} / month
+                  <small>
+                    {money(funding.perPeriodAmount, funding.currency)} / payday
+                  </small>
                 </b>
               </li>
             ))}
@@ -2131,7 +2141,9 @@ export default function FinanceAppClient({
                       your saved balances for the next payment, divided across
                       the salary paydays left before it is due. Meeting today’s
                       savings target keeps you on track; contributions continue
-                      until the next payment is funded.
+                      until the next payment is funded. The annual row shows the
+                      monthly total, with the payday deduction underneath.
+                      Remaining funds use the payday deduction.
                     </p>
                   </div>
                 </div>

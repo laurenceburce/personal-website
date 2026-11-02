@@ -146,26 +146,23 @@ test("monthly bill reserves and commitment cards recalculate from saved balances
 });
 
 test("workspace spending totals recover funds as an annual bill is saved, then adjust when lowered", () => {
-  for (const [saved, contribution, available] of [
-    [0, "-$197.50", "$1,002.50"],
-    [100, "-$147.50", "$1,052.50"],
-    [395, "$0.00", "$1,200.00"],
-    [100, "-$147.50", "$1,052.50"],
+  for (const [saved, monthly, contribution, available] of [
+    [0, "$427.92", "-$197.50", "$1,002.50"],
+    [100, "$319.58", "-$147.50", "$1,052.50"],
+    [395, "$0.00", "$0.00", "$1,200.00"],
+    [100, "$319.58", "-$147.50", "$1,052.50"],
   ]) {
     const html = render("spending", saved);
     const annual = html.match(/fp-spending-annual[^>]*>([\s\S]*?)<\/b>/)?.[1];
     assert.ok(annual, "the annual funding row is rendered");
-    assert.ok(plain(annual).includes(contribution));
+    assert.ok(plain(annual).includes(`${monthly} / month`));
+    assert.ok(plain(annual).includes(`${contribution} per payday`));
     assert.ok(
       plain(html).includes(
         `Left to spendAfter bills &amp; your allocations${available}`,
       ),
     );
-    assert.ok(
-      html.includes(
-        "Next payments, funded across the paydays left before each due date",
-      ),
-    );
+    assert.ok(html.includes("Monthly funding total for upcoming payments"));
   }
 });
 
@@ -208,7 +205,8 @@ test("the spending, chart and dated plan use the same deadline contributions for
   const overrides = { bills: screenshotAnnualBills };
   const spending = render("spending", 0, overrides);
   const annual = spending.match(/fp-spending-annual[^>]*>([\s\S]*?)<\/b>/)?.[1];
-  assert.ok(plain(annual).includes("-$22.89"));
+  assert.ok(plain(annual).includes("$49.60 / month"));
+  assert.ok(plain(annual).includes("-$22.89 per payday"));
   const breakdown = spending.match(
     /fp-annual-funding-details[^>]*>([\s\S]*?)<\/details>/,
   )?.[1];
@@ -223,6 +221,7 @@ test("the spending, chart and dated plan use the same deadline contributions for
     breakdownText.includes("9 paydays left · $164.36 to fund by Mar 1, 2027"),
   );
   assert.ok(breakdownText.includes("$18.27 / payday"));
+  assert.ok(breakdownText.includes("$39.59 / month"));
   assert.ok(!spending.includes("$19.67"));
   const overview = render("home", 0, overrides);
   assert.ok(plain(overview).includes("Annual reserve$49.60"));

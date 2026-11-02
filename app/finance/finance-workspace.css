@@ -322,3 +322,20 @@
   color: #296d55;
   white-space: nowrap;
 }
+.fp-app .fp-spending-row .fp-annual-monthly-total {
+  text-align: right;
+  color: #296d55;
+}
+.fp-annual-monthly-total > span {
+  font-size: 10px;
+  font-weight: 500;
+}
+.fp-app .fp-annual-monthly-total > small,
+.fp-annual-breakdown-total > small {
+  display: block;
+  margin-top: 5px;
+  color: #65766a;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+}
