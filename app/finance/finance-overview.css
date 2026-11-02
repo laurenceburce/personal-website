@@ -1,0 +1,795 @@
+.fpi-overview {
+  display: grid;
+  gap: 23px;
+  color: #263c33;
+}
+.fpi-overview p {
+  color: #65766a;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.fpi-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 15px;
+}
+.fpi-metric {
+  min-width: 0;
+  min-height: 153px;
+  padding: 20px;
+  background: #fff;
+  border: 1px solid #e4ece6;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+}
+.fpi-metric-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: #64796b;
+  font-size: 11px;
+  font-weight: 650;
+}
+.fpi-metric-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: #f0f6f2;
+  color: #47755b;
+  font-size: 17px;
+}
+.fpi-metric > strong {
+  display: block;
+  margin: 13px 0 10px;
+  color: #234b39;
+  font-size: clamp(22px, 2.2vw, 31px);
+  line-height: 1.25;
+  letter-spacing: -0.9px;
+  overflow-wrap: anywhere;
+}
+.fpi-overview .fpi-metric > p {
+  font-size: 11px;
+  margin-top: auto;
+  line-height: 1.7;
+}
+.fpi-metric .fpi-action {
+  margin-top: 9px;
+  align-self: flex-start;
+}
+.fpi-metric-accent {
+  background: #184f3c;
+  border-color: #184f3c;
+}
+.fpi-metric-accent .fpi-metric-label,
+.fpi-overview .fpi-metric-accent > p {
+  color: #e1eee5;
+}
+.fpi-metric-accent .fpi-metric-icon {
+  background: #ffffff12;
+  color: #d0e9da;
+}
+.fpi-metric-accent > strong {
+  color: #fff;
+}
+.fpi-negative {
+  color: #a8473c !important;
+}
+.fpi-metric-accent > strong.fpi-negative {
+  color: #ffd3ca !important;
+}
+.fpi-positive {
+  color: #1f7855 !important;
+}
+.fpi-overview .fpi-notice {
+  border: 1px solid #eadbbd;
+  border-radius: 8px;
+  padding: 12px 15px;
+  background: #fff8e9;
+  color: #856125;
+  font-size: 12px;
+}
+.fpi-overview .fpi-actual-note {
+  margin-top: -11px;
+  font-size: 11px;
+}
+.fpi-card {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid #e4ece6;
+  border-radius: 12px;
+  background: #fff;
+}
+.fpi-card-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 15px;
+  margin-bottom: 23px;
+}
+.fpi-overview .fpi-card-heading h2 {
+  color: #294b38;
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -0.25px;
+  line-height: 1.4;
+}
+.fpi-card-heading p {
+  margin-top: 5px;
+  font-size: 11px;
+}
+.fpi-pill {
+  border: 1px solid #dce9df;
+  border-radius: 5px;
+  padding: 3px 7px;
+  background: #eff7f1;
+  color: #3e7252;
+  font-size: 10px;
+  font-weight: 650;
+  flex-shrink: 0;
+}
+.fpi-pill-plan {
+  border-color: #dfe5ec;
+  background: #f2f5f9;
+  color: #526b84;
+}
+.fpi-charts {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 22px;
+}
+.fpi-action {
+  border: 0;
+  border-radius: 5px;
+  padding: 4px 0;
+  background: transparent;
+  color: #176e4f;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  min-height: 30px;
+  text-align: left;
+}
+.fpi-action:hover {
+  color: #0f4c35;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.fpi-action-primary {
+  background: #16765b;
+  color: #fff;
+  padding: 9px 14px;
+  border: 1px solid #16765b;
+  min-height: 39px;
+}
+.fpi-action-primary:hover {
+  color: #fff;
+  background: #115b46;
+  text-decoration: none;
+}
+.fpi-chart-topline {
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  margin-bottom: 18px;
+  font-size: 11px;
+  color: #667a6b;
+}
+.fpi-chart-topline > span {
+  font-weight: 700;
+  color: #476650;
+}
+.fpi-chart-topline > div {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+.fpi-chart-topline > div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+}
+.fpi-chart-topline strong {
+  color: #425f4b;
+  font-weight: 650;
+}
+.fpi-chart-topline i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+}
+.fpi-key-income {
+  background: #3c926b;
+}
+.fpi-key-expense {
+  background: #d7ab7e;
+}
+.fpi-bar-chart {
+  display: flex;
+  height: 250px;
+  gap: 9px;
+  width: 100%;
+}
+.fpi-chart-scale {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 48px;
+  min-width: 48px;
+  margin-top: -7px;
+  margin-bottom: 36px;
+  color: #6b7f71;
+  text-align: right;
+  font-size: 10px;
+}
+.fpi-chart-plot {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.fpi-chart-grid {
+  position: absolute;
+  inset: 0 0 40px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+.fpi-chart-grid span {
+  border-top: 1px dashed #e7eee8;
+  width: 100%;
+}
+.fpi-chart-columns {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  height: 100%;
+}
+.fpi-chart-month {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+}
+.fpi-month-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  max-width: 66px;
+  height: calc(100% - 40px);
+  min-height: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px 5px 0 0;
+  background: transparent;
+  cursor: pointer;
+}
+.fpi-month-bars:hover,
+.fpi-month-bars:focus-visible {
+  background: #f1f6f366;
+}
+.fpi-month-bars:focus-visible {
+  outline: 2px solid #448b65;
+  outline-offset: 4px;
+}
+.fpi-month-bars > span {
+  flex: 1;
+  min-width: 3px;
+  max-width: 19px;
+  border-radius: 4px 4px 0 0;
+  transition:
+    filter 0.15s,
+    opacity 0.15s;
+}
+.fpi-income-bar {
+  background: #44936e;
+}
+.fpi-expense-bar {
+  background: #d9af85;
+}
+.fpi-month-selected .fpi-income-bar {
+  background: #176d4e;
+}
+.fpi-month-selected .fpi-expense-bar {
+  background: #b77a40;
+}
+.fpi-month-label {
+  display: block;
+  color: #647b69;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.fpi-month-label small {
+  display: block;
+  margin-top: 3px;
+  color: #6d8073;
+  font-size: 9px;
+}
+.fpi-chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 13px 15px;
+  margin-top: 10px;
+  background: #f4f8f5;
+  border-radius: 8px;
+  font-size: 11px;
+  color: #6b7b6e;
+}
+.fpi-chart-empty strong {
+  color: #4f6e58;
+  font-weight: 650;
+}
+.fpi-chart-empty span {
+  line-height: 1.7;
+}
+.fpi-chart-data {
+  margin-top: 17px;
+  color: #617568;
+  font-size: 11px;
+  overflow-x: auto;
+}
+.fpi-chart-data summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.fpi-chart-data table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  text-align: right;
+  font-size: 10px;
+}
+.fpi-chart-data caption {
+  text-align: left;
+  font-size: 11px;
+  padding: 3px 0 8px;
+}
+.fpi-chart-data th,
+.fpi-chart-data td {
+  padding: 7px 2px;
+  border-bottom: 1px solid #edf2ed;
+  font-weight: 500;
+}
+.fpi-chart-data th:first-child {
+  text-align: left;
+  font-weight: 650;
+}
+.fpi-allocation-content {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 17px;
+  min-height: 260px;
+}
+.fpi-donut-wrap {
+  width: 185px;
+  max-width: 100%;
+  position: relative;
+  flex-shrink: 0;
+}
+.fpi-donut {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.fpi-donut-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.fpi-donut-center strong {
+  font-size: 24px;
+  color: #305f44;
+  letter-spacing: -0.5px;
+}
+.fpi-donut-center span {
+  font-size: 10px;
+  color: #657b6b;
+}
+.fpi-allocation-legend {
+  flex: 1;
+  min-width: 185px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 13px;
+}
+.fpi-allocation-legend li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: #62796a;
+}
+.fpi-allocation-legend strong {
+  font-size: 11px;
+  font-weight: 650;
+  color: #3b5a47;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.fpi-legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.fpi-plan-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  margin-top: 20px;
+  border-top: 1px solid #e8eee9;
+  padding-top: 15px;
+  font-size: 11px;
+  color: #62796a;
+}
+.fpi-plan-note > span {
+  line-height: 1.8;
+}
+.fpi-plan-over > span {
+  color: #a8473c;
+}
+.fpi-lower-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+.fpi-bill-list,
+.fpi-recent-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.fpi-bill-list li,
+.fpi-recent-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid #edf1ed;
+}
+.fpi-bill-list li:last-child,
+.fpi-recent-list li:last-child {
+  border: 0;
+  padding-bottom: 4px;
+}
+.fpi-bill-list li > div,
+.fpi-recent-list li > div:not(.fpi-recent-amount) {
+  flex: 1;
+  min-width: 0;
+}
+.fpi-bill-list li > div > strong,
+.fpi-recent-list li > div > strong {
+  display: block;
+  color: #3a5946;
+  font-size: 12px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fpi-bill-list li > div > span,
+.fpi-recent-list li > div > span {
+  display: block;
+  margin-top: 3px;
+  font-size: 10px;
+  color: #64796c;
+}
+.fpi-bill-list b,
+.fpi-recent-list b {
+  font-size: 12px;
+  font-weight: 650;
+  color: #3c5d47;
+  white-space: nowrap;
+}
+.fpi-due-date {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 37px;
+  height: 41px;
+  flex-shrink: 0;
+  border: 1px solid #e4ece6;
+  border-radius: 7px;
+  background: #f8faf8;
+}
+.fpi-due-date strong {
+  color: #4f7159;
+  font-size: 14px;
+  line-height: 1.1;
+}
+.fpi-due-date span {
+  font-size: 9px;
+  color: #647d6b;
+  margin-top: 4px;
+}
+.fpi-transaction-glyph {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  background: #f8eee6;
+  color: #99693c;
+  border-radius: 10px;
+  font-size: 20px;
+}
+.fpi-transaction-income {
+  color: #38845a;
+  background: #edf6ee;
+}
+.fpi-recent-amount {
+  text-align: right;
+  min-width: 0;
+}
+.fpi-recent-amount small {
+  font-size: 10px;
+  color: #64796c;
+  display: block;
+  margin-top: 3px;
+}
+.fpi-overview .fpi-small-note {
+  font-size: 11px;
+  margin-top: 15px;
+  padding-top: 12px;
+  border-top: 1px solid #edf2ed;
+}
+.fpi-list-empty {
+  display: flex;
+  min-height: 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  color: #64796b;
+  font-size: 12px;
+}
+.fpi-list-empty > strong {
+  color: #4a7056;
+  font-weight: 650;
+}
+.fpi-list-empty > p {
+  font-size: 11px;
+  max-width: 300px;
+}
+.fpi-list-empty .fpi-action-primary {
+  margin-top: 9px;
+}
+.fpi-overview .fpi-overview-footnote {
+  font-size: 11px;
+  color: #62766a;
+  line-height: 1.8;
+}
+@media (max-width: 1300px) {
+  .fpi-metric {
+    padding: 17px;
+  }
+  .fpi-metric > strong {
+    font-size: 26px;
+  }
+  .fpi-charts {
+    grid-template-columns: 1fr;
+  }
+  .fpi-allocation-content {
+    min-height: 210px;
+    gap: 30px;
+  }
+  .fpi-allocation-legend {
+    max-width: 400px;
+  }
+  .fpi-cashflow-card .fpi-bar-chart {
+    height: 260px;
+  }
+}
+@media (max-width: 1000px) {
+  .fpi-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .fpi-lower-grid {
+    grid-template-columns: 1fr;
+  }
+  .fpi-metric {
+    min-height: 145px;
+  }
+}
+@media (max-width: 760px) {
+  .fpi-overview {
+    gap: 18px;
+  }
+  .fpi-metrics {
+    gap: 10px;
+  }
+  .fpi-metric {
+    padding: 15px 13px;
+    min-height: 155px;
+  }
+  .fpi-metric-label {
+    font-size: 11px;
+    gap: 7px;
+  }
+  .fpi-metric-icon {
+    width: 22px;
+    height: 22px;
+    font-size: 15px;
+  }
+  .fpi-metric > strong {
+    font-size: clamp(20px, 5.7vw, 27px);
+    margin: 11px 0 9px;
+    letter-spacing: -0.7px;
+  }
+  .fpi-overview .fpi-metric > p {
+    font-size: 11px;
+  }
+  .fpi-metric .fpi-action {
+    font-size: 11px !important;
+    min-height: 35px;
+  }
+  .fpi-card {
+    padding: 20px 16px;
+  }
+  .fpi-overview .fpi-card-heading h2 {
+    font-size: 14px;
+  }
+  .fpi-card-heading {
+    gap: 10px;
+    margin-bottom: 19px;
+  }
+  .fpi-card-heading p {
+    font-size: 11px;
+  }
+  .fpi-pill {
+    font-size: 10px;
+  }
+  .fpi-chart-topline {
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .fpi-chart-topline > div {
+    gap: 12px;
+  }
+  .fpi-chart-topline > div > span {
+    font-size: 11px;
+  }
+  .fpi-cashflow-card .fpi-bar-chart {
+    height: 230px;
+    gap: 7px;
+  }
+  .fpi-chart-scale {
+    width: 43px;
+    min-width: 43px;
+    font-size: 10px;
+  }
+  .fpi-chart-columns {
+    gap: 4px;
+  }
+  .fpi-month-bars {
+    padding: 0 3px;
+    gap: 3px;
+  }
+  .fpi-month-label {
+    font-size: 11px;
+  }
+  .fpi-chart-empty {
+    padding: 13px 11px;
+    font-size: 11px;
+  }
+  .fpi-action {
+    min-height: 40px;
+    font-size: 11px !important;
+  }
+  .fpi-chart-data {
+    font-size: 11px;
+  }
+  .fpi-chart-data table {
+    font-size: 10px;
+  }
+  .fpi-allocation-content {
+    min-height: 0;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .fpi-donut-wrap {
+    width: 180px;
+  }
+  .fpi-allocation-legend {
+    width: 100%;
+    min-width: 0;
+    gap: 14px;
+  }
+  .fpi-allocation-legend li,
+  .fpi-allocation-legend strong {
+    font-size: 12px;
+  }
+  .fpi-plan-note {
+    margin-top: 20px;
+    font-size: 11px;
+    gap: 4px;
+  }
+  .fpi-lower-grid {
+    gap: 18px;
+  }
+  .fpi-bill-list li,
+  .fpi-recent-list li {
+    gap: 9px;
+    padding: 15px 0;
+  }
+  .fpi-bill-list li > div > strong,
+  .fpi-recent-list li > div > strong {
+    font-size: 12px;
+  }
+  .fpi-bill-list li > div > span,
+  .fpi-recent-list li > div > span {
+    font-size: 11px;
+  }
+  .fpi-bill-list b,
+  .fpi-recent-list b {
+    font-size: 12px;
+  }
+  .fpi-recent-amount small {
+    font-size: 11px;
+  }
+  .fpi-list-empty {
+    min-height: 190px;
+  }
+  .fpi-list-empty > p {
+    font-size: 12px;
+  }
+  .fpi-overview .fpi-overview-footnote {
+    font-size: 11px;
+  }
+}
+@media (max-width: 370px) {
+  .fpi-metric-icon {
+    display: none;
+  }
+  .fpi-metric > strong {
+    font-size: 21px;
+  }
+  .fpi-card {
+    padding-left: 13px;
+    padding-right: 13px;
+  }
+  .fpi-chart-topline > div {
+    flex-direction: column;
+    gap: 3px;
+  }
+  .fpi-chart-data table {
+    font-size: 9px;
+  }
+  .fpi-bill-list li > div > span,
+  .fpi-recent-list li > div > span {
+    font-size: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fpi-overview *,
+  .fpi-overview *::before,
+  .fpi-overview *::after {
+    transition: none !important;
+  }
+}

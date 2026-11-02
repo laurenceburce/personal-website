@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
+import { financeActivityWindow, financeProviderStatus, mapFinanceActivityAccount, validateFinanceTransactionInput } from "./financeActivity.mjs";
 
 export const FINANCE_OWNER_EMAIL = "laurenceburce@gmail.com";
+export const FINANCE_BRANKAS_STATE_COOKIE = "finance_brankas_state";
 
 export const FINANCE_ACCOUNT_TYPES = [
   "checking",
@@ -119,6 +121,7 @@ const getPool = async () => {
     poolPromise = Promise.resolve(mysql.createPool({
       uri: getDatabaseUrl(),
       connectionLimit: 4,
+      connectTimeout: 5000,
       waitForConnections: true,
       enableKeepAlive: true
     }));
@@ -275,7 +278,7 @@ const ensureFinanceSchema = async () => {
       await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD COLUMN external_transaction_id VARCHAR(180) NULL");
       await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD COLUMN pending TINYINT(1) NOT NULL DEFAULT 0");
       await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD UNIQUE KEY personal_finance_transactions_external_idx (external_provider, external_transaction_id)");
-    })();
+    })().catch((error) => { schemaReadyPromise = null; throw error; });
   }
 
   await schemaReadyPromise;
@@ -374,6 +377,10 @@ function requirePlaidConfig() {
   if (!clientId || !secret) {
     throw appError("Plaid is not configured. Add PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV.", 503);
   }
+  getTokenSecret();
+  if (!["sandbox", "development", "production"].includes(String(process.env.PLAID_ENV || "sandbox").toLowerCase())) {
+    throw appError("PLAID_ENV must be sandbox, development, or production.", 503);
+  }
   return { clientId, secret };
 }
 
@@ -393,7 +400,7 @@ function requireBrankasConfig() {
 
   try {
     const url = new URL(linkUrl);
-    if (!["https:", "http:"].includes(url.protocol)) throw new Error("Invalid protocol");
+    if (url.protocol !== "https:") throw new Error("Invalid protocol");
   } catch {
     throw appError("BRANKAS_LINK_URL must be a valid Brankas Link URL.", 503);
   }
@@ -401,9 +408,8 @@ function requireBrankasConfig() {
   return { linkUrl, redirectUri };
 }
 
-function buildBrankasLinkUrl(email) {
+function buildBrankasLinkUrl(email, state) {
   const { linkUrl, redirectUri } = requireBrankasConfig();
-  const state = crypto.randomBytes(16).toString("hex");
   const userId = stableFinanceUserId(email);
   let urlText = linkUrl
     .replaceAll("{redirect_uri}", encodeURIComponent(redirectUri))
@@ -418,7 +424,9 @@ function buildBrankasLinkUrl(email) {
     urlText = url.toString();
   }
 
-  return urlText;
+  const url = new URL(urlText);
+  url.searchParams.set("state", state);
+  return url.toString();
 }
 
 function cleanCallbackParams(params) {
@@ -433,6 +441,7 @@ async function plaidRequest(endpoint, data = {}) {
   const response = await fetch(`${plaidBaseUrl()}${endpoint}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
+    signal: AbortSignal.timeout(30_000),
     body: JSON.stringify({
       client_id: clientId,
       secret,
@@ -777,6 +786,59 @@ function mapConnection(row) {
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
     updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
   };
+}
+
+// Activity uses the existing account/transaction tables, independently of forecasts.
+// Reading this snapshot never calls a bank provider or starts a background sync.
+export async function getFinanceActivity({ month } = {}) {
+  const window = financeActivityWindow(month);
+  const empty = {
+    configured: false, month: window.month, historyStart: window.historyStart, historyEnd: window.historyEnd,
+    accounts: [], connections: [], transactions: [], categories: [...FINANCE_DEFAULT_CATEGORIES],
+    providers: financeProviderStatus(), limitHit: false
+  };
+  try {
+    const database = await ensureFinanceSchema();
+    if (!database) return { ...empty, warning: "Connect your finance database to record transactions and connect bank accounts." };
+    const [accountResult, connectionResult, transactionResult] = await Promise.all([
+      database.query(`
+        SELECT a.*, c.institution_name,
+          (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
+           FROM personal_finance_transactions t
+           WHERE t.account_id = a.id AND t.currency = a.currency
+             AND t.pending = 0 AND t.transaction_date <= ?) AS native_movement
+        FROM personal_finance_accounts a
+        LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+        WHERE a.is_archived = 0 ORDER BY a.name, a.id
+      `, [window.today]),
+      database.query(`SELECT id, provider, institution_id, institution_name, status, last_synced_at, created_at, updated_at
+        FROM personal_finance_connections ORDER BY updated_at DESC, id DESC`),
+      database.query(`
+        SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+          a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
+        FROM personal_finance_transactions t
+        LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
+        LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+        WHERE t.transaction_date >= ? AND t.transaction_date < ?
+        ORDER BY t.transaction_date DESC, t.id DESC LIMIT 5001
+      `, [window.historyStart, window.nextMonthStart])
+    ]);
+    const accountRows = accountResult[0];
+    const transactionRows = transactionResult[0];
+    const accounts = accountRows.map(mapFinanceActivityAccount).filter(Boolean);
+    const transactions = transactionRows.slice(0, 5000).map(mapTransaction).filter((row) => CURRENCY_SET.has(row.currency));
+    const warnings = [];
+    if (accounts.length !== accountRows.length || transactions.length !== Math.min(transactionRows.length, 5000)) warnings.push("Accounts or transactions outside USD and PHP are excluded from this workspace.");
+    const limitHit = transactionRows.length > 5000;
+    if (limitHit) warnings.push("Only the newest 5,000 transactions in this six-month window are loaded. Activity totals and charts may be incomplete.");
+    return {
+      ...empty, configured: true, accounts, connections: connectionResult[0].map(mapConnection), transactions, limitHit,
+      categories: [...new Set([...FINANCE_DEFAULT_CATEGORIES, ...transactions.map((row) => row.category)])].sort(),
+      ...(warnings.length ? { warning: warnings.join(" ") } : {})
+    };
+  } catch {
+    return { ...empty, warning: "Your finance activity database is temporarily unavailable. Saved accounts and transactions have not been changed. Reload to try again." };
+  }
 }
 
 function buildEmptyDashboard(month) {
@@ -1326,17 +1388,26 @@ export async function seedFinanceStarter() {
   return { bills: STARTER_BILLS.length, goals: STARTER_GOALS.length };
 }
 
+async function validateTransactionAccount(pool, accountId, currency) {
+  if (accountId === null) return;
+  const [accounts] = await pool.query("SELECT id, currency FROM personal_finance_accounts WHERE id = ? AND is_archived = 0 LIMIT 1", [accountId]);
+  if (!accounts.length) throw appError("The selected account is unavailable. Choose another account or leave it unassigned.", 400);
+  if (accounts[0].currency !== currency) throw appError("The transaction currency must match the account currency. Choose another account or leave it unassigned.", 400);
+}
+
+async function requireManualTransaction(pool, transactionId) {
+  if (transactionId === null) throw appError("Choose a valid transaction.", 400);
+  const [rows] = await pool.query("SELECT id, external_provider, external_transaction_id FROM personal_finance_transactions WHERE id = ? LIMIT 1", [transactionId]);
+  if (!rows.length) throw appError("Transaction was not found.", 404);
+  if (rows[0].external_provider || rows[0].external_transaction_id) throw appError("Bank-imported transactions are read-only. Correct the source record through your bank and sync again.", 409);
+}
+
 export async function createFinanceTransaction(data) {
+  const clean = validateFinanceTransactionInput(data);
+  const { date: transactionDate, kind, accountId, category, merchant, note, amount, currency } = clean;
   const pool = requirePool(await ensureFinanceSchema());
   const now = new Date();
-  const transactionDate = cleanDate(data?.date);
-  const kind = cleanKind(data?.kind);
-  const accountId = cleanId(data?.accountId, "Account");
-  const category = cleanText(data?.category, 80, "Uncategorized");
-  const merchant = cleanText(data?.merchant, 120);
-  const note = cleanText(data?.note, 300);
-  const amount = cleanPositiveAmount(data?.amount);
-  const currency = cleanCurrency(data?.currency);
+  await validateTransactionAccount(pool, accountId, currency);
 
   const [result] = await pool.query(
     `INSERT INTO personal_finance_transactions
@@ -1349,16 +1420,12 @@ export async function createFinanceTransaction(data) {
 }
 
 export async function updateFinanceTransaction(id, data) {
-  const pool = requirePool(await ensureFinanceSchema());
+  const clean = validateFinanceTransactionInput(data);
+  const { date: transactionDate, kind, accountId, category, merchant, note, amount, currency } = clean;
   const transactionId = cleanId(id, "Transaction");
-  const transactionDate = cleanDate(data?.date);
-  const kind = cleanKind(data?.kind);
-  const accountId = cleanId(data?.accountId, "Account");
-  const category = cleanText(data?.category, 80, "Uncategorized");
-  const merchant = cleanText(data?.merchant, 120);
-  const note = cleanText(data?.note, 300);
-  const amount = cleanPositiveAmount(data?.amount);
-  const currency = cleanCurrency(data?.currency);
+  const pool = requirePool(await ensureFinanceSchema());
+  await requireManualTransaction(pool, transactionId);
+  await validateTransactionAccount(pool, accountId, currency);
 
   await pool.query(
     `UPDATE personal_finance_transactions
@@ -1371,7 +1438,8 @@ export async function updateFinanceTransaction(id, data) {
          amount = ?,
          currency = ?,
          updated_at = ?
-     WHERE id = ?`,
+     WHERE id = ? AND (external_provider IS NULL OR external_provider = '')
+       AND (external_transaction_id IS NULL OR external_transaction_id = '')`,
     [transactionDate, kind, accountId, category, merchant, note, amount, currency, new Date(), transactionId]
   );
 
@@ -1381,7 +1449,8 @@ export async function updateFinanceTransaction(id, data) {
 export async function deleteFinanceTransaction(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const transactionId = cleanId(id, "Transaction");
-  await pool.query("DELETE FROM personal_finance_transactions WHERE id = ?", [transactionId]);
+  await requireManualTransaction(pool, transactionId);
+  await pool.query("DELETE FROM personal_finance_transactions WHERE id = ? AND (external_provider IS NULL OR external_provider = '') AND (external_transaction_id IS NULL OR external_transaction_id = '')", [transactionId]);
   return { id: transactionId };
 }
 
@@ -1394,12 +1463,14 @@ export async function createFinanceAccount(data) {
   const accountType = cleanAccountType(data?.type);
   const openingBalance = cleanSignedAmount(data?.openingBalance || 0, "Opening balance");
   const color = cleanColor(data?.color);
+  const currency = String(data?.currency || "USD").toUpperCase();
+  if (!CURRENCY_SET.has(currency)) throw appError("Choose USD or PHP for this account.");
 
   const [result] = await pool.query(
     `INSERT INTO personal_finance_accounts
-       (name, account_type, opening_balance, color, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [name, accountType, openingBalance, color, now, now]
+       (name, account_type, opening_balance, currency, color, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [name, accountType, openingBalance, currency, color, now, now]
   );
 
   return { id: Number(result.insertId) };
@@ -1692,22 +1763,31 @@ export async function syncFinanceConnection(id) {
 }
 
 export async function createBrankasLink(email) {
+  getTokenSecret();
+  const pool = requirePool(await ensureFinanceSchema());
+  const state = crypto.randomBytes(32).toString("hex");
+  const hash = crypto.createHash("sha256").update(state).digest("hex");
+  const url = buildBrankasLinkUrl(email, state);
+  await upsertSetting(pool, "brankasLinkState", JSON.stringify({ hash, expires: Date.now() + 10 * 60_000 }));
   return {
-    url: buildBrankasLinkUrl(email),
-    expiresIn: null
+    url, state, expiresIn: 600
   };
 }
 
-export async function saveBrankasCallback(params) {
+export async function saveBrankasCallback(params, expectedState) {
   const pool = requirePool(await ensureFinanceSchema());
   const payload = cleanCallbackParams(params);
+  const state = payload.state || "";
+  if (!/^[a-f0-9]{64}$/.test(state) || typeof expectedState !== "string" || !/^[a-f0-9]{64}$/.test(expectedState)
+      || !crypto.timingSafeEqual(Buffer.from(state), Buffer.from(expectedState))) {
+    throw appError("This bank authorization could not be verified. Start connecting Brankas again from Accounts.", 400);
+  }
+  const hash = crypto.createHash("sha256").update(state).digest("hex");
   const tokenSource = payload.code
     || payload.consent_id
     || payload.customer_id
     || payload.request_id
-    || payload.reference_id
-    || payload.state
-    || JSON.stringify(payload);
+    || payload.reference_id;
   if (!tokenSource || tokenSource === "{}") throw appError("Brankas did not return a usable callback payload.", 400);
 
   const tokenHash = crypto.createHash("sha256").update(tokenSource).digest("hex").slice(0, 48);
@@ -1727,7 +1807,16 @@ export async function saveBrankasCallback(params) {
   );
   const now = new Date();
 
-  const [result] = await pool.query(
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [stateRows] = await connection.query("SELECT setting_value FROM personal_finance_settings WHERE setting_key = 'brankasLinkState' FOR UPDATE");
+    let storedState;
+    try { storedState = JSON.parse(stateRows[0]?.setting_value || "null"); } catch { /* Invalid state is rejected below. */ }
+    if (!storedState || storedState.hash !== hash || !Number.isFinite(storedState.expires) || storedState.expires < Date.now()) {
+      throw appError("This bank authorization expired or was already used. Start connecting Brankas again from Accounts.", 400);
+    }
+    const [result] = await connection.query(
     `INSERT INTO personal_finance_connections
        (provider, institution_name, item_id, encrypted_access_token, status, created_at, updated_at)
      VALUES ('brankas', ?, ?, ?, 'linked', ?, ?)
@@ -1739,9 +1828,15 @@ export async function saveBrankasCallback(params) {
     [institutionName, itemId, encryptSecret(JSON.stringify(payload)), now, now]
   );
 
-  const insertedConnectionId = Number(result.insertId || 0);
-  const connectionId = insertedConnectionId || await getConnectionIdByItem(pool, "brankas", itemId);
-  return { id: connectionId, status: "linked" };
+    const insertedConnectionId = Number(result.insertId || 0);
+    const connectionId = insertedConnectionId || await getConnectionIdByItem(connection, "brankas", itemId);
+    await connection.query("DELETE FROM personal_finance_settings WHERE setting_key = 'brankasLinkState'");
+    await connection.commit();
+    return { id: connectionId, status: "linked" };
+  } catch (error) {
+    await connection.rollback().catch(() => {});
+    throw error;
+  } finally { connection.release(); }
 }
 
 async function getConnectionIdByItem(pool, provider, itemId) {
@@ -1772,10 +1867,11 @@ async function syncPlaidConnection(pool, connectionId, accessTokenOverride = "")
   if (!connection) throw appError("Plaid connection was not found.", 404);
 
   const accessToken = accessTokenOverride || decryptSecret(connection.encrypted_access_token);
-  const accountSync = await syncPlaidAccounts(pool, connectionId, accessToken, connection.institution_name || "Plaid");
+  let accountSync = { accounts: 0 };
   let transactionSync = { added: 0, modified: 0, removed: 0 };
 
   try {
+    accountSync = await syncPlaidAccounts(pool, connectionId, accessToken, connection.institution_name || "Plaid");
     transactionSync = await syncPlaidTransactions(pool, connectionId, accessToken, connection.sync_cursor || null);
     await pool.query(
       "UPDATE personal_finance_connections SET status = 'active', last_synced_at = ?, updated_at = ? WHERE id = ?",
@@ -1818,10 +1914,12 @@ async function syncPlaidAccounts(pool, connectionId, accessToken, fallbackInstit
     const externalAccountId = cleanText(account?.account_id, 160);
     if (!externalAccountId) continue;
 
-    const currency = cleanCurrency(balances?.iso_currency_code || "USD");
+    // Retain a provider's native currency; never label an unsupported balance USD.
+    const currency = String(balances?.iso_currency_code || balances?.unofficial_currency_code || "").toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) continue;
     const name = cleanText(account?.official_name || account?.name || fallbackInstitutionName, 80, fallbackInstitutionName);
     const accountType = mapProviderAccountType(account?.type, account?.subtype);
-    const currentBalance = toMoney(balances?.current ?? 0);
+    const currentBalance = balances?.current === null || balances?.current === undefined ? null : toMoney(balances.current);
     const availableBalance = balances?.available === null || balances?.available === undefined
       ? null
       : toMoney(balances.available);
@@ -1905,6 +2003,8 @@ async function syncPlaidTransactions(pool, connectionId, accessToken, cursor) {
 async function upsertPlaidTransaction(pool, transaction) {
   const externalTransactionId = cleanText(transaction?.transaction_id, 180);
   if (!externalTransactionId) return;
+  const currency = String(transaction?.iso_currency_code || transaction?.unofficial_currency_code || "").toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) return;
 
   const externalAccountId = cleanText(transaction?.account_id, 160);
   const accountId = externalAccountId ? await getAccountIdByProvider(pool, "plaid", externalAccountId) : null;
@@ -1920,7 +2020,6 @@ async function upsertPlaidTransaction(pool, transaction) {
   );
   const merchant = cleanText(transaction?.merchant_name || transaction?.name || "", 120);
   const amount = toMoney(Math.abs(plaidAmount));
-  const currency = cleanCurrency(transaction?.iso_currency_code || "USD");
   const date = cleanDate(transaction?.date || new Date().toISOString().slice(0, 10));
   const now = new Date();
 

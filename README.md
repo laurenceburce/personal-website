@@ -110,9 +110,11 @@ automatically on the first authorized visit; existing monthly salary and bill
 records are imported once, and the previous tables are retained. Without a
 database, the interface loads with saving disabled.
 
-The finance workspace has four views:
+The finance workspace separates recorded activity from your plans:
 
-- **Overview:** monthly salary in USD (default) or PHP with instant conversion.
+- **Overview:** net worth, recorded income, spending, and net cash flow; a
+  six-month income/spending graph; a planned allocation chart; dated bills
+  and recent activity. Select a month and display amounts in USD or PHP.
 - **Bills:** monthly and annual bills, native payment currency, due day,
   optional payment method/autopay, annual installments, and a monthly annual-bill reserve.
 - **Spending plan:** automatic per-pay income, USD/PHP bills, annual reserves,
@@ -121,13 +123,37 @@ The finance workspace has four views:
 - **Budget plans:** independent dated forecasts with starting USD/PHP balances,
   automatic bills/paydays, custom income/expense entries, conversions, and running
   balances in both currencies. Undated bills are flagged and excluded until dated.
+- **Transactions:** quickly record one-time income or expenses from any view.
+  Amount and description come first; date, category, note, and account are optional
+  details. Search and filter history, edit manual entries, and view bank imports.
+- **Bank accounts:** connect US accounts through Plaid, view native balances,
+  and sync transactions. Production and sandbox connections are clearly labeled.
+- **Salary & settings:** monthly salary with instant USD/PHP conversion and
+  the first payday used by forecasts.
+
+Actual income/spending totals exclude pending and future-dated transactions,
+bank transfers, and loan-payment categories. Planned salary, recurring bills,
+and allocations are not counted as posted activity. Bank account balances stay
+provider-reported; one-time entries assigned to a manually tracked account
+update its balance in that account's native currency. Imported records remain
+read-only so a sync cannot silently replace your edits. Avoid manually recording
+transactions that your bank already imports.
+
+Plaid requires `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV`, plus
+`FINANCE_TOKEN_SECRET` or the existing `AUTH_SECRET` for encrypted token storage.
+For OAuth banks, register an HTTPS `PLAID_REDIRECT_URI` ending at `/finance`
+in your Plaid dashboard. The app resumes bank redirects on the accounts view.
+Philippine bank authorization through Brankas requires a configured
+`BRANKAS_LINK_URL`; this existing integration saves authorization only and does
+not import balances or transactions. Its callback verifies a short-lived,
+one-use state tied to the current browser.
 
 The exchange rate comes from Frankfurter's daily USD/PHP reference feed,
 cached for an hour with a manual refresh. It is not a bank's executable exchange
 quote; provider failures show a clearly marked last-known rate or estimate.
 Concurrent changes on another device are rejected instead of silently overwritten.
 
-For a starting point, choose **Use your workbook example** in the empty overview.
+For a starting point, choose **Use workbook example** under **Salary & settings**.
 It adds editable sample bills from the reference workbook; it does not record
 payments or move money. Budget plans are hypothetical and recalculate when
 salary, bills, or reference rates change.
@@ -136,7 +162,8 @@ For phone access, deploy this app to your existing HTTPS host with the same
 MySQL, `AUTH_SECRET`, and OAuth settings. Open `/finance` on your phone and sign in with the
 owner account. The **On your phone** control explains installation (Safari:
 Share → Add to Home Screen; Android: browser menu → Install app). Saved changes
-share the same database across devices. The finance app requires a connection;
+share the same database across devices. The home-screen **Quick transaction**
+shortcut opens the entry form directly. The finance app requires a connection;
 its service worker caches only public icons and shows a generic offline screen.
 
 Run the finance calculation and validation checks with `npm run test:finance`.

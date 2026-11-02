@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import FinanceAppClient from "./FinanceAppClient";
 import { getFinanceAccess } from "../lib/financeAuth";
 import { getFinancePlanner } from "../lib/financePlannerStore";
+import { getFinanceActivity } from "../lib/financeStore";
+import { localDate } from "../lib/financePlanner.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -24,24 +26,35 @@ export const metadata = {
   },
 };
 
-function cleanCallback(month, tab) {
+function cleanCallback(month, tab, quick = false) {
   const params = new URLSearchParams();
   if (month) params.set("month", month);
   if (tab) params.set("tab", tab);
+  if (quick) params.set("quick", "1");
   const query = params.toString();
   return query ? `/finance?${query}` : "/finance";
 }
 
 export default async function FinancePage({ searchParams }) {
   const params = await searchParams;
-  const month = typeof params?.month === "string" ? params.month : "";
-  const tab = typeof params?.tab === "string" ? params.tab : "home";
+  const month =
+    typeof params?.month === "string" &&
+    /^(19\d{2}|20\d{2}|21\d{2}|2200)-(0[1-9]|1[0-2])$/.test(params.month)
+      ? params.month
+      : localDate().slice(0, 7);
+  const isBankRedirect = typeof params?.oauth_state_id === "string";
+  const tab = isBankRedirect
+    ? "accounts"
+    : typeof params?.tab === "string"
+      ? params.tab
+      : "home";
   const access = await getFinanceAccess();
 
   if (!access.session) {
-    redirect(
-      `/finance/login?callbackUrl=${encodeURIComponent(cleanCallback(month, tab))}`,
-    );
+    const callback = isBankRedirect
+      ? `/finance?${new URLSearchParams(Object.entries(params).filter(([, value]) => typeof value === "string")).toString()}`
+      : cleanCallback(month, tab, params?.quick === "1");
+    redirect(`/finance/login?callbackUrl=${encodeURIComponent(callback)}`);
   }
 
   if (!access.authorized) {
@@ -59,7 +72,16 @@ export default async function FinancePage({ searchParams }) {
     );
   }
 
-  const snapshot = await getFinancePlanner();
+  const [snapshot, activity] = await Promise.all([
+    getFinancePlanner(),
+    getFinanceActivity({ month }),
+  ]);
 
-  return <FinanceAppClient snapshot={snapshot} initialTab={tab} />;
+  return (
+    <FinanceAppClient
+      snapshot={snapshot}
+      initialActivity={activity}
+      initialTab={tab}
+    />
+  );
 }

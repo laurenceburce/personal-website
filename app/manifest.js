@@ -13,29 +13,29 @@ export default function manifest() {
       {
         src: "/favicon-192x192.png",
         sizes: "192x192",
-        type: "image/png"
+        type: "image/png",
       },
       {
         src: "/logo-512.png",
         sizes: "512x512",
-        type: "image/png"
-      }
+        type: "image/png",
+      },
     ],
     shortcuts: [
       {
         name: "Quick Add",
         short_name: "Add",
-        description: "Open the transaction form.",
-        url: "/finance?tab=transactions",
-        icons: [{ src: "/favicon-192x192.png", sizes: "192x192" }]
+        description: "Quickly record income or an expense.",
+        url: "/finance?tab=transactions&quick=1",
+        icons: [{ src: "/favicon-192x192.png", sizes: "192x192" }],
       },
       {
         name: "Bills",
         short_name: "Bills",
         description: "Open recurring bills.",
         url: "/finance?tab=bills",
-        icons: [{ src: "/favicon-192x192.png", sizes: "192x192" }]
-      }
-    ]
+        icons: [{ src: "/favicon-192x192.png", sizes: "192x192" }],
+      },
+    ],
   };
 }

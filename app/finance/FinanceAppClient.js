@@ -12,14 +12,64 @@ import {
   money,
 } from "../lib/financePlanner.mjs";
 import FinanceInstall from "./FinanceInstall";
+import FinanceOverview from "./FinanceOverview";
+import {
+  QuickTransactionForm,
+  TransactionsPanel,
+  BankAccountsPanel,
+} from "./FinanceActivity";
 import "./finance.css";
+import "./finance-workspace.css";
 
 const NAV = [
   { id: "home", label: "Overview", icon: "grid" },
   { id: "bills", label: "Bills", icon: "receipt" },
   { id: "spending", label: "Spending plan", icon: "chart" },
   { id: "plans", label: "Budget plans", icon: "calendar" },
+  { id: "transactions", label: "Transactions", icon: "exchange" },
+  { id: "accounts", label: "Bank accounts", icon: "bank" },
+  { id: "settings", label: "Salary & settings", icon: "settings" },
 ];
+const TAB_ALIASES = {
+  profile: "accounts",
+  budget: "plans",
+  add: "transactions",
+};
+const MONTH_PATTERN = /^(19\d{2}|20\d{2}|21\d{2}|2200)-(0[1-9]|1[0-2])$/;
+const normalizeTab = (value) => {
+  const tab = TAB_ALIASES[value] || value;
+  return NAV.some((item) => item.id === tab) ? tab : "home";
+};
+const PAGE_COPY = {
+  home: [
+    "Your financial overview",
+    "See what came in, what went out, and where your plan stands.",
+  ],
+  bills: [
+    "Everything that’s due.",
+    "Monthly essentials and annual commitments, all accounted for.",
+  ],
+  spending: [
+    "Give every payday a plan.",
+    "Know what to set aside and what’s yours to spend.",
+  ],
+  plans: [
+    "A plan for what’s ahead.",
+    "Try out dates, expenses, and currency moves before they happen.",
+  ],
+  transactions: [
+    "Your money in motion",
+    "Quickly record one-time income and expenses, alongside your bank activity.",
+  ],
+  accounts: [
+    "Your connected accounts",
+    "Bring your bank balances and transactions into one place.",
+  ],
+  settings: [
+    "Make the plan yours",
+    "Update your salary, payday schedule, and conversion settings.",
+  ],
+};
 const MONTHS = [
   "Jan",
   "Feb",
@@ -109,6 +159,19 @@ function Icon({ name, size = 20 }) {
       <>
         <circle cx="12" cy="12" r="9" />
         <path d="M15 8h-4a2 2 0 0 0 0 4h2a2 2 0 0 1 0 4H9m3-10v12" />
+      </>
+    ),
+    exchange: <path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4" />,
+    bank: (
+      <>
+        <path d="m3 8 9-5 9 5H3Zm0 13h18M5 11v7m7-7v7m7-7v7" />
+      </>
+    ),
+    settings: (
+      <>
+        <path d="M4 7h16M4 17h16" />
+        <circle cx="9" cy="7" r="3" fill="currentColor" />
+        <circle cx="15" cy="17" r="3" fill="currentColor" />
       </>
     ),
   };
@@ -237,19 +300,6 @@ function Empty({ icon = "receipt", title, children, action }) {
     </div>
   );
 }
-function Metric({ label, value, detail, icon, accent }) {
-  return (
-    <article className={`fp-metric ${accent ? "fp-metric-accent" : ""}`}>
-      <div className="fp-metric-label">
-        {label}
-        <Icon name={icon} size={18} />
-      </div>
-      <strong>{value}</strong>
-      <small>{detail}</small>
-    </article>
-  );
-}
-
 function SpendingTable({
   document,
   summary,
@@ -1177,11 +1227,18 @@ function Ledger({ plan, rows, onEdit, onDelete }) {
   );
 }
 
-export default function FinanceAppClient({ snapshot, initialTab }) {
+export default function FinanceAppClient({
+  snapshot,
+  initialTab,
+  initialActivity,
+}) {
   const [state, setState] = useState(snapshot);
-  const [tab, setTab] = useState(
-    NAV.some((item) => item.id === initialTab) ? initialTab : "home",
-  );
+  const [tab, setTab] = useState(normalizeTab(initialTab));
+  const [activity, setActivity] = useState(initialActivity);
+  const [selectedMonth, setSelectedMonth] = useState(initialActivity.month);
+  const [displayCurrency, setDisplayCurrency] = useState("USD");
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState("");
   const [cadence, setCadence] = useState("monthly");
   const [modal, setModal] = useState(null);
   const [selectedPlanId, setSelectedPlanId] = useState(
@@ -1205,15 +1262,36 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   const activeNav = NAV.find((item) => item.id === tab);
   const undated = document.bills.filter((bill) => !bill.dueDay);
   const saveLock = useRef(false);
+  const activityRequest = useRef(0);
+  const selectedMonthRef = useRef(selectedMonth);
+  const pageCopy = PAGE_COPY[tab];
 
   useEffect(() => {
     const onPop = () => {
-      const next = new URL(window.location.href).searchParams.get("tab");
-      setTab(NAV.some((item) => item.id === next) ? next : "home");
+      const params = new URL(window.location.href).searchParams;
+      setTab(normalizeTab(params.get("tab")));
+      const month = params.get("month") || localDate().slice(0, 7);
+      if (MONTH_PATTERN.test(month) && month !== selectedMonthRef.current) {
+        selectedMonthRef.current = month;
+        setSelectedMonth(month);
+        loadActivity(month);
+      }
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (
+      url.searchParams.get("quick") === "1" &&
+      !url.searchParams.has("oauth_state_id") &&
+      initialActivity.configured
+    ) {
+      setModal({ type: "transaction" });
+      url.searchParams.delete("quick");
+      window.history.replaceState({}, "", url);
+    }
+  }, [initialActivity.configured]);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(""), 5000);
@@ -1230,7 +1308,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   }, []);
 
   function navigate(next) {
-    setTab(next);
+    setTab(normalizeTab(next));
     const url = new URL(window.location.href);
     url.searchParams.set("tab", next);
     window.history.pushState({}, "", url);
@@ -1239,6 +1317,98 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
   function open(next) {
     setError("");
     setModal(next);
+  }
+  async function loadActivity(month = selectedMonthRef.current) {
+    const requestId = ++activityRequest.current;
+    setActivityLoading(true);
+    setActivityError("");
+    try {
+      const response = await fetch(
+        `/api/finance/activity?month=${encodeURIComponent(month)}`,
+        { cache: "no-store" },
+      );
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(
+          result.error || "Could not refresh your transactions and accounts.",
+        );
+      if (requestId === activityRequest.current) setActivity(result);
+      return true;
+    } catch (err) {
+      if (requestId === activityRequest.current) setActivityError(err.message);
+      return false;
+    } finally {
+      if (requestId === activityRequest.current) setActivityLoading(false);
+    }
+  }
+  function changeMonth(month) {
+    if (!MONTH_PATTERN.test(month)) return;
+    setSelectedMonth(month);
+    selectedMonthRef.current = month;
+    const url = new URL(window.location.href);
+    url.searchParams.set("month", month);
+    window.history.pushState({}, "", url);
+    loadActivity(month);
+  }
+  async function performAction(action, data = {}) {
+    const response = await fetch("/api/finance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, data }),
+    });
+    const result = await response.json();
+    if (!response.ok)
+      throw new Error(
+        result.error || "The finance action could not be completed.",
+      );
+    return result.result;
+  }
+  async function saveTransaction(transaction) {
+    if (saveLock.current || !activity.configured) return;
+    saveLock.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await performAction(
+        transaction.id ? "updateTransaction" : "createTransaction",
+        transaction,
+      );
+      setModal(null);
+      setNotice(
+        transaction.id ? "Transaction updated." : "Transaction recorded.",
+      );
+      const month = transaction.date.slice(0, 7);
+      if (month !== selectedMonthRef.current) {
+        selectedMonthRef.current = month;
+        setSelectedMonth(month);
+        const url = new URL(window.location.href);
+        url.searchParams.set("month", month);
+        window.history.replaceState({}, "", url);
+      }
+      await loadActivity(month);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      saveLock.current = false;
+      setBusy(false);
+    }
+  }
+  async function deleteTransaction(transaction) {
+    if (saveLock.current) return;
+    saveLock.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await performAction("deleteTransaction", { id: transaction.id });
+      setModal(null);
+      setNotice("Transaction deleted.");
+      await loadActivity();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      saveLock.current = false;
+      setBusy(false);
+    }
   }
   async function refreshRate(quiet = false) {
     setRefreshing(true);
@@ -1433,9 +1603,20 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       <div className="fp-main">
         <header className="fp-topbar">
           <span>
-            My workspace <span>/</span> <strong>{activeNav.label}</strong>
+            <span className="fp-breadcrumb-prefix">My workspace /</span>{" "}
+            <strong>{activeNav.label}</strong>
           </span>
           <div>
+            <Button
+              icon="plus"
+              variant="primary"
+              className="fp-quick-add"
+              onClick={() => open({ type: "transaction" })}
+              disabled={!activity.configured}
+            >
+              <span className="fp-quick-label-desktop">Add transaction</span>
+              <span className="fp-quick-label-mobile">Quick add</span>
+            </Button>
             <span className="fp-private-badge">
               <Icon name="lock" size={12} /> Private
             </span>
@@ -1457,25 +1638,9 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
         <main className="fp-content" id="finance-main">
           <div className="fp-page-heading">
             <div>
-              <p className="fp-eyebrow">A LITTLE CLARITY, EVERY PAYDAY</p>
-              <h1>
-                {tab === "home"
-                  ? "Your money, at a glance."
-                  : tab === "bills"
-                    ? "Everything that’s due."
-                    : tab === "spending"
-                      ? "Give every payday a plan."
-                      : "A plan for what’s ahead."}
-              </h1>
-              <p>
-                {tab === "home"
-                  ? "One place for your dollars, pesos, and peace of mind."
-                  : tab === "bills"
-                    ? "Monthly essentials and annual commitments, all accounted for."
-                    : tab === "spending"
-                      ? "Know what to set aside and what’s yours to spend."
-                      : "Try out dates, expenses, and currency moves before they happen."}
-              </p>
+              <p className="fp-eyebrow">PERSONAL FINANCE</p>
+              <h1>{pageCopy[0]}</h1>
+              <p>{pageCopy[1]}</p>
             </div>
             {tab === "bills" ? (
               <Button
@@ -1546,153 +1711,177 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
             </p>
           )}
 
-          {tab === "home" && (
+          {["home", "transactions", "accounts"].includes(tab) && (
             <>
-              <section className="fp-metrics" aria-label="Monthly summary">
-                <Metric
-                  label="Monthly income"
-                  value={money(summary.monthlyUsd)}
-                  detail={`${money(summary.monthlyPhp, "PHP")} equivalent`}
-                  icon="coin"
-                />
-                <Metric
-                  label="Monthly bills"
-                  value={money(summary.monthlyCommitmentsUsd)}
-                  detail="Includes your annual bills reserve"
-                  icon="receipt"
-                />
-                <Metric
-                  label="Annual reserve / month"
-                  value={money(summary.annualMonthlyUsd)}
-                  detail={`${money(summary.annualUsd)} in annual commitments`}
-                  icon="calendar"
-                />
-                <Metric
-                  label="After monthly bills"
-                  value={money(summary.monthlyRemainingUsd)}
-                  detail="Before savings & everyday spending"
-                  icon="wallet"
-                  accent
-                />
-              </section>
-              <div className="fp-overview-grid">
-                <section className="fp-card fp-salary-card">
-                  <div className="fp-card-heading">
-                    <div>
-                      <span className="fp-section-number">01</span>
-                      <h2>Your monthly salary</h2>
-                    </div>
-                    <span className="fp-label-pill">USD ⇄ PHP</span>
-                  </div>
-                  <p className="fp-card-intro">
-                    Start with what comes in. The rest falls into place.
-                  </p>
-                  <SalaryEditor
-                    salary={document.salary}
-                    rate={rate}
-                    busy={busy}
-                    configured={state.configured}
-                    onSave={(salary) =>
-                      save(
-                        { ...document, salary },
-                        "Salary updated. All calculations are up to date.",
-                      )
-                    }
-                  />
-                </section>
-                <section className="fp-card">
-                  <div className="fp-card-heading">
-                    <div>
-                      <span className="fp-section-number">02</span>
-                      <h2>Your payday breakdown</h2>
-                    </div>
-                    <span className="fp-label-pill">
-                      {isBiweekly ? "Every 2 weeks" : "Twice a month"}
-                    </span>
-                  </div>
-                  <p className="fp-card-intro">
-                    Your spending plan, per pay period.
-                  </p>
-                  <SpendingTable
-                    document={document}
-                    summary={summary}
-                    rate={rate}
-                    compact
-                  />
-                  <Button
-                    variant="text"
-                    icon="arrow"
-                    onClick={() => navigate("spending")}
+              <div className="fp-workspace-toolbar">
+                <div className="fp-data-controls">
+                  {tab !== "accounts" && (
+                    <Field label="Month">
+                      <input
+                        type="month"
+                        min="1900-01"
+                        max="2200-12"
+                        value={selectedMonth}
+                        onChange={(event) => changeMonth(event.target.value)}
+                      />
+                    </Field>
+                  )}
+                  <div
+                    className="fp-display-currency"
+                    role="group"
+                    aria-label="Display currency"
                   >
-                    Open spending plan
-                  </Button>
-                </section>
-              </div>
-              <section className="fp-card">
-                <div className="fp-card-heading">
-                  <div>
-                    <span className="fp-section-number">03</span>
-                    <h2>Your commitments</h2>
-                    <span className="fp-count">{document.bills.length}</span>
-                  </div>
-                  <Button
-                    variant="text"
-                    icon="arrow"
-                    onClick={() => navigate("bills")}
-                  >
-                    View all bills
-                  </Button>
-                </div>
-                {document.bills.length ? (
-                  <div className="fp-commitments">
-                    {document.bills.slice(0, 6).map((bill) => (
+                    {["USD", "PHP"].map((currency) => (
                       <button
-                        className="fp-commitment"
-                        key={bill.id}
-                        onClick={() => {
-                          setCadence(bill.cadence);
-                          navigate("bills");
-                        }}
+                        key={currency}
+                        type="button"
+                        aria-pressed={displayCurrency === currency}
+                        onClick={() => setDisplayCurrency(currency)}
                       >
-                        <span
-                          className={`fp-bill-monogram fp-currency-${bill.currency.toLowerCase()}`}
-                        >
-                          {bill.name.slice(0, 1)}
-                        </span>
-                        <span>
-                          <strong>{bill.name}</strong>
-                          <small>
-                            <DueLabel bill={bill} /> · {bill.cadence}
-                          </small>
-                        </span>
-                        <b>{money(bill.amount, bill.currency)}</b>
+                        {currency}
                       </button>
                     ))}
                   </div>
-                ) : (
-                  <Empty
-                    title="Let’s get your bills in order"
-                    action={
-                      <div className="fp-button-row">
-                        <Button
-                          icon="plus"
-                          variant="primary"
-                          onClick={() => open({ type: "bill" })}
-                        >
-                          Add a bill
-                        </Button>
-                        <Button onClick={() => open({ type: "example" })}>
-                          Use your workbook example
-                        </Button>
-                      </div>
-                    }
-                  >
-                    Add your own bills, or start with the examples from your
-                    workbook.
-                  </Empty>
+                </div>
+                <Button
+                  icon="refresh"
+                  onClick={() => loadActivity()}
+                  disabled={activityLoading}
+                >
+                  {activityLoading ? "Refreshing…" : "Refresh activity"}
+                </Button>
+              </div>
+              {activity.warning && (
+                <div className="fp-alert fp-alert-warning" role="status">
+                  {activity.warning}
+                </div>
+              )}
+              {activityError && (
+                <div className="fp-alert fp-alert-error" role="alert">
+                  {activityError}
+                  <Button variant="text" onClick={() => loadActivity()}>
+                    Try again
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+          {tab === "home" && (
+            <div aria-busy={activityLoading}>
+              {selectedMonth !== activity.month ? (
+                <div className="fp-card fp-loading-state" role="status">
+                  {activityLoading
+                    ? "Loading your overview…"
+                    : "Your overview could not be refreshed. Try again above."}
+                </div>
+              ) : (
+                <FinanceOverview
+                  document={document}
+                  activity={activity}
+                  rate={rate}
+                  month={selectedMonth}
+                  currency={displayCurrency}
+                  onAddTransaction={() => open({ type: "transaction" })}
+                  onNavigate={navigate}
+                />
+              )}
+            </div>
+          )}
+          {tab === "transactions" && (
+            <div aria-busy={activityLoading}>
+              {selectedMonth !== activity.month ? (
+                <div className="fp-card fp-loading-state" role="status">
+                  {activityLoading
+                    ? "Loading transactions…"
+                    : "Your transactions could not be refreshed. Try again above."}
+                </div>
+              ) : (
+                <TransactionsPanel
+                  activity={activity}
+                  month={selectedMonth}
+                  currency={displayCurrency}
+                  rate={rate}
+                  onAdd={() => open({ type: "transaction" })}
+                  onEdit={(transaction) =>
+                    open({ type: "transaction", transaction })
+                  }
+                  onDelete={(row) => open({ type: "deleteTransaction", row })}
+                />
+              )}
+            </div>
+          )}
+          {tab === "accounts" && (
+            <BankAccountsPanel
+              activity={activity}
+              rate={rate}
+              currency={displayCurrency}
+              busy={busy}
+              onAction={performAction}
+              onRefresh={async () => {
+                if (!(await loadActivity()))
+                  throw new Error(
+                    "Your connection was saved, but account data could not be refreshed. Use Refresh activity to try again.",
+                  );
+              }}
+              onNotice={setNotice}
+              onError={setError}
+            />
+          )}
+          {tab === "settings" && (
+            <div className="fp-settings-grid">
+              <section className="fp-card fp-salary-card">
+                <div className="fp-card-heading">
+                  <div>
+                    <span className="fp-section-number">01</span>
+                    <h2>Your monthly salary</h2>
+                  </div>
+                  <span className="fp-label-pill">USD ⇄ PHP</span>
+                </div>
+                <p className="fp-card-intro">
+                  Your salary drives spending plans and budget forecasts.
+                  Recorded income on the overview comes from transactions.
+                </p>
+                <SalaryEditor
+                  salary={document.salary}
+                  rate={rate}
+                  busy={busy}
+                  configured={state.configured}
+                  onSave={(salary) =>
+                    save(
+                      { ...document, salary },
+                      "Salary and forecast settings updated.",
+                    )
+                  }
+                />
+              </section>
+              <section className="fp-card fp-settings-notes">
+                <h2>One place to plan. One place to track.</h2>
+                <p>
+                  Bills, spending allocations, and budget plans describe what
+                  you expect. One-time transactions and bank imports show what
+                  actually happened.
+                </p>
+                <p>
+                  Reference rates update automatically. USD and PHP totals use
+                  the same rate so your charts and plans stay consistent.
+                </p>
+                <Button icon="bank" onClick={() => navigate("accounts")}>
+                  Manage bank connections
+                </Button>
+                {!document.bills.length && (
+                  <div className="fp-settings-example">
+                    <h3>Start with your workbook</h3>
+                    <p>
+                      Add editable bills from your original workbook, then
+                      adjust the details to your current needs.
+                    </p>
+                    <Button onClick={() => open({ type: "example" })}>
+                      Use workbook example
+                    </Button>
+                  </div>
                 )}
               </section>
-            </>
+            </div>
           )}
 
           {tab === "bills" && (
@@ -1808,7 +1997,7 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
                         ? "Your monthly salary and bills are annualized, then divided across 26 pay periods."
                         : "Your monthly salary and bills are split across 2 pay periods each month (24 per year)."}
                     </p>
-                    <Button variant="text" onClick={() => navigate("home")}>
+                    <Button variant="text" onClick={() => navigate("settings")}>
                       Change pay frequency <Icon name="arrow" size={15} />
                     </Button>
                   </div>
@@ -2018,25 +2207,31 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
       {modal && (
         <Modal
           title={
-            modal.type === "bill"
-              ? modal.bill
-                ? "Edit bill"
-                : `Add ${cadence} bill`
-              : modal.type === "allocation"
-                ? modal.row
-                  ? "Edit allocation"
-                  : "Add an allocation"
-                : modal.type === "plan"
-                  ? modal.plan
-                    ? "Edit budget plan"
-                    : "Create a budget plan"
-                  : modal.type === "entry"
-                    ? modal.entry
-                      ? "Edit entry"
-                      : "Add a plan entry"
-                    : modal.type === "example"
-                      ? "Start with your workbook"
-                      : "Delete this item?"
+            modal.type === "transaction"
+              ? modal.transaction
+                ? "Edit transaction"
+                : "Quick add transaction"
+              : modal.type === "deleteTransaction"
+                ? "Delete this transaction?"
+                : modal.type === "bill"
+                  ? modal.bill
+                    ? "Edit bill"
+                    : `Add ${cadence} bill`
+                  : modal.type === "allocation"
+                    ? modal.row
+                      ? "Edit allocation"
+                      : "Add an allocation"
+                    : modal.type === "plan"
+                      ? modal.plan
+                        ? "Edit budget plan"
+                        : "Create a budget plan"
+                      : modal.type === "entry"
+                        ? modal.entry
+                          ? "Edit entry"
+                          : "Add a plan entry"
+                        : modal.type === "example"
+                          ? "Start with your workbook"
+                          : "Delete this item?"
           }
           onClose={() => setModal(null)}
           busy={busy}
@@ -2046,12 +2241,47 @@ export default function FinanceAppClient({ snapshot, initialTab }) {
               {error}
             </div>
           )}
-          {!state.configured && (
-            <div className="fp-alert fp-alert-warning">
-              Database storage is required to save changes. Connect MySQL using
-              the setup in README.md.
+          {modal.type === "transaction" && (
+            <QuickTransactionForm
+              transaction={modal.transaction}
+              accounts={activity.accounts}
+              categories={activity.categories}
+              rate={rate}
+              onSave={saveTransaction}
+              busy={busy}
+              disabled={!activity.configured}
+            />
+          )}
+          {modal.type === "deleteTransaction" && (
+            <div className="fp-form">
+              <p>
+                Delete{" "}
+                <strong>{modal.row.merchant || modal.row.category}</strong> for{" "}
+                <strong>{money(modal.row.amount, modal.row.currency)}</strong>?
+                Your recorded totals and any manually tracked account balance
+                will update. This cannot be undone.
+              </p>
+              <div className="fp-button-row">
+                <Button onClick={() => setModal(null)}>Keep it</Button>
+                <Button
+                  variant="danger"
+                  disabled={busy || !activity.configured}
+                  onClick={() => deleteTransaction(modal.row)}
+                >
+                  {busy ? "Deleting…" : "Delete transaction"}
+                </Button>
+              </div>
             </div>
           )}
+          {!(
+            modal.type === "transaction" || modal.type === "deleteTransaction"
+          ) &&
+            !state.configured && (
+              <div className="fp-alert fp-alert-warning">
+                Database storage is required to save changes. Connect MySQL
+                using the setup in README.md.
+              </div>
+            )}
           {modal.type === "bill" && (
             <BillForm
               bill={modal.bill}
