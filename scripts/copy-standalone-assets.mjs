@@ -17,5 +17,4 @@ const copyIfExists = (source, destination) => {
 };
 
 copyIfExists(join(root, "public"), join(standaloneDir, "public"));
-copyIfExists(join(root, "app", "documents"), join(standaloneDir, "app", "documents"));
 copyIfExists(join(root, ".next", "static"), join(standaloneDir, ".next", "static"));

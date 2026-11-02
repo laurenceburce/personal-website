@@ -60,7 +60,7 @@ function MarkdownMessage({ text }) {
 
 const GREETING = {
   role: "assistant",
-  content: "Hi! I'm Laurence Burce's portfolio assistant. I can answer questions about his software-engineering experience, AI and automation work, projects, skills, education, availability, and contact information."
+  content: "Hi! I'm Laurence Burce's portfolio assistant. I can answer questions about his software-engineering experience, AI and automation work, projects, skills, education, and contact information."
 };
 
 export default function ChatWidget() {

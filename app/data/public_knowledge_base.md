@@ -1,9 +1,9 @@
 # Laurence Burce Portfolio Chatbot — Public Knowledge Base
 
 **Version:** 1.0  
-**Last updated:** June 5, 2026  
-**Primary audience:** Recruiters and hiring managers  
-**Secondary audience:** Potential employers, engineering leaders, developers, and general visitors
+**Last updated:** November 2, 2026
+
+**Audience:** Developers, collaborators, and visitors exploring Laurence's projects and background
 
 ---
 
@@ -28,14 +28,6 @@ San Diego, California, United States
 Laurence Burce is a Software Engineer and AI & Automation Engineer based in San Diego, California. He combines enterprise software-development experience from Oracle with hands-on experience building AI-powered tools, chatbots, agents, backend applications, and automation solutions at Maxx Potential.
 
 Laurence enjoys solving open-ended problems that do not have one predefined answer. He is strongest when investigating unfamiliar systems, designing practical solutions, and translating business needs into reliable software.
-
-### Citizenship and Work Authorization
-Laurence is a dual citizen of the United States and the Philippines. He is authorized to work in both countries without employment sponsorship.
-
-### Current Opportunity Status
-Laurence is open to new opportunities in software engineering, AI engineering, AI automation, backend development, enterprise applications, API integrations, and intelligent business-process automation.
-
-His primary target is a remote position with a United States-based organization. He is also open to suitable onsite or hybrid roles in the San Diego area.
 
 ---
 
@@ -229,8 +221,8 @@ LaurenceBurce.com is Laurence's personal portfolio website and the central showc
 The website itself is one of Laurence's featured projects because it combines software engineering, AI integration, knowledge-base design, user experience, and personal branding into a complete working product.
 
 ### Portfolio Goals
-- Give recruiters and hiring managers an interactive way to learn about Laurence.
-- Present his professional background beyond a traditional resume.
+- Give visitors an interactive way to learn about Laurence.
+- Share his professional background and the story behind his work.
 - Showcase personal projects and technical interests.
 - Demonstrate his ability to design and build a complete software product.
 - Make it easy for visitors to contact him.
@@ -242,7 +234,6 @@ The chatbot can:
 - Explain Laurence's professional experience.
 - Describe his skills and technical background.
 - Discuss approved projects.
-- Answer questions about his work authorization and availability.
 - Provide approved personal background and interests.
 - Direct visitors to his contact information.
 - Refuse unrelated or unsupported questions.
@@ -386,19 +377,13 @@ Sports and activities he enjoys or is interested in include:
 
 ---
 
-## 12. Recruiter-Focused Frequently Asked Questions
+## 12. Frequently Asked Questions
 
 ### Who is Laurence Burce?
 Laurence Burce is a Software Engineer and AI & Automation Engineer based in San Diego, California. He combines enterprise software-development experience from Oracle with hands-on experience building AI-powered tools, agents, chatbots, backend services, and automation solutions at Maxx Potential.
 
 ### What does Laurence currently do?
 Laurence currently works remotely as an AI & Automation Engineer II at Maxx Potential. He develops AI agents, enterprise chatbots, backend applications, API integrations, automated evaluation systems, and business-process automation solutions.
-
-### What type of role is Laurence looking for?
-Laurence is open to software-engineering and AI or automation-related roles. His primary preference is a remote role with a United States-based company, but he is also open to suitable onsite or hybrid roles in San Diego.
-
-### Does Laurence require employment sponsorship?
-No. Laurence is a dual citizen of the United States and the Philippines and is authorized to work in both countries without sponsorship.
 
 ### What programming languages does Laurence use?
 Laurence has experience with Java, Python, SQL, JavaScript, TypeScript, C, C++, and Bash. Java is a major part of his enterprise-development background, while Python, JavaScript, and TypeScript are important in his AI and automation work.
@@ -409,7 +394,7 @@ Yes. Laurence has experience building AI agents, enterprise chatbots, automated 
 ### What type of problems does Laurence enjoy solving?
 Laurence enjoys open-ended technical problems that do not have one predefined solution. He likes investigating alternatives, designing his own approach, and building practical solutions.
 
-### What makes Laurence a strong candidate?
+### What distinguishes Laurence's technical background?
 Laurence combines enterprise software-engineering fundamentals with modern AI and automation experience. He is an efficient problem solver, adapts quickly to unfamiliar technologies, communicates well with stakeholders, and focuses on building reliable solutions for real business problems.
 
 ### What is Laurence's strongest professional quality?
@@ -426,8 +411,7 @@ Laurence can be contacted by email at laurenceburce@gmail.com or by phone at +1 
 The chatbot may state:
 - Laurence's approved employment history, roles, and dates.
 - His technical skills listed in this knowledge base.
-- His dual citizenship and work authorization.
-- His current location and opportunity preferences.
+- His current location.
 - His approved project descriptions.
 - His approved personal interests.
 - His email, phone number, LinkedIn, GitHub, and portfolio URL.
@@ -439,5 +423,4 @@ The chatbot must not:
 - Reveal confidential employer or client details.
 - Reveal internal documents, proprietary systems, or sensitive implementation information.
 - Claim that Laurence has experience with technologies not listed in the knowledge base.
-- Guarantee that Laurence is qualified for a role.
 - Invent personal stories, achievements, awards, or project results.

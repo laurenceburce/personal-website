@@ -333,230 +333,6 @@ body {
   background: rgba(56, 189, 248, 0.07);
 }
 
-.scroll-downloads {
-  display: grid;
-  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
-  gap: 0.38rem;
-  margin-top: 0.62rem;
-  padding-top: 0.62rem;
-  border-top: 1px solid var(--line);
-}
-
-.scroll-download-link {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.34rem;
-  min-width: 0;
-  min-height: 2.22rem;
-  padding: 0.46rem 0.48rem;
-  border-radius: 9px;
-  border: 1px solid rgba(56, 189, 248, 0.22);
-  text-decoration: none;
-  color: var(--ink);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent),
-    rgba(56, 189, 248, 0.08);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 7px 16px rgba(0, 4, 18, 0.16);
-  font-size: 0.66rem;
-  font-weight: 850;
-  line-height: 1.15;
-  overflow: hidden;
-  white-space: nowrap;
-  transition:
-    background var(--t-fast) var(--ease-smooth),
-    border-color var(--t-fast) var(--ease-smooth),
-    box-shadow var(--t-fast) var(--ease-smooth),
-    color var(--t-fast) var(--ease-smooth),
-    transform var(--t-normal) var(--ease-spring);
-}
-
-button.scroll-download-link {
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.scroll-download-link::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.2), transparent 62%);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.18s;
-}
-
-.scroll-download-link svg {
-  color: var(--accent);
-  opacity: 0.9;
-}
-
-.scroll-download-link span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.scroll-download-resume {
-  border-color: rgba(56, 189, 248, 0.34);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.09), transparent),
-    linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(37, 99, 235, 0.14));
-}
-
-.scroll-download-letter {
-  border-color: rgba(167, 139, 250, 0.28);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
-    linear-gradient(135deg, rgba(167, 139, 250, 0.14), rgba(56, 189, 248, 0.09));
-}
-
-.scroll-download-link:hover,
-.scroll-download-link:focus-visible {
-  color: var(--accent);
-  border-color: rgba(56, 189, 248, 0.42);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 10px 22px rgba(0, 4, 18, 0.22);
-  transform: translateY(-2px);
-}
-
-.scroll-download-link:active {
-  transform: translateY(0) scale(0.97);
-}
-
-.scroll-download-link:hover::before,
-.scroll-download-link:focus-visible::before {
-  opacity: 1;
-}
-
-.download-gate {
-  position: fixed;
-  inset: 0;
-  z-index: 10050;
-  display: grid;
-  place-items: center;
-  padding: 1rem;
-}
-
-.download-gate-backdrop {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  background: rgba(0, 4, 18, 0.72);
-  backdrop-filter: blur(8px);
-  cursor: pointer;
-}
-
-.download-gate-panel {
-  position: relative;
-  z-index: 1;
-  width: min(24rem, calc(100vw - 2rem));
-  display: grid;
-  gap: 0.84rem;
-  padding: 1rem;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
-  background: var(--surface-solid);
-  box-shadow: var(--shadow-soft);
-}
-
-.download-gate-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.8rem;
-}
-
-.download-gate-head p {
-  margin: 0;
-  color: var(--ink);
-  font-size: 0.95rem;
-  font-weight: 850;
-}
-
-.download-gate-head button {
-  width: 1.8rem;
-  height: 1.8rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.04);
-  cursor: pointer;
-}
-
-.download-gate-panel label {
-  display: grid;
-  gap: 0.34rem;
-}
-
-.download-gate-panel label span {
-  color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.download-gate-panel input {
-  width: 100%;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  padding: 0.68rem 0.72rem;
-  font: inherit;
-  font-size: 0.88rem;
-  line-height: 1.35;
-  color: var(--ink);
-  background: rgba(14, 22, 52, 0.74);
-}
-
-.download-gate-panel input:focus {
-  outline: none;
-  border-color: rgba(56, 189, 248, 0.6);
-  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.12);
-}
-
-.download-gate-note,
-.download-gate-status {
-  margin: 0;
-  color: var(--subtle);
-  font-size: 0.76rem;
-  line-height: 1.45;
-}
-
-.download-gate-status {
-  color: var(--accent);
-  font-weight: 750;
-}
-
-.download-gate-providers {
-  display: flex;
-  gap: 0.6rem;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.download-gate-submit {
-  min-height: 2.42rem;
-  border: 1px solid rgba(56, 189, 248, 0.34);
-  border-radius: 10px;
-  color: var(--ink);
-  background: linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(37, 99, 235, 0.18));
-  font: inherit;
-  font-size: 0.84rem;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.download-gate-submit:disabled {
-  opacity: 0.58;
-  cursor: wait;
-}
-
 .auth-provider-list {
   display: flex;
   gap: 0.6rem;
@@ -1266,34 +1042,6 @@ button.scroll-download-link {
 
 .hero-copy {
   max-width: 52ch;
-}
-
-.hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.52rem;
-  padding: 0.32rem 0.95rem 0.32rem 0.72rem;
-  border-radius: 999px;
-  border: 1px solid rgba(34, 197, 94, 0.42);
-  background: rgba(34, 197, 94, 0.09);
-  color: #86efac;
-  box-shadow: 0 0 28px rgba(34, 197, 94, 0.2), inset 0 1px 0 rgba(255,255,255,0.07);
-  font-size: 0.65rem;
-  font-weight: 800;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  margin-top: 1.4rem;
-  margin-bottom: 0;
-}
-
-.hero-badge-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22c55e;
-  box-shadow: 0 0 10px rgba(34, 197, 94, 0.95), 0 0 20px rgba(34, 197, 94, 0.35);
-  animation: badge-pulse 2.4s ease infinite;
-  flex-shrink: 0;
 }
 
 @keyframes badge-pulse {
@@ -3236,13 +2984,6 @@ html[data-theme="light"] .work-detail {
     background: rgba(14, 22, 52, 0.46);
   }
 
-  .mobile-nav-downloads {
-    display: grid;
-    grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.14fr);
-    gap: 0.4rem;
-    margin-top: 0.22rem;
-  }
-
   .mobile-nav-section-title {
     display: block;
     margin-top: 0.1rem;
@@ -3467,18 +3208,6 @@ html[data-theme="light"] .welcome-line {
   color: #1f1f1f;
 }
 
-html[data-theme="light"] .hero-badge {
-  border-color: rgba(22, 163, 74, 0.38);
-  background: rgba(34, 197, 94, 0.1);
-  color: #15803d;
-  box-shadow: 0 0 20px rgba(34, 197, 94, 0.14);
-}
-
-html[data-theme="light"] .hero-badge-dot {
-  background: #22c55e;
-  box-shadow: 0 0 10px rgba(34, 197, 94, 0.85), 0 0 18px rgba(34, 197, 94, 0.3);
-}
-
 html[data-theme="light"] h1,
 html[data-theme="light"] h2,
 html[data-theme="light"] h3 {
@@ -3669,44 +3398,6 @@ html[data-theme="light"] .scroll-social-link:hover {
   color: var(--accent-strong);
   border-color: rgba(54, 54, 54, 0.28);
   background: rgba(54, 54, 54, 0.05);
-}
-
-html[data-theme="light"] .scroll-downloads {
-  border-top-color: rgba(54, 54, 54, 0.14);
-}
-
-html[data-theme="light"] .scroll-download-link {
-  border-color: rgba(54, 54, 54, 0.18);
-  color: #363636;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.52)),
-    rgba(54, 54, 54, 0.055);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 7px 16px rgba(30, 30, 30, 0.06);
-}
-
-html[data-theme="light"] .scroll-download-resume {
-  border-color: rgba(54, 54, 54, 0.24);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(232, 231, 225, 0.6)),
-    rgba(54, 54, 54, 0.08);
-}
-
-html[data-theme="light"] .scroll-download-letter {
-  border-color: rgba(84, 84, 84, 0.2);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(239, 238, 232, 0.62)),
-    rgba(84, 84, 84, 0.06);
-}
-
-html[data-theme="light"] .scroll-download-link:hover,
-html[data-theme="light"] .scroll-download-link:focus-visible {
-  border-color: rgba(54, 54, 54, 0.34);
-  color: var(--accent-strong);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 10px 22px rgba(30, 30, 30, 0.1);
 }
 
 html[data-theme="light"] .sidebar-inline-links a {

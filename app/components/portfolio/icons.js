@@ -40,14 +40,6 @@ export function SidebarIcon({ type }) {
   }
 }
 
-export function IconDownload() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
-      <path d="M7 2v7M4.5 6.5 7 9l2.5-2.5M2.5 11.5h9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 export function IconMail() {
   return (
     <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>

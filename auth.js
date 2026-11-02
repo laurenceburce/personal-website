@@ -50,7 +50,7 @@ if (process.env.AUTH_MICROSOFT_ENTRA_ID_ID && process.env.AUTH_MICROSOFT_ENTRA_I
 export const { handlers: { GET, POST }, auth } = NextAuth({
   providers,
   secret: process.env.AUTH_SECRET || (
-    process.env.NODE_ENV === "production" ? undefined : "local-development-download-gate-secret"
+    process.env.NODE_ENV === "production" ? undefined : "local-development-auth-secret"
   ),
   session: {
     strategy: "jwt"

@@ -18,7 +18,6 @@ const initialStats = {
   topReferrers: [],
   deviceBreakdown: [],
   browserBreakdown: [],
-  topDownloads: [],
   avgTimeOnPageSeconds: null,
   firstVisitAt: null
 };

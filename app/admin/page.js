@@ -112,7 +112,7 @@ function Header() {
           Analytics Overview
         </h1>
         <p style={{ ...muted, fontSize: "14px", margin: 0 }}>
-          Traffic, engagement, downloads, and known visitors for laurenceburce.com.
+          Traffic, engagement, and known visitors for laurenceburce.com.
         </p>
       </div>
       <div className="admin-header-actions" style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -182,10 +182,10 @@ function ActivityList({ title, items, type }) {
         <p style={{ ...muted, fontSize: "14px", margin: 0 }}>No {type} events yet</p>
       ) : (
         items.slice(0, 8).map((event) => (
-          <div key={`${event.createdAt}-${event.visitorId}-${event.file || event.link}`} className="admin-list-row admin-activity-row" style={{ ...row, alignItems: "start" }}>
+          <div key={`${event.createdAt}-${event.visitorId}-${event.link}`} className="admin-list-row admin-activity-row" style={{ ...row, alignItems: "start" }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ color: "#e2e8f0", fontSize: "13px", fontWeight: "700", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {fmtEventValue(event.file || event.link)}
+                {fmtEventValue(event.link)}
               </div>
               <div style={{ ...muted, fontSize: "12px", marginTop: "3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {fmtVisitor(event)}
@@ -243,7 +243,7 @@ export default async function AdminPage() {
     getAnalyticsStats(),
     getIdentifiedVisitors()
   ]);
-  const totalEngagement = sumCounts(stats.topDownloads) + sumCounts(stats.topLinkClicks);
+  const totalEngagement = sumCounts(stats.topLinkClicks);
   const identifiedRate = stats.uniqueVisitors > 0
     ? `${Math.round((stats.identifiedVisitors / stats.uniqueVisitors) * 100)}%`
     : "0%";
@@ -258,7 +258,7 @@ export default async function AdminPage() {
           <MetricCard label="Unique Visitors" value={fmt(stats.uniqueVisitors)} note="Known browser identities" />
           <MetricCard label="Identified Rate" value={identifiedRate} note={`${fmt(stats.identifiedVisitors)} identified visitors`} />
           <MetricCard label="Avg Time" value={fmtTime(stats.avgTimeOnPageSeconds)} note="Average tracked page duration" />
-          <MetricCard label="Engagement" value={fmt(totalEngagement)} note="Downloads and link clicks" />
+          <MetricCard label="Engagement" value={fmt(totalEngagement)} note="Link clicks" />
           <MetricCard
             label="Tracking Since"
             value={stats.firstVisitAt ? new Date(stats.firstVisitAt).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", timeZoneName: "shortOffset" }) : "—"}
@@ -275,13 +275,11 @@ export default async function AdminPage() {
           </div>
 
           <div className="admin-side-grid" style={{ display: "grid", gap: "14px" }}>
-            <RankedList title="Top Downloads" items={stats.topDownloads} getLabel={(item) => item.file} emptyText="No downloads yet" />
             <RankedList title="Top Links" items={stats.topLinkClicks.slice(0, 8)} getLabel={(item) => item.link} emptyText="No link clicks yet" />
           </div>
         </div>
 
         <div className="admin-activity-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "14px", marginBottom: "18px" }}>
-          <ActivityList title="Recent Downloads" items={stats.downloadEvents} type="download" />
           <ActivityList title="Recent Link Clicks" items={stats.linkClickEvents} type="link click" />
         </div>
 

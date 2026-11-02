@@ -1,2606 +1,2156 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
+import {
+  buildPlanRows,
+  convert,
+  formatDate,
+  getSummary,
+  localDate,
+  addDays,
+  money,
+} from "../lib/financePlanner.mjs";
+import FinanceInstall from "./FinanceInstall";
+import "./finance.css";
 
-const TABS = ["home", "bills", "transactions", "profile"];
-const TAB_ALIASES = {
-  overview: "home",
-  add: "transactions",
-  goals: "profile",
-  accounts: "profile"
-};
-const ACCOUNT_TYPES = ["checking", "savings", "credit", "cash", "investment", "loan", "other"];
-const COLORS = ["#34d399", "#22d3ee", "#fbbf24", "#fb7185", "#a78bfa", "#f97316"];
-const PAY_PERIOD_ANCHOR_START = "2026-07-18";
-const MS_PER_DAY = 86_400_000;
-const TRANSACTION_HISTORY_PAGE_SIZE = 50;
-const WEEKDAY_DUE_ORDER = {
-  monday: 41,
-  tuesday: 42,
-  wednesday: 43,
-  thursday: 44,
-  friday: 45,
-  saturday: 46,
-  sunday: 47
-};
-
-const usdFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2
-});
-
-const phpFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "PHP",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2
-});
-
-const phpRateFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "PHP",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 4
-});
-
-function normalizeTab(tab) {
-  const value = String(tab || "").toLowerCase();
-  const normalized = TAB_ALIASES[value] || value;
-  return TABS.includes(normalized) ? normalized : "home";
-}
-
-function loadPlaidScript() {
-  if (typeof window === "undefined") return Promise.reject(new Error("Plaid Link is only available in the browser."));
-  if (window.Plaid) return Promise.resolve(window.Plaid);
-
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector("script[data-plaid-link]");
-    if (existing) {
-      existing.addEventListener("load", () => resolve(window.Plaid));
-      existing.addEventListener("error", () => reject(new Error("Plaid Link failed to load.")));
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
-    script.async = true;
-    script.dataset.plaidLink = "true";
-    script.onload = () => resolve(window.Plaid);
-    script.onerror = () => reject(new Error("Plaid Link failed to load."));
-    document.head.appendChild(script);
-  });
-}
-
-function money(value, currency = "USD") {
-  return currency === "PHP"
-    ? phpFormatter.format(Number(value || 0))
-    : usdFormatter.format(Number(value || 0));
-}
-
-function compactAmountText(value) {
-  const amount = Math.abs(Number(value || 0));
-  if (!Number.isFinite(amount)) return "0";
-
-  const units = [
-    { value: 1_000_000_000, suffix: "B" },
-    { value: 1_000_000, suffix: "M" },
-    { value: 1_000, suffix: "K" }
-  ];
-  const unit = units.find((item) => amount >= item.value);
-  if (!unit) return amount.toFixed(2);
-
-  const scaled = amount / unit.value;
-  return `${scaled.toFixed(2)}${unit.suffix}`;
-}
-
-function compactMoney(value, currency = "USD") {
-  const amount = Number(value || 0);
-  const sign = amount < 0 ? "-" : "";
-  const symbol = currency === "PHP" ? "\u20b1" : "$";
-  return `${sign}${symbol}${compactAmountText(amount)}`;
-}
-
-function exchangeRateMoney(value) {
-  return phpRateFormatter.format(Number(value || 0));
-}
-
-function toMoneyValue(value) {
-  const amount = Number(value || 0);
-  return Number.isFinite(amount) ? Math.round(amount * 100) / 100 : 0;
-}
-
-function convertAmount(value, fromCurrency, toCurrency, exchangeRate) {
-  const amount = Number(value || 0);
-  const rate = Number(exchangeRate || 1);
-
-  if (fromCurrency === toCurrency) return toMoneyValue(amount);
-  if (fromCurrency === "USD" && toCurrency === "PHP") return toMoneyValue(amount * rate);
-  if (fromCurrency === "PHP" && toCurrency === "USD") return toMoneyValue(amount / rate);
-  return toMoneyValue(amount);
-}
-
-function formatRateTimestamp(value) {
-  if (!value) return "Not refreshed yet";
-  return new Date(value).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function colorForConnection(provider) {
-  return provider === "brankas" ? "#fbbf24" : "#22d3ee";
-}
-
-function niceAxisMax(value) {
-  const amount = Math.abs(Number(value || 0));
-  if (!Number.isFinite(amount) || amount <= 0) return 100;
-
-  const exponent = Math.floor(Math.log10(amount));
-  const base = 10 ** exponent;
-  const fraction = amount / base;
-  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-
-  return niceFraction * base;
-}
-
-function shortChartLabel(label, maxLength = 12) {
-  const text = String(label || "").trim();
-  return text.length > maxLength ? `${text.slice(0, Math.max(1, maxLength - 2))}...` : text;
-}
-
-function dueDayFromLabel(dueLabel) {
-  const text = String(dueLabel || "").trim().toLowerCase();
-  const exactDay = text.match(/^([1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?$/);
-  const looseDay = text.match(/\b([1-9]|[12][0-9]|3[01])\b/);
-  const day = Number(exactDay?.[1] || looseDay?.[1] || 0);
-  return day >= 1 && day <= 31 ? day : null;
-}
-
-function dueSortValue(dueLabel) {
-  const day = dueDayFromLabel(dueLabel);
-  if (day) return day;
-
-  const text = String(dueLabel || "").trim().toLowerCase();
-  return WEEKDAY_DUE_ORDER[text] || 99;
-}
-
-function sortBillsByDueDate(first, second) {
-  const dueDiff = dueSortValue(first.dueLabel) - dueSortValue(second.dueLabel);
-  if (dueDiff !== 0) return dueDiff;
-  return String(first.name || "").localeCompare(String(second.name || ""));
-}
-
-function billDueDate(bill, month) {
-  const day = dueDayFromLabel(bill.dueLabel);
-  if (!day) return null;
-
-  const [year, monthNumber] = String(month || "").split("-").map(Number);
-  if (!year || !monthNumber) return null;
-
-  const lastDay = new Date(year, monthNumber, 0).getDate();
-  return new Date(year, monthNumber - 1, Math.min(day, lastDay), 23, 59, 59, 999);
-}
-
-function monthName(month) {
-  return new Date(`${month}-01T12:00:00`).toLocaleDateString("en-US", { month: "short" });
-}
-
-function formatShortDate(value) {
-  if (!value) return "";
-  return new Date(`${value}T12:00:00`).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric"
-  });
-}
-
-function formatMonthLabel(month) {
-  if (!month) return "Month";
-  return new Date(`${month}-01T12:00:00`).toLocaleDateString("en-US", {
-    month: "short",
-    year: "numeric"
-  });
-}
-
-function utcTimeForDate(value) {
-  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!match) return Number.NaN;
-  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-}
-
-function dateFromUtcTime(value) {
-  return new Date(value).toISOString().slice(0, 10);
-}
-
-function latestTransactionDate(transactions, fallbackDate) {
-  return [...transactions]
-    .map((transaction) => transaction.date)
-    .filter(Boolean)
-    .sort()
-    .at(-1) || fallbackDate;
-}
-
-function payPeriodForDate(value) {
-  const dateTime = utcTimeForDate(value);
-  const anchorTime = utcTimeForDate(PAY_PERIOD_ANCHOR_START);
-  const safeDateTime = Number.isFinite(dateTime) ? dateTime : anchorTime;
-  const periodIndex = Math.floor((safeDateTime - anchorTime) / (MS_PER_DAY * 14));
-  const startTime = anchorTime + periodIndex * MS_PER_DAY * 14;
-  const endTime = startTime + MS_PER_DAY * 13;
-  const start = dateFromUtcTime(startTime);
-  const end = dateFromUtcTime(endTime);
-
-  return {
-    id: start,
-    start,
-    end,
-    label: `${formatShortDate(start)} - ${formatShortDate(end)}`,
-    detail: `${start} to ${end}`
-  };
-}
-
-function buildMonthOptions(transactions, fallbackMonth) {
-  const months = new Set([
-    fallbackMonth,
-    ...transactions.map((transaction) => String(transaction.date || "").slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month))
-  ]);
-
-  return [...months].sort().reverse();
-}
-
-function buildYearOptions(transactions, fallbackYear) {
-  const years = new Set([
-    fallbackYear,
-    ...transactions.map((transaction) => String(transaction.date || "").slice(0, 4)).filter((year) => /^\d{4}$/.test(year))
-  ]);
-
-  return [...years].sort().reverse();
-}
-
-function buildPayPeriodOptions(transactions, fallbackDate) {
-  const periods = new Map();
-  const dates = transactions.map((transaction) => transaction.date).filter(Boolean);
-  const sourceDates = dates.length > 0 ? dates : [fallbackDate];
-
-  for (const date of sourceDates) {
-    const period = payPeriodForDate(date);
-    periods.set(period.id, period);
-  }
-
-  return [...periods.values()].sort((first, second) => second.start.localeCompare(first.start));
-}
-
-function transactionInPayPeriod(transaction, period) {
-  if (!period || !transaction.date) return false;
-  return transaction.date >= period.start && transaction.date <= period.end;
-}
-
-function transactionMatchesDateFilter(transaction, filter) {
-  const date = String(transaction.date || "");
-  if (!date) return false;
-  if (filter.from && date < filter.from) return false;
-  if (filter.to && date > filter.to) return false;
-  return true;
-}
-
-function formatBillDue(bill, month) {
-  const dueDate = billDueDate(bill, month);
-  if (dueDate) {
-    return dueDate.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric"
-    });
-  }
-
-  const label = String(bill.dueLabel || "open").trim();
-  const weekday = label.toLowerCase();
-  if (WEEKDAY_DUE_ORDER[weekday]) {
-    return `every ${label.charAt(0).toUpperCase()}${label.slice(1).toLowerCase()} in ${monthName(month)}`;
-  }
-
-  return `${monthName(month)} - ${label}`;
-}
-
-function joinSourceParts(parts) {
-  const seen = new Set();
-  const cleanParts = parts
-    .map((part) => String(part || "").trim())
-    .filter(Boolean)
-    .filter((part) => {
-      const key = part.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-  return cleanParts.length > 0 ? cleanParts.join(" - ") : "Account/bank not set";
-}
-
-function transactionSourceLabel(transaction) {
-  return joinSourceParts([
-    transaction.accountName,
-    transaction.institutionName,
-    transaction.provider
-  ]);
-}
-
-function billSourceLabel(bill) {
-  const match = bill.matchedTransaction || {};
-  return joinSourceParts([
-    bill.paymentAccount,
-    match.accountName,
-    match.institutionName,
-    match.provider
-  ]);
-}
-
-const TRANSACTION_TEXT_STOP_WORDS = new Set([
-  "the",
-  "and",
-  "to",
-  "of",
-  "in",
-  "on",
-  "for",
-  "with",
-  "from",
-  "into",
-  "acct",
-  "account",
-  "payment",
-  "pmt",
-  "bill",
-  "auto",
-  "online",
-  "mobile"
-]);
-
-const TRANSFER_HINT_WORDS = [
-  "transfer",
-  "xfer",
-  "payment",
-  "pmt",
-  "autopay",
-  "automatic",
-  "ach",
-  "deposit",
-  "withdrawal",
-  "withdraw",
-  "zelle",
-  "venmo",
-  "paypal",
-  "gcash",
-  "cashapp"
+const NAV = [
+  { id: "home", label: "Overview", icon: "grid" },
+  { id: "bills", label: "Bills", icon: "receipt" },
+  { id: "spending", label: "Spending plan", icon: "chart" },
+  { id: "plans", label: "Budget plans", icon: "calendar" },
 ];
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+const uid = () => globalThis.crypto.randomUUID();
+const amount = (value) => Number(value || 0);
+const signed = (value, currency) =>
+  `${value > 0 ? "+" : ""}${money(value, currency)}`;
+const rateMoney = (value) =>
+  new Intl.NumberFormat("en-PH", {
+    style: "currency",
+    currency: "PHP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  }).format(value);
 
-const FEE_WORDS = new Set(["fee", "fees", "charge", "charges", "maintenance", "service"]);
-const REVERSAL_WORDS = new Set(["waived", "waiver", "refund", "refunded", "reversal", "reversed", "credit"]);
-
-function transactionTitle(transaction) {
-  return transaction.merchant || transaction.category || "Transaction";
-}
-
-function tokenizeFinanceText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/&/g, " and ")
-    .match(/[a-z0-9]+/g) || [];
-}
-
-function usefulFinanceTokens(value) {
-  return tokenizeFinanceText(value)
-    .filter((token) => token.length > 1 && !TRANSACTION_TEXT_STOP_WORDS.has(token));
-}
-
-function financeTextMatches(source, target) {
-  const sourceTokens = tokenizeFinanceText(source);
-  const targetTokens = usefulFinanceTokens(target);
-  if (sourceTokens.length === 0 || targetTokens.length === 0) return false;
-
-  const sourceText = sourceTokens.join(" ");
-  const targetText = targetTokens.join(" ");
-  if (sourceText.includes(targetText) || targetText.includes(sourceText)) return true;
-
-  const matches = targetTokens.filter((targetToken) => (
-    sourceTokens.some((sourceToken) => sourceToken === targetToken || sourceToken.includes(targetToken) || targetToken.includes(sourceToken))
-  ));
-
-  return matches.length >= Math.min(2, targetTokens.length);
-}
-
-function strictFinanceTextMatches(source, target) {
-  const sourceTokens = tokenizeFinanceText(source);
-  const targetTokens = usefulFinanceTokens(target);
-  if (sourceTokens.length === 0 || targetTokens.length === 0) return false;
-
-  const sourceTokenSet = new Set(sourceTokens);
-  const exactMatches = targetTokens.filter((targetToken) => sourceTokenSet.has(targetToken));
-  if (exactMatches.length === targetTokens.length) return true;
-
-  if (targetTokens.length === 1) {
-    const targetToken = targetTokens[0];
-    return sourceTokens.some((sourceToken) => sourceToken === targetToken);
-  }
-
-  return exactMatches.length >= Math.max(2, Math.ceil(targetTokens.length * 0.75));
-}
-
-function transactionSearchText(transaction) {
-  return [
-    transaction.merchant,
-    transaction.category,
-    transaction.note
-  ].filter(Boolean).join(" ");
-}
-
-function transactionAmountUsd(transaction, exchangeRate) {
-  return Math.abs(convertAmount(transaction.amount, transaction.currency, "USD", exchangeRate));
-}
-
-function transactionSignedUsd(transaction, exchangeRate) {
-  const amountUsd = transactionAmountUsd(transaction, exchangeRate);
-  return transaction.kind === "income" ? amountUsd : -amountUsd;
-}
-
-function transactionSignedNativeAmount(transaction) {
-  const amount = Number(transaction.amount || 0);
-  return transaction.kind === "income" ? amount : -amount;
-}
-
-function transactionMonth(transaction) {
-  return String(transaction.date || "").slice(0, 7) || "";
-}
-
-function dateDistanceInDays(firstDate, secondDate) {
-  const first = new Date(`${firstDate}T12:00:00Z`).getTime();
-  const second = new Date(`${secondDate}T12:00:00Z`).getTime();
-  if (!Number.isFinite(first) || !Number.isFinite(second)) return 999;
-  return Math.abs(Math.round((first - second) / 86_400_000));
-}
-
-function amountClose(firstAmount, secondAmount, percent = 0.08) {
-  const first = Math.abs(Number(firstAmount || 0));
-  const second = Math.abs(Number(secondAmount || 0));
-  if (!first || !second) return false;
-
-  const tolerance = Math.max(2, Math.min(first, second) * percent);
-  return Math.abs(first - second) <= tolerance;
-}
-
-function billAmountClose(firstAmount, secondAmount) {
-  const first = Math.abs(Number(firstAmount || 0));
-  const second = Math.abs(Number(secondAmount || 0));
-  if (!first || !second) return false;
-
-  const tolerance = Math.max(0.25, Math.min(5, Math.min(first, second) * 0.05));
-  return Math.abs(first - second) <= tolerance;
-}
-
-function textHasAnyToken(value, words) {
-  const tokens = tokenizeFinanceText(value);
-  return tokens.some((token) => words.has(token));
-}
-
-function billAllowsFeeTransaction(bill, transaction) {
-  const transactionLooksLikeFee = textHasAnyToken(transactionSearchText(transaction), FEE_WORDS);
-  if (!transactionLooksLikeFee) return true;
-  return textHasAnyToken(bill.name, FEE_WORDS);
-}
-
-function findBillForTransaction(transaction, recurringBills, exchangeRate) {
-  if (transaction.kind !== "expense" || transaction.pending) return null;
-
-  const transactionUsd = transactionAmountUsd(transaction, exchangeRate);
-  const transactionText = transactionSearchText(transaction);
-  const sourceText = transactionSourceLabel(transaction);
-  const matches = recurringBills
-    .map((bill) => {
-      const billUsd = Number(bill.amountUsd || 0);
-      const matchedById = String(bill.matchedTransaction?.id || "") === String(transaction.id);
-      const nameMatched = strictFinanceTextMatches(transactionText, bill.name);
-      const sourceMatched = bill.paymentAccount ? financeTextMatches(sourceText, bill.paymentAccount) : false;
-      const amountMatched = billUsd > 0 ? billAmountClose(transactionUsd, billUsd) : true;
-
-      if (!matchedById && (!nameMatched || !billAllowsFeeTransaction(bill, transaction))) return null;
-
-      return {
-        bill,
-        score: (matchedById ? 100 : 0) + (nameMatched ? 12 : 0) + (sourceMatched ? 4 : 0) + (amountMatched ? 4 : 0)
-      };
-    })
-    .filter(Boolean)
-    .sort((first, second) => second.score - first.score || String(first.bill.name || "").localeCompare(String(second.bill.name || "")));
-
-  return matches[0]?.bill || null;
-}
-
-function relatedFeeTokens(transaction) {
-  return usefulFinanceTokens(transactionSearchText(transaction))
-    .filter((token) => !REVERSAL_WORDS.has(token));
-}
-
-function relatedFeeTextMatches(outgoing, incoming) {
-  const outgoingTokens = new Set(relatedFeeTokens(outgoing));
-  const incomingTokens = relatedFeeTokens(incoming);
-  if (outgoingTokens.size === 0 || incomingTokens.length === 0) return false;
-
-  const shared = incomingTokens.filter((token) => outgoingTokens.has(token));
-  return shared.length >= Math.min(2, Math.max(1, incomingTokens.length - 1));
-}
-
-function feeReversalPairScore(outgoing, incoming, exchangeRate) {
-  if (outgoing.kind !== "expense" || incoming.kind !== "income") return -1;
-  if (String(outgoing.id) === String(incoming.id)) return -1;
-  if (outgoing.accountId && incoming.accountId && String(outgoing.accountId) !== String(incoming.accountId)) return -1;
-
-  const outgoingText = transactionSearchText(outgoing);
-  const incomingText = transactionSearchText(incoming);
-  const hasFee = textHasAnyToken(outgoingText, FEE_WORDS) || textHasAnyToken(incomingText, FEE_WORDS);
-  const hasReversal = textHasAnyToken(incomingText, REVERSAL_WORDS) || textHasAnyToken(outgoingText, REVERSAL_WORDS);
-  if (!hasFee || !hasReversal || !relatedFeeTextMatches(outgoing, incoming)) return -1;
-
-  const outgoingUsd = transactionAmountUsd(outgoing, exchangeRate);
-  const incomingUsd = transactionAmountUsd(incoming, exchangeRate);
-  if (!billAmountClose(outgoingUsd, incomingUsd)) return -1;
-
-  const dayDistance = dateDistanceInDays(outgoing.date, incoming.date);
-  if (dayDistance > 7) return -1;
-
-  return 120 - dayDistance * 4 - Math.abs(outgoingUsd - incomingUsd);
-}
-
-function transferHintScore(first, second) {
-  const text = tokenizeFinanceText([
-    transactionSearchText(first),
-    transactionSearchText(second)
-  ].join(" "));
-
-  return TRANSFER_HINT_WORDS.reduce((score, word) => (
-    text.some((token) => token === word || token.includes(word)) ? score + 1 : score
-  ), 0);
-}
-
-function transferPairScore(outgoing, incoming, exchangeRate) {
-  if (outgoing.kind !== "expense" || incoming.kind !== "income") return -1;
-  if (String(outgoing.id) === String(incoming.id)) return -1;
-  if (outgoing.accountId && incoming.accountId && String(outgoing.accountId) === String(incoming.accountId)) return -1;
-
-  const outgoingUsd = transactionAmountUsd(outgoing, exchangeRate);
-  const incomingUsd = transactionAmountUsd(incoming, exchangeRate);
-  if (!amountClose(outgoingUsd, incomingUsd, 0.04)) return -1;
-
-  const dayDistance = dateDistanceInDays(outgoing.date, incoming.date);
-  if (dayDistance > 4) return -1;
-
-  const hintScore = transferHintScore(outgoing, incoming);
-  if (hintScore === 0) return -1;
-
-  const amountDiff = Math.abs(outgoingUsd - incomingUsd);
-  return 100 + hintScore * 10 - dayDistance * 6 - amountDiff;
-}
-
-function transactionLooksLikeCreditAccount(transaction) {
-  const text = tokenizeFinanceText([
-    transaction.accountType,
-    transaction.accountName,
-    transaction.category,
-    transaction.merchant,
-    transaction.note
-  ].join(" "));
-
-  return text.includes("credit") || text.includes("card");
-}
-
-function transactionLooksLikePayment(transaction) {
-  const text = tokenizeFinanceText([
-    transaction.category,
-    transaction.merchant,
-    transaction.note
-  ].join(" "));
-
-  return text.some((token) => ["payment", "pmt", "pay", "paid"].includes(token))
-    || (text.includes("thank") && text.includes("you"));
-}
-
-function isCreditCardPaymentGroup(group) {
-  if (group.type !== "transfer") return false;
-  return group.transactions.some(transactionLooksLikeCreditAccount)
-    && group.transactions.some(transactionLooksLikePayment);
-}
-
-function billExpectedAmountUsd(bill, exchangeRate) {
-  const amountUsd = Number(bill?.amountUsd || 0);
-  if (amountUsd > 0) return toMoneyValue(amountUsd);
-  return toMoneyValue(convertAmount(bill?.amountPhp || 0, "PHP", "USD", exchangeRate));
-}
-
-function billActualPaidUsd(bill, exchangeRate) {
-  if (bill?.matchedTransaction) return transactionAmountUsd(bill.matchedTransaction, exchangeRate);
-  return bill?.isPaid ? billExpectedAmountUsd(bill, exchangeRate) : 0;
-}
-
-function billVarianceForGroup(group, transactionsInGroup, exchangeRate) {
-  if (group.type !== "bill" || !group.bill) return null;
-
-  const expectedUsd = billExpectedAmountUsd(group.bill, exchangeRate);
-  const actualUsd = toMoneyValue(transactionsInGroup
-    .filter((transaction) => transaction.kind === "expense")
-    .reduce((sum, transaction) => sum + transactionAmountUsd(transaction, exchangeRate), 0));
-  if (expectedUsd <= 0 || actualUsd <= 0) return null;
-
-  const differenceUsd = toMoneyValue(actualUsd - expectedUsd);
-  if (Math.abs(differenceUsd) < 0.01) return null;
-
-  return {
-    type: differenceUsd > 0 ? "over" : "overflow",
-    amountUsd: Math.abs(differenceUsd),
-    expectedUsd,
-    actualUsd
+function Icon({ name, size = 20 }) {
+  const paths = {
+    grid: (
+      <>
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </>
+    ),
+    receipt: (
+      <>
+        <path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" />
+        <path d="M9 7h6M9 11h6M9 15h3" />
+      </>
+    ),
+    chart: <path d="M4 20V10m8 10V4m8 16v-7M2 21h20" />,
+    calendar: (
+      <>
+        <rect x="3" y="5" width="18" height="16" rx="3" />
+        <path d="M7 3v4m10-4v4M3 11h18M8 15h2m4 0h2" />
+      </>
+    ),
+    wallet: (
+      <>
+        <path d="M20 8V5a2 2 0 0 0-2-2L5 6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h15V8H5" />
+        <path d="M20 12h-5v5h5M17 14.5h.01" />
+      </>
+    ),
+    arrow: <path d="M5 12h14m-5-5 5 5-5 5" />,
+    plus: <path d="M12 5v14M5 12h14" />,
+    edit: (
+      <>
+        <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z" />
+      </>
+    ),
+    trash: <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />,
+    close: <path d="m6 6 12 12M6 18 18 6" />,
+    refresh: (
+      <>
+        <path d="M20 7v5h-5M4 17v-5h5" />
+        <path d="M6 7a7 7 0 0 1 12-2l2 3M4 16l2 3a7 7 0 0 0 12-2" />
+      </>
+    ),
+    lock: (
+      <>
+        <rect x="5" y="10" width="14" height="11" rx="2" />
+        <path d="M8 10V7a4 4 0 0 1 8 0v3m-4 5v2" />
+      </>
+    ),
+    exit: <path d="M9 4H4v16h5m6-13 5 5-5 5M8 12h12" />,
+    globe: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <ellipse cx="12" cy="12" rx="4" ry="9" />
+        <path d="M3 12h18" />
+      </>
+    ),
+    check: <path d="m5 12 4 4L19 6" />,
+    coin: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M15 8h-4a2 2 0 0 0 0 4h2a2 2 0 0 1 0 4H9m3-10v12" />
+      </>
+    ),
   };
-}
-
-function buildFundsExpenseSeries(transactions, exchangeRate) {
-  const sortedTransactions = [...transactions].sort((first, second) => (
-    String(first.date || "").localeCompare(String(second.date || "")) || Number(first.id || 0) - Number(second.id || 0)
-  ));
-  let incomeUsd = 0;
-  let expenseUsd = 0;
-
-  return sortedTransactions.map((transaction, index) => {
-    const amountUsd = transactionAmountUsd(transaction, exchangeRate);
-    if (transaction.kind === "income") {
-      incomeUsd = toMoneyValue(incomeUsd + amountUsd);
-    } else {
-      expenseUsd = toMoneyValue(expenseUsd + amountUsd);
-    }
-
-    return {
-      id: transaction.id || `${transaction.date}-${index}`,
-      date: transaction.date,
-      incomeUsd,
-      expenseUsd,
-      transaction,
-      amountUsd
-    };
-  });
-}
-
-function buildLinePath(items, valueKey, xForIndex, yForValue) {
-  return items
-    .map((item, index) => `${index === 0 ? "M" : "L"} ${xForIndex(index).toFixed(2)} ${yForValue(item[valueKey]).toFixed(2)}`)
-    .join(" ");
-}
-
-function sourceName(transaction) {
-  return joinSourceParts([
-    transaction.accountName,
-    transaction.institutionName
-  ]);
-}
-
-function addTransactionToHistoryGroup(group, transaction) {
-  const id = String(transaction.id);
-  if (group.transactionIds.has(id)) return;
-
-  group.transactionIds.add(id);
-  group.transactions.push(transaction);
-  if (!group.date || String(transaction.date || "") > group.date) group.date = transaction.date;
-}
-
-function buildTransactionHistoryGroups(transactions, recurringBills, exchangeRate) {
-  const sortedTransactions = [...transactions].sort((first, second) => (
-    String(second.date || "").localeCompare(String(first.date || "")) || Number(second.id || 0) - Number(first.id || 0)
-  ));
-  const groups = new Map();
-  const assignedGroupIds = new Map();
-  const pairedTransferIds = new Set();
-
-  function ensureBillGroup(bill, month, transaction) {
-    const id = `bill-${bill.id}-${month || transactionMonth(transaction) || "open"}`;
-    if (!groups.has(id)) {
-      groups.set(id, {
-        id,
-        type: "bill",
-        title: bill.name || "Recurring bill",
-        bill,
-        month: month || transactionMonth(transaction),
-        transactions: [],
-        transactionIds: new Set(),
-        date: transaction.date || "",
-        transfer: null
-      });
-    }
-
-    return groups.get(id);
-  }
-
-  function ensureTransferGroup(outgoing, incoming) {
-    const id = `transfer-${Math.min(Number(outgoing.id), Number(incoming.id))}-${Math.max(Number(outgoing.id), Number(incoming.id))}`;
-    if (!groups.has(id)) {
-      groups.set(id, {
-        id,
-        type: "transfer",
-        title: "Transfer",
-        bill: null,
-        month: transactionMonth(outgoing) || transactionMonth(incoming),
-        transactions: [],
-        transactionIds: new Set(),
-        date: [outgoing.date, incoming.date].filter(Boolean).sort().pop() || "",
-        transfer: { outgoing, incoming }
-      });
-    }
-
-    return groups.get(id);
-  }
-
-  function ensureAdjustmentGroup(outgoing, incoming) {
-    const id = `adjustment-${Math.min(Number(outgoing.id), Number(incoming.id))}-${Math.max(Number(outgoing.id), Number(incoming.id))}`;
-    if (!groups.has(id)) {
-      groups.set(id, {
-        id,
-        type: "adjustment",
-        title: transactionTitle(outgoing),
-        bill: null,
-        month: transactionMonth(outgoing) || transactionMonth(incoming),
-        transactions: [],
-        transactionIds: new Set(),
-        date: [outgoing.date, incoming.date].filter(Boolean).sort().pop() || "",
-        transfer: null,
-        adjustment: { outgoing, incoming }
-      });
-    }
-
-    return groups.get(id);
-  }
-
-  for (const transaction of sortedTransactions) {
-    const bill = findBillForTransaction(transaction, recurringBills, exchangeRate);
-    if (!bill) continue;
-
-    const group = ensureBillGroup(bill, transactionMonth(transaction), transaction);
-    addTransactionToHistoryGroup(group, transaction);
-    assignedGroupIds.set(String(transaction.id), group.id);
-  }
-
-  for (const outgoing of sortedTransactions) {
-    if (outgoing.kind !== "expense") continue;
-
-    const bestIncoming = sortedTransactions
-      .filter((transaction) => transaction.kind === "income" && !assignedGroupIds.has(String(transaction.id)))
-      .map((incoming) => ({ incoming, score: feeReversalPairScore(outgoing, incoming, exchangeRate) }))
-      .filter((item) => item.score > 0)
-      .sort((first, second) => second.score - first.score)[0]?.incoming;
-
-    if (!bestIncoming) continue;
-
-    const existingGroupId = assignedGroupIds.get(String(outgoing.id));
-    const group = existingGroupId
-      ? groups.get(existingGroupId)
-      : ensureAdjustmentGroup(outgoing, bestIncoming);
-
-    if (!group.adjustment) group.adjustment = { outgoing, incoming: bestIncoming };
-    addTransactionToHistoryGroup(group, outgoing);
-    addTransactionToHistoryGroup(group, bestIncoming);
-    assignedGroupIds.set(String(outgoing.id), group.id);
-    assignedGroupIds.set(String(bestIncoming.id), group.id);
-  }
-
-  for (const outgoing of sortedTransactions) {
-    if (outgoing.kind !== "expense" || pairedTransferIds.has(String(outgoing.id)) || assignedGroupIds.has(String(outgoing.id))) continue;
-
-    const bestIncoming = sortedTransactions
-      .filter((transaction) => (
-        transaction.kind === "income"
-          && !pairedTransferIds.has(String(transaction.id))
-          && !assignedGroupIds.has(String(transaction.id))
-      ))
-      .map((incoming) => ({ incoming, score: transferPairScore(outgoing, incoming, exchangeRate) }))
-      .filter((item) => item.score > 0)
-      .sort((first, second) => second.score - first.score)[0]?.incoming;
-
-    if (!bestIncoming) continue;
-
-    const existingGroupId = assignedGroupIds.get(String(outgoing.id)) || assignedGroupIds.get(String(bestIncoming.id));
-    const group = existingGroupId
-      ? groups.get(existingGroupId)
-      : ensureTransferGroup(outgoing, bestIncoming);
-
-    if (!group.transfer) group.transfer = { outgoing, incoming: bestIncoming };
-    addTransactionToHistoryGroup(group, outgoing);
-    addTransactionToHistoryGroup(group, bestIncoming);
-    assignedGroupIds.set(String(outgoing.id), group.id);
-    assignedGroupIds.set(String(bestIncoming.id), group.id);
-    pairedTransferIds.add(String(outgoing.id));
-    pairedTransferIds.add(String(bestIncoming.id));
-  }
-
-  for (const transaction of sortedTransactions) {
-    if (assignedGroupIds.has(String(transaction.id))) continue;
-
-    const id = `transaction-${transaction.id}`;
-    groups.set(id, {
-      id,
-      type: "single",
-      title: transactionTitle(transaction),
-      bill: null,
-      month: transactionMonth(transaction),
-      transactions: [transaction],
-      transactionIds: new Set([String(transaction.id)]),
-      date: transaction.date || "",
-      transfer: null
-    });
-  }
-
-  return [...groups.values()]
-    .map((group) => {
-      const transactionsInGroup = [...group.transactions].sort((first, second) => (
-        String(second.date || "").localeCompare(String(first.date || "")) || Number(second.id || 0) - Number(first.id || 0)
-      ));
-      const signedTotalUsd = toMoneyValue(transactionsInGroup.reduce((sum, transaction) => sum + transactionSignedUsd(transaction, exchangeRate), 0));
-      const transferAmountUsd = group.transfer
-        ? Math.max(
-            transactionAmountUsd(group.transfer.outgoing, exchangeRate),
-            transactionAmountUsd(group.transfer.incoming, exchangeRate)
-          )
-        : Math.abs(signedTotalUsd);
-      const firstTransaction = transactionsInGroup[0];
-      const subtitle = group.type === "bill"
-        ? `${formatShortDate(group.date)} - ${billSourceLabel(group.bill)}`
-        : group.type === "transfer"
-          ? `${formatShortDate(group.date)} - ${sourceName(group.transfer.outgoing)} to ${sourceName(group.transfer.incoming)}`
-          : group.type === "adjustment"
-            ? `${formatShortDate(group.date)} - ${transactionSourceLabel(firstTransaction || {})}`
-          : `${formatShortDate(firstTransaction?.date)} - ${transactionSourceLabel(firstTransaction || {})}`;
-      const isCreditCardPayment = isCreditCardPaymentGroup({ ...group, transactions: transactionsInGroup });
-      const billVariance = billVarianceForGroup(group, transactionsInGroup, exchangeRate);
-      const amountUsd = group.type === "transfer"
-        ? toMoneyValue(transferAmountUsd)
-        : group.type === "bill"
-          ? signedTotalUsd || -Number(group.bill?.amountUsd || 0)
-          : signedTotalUsd;
-
-      return {
-        ...group,
-        title: isCreditCardPayment ? "Credit Card Payment" : group.title,
-        transactions: transactionsInGroup,
-        subtitle,
-        billVariance,
-        amountUsd: toMoneyValue(amountUsd),
-        tone: group.type === "transfer" || group.type === "adjustment" ? "info" : amountUsd >= 0 ? "good" : "bad",
-        itemCount: transactionsInGroup.length + (group.bill ? 1 : 0)
-      };
-    })
-    .sort((first, second) => (
-      String(second.date || "").localeCompare(String(first.date || "")) || first.title.localeCompare(second.title)
-    ));
-}
-
-function isBillOverdue(bill, month) {
-  if (bill.isPaid) return false;
-
-  const dueDate = billDueDate(bill, month);
-  if (!dueDate) return false;
-
-  const [year, monthNumber] = String(month || "").split("-").map(Number);
-  if (!year || !monthNumber) return false;
-
-  const now = new Date();
-  const monthStart = new Date(year, monthNumber - 1, 1);
-  const nextMonthStart = new Date(year, monthNumber, 1);
-
-  if (now < monthStart) return false;
-  if (now >= nextMonthStart) return true;
-  return dueDate < now;
-}
-
-function todayForMonth(month) {
-  const today = new Date().toISOString().slice(0, 10);
-  return today.startsWith(month) ? today : `${month}-01`;
-}
-
-function defaultTransaction(month, accounts, displayCurrency = "USD") {
-  return {
-    date: todayForMonth(month),
-    kind: "expense",
-    amount: "",
-    currency: displayCurrency,
-    category: "Bills",
-    accountId: accounts[0]?.id ? String(accounts[0].id) : "",
-    merchant: "",
-    note: ""
-  };
-}
-
-function defaultBill(displayCurrency = "USD") {
-  return {
-    id: null,
-    name: "",
-    amount: "",
-    currency: displayCurrency,
-    dueLabel: "",
-    paymentAccount: "",
-    isPaid: false,
-    isAutopay: false
-  };
-}
-
-function defaultGoal(displayCurrency = "USD") {
-  return {
-    id: null,
-    name: "",
-    currency: displayCurrency,
-    targetAmount: "",
-    savedAmount: "",
-    category: "PC Build",
-    note: ""
-  };
-}
-
-function defaultAccount() {
-  return {
-    id: null,
-    name: "",
-    type: "checking",
-    openingBalance: "",
-    color: COLORS[0]
-  };
-}
-
-function progressClass(percent) {
-  if (percent >= 100) return "finance-progress finance-progress-over";
-  if (percent >= 80) return "finance-progress finance-progress-warn";
-  return "finance-progress";
-}
-
-function Field({ label, children }) {
   return (
-    <label className="finance-field">
-      <span>{label}</span>
-      {children}
-    </label>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {paths[name] || paths.wallet}
+    </svg>
   );
 }
 
-function Metric({ label, value, tone, detail }) {
+function Button({
+  children,
+  icon,
+  variant = "secondary",
+  className = "",
+  ...props
+}) {
   return (
-    <article className="finance-metric">
+    <button
+      type="button"
+      className={`fp-button fp-${variant} ${className}`}
+      {...props}
+    >
+      {icon && <Icon name={icon} size={16} />}
+      {children}
+    </button>
+  );
+}
+function Field({ label, children, hint }) {
+  return (
+    <label className="fp-field">
       <span>{label}</span>
-      <strong className={tone ? `finance-${tone}` : ""}>{value}</strong>
-      {detail ? <small>{detail}</small> : null}
+      {children}
+      {hint && <small>{hint}</small>}
+    </label>
+  );
+}
+function CurrencySelect({ value, onChange }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="USD">USD · US dollar</option>
+      <option value="PHP">PHP · Philippine peso</option>
+    </select>
+  );
+}
+function Modal({ title, children, onClose, busy }) {
+  const dialog = useRef(null);
+  useEffect(() => {
+    const previous = window.document.activeElement;
+    const element = dialog.current;
+    element.showModal();
+    return () => {
+      element.close();
+      previous?.focus();
+    };
+  }, []);
+  return (
+    <dialog
+      aria-labelledby="fp-dialog-title"
+      className="fp-modal"
+      ref={dialog}
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!busy) onClose();
+      }}
+      onClick={(e) => {
+        if (e.target === dialog.current && !busy) onClose();
+      }}
+    >
+      <header>
+        <div>
+          <p className="fp-eyebrow">PERSONAL FINANCE</p>
+          <h2 id="fp-dialog-title">{title}</h2>
+        </div>
+        <Button
+          icon="close"
+          className="fp-icon-button"
+          aria-label="Close dialog"
+          onClick={onClose}
+          disabled={busy}
+        />
+      </header>
+      {children}
+    </dialog>
+  );
+}
+function DueLabel({ bill }) {
+  if (!bill.dueDay)
+    return (
+      <span className="fp-needs-date">
+        Date not set
+        {bill.cadence === "annual"
+          ? ` · ${bill.dueMonths.map((month) => MONTHS[month - 1]).join(", ")}`
+          : ""}
+      </span>
+    );
+  return bill.cadence === "annual" ? (
+    <>
+      {bill.dueMonths
+        .map((month) => `${MONTHS[month - 1]} ${bill.dueDay}`)
+        .join(" · ")}
+    </>
+  ) : (
+    <>Day {bill.dueDay}</>
+  );
+}
+function Empty({ icon = "receipt", title, children, action }) {
+  return (
+    <div className="fp-empty">
+      <span className="fp-empty-icon">
+        <Icon name={icon} size={27} />
+      </span>
+      <h3>{title}</h3>
+      <p>{children}</p>
+      {action}
+    </div>
+  );
+}
+function Metric({ label, value, detail, icon, accent }) {
+  return (
+    <article className={`fp-metric ${accent ? "fp-metric-accent" : ""}`}>
+      <div className="fp-metric-label">
+        {label}
+        <Icon name={icon} size={18} />
+      </div>
+      <strong>{value}</strong>
+      <small>{detail}</small>
     </article>
   );
 }
 
-function Panel({ title, action, children, className = "" }) {
+function SpendingTable({
+  document,
+  summary,
+  rate,
+  onAdd,
+  onEdit,
+  onDelete,
+  compact = false,
+}) {
+  const rows = [
+    [
+      "Income",
+      summary.incomePerPeriodUsd,
+      "Your salary per pay period",
+      "income",
+    ],
+    [
+      "Bills in USD",
+      -summary.billsUsdPerPeriod,
+      "Monthly USD bills, set aside per period",
+      "usd",
+    ],
+    [
+      "Bills in PHP",
+      -summary.billsPhpPerPeriodUsd,
+      `${money(summary.billsPhpPerPeriod, "PHP")} per period`,
+      "php",
+    ],
+    [
+      "Annual bills",
+      -summary.annualPerPeriodUsd,
+      "A little now, ready when it’s due",
+      "annual",
+    ],
+  ];
   return (
-    <section className={`finance-panel ${className}`.trim()}>
-      <header>
-        <h2>{title}</h2>
-        {action}
-      </header>
-      {children}
-    </section>
+    <div className="fp-spending-table">
+      {rows.map(([label, value, detail, color]) => (
+        <div className={`fp-spending-row fp-spending-${color}`} key={label}>
+          <span className={`fp-dot fp-dot-${color}`} />
+          <div>
+            <strong>{label}</strong>
+            {!compact && <small>{detail}</small>}
+          </div>
+          <b className={value > 0 ? "fp-positive" : ""}>
+            {signed(value, "USD")}
+          </b>
+        </div>
+      ))}
+      <div className="fp-spending-subtotal">
+        <span>Remaining after bills</span>
+        <b className={summary.remainingPerPeriodUsd < 0 ? "fp-negative" : ""}>
+          {money(summary.remainingPerPeriodUsd)}
+        </b>
+      </div>
+      {document.allocations.map((row) => (
+        <div className="fp-spending-row fp-allocation" key={row.id}>
+          <span
+            className={`fp-dot fp-dot-${row.kind === "savings" ? "annual" : "php"}`}
+          />
+          <div>
+            <strong>{row.name}</strong>
+            {!compact && (
+              <small>
+                {row.kind === "savings" ? "Savings" : "Expense"} ·{" "}
+                {money(row.amount, row.currency)} per period
+              </small>
+            )}
+          </div>
+          <b>−{money(convert(row.amount, row.currency, "USD", rate))}</b>
+          {!compact && (
+            <div className="fp-row-actions">
+              <Button
+                icon="edit"
+                className="fp-icon-button"
+                aria-label={`Edit ${row.name}`}
+                onClick={() => onEdit(row)}
+              />
+              <Button
+                icon="trash"
+                className="fp-icon-button"
+                aria-label={`Delete ${row.name}`}
+                onClick={() => onDelete(row)}
+              />
+            </div>
+          )}
+        </div>
+      ))}
+      <div
+        className={`fp-spending-total ${summary.unallocatedPerPeriodUsd < 0 ? "fp-total-negative" : ""}`}
+      >
+        <div>
+          <span>Left to spend</span>
+          <small>After bills & your allocations</small>
+        </div>
+        <strong>{money(summary.unallocatedPerPeriodUsd)}</strong>
+      </div>
+      {!compact && (
+        <Button icon="plus" variant="text" onClick={onAdd}>
+          Add savings or expense
+        </Button>
+      )}
+    </div>
   );
 }
 
-function FinanceHeader({ onHome }) {
+function SalaryEditor({ salary, rate, onSave, busy, configured }) {
+  const [draft, setDraft] = useState(salary);
+  useEffect(() => setDraft(salary), [salary]);
+  const changed = JSON.stringify(draft) !== JSON.stringify(salary);
+  const set = (key, value) =>
+    setDraft((current) => ({ ...current, [key]: value }));
   return (
-    <header className="finance-topbar">
-      <h1>Private Finance</h1>
-      <button type="button" className="finance-header-home" onClick={onHome}>
-        Home
-      </button>
-    </header>
+    <form
+      className="fp-salary-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave({ ...draft, amount: amount(draft.amount) });
+      }}
+    >
+      <div className="fp-salary-inputs">
+        <Field label="Monthly salary">
+          <div className="fp-money-input">
+            <span>{draft.currency === "PHP" ? "₱" : "$"}</span>
+            <input
+              aria-label="Monthly salary"
+              inputMode="decimal"
+              type="number"
+              min="0"
+              max="999999999"
+              step="0.01"
+              required
+              value={draft.amount}
+              onChange={(e) => set("amount", e.target.value)}
+            />
+          </div>
+        </Field>
+        <Field label="Paid in">
+          <CurrencySelect
+            value={draft.currency}
+            onChange={(value) => set("currency", value)}
+          />
+        </Field>
+      </div>
+      <div className="fp-salary-converted">
+        <Icon name="refresh" size={16} />
+        <span>
+          That’s{" "}
+          <strong>
+            {money(
+              convert(
+                draft.amount,
+                draft.currency,
+                draft.currency === "USD" ? "PHP" : "USD",
+                rate,
+              ),
+              draft.currency === "USD" ? "PHP" : "USD",
+            )}
+          </strong>{" "}
+          per month
+        </span>
+      </div>
+      <div className="fp-form-grid">
+        <Field label="Pay frequency">
+          <select
+            value={draft.payFrequency}
+            onChange={(e) => set("payFrequency", e.target.value)}
+          >
+            <option value="semimonthly">Twice a month · 24/year</option>
+            <option value="biweekly">Every 2 weeks · 26/year</option>
+          </select>
+        </Field>
+        <Field
+          label="First payday"
+          hint="Used to schedule income in budget plans."
+        >
+          <input
+            type="date"
+            required
+            value={draft.firstPayDate}
+            onChange={(e) => set("firstPayDate", e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="fp-form-footer">
+        <small>
+          {draft.payFrequency === "biweekly"
+            ? "Per-pay income = monthly salary × 12 ÷ 26."
+            : "Per-pay income = monthly salary ÷ 2. Two fixed paydays per month, 15 days apart."}
+        </small>
+        <Button
+          variant="primary"
+          type="submit"
+          icon="check"
+          disabled={busy || !changed || !configured}
+        >
+          {busy ? "Saving…" : "Save salary"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
+  const [draft, setDraft] = useState(
+    bill || {
+      name: "",
+      amount: "",
+      currency: "USD",
+      cadence,
+      dueDay: "",
+      dueMonths: [Number(localDate().slice(5, 7))],
+      paymentMethod: "",
+      isAutopay: false,
+    },
+  );
+  const set = (key, value) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  const annual = draft.cadence === "annual";
+  return (
+    <form
+      className="fp-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave({
+          ...draft,
+          id: draft.id || uid(),
+          amount: amount(draft.amount),
+          dueDay: draft.dueDay ? Number(draft.dueDay) : null,
+        });
+      }}
+    >
+      <Field label="Item">
+        <input
+          required
+          autoFocus
+          maxLength={120}
+          placeholder="e.g. Google, rent, car insurance"
+          value={draft.name}
+          onChange={(e) => set("name", e.target.value)}
+        />
+      </Field>
+      <div className="fp-form-grid">
+        <Field label={annual ? "Total annual amount" : "Monthly amount"}>
+          <input
+            required
+            type="number"
+            min="0.01"
+            max="999999999"
+            step="0.01"
+            inputMode="decimal"
+            value={draft.amount}
+            onChange={(e) => set("amount", e.target.value)}
+          />
+        </Field>
+        <Field label="Paid in">
+          <CurrencySelect
+            value={draft.currency}
+            onChange={(value) => set("currency", value)}
+          />
+        </Field>
+      </div>
+      <div
+        className={`fp-conversion-note fp-currency-${draft.currency.toLowerCase()}`}
+      >
+        {money(
+          convert(
+            draft.amount,
+            draft.currency,
+            draft.currency === "USD" ? "PHP" : "USD",
+            rate,
+          ),
+          draft.currency === "USD" ? "PHP" : "USD",
+        )}{" "}
+        equivalent
+        {annual && (
+          <> · Save {money(amount(draft.amount) / 12, draft.currency)}/month</>
+        )}
+      </div>
+      <div className="fp-form-grid">
+        <Field label="Repeats">
+          <select
+            value={draft.cadence}
+            onChange={(e) => set("cadence", e.target.value)}
+          >
+            <option value="monthly">Monthly</option>
+            <option value="annual">Annually</option>
+          </select>
+        </Field>
+        <Field label="Due day" hint="Shorter months use their last day.">
+          <input
+            type="number"
+            min="1"
+            max="31"
+            step="1"
+            placeholder="1–31 (optional)"
+            value={draft.dueDay ?? ""}
+            onChange={(e) => set("dueDay", e.target.value)}
+          />
+        </Field>
+      </div>
+      {annual && (
+        <fieldset className="fp-month-field">
+          <legend>Payment month{draft.dueMonths.length > 1 ? "s" : ""}</legend>
+          <div>
+            {MONTHS.map((name, index) => (
+              <label key={name}>
+                <input
+                  type="checkbox"
+                  checked={draft.dueMonths.includes(index + 1)}
+                  onChange={(e) =>
+                    set(
+                      "dueMonths",
+                      e.target.checked
+                        ? [...draft.dueMonths, index + 1].sort((a, b) => a - b)
+                        : draft.dueMonths.filter(
+                            (month) => month !== index + 1,
+                          ),
+                    )
+                  }
+                />
+                {name}
+              </label>
+            ))}
+          </div>
+          <small>
+            Select multiple months to split the annual total into equal
+            installments.
+          </small>
+        </fieldset>
+      )}
+      <Field label="Payment method (optional)">
+        <input
+          maxLength={80}
+          placeholder="e.g. US Bank Credit, RCBC, cash"
+          value={draft.paymentMethod}
+          onChange={(e) => set("paymentMethod", e.target.value)}
+        />
+      </Field>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={draft.isAutopay}
+          onChange={(e) => set("isAutopay", e.target.checked)}
+        />
+        Automatic payment is enabled
+      </label>
+      {!draft.dueDay && (
+        <p className="fp-inline-note">
+          Add a due day to include this bill automatically in dated budget
+          plans.
+        </p>
+      )}
+      <Button
+        type="submit"
+        variant="primary"
+        icon="check"
+        disabled={busy || disabled || (annual && !draft.dueMonths.length)}
+      >
+        {busy ? "Saving…" : bill ? "Save changes" : "Add bill"}
+      </Button>
+    </form>
+  );
+}
+
+function AllocationForm({ row, onSave, busy, disabled }) {
+  const [draft, setDraft] = useState(
+    row || { name: "", amount: "", currency: "USD", kind: "savings" },
+  );
+  const set = (key, value) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  return (
+    <form
+      className="fp-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave({
+          ...draft,
+          id: draft.id || uid(),
+          amount: amount(draft.amount),
+        });
+      }}
+    >
+      <Field label="Name">
+        <input
+          autoFocus
+          required
+          maxLength={120}
+          placeholder="e.g. Emergency fund, groceries"
+          value={draft.name}
+          onChange={(e) => set("name", e.target.value)}
+        />
+      </Field>
+      <div className="fp-form-grid">
+        <Field label="Amount per pay period">
+          <input
+            required
+            type="number"
+            min="0.01"
+            step="0.01"
+            max="999999999"
+            value={draft.amount}
+            onChange={(e) => set("amount", e.target.value)}
+          />
+        </Field>
+        <Field label="Currency">
+          <CurrencySelect
+            value={draft.currency}
+            onChange={(value) => set("currency", value)}
+          />
+        </Field>
+      </div>
+      <Field label="Type">
+        <select
+          value={draft.kind}
+          onChange={(e) => set("kind", e.target.value)}
+        >
+          <option value="savings">Savings</option>
+          <option value="expense">Expense</option>
+        </select>
+      </Field>
+      <p className="fp-inline-note">
+        This allocation is deducted from each pay period’s remaining funds.
+        Budget plans use their own dated entries.
+      </p>
+      <Button type="submit" variant="primary" disabled={busy || disabled}>
+        {busy ? "Saving…" : "Save allocation"}
+      </Button>
+    </form>
+  );
+}
+
+function PlanForm({ plan, onSave, busy, disabled }) {
+  const today = localDate();
+  const [draft, setDraft] = useState(
+    plan || {
+      name: "",
+      startDate: today,
+      endDate: addDays(today, 30),
+      openingUsd: 0,
+      openingPhp: 0,
+      includeIncome: true,
+      entries: [],
+    },
+  );
+  const set = (key, value) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  return (
+    <form
+      className="fp-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave({
+          ...draft,
+          id: draft.id || uid(),
+          openingUsd: amount(draft.openingUsd),
+          openingPhp: amount(draft.openingPhp),
+        });
+      }}
+    >
+      <Field label="Plan name">
+        <input
+          autoFocus
+          required
+          maxLength={120}
+          placeholder="e.g. November essentials"
+          value={draft.name}
+          onChange={(e) => set("name", e.target.value)}
+        />
+      </Field>
+      <div className="fp-form-grid">
+        <Field label="From">
+          <input
+            required
+            type="date"
+            value={draft.startDate}
+            onChange={(e) => set("startDate", e.target.value)}
+          />
+        </Field>
+        <Field label="Through">
+          <input
+            required
+            type="date"
+            min={draft.startDate}
+            max={addDays(draft.startDate, 730)}
+            value={draft.endDate}
+            onChange={(e) => set("endDate", e.target.value)}
+          />
+        </Field>
+      </div>
+      <div className="fp-form-grid">
+        <Field label="Starting balance · USD">
+          <input
+            required
+            type="number"
+            step="0.01"
+            min="-999999999"
+            max="999999999"
+            value={draft.openingUsd}
+            onChange={(e) => set("openingUsd", e.target.value)}
+          />
+        </Field>
+        <Field label="Starting balance · PHP">
+          <input
+            required
+            type="number"
+            step="0.01"
+            min="-999999999"
+            max="999999999"
+            value={draft.openingPhp}
+            onChange={(e) => set("openingPhp", e.target.value)}
+          />
+        </Field>
+      </div>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={draft.includeIncome}
+          onChange={(e) => set("includeIncome", e.target.checked)}
+        />
+        Include scheduled salary payments
+      </label>
+      <p className="fp-inline-note">
+        Bills with due dates appear automatically. Each plan is a forecast; it
+        doesn’t record real payments. Changes to salary, bills, or the exchange
+        rate update every forecast.
+      </p>
+      <Button type="submit" variant="primary" disabled={busy || disabled}>
+        {busy ? "Saving…" : plan ? "Save plan" : "Create plan"}
+      </Button>
+    </form>
+  );
+}
+
+function EntryForm({ entry, plan, onSave, busy, disabled, rate }) {
+  const [draft, setDraft] = useState(
+    entry || {
+      date: plan.startDate,
+      description: "",
+      kind: "expense",
+      amount: "",
+      currency: "USD",
+    },
+  );
+  const set = (key, value) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+  return (
+    <form
+      className="fp-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave({
+          ...draft,
+          id: draft.id || uid(),
+          amount: amount(draft.amount),
+        });
+      }}
+    >
+      <div className="fp-form-grid">
+        <Field label="Date">
+          <input
+            required
+            type="date"
+            min={plan.startDate}
+            max={plan.endDate}
+            value={draft.date}
+            onChange={(e) => set("date", e.target.value)}
+          />
+        </Field>
+        <Field label="Entry type">
+          <select
+            value={draft.kind}
+            onChange={(e) => set("kind", e.target.value)}
+          >
+            <option value="expense">Expense / savings</option>
+            <option value="income">Income</option>
+            <option value="conversion">Currency conversion</option>
+          </select>
+        </Field>
+      </div>
+      <Field label="Description">
+        <input
+          autoFocus
+          required
+          maxLength={120}
+          placeholder="e.g. Insurance, savings, convert to PHP"
+          value={draft.description}
+          onChange={(e) => set("description", e.target.value)}
+        />
+      </Field>
+      <div className="fp-form-grid">
+        <Field
+          label={draft.kind === "conversion" ? "Amount to convert" : "Amount"}
+        >
+          <input
+            required
+            type="number"
+            min="0.01"
+            max="999999999"
+            step="0.01"
+            value={draft.amount}
+            onChange={(e) => set("amount", e.target.value)}
+          />
+        </Field>
+        <Field
+          label={draft.kind === "conversion" ? "Convert from" : "Currency"}
+        >
+          <CurrencySelect
+            value={draft.currency}
+            onChange={(value) => set("currency", value)}
+          />
+        </Field>
+      </div>
+      {draft.kind === "conversion" && (
+        <p className="fp-conversion-note">
+          Receive{" "}
+          {money(
+            convert(
+              draft.amount,
+              draft.currency,
+              draft.currency === "USD" ? "PHP" : "USD",
+              rate,
+            ),
+            draft.currency === "USD" ? "PHP" : "USD",
+          )}{" "}
+          at the current reference rate. Fees aren’t included.
+        </p>
+      )}
+      <Button type="submit" variant="primary" disabled={busy || disabled}>
+        {busy ? "Saving…" : entry ? "Save entry" : "Add entry"}
+      </Button>
+    </form>
+  );
+}
+
+function BillsTable({
+  bills,
+  cadence,
+  summary,
+  rate,
+  onAdd,
+  onEdit,
+  onDelete,
+}) {
+  if (!bills.length && !(cadence === "monthly" && summary.annualUsd > 0))
+    return (
+      <Empty
+        title={`Your ${cadence} bills go here`}
+        action={
+          <Button icon="plus" variant="primary" onClick={onAdd}>
+            Add your first bill
+          </Button>
+        }
+      >
+        Enter the amount in the currency you actually pay. We’ll handle the
+        conversion.
+      </Empty>
+    );
+  return (
+    <div className="fp-table-wrap">
+      <table className="fp-table fp-bills-table">
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Amount · USD</th>
+            <th>Amount · PHP</th>
+            {cadence === "annual" && <th>Save / month</th>}
+            <th>Due date</th>
+            <th>Auto payment</th>
+            <th>
+              <span className="fp-sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {bills.map((bill) => (
+            <tr key={bill.id}>
+              <td data-label="Item">
+                <span className="fp-bill-name">
+                  <span
+                    className={`fp-bill-monogram fp-currency-${bill.currency.toLowerCase()}`}
+                  >
+                    {bill.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span>
+                    <strong>{bill.name}</strong>
+                    <small>
+                      Paid in {bill.currency}
+                      {cadence === "annual" && bill.dueMonths.length > 1
+                        ? ` · ${bill.dueMonths.length} installments`
+                        : ""}
+                    </small>
+                  </span>
+                </span>
+              </td>
+              <td data-label="USD">
+                <span
+                  className={
+                    bill.currency === "USD"
+                      ? "fp-native fp-currency-usd"
+                      : "fp-equivalent"
+                  }
+                >
+                  {money(convert(bill.amount, bill.currency, "USD", rate))}
+                </span>
+              </td>
+              <td data-label="PHP">
+                <span
+                  className={
+                    bill.currency === "PHP"
+                      ? "fp-native fp-currency-php"
+                      : "fp-equivalent"
+                  }
+                >
+                  {money(
+                    convert(bill.amount, bill.currency, "PHP", rate),
+                    "PHP",
+                  )}
+                </span>
+              </td>
+              {cadence === "annual" && (
+                <td data-label="Save / month">
+                  <strong>
+                    {money(
+                      convert(bill.amount / 12, bill.currency, "USD", rate),
+                    )}
+                  </strong>
+                  <small>
+                    {money(
+                      convert(bill.amount / 12, bill.currency, "PHP", rate),
+                      "PHP",
+                    )}
+                  </small>
+                </td>
+              )}
+              <td data-label="Due date">
+                <DueLabel bill={bill} />
+              </td>
+              <td data-label="Auto payment">
+                <span>{bill.paymentMethod || "—"}</span>
+                <small>{bill.isAutopay ? "Automatic" : "Manual"}</small>
+              </td>
+              <td data-label="Actions">
+                <div className="fp-row-actions">
+                  <Button
+                    icon="edit"
+                    className="fp-icon-button"
+                    aria-label={`Edit ${bill.name}`}
+                    onClick={() => onEdit(bill)}
+                  />
+                  <Button
+                    icon="trash"
+                    className="fp-icon-button"
+                    aria-label={`Delete ${bill.name}`}
+                    onClick={() => onDelete(bill)}
+                  />
+                </div>
+              </td>
+            </tr>
+          ))}
+          {cadence === "monthly" && (
+            <tr className="fp-reserve-row">
+              <td data-label="Item">
+                <strong>Annual bills reserve</strong>
+                <small>Set aside each month</small>
+              </td>
+              <td data-label="USD">
+                <strong>{money(summary.annualMonthlyUsd)}</strong>
+              </td>
+              <td data-label="PHP">
+                <strong>{money(summary.annualMonthlyPhp, "PHP")}</strong>
+              </td>
+              <td data-label="Due date">Monthly savings</td>
+              <td data-label="Auto payment">For your annual bills</td>
+              <td />
+            </tr>
+          )}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>
+              {cadence === "annual" ? "Annual total" : "Total monthly bills"}
+            </td>
+            <td>
+              {money(
+                cadence === "annual"
+                  ? summary.annualUsd
+                  : summary.monthlyCommitmentsUsd,
+              )}
+            </td>
+            <td>
+              {money(
+                cadence === "annual"
+                  ? summary.annualPhp
+                  : summary.monthlyCommitmentsPhp,
+                "PHP",
+              )}
+            </td>
+            {cadence === "annual" && (
+              <td>
+                {money(summary.annualMonthlyUsd)}
+                <small>per month</small>
+              </td>
+            )}
+            <td colSpan="3" />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+function Ledger({ plan, rows, onEdit, onDelete }) {
+  return (
+    <div
+      className="fp-table-wrap fp-ledger-wrap"
+      role="region"
+      aria-label="Budget running balance, scroll horizontally on small screens"
+      tabIndex={0}
+    >
+      <table className="fp-table fp-ledger">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Description</th>
+            <th>USD</th>
+            <th>PHP</th>
+            <th className="fp-running">Balance · USD</th>
+            <th className="fp-running">Balance · PHP</th>
+            <th>
+              <span className="fp-sr-only">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr className="fp-opening-row">
+            <td>{formatDate(plan.startDate)}</td>
+            <td>
+              <strong>Starting balance</strong>
+            </td>
+            <td>—</td>
+            <td>—</td>
+            <td className="fp-running">{money(plan.openingUsd)}</td>
+            <td className="fp-running">{money(plan.openingPhp, "PHP")}</td>
+            <td />
+          </tr>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <td>{formatDate(row.date)}</td>
+              <td>
+                <strong>{row.description}</strong>
+                <small>
+                  {row.source === "salary"
+                    ? "Scheduled income"
+                    : row.source === "bill"
+                      ? "Automatic bill"
+                      : row.kind === "conversion"
+                        ? "Currency conversion"
+                        : "Your entry"}
+                </small>
+              </td>
+              <td
+                className={
+                  row.usd < 0
+                    ? "fp-negative"
+                    : row.usd > 0
+                      ? "fp-positive"
+                      : "fp-zero"
+                }
+              >
+                {row.usd ? signed(row.usd, "USD") : "—"}
+              </td>
+              <td
+                className={
+                  row.php < 0
+                    ? "fp-negative"
+                    : row.php > 0
+                      ? "fp-positive"
+                      : "fp-zero"
+                }
+              >
+                {row.php ? signed(row.php, "PHP") : "—"}
+              </td>
+              <td
+                className={`fp-running ${row.balanceUsd < 0 ? "fp-negative" : ""}`}
+              >
+                {money(row.balanceUsd)}
+              </td>
+              <td
+                className={`fp-running ${row.balancePhp < 0 ? "fp-negative" : ""}`}
+              >
+                {money(row.balancePhp, "PHP")}
+              </td>
+              <td>
+                {row.source === "manual" && (
+                  <div className="fp-row-actions">
+                    <Button
+                      icon="edit"
+                      className="fp-icon-button"
+                      aria-label={`Edit ${row.description}`}
+                      onClick={() =>
+                        onEdit(
+                          plan.entries.find((item) => item.id === row.entryId),
+                        )
+                      }
+                    />
+                    <Button
+                      icon="trash"
+                      className="fp-icon-button"
+                      aria-label={`Delete ${row.description}`}
+                      onClick={() =>
+                        onDelete(
+                          plan.entries.find((item) => item.id === row.entryId),
+                        )
+                      }
+                    />
+                  </div>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
 export default function FinanceAppClient({ snapshot, initialTab }) {
-  const router = useRouter();
-  const displayCurrency = snapshot.plan.displayCurrency || "USD";
-  const exchangeRate = Number(snapshot.plan.exchangeRate || 1);
-  const initialAllTransactions = snapshot.allTransactions || snapshot.transactions || [];
-  const initialFundsDate = latestTransactionDate(initialAllTransactions, `${snapshot.month}-01`);
-  const showCurrency = (value, fromCurrency = "USD") => (
-    money(convertAmount(value, fromCurrency, displayCurrency, exchangeRate), displayCurrency)
+  const [state, setState] = useState(snapshot);
+  const [tab, setTab] = useState(
+    NAV.some((item) => item.id === initialTab) ? initialTab : "home",
   );
-  const showCompactCurrency = (value, fromCurrency = "USD") => (
-    compactMoney(convertAmount(value, fromCurrency, displayCurrency, exchangeRate), displayCurrency)
+  const [cadence, setCadence] = useState("monthly");
+  const [modal, setModal] = useState(null);
+  const [selectedPlanId, setSelectedPlanId] = useState(
+    snapshot.document.plans[0]?.id || "",
   );
-  const toUsdFromDisplay = (value) => convertAmount(value, displayCurrency, "USD", exchangeRate);
-  const toPhpFromDisplay = (value) => convertAmount(value, displayCurrency, "PHP", exchangeRate);
-  const [activeTab, setActiveTab] = useState(() => normalizeTab(initialTab));
-  const [saving, setSaving] = useState("");
-  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-  const [installPrompt, setInstallPrompt] = useState(null);
-  const [toolbarOpen, setToolbarOpen] = useState(false);
-  const [chartTooltip, setChartTooltip] = useState(null);
-  const [billTooltip, setBillTooltip] = useState(null);
-  const [fundsFilter, setFundsFilter] = useState(() => ({
-    mode: "month",
-    month: snapshot.month,
-    year: String(snapshot.month || "").slice(0, 4) || String(initialFundsDate).slice(0, 4),
-    payPeriod: payPeriodForDate(initialFundsDate).id
-  }));
-  const [transactionDateFilter, setTransactionDateFilter] = useState({ from: "", to: "" });
-  const [transactionPage, setTransactionPage] = useState(1);
-  const [expandedTransactionGroups, setExpandedTransactionGroups] = useState(() => new Set());
-  const [transactionModalOpen, setTransactionModalOpen] = useState(false);
-  const [transactionEditId, setTransactionEditId] = useState(null);
-  const [transactionForm, setTransactionForm] = useState(() => defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
-  const [planForm, setPlanForm] = useState(() => ({
-    monthlyIncomeUsd: String(convertAmount(snapshot.plan.monthlyIncomeUsd, "USD", displayCurrency, exchangeRate)),
-    biweeklyIncomeUsd: String(convertAmount(snapshot.plan.biweeklyIncomeUsd, "USD", displayCurrency, exchangeRate)),
-    biweeklyBillsUsd: String(convertAmount(snapshot.plan.biweeklyBillsUsd, "USD", displayCurrency, exchangeRate)),
-    biweeklySavingsUsd: String(convertAmount(snapshot.plan.biweeklySavingsUsd, "USD", displayCurrency, exchangeRate))
-  }));
-  const [billForm, setBillForm] = useState(() => defaultBill(displayCurrency));
-  const [goalForm, setGoalForm] = useState(() => defaultGoal(displayCurrency));
-  const [accountForm, setAccountForm] = useState(defaultAccount);
-
-  const maxTrend = useMemo(() => {
-    return Math.max(1, ...snapshot.monthlySeries.flatMap((item) => [item.incomeUsd, item.expensesUsd]));
-  }, [snapshot.monthlySeries]);
-
-  const connections = snapshot.connections || [];
-  const allTransactions = initialAllTransactions;
-  const recentTransactions = allTransactions.slice(0, 8);
-  const filteredHistoryTransactions = useMemo(() => {
-    if (!transactionDateFilter.from && !transactionDateFilter.to) return allTransactions;
-    return allTransactions.filter((transaction) => transactionMatchesDateFilter(transaction, transactionDateFilter));
-  }, [allTransactions, transactionDateFilter]);
-  const transactionDateFilterActive = Boolean(transactionDateFilter.from || transactionDateFilter.to);
-  const transactionPageCount = Math.max(1, Math.ceil(filteredHistoryTransactions.length / TRANSACTION_HISTORY_PAGE_SIZE));
-  const safeTransactionPage = Math.min(transactionPage, transactionPageCount);
-  const transactionPageStart = (safeTransactionPage - 1) * TRANSACTION_HISTORY_PAGE_SIZE;
-  const pagedHistoryTransactions = filteredHistoryTransactions.slice(
-    transactionPageStart,
-    transactionPageStart + TRANSACTION_HISTORY_PAGE_SIZE
+  const [notice, setNotice] = useState("");
+  const document = state.document;
+  const rate = state.exchangeRate.rate;
+  const summary = useMemo(() => getSummary(document, rate), [document, rate]);
+  const plan =
+    document.plans.find((item) => item.id === selectedPlanId) ||
+    document.plans[0];
+  const planRows = useMemo(
+    () => (plan ? buildPlanRows(plan, document, rate) : []),
+    [plan, document, rate],
   );
-  const transactionPageEnd = transactionPageStart + pagedHistoryTransactions.length;
-  const fundsMonthOptions = useMemo(() => {
-    return buildMonthOptions(allTransactions, snapshot.month);
-  }, [allTransactions, snapshot.month]);
-  const fundsYearOptions = useMemo(() => {
-    return buildYearOptions(allTransactions, String(snapshot.month || "").slice(0, 4));
-  }, [allTransactions, snapshot.month]);
-  const fundsPayPeriodOptions = useMemo(() => {
-    return buildPayPeriodOptions(allTransactions, initialFundsDate);
-  }, [allTransactions, initialFundsDate]);
-  const activeFundsPayPeriod = fundsPayPeriodOptions.find((period) => period.id === fundsFilter.payPeriod)
-    || fundsPayPeriodOptions[0]
-    || payPeriodForDate(initialFundsDate);
-  const filteredFundsTransactions = useMemo(() => {
-    if (fundsFilter.mode === "year") {
-      return allTransactions.filter((transaction) => String(transaction.date || "").startsWith(`${fundsFilter.year}-`));
-    }
-
-    if (fundsFilter.mode === "payPeriod") {
-      return allTransactions.filter((transaction) => transactionInPayPeriod(transaction, activeFundsPayPeriod));
-    }
-
-    if (fundsFilter.mode === "all") return allTransactions;
-
-    return allTransactions.filter((transaction) => String(transaction.date || "").startsWith(fundsFilter.month));
-  }, [allTransactions, fundsFilter, activeFundsPayPeriod]);
-  const fundsFilterDetail = fundsFilter.mode === "year"
-    ? fundsFilter.year
-    : fundsFilter.mode === "payPeriod"
-      ? activeFundsPayPeriod.detail
-      : fundsFilter.mode === "all"
-        ? "All transactions"
-        : formatMonthLabel(fundsFilter.month);
-  const sortedRecurringBills = useMemo(() => {
-    return [...snapshot.recurringBills].sort(sortBillsByDueDate);
-  }, [snapshot.recurringBills]);
-  const transactionGroups = useMemo(() => {
-    return buildTransactionHistoryGroups(pagedHistoryTransactions, sortedRecurringBills, exchangeRate);
-  }, [pagedHistoryTransactions, sortedRecurringBills, exchangeRate]);
-  const unpaidBills = sortedRecurringBills.filter((bill) => !bill.isPaid);
-  const overdueBills = sortedRecurringBills.filter((bill) => isBillOverdue(bill, snapshot.month));
-  const overdueBillIds = new Set(overdueBills.map((bill) => bill.id));
-  const accountBalanceItems = snapshot.accounts.map((account) => {
-    const valueUsd = ["credit", "loan"].includes(account.type)
-      ? -Math.abs(Number(account.currentBalance || 0))
-      : Number(account.currentBalance || 0);
-    const details = [
-      account.institutionName || account.provider || account.type,
-      account.isLinked ? "linked" : "manual",
-      account.isLinked && account.currency !== displayCurrency ? money(account.nativeCurrentBalance, account.currency) : ""
-    ].filter(Boolean).join(" - ");
-
-    return {
-      id: `account-${account.id}`,
-      label: account.name,
-      detail: details,
-      valueUsd: toMoneyValue(valueUsd),
-      tone: valueUsd < 0 ? "bad" : "good"
-    };
-  });
-  const totalAccountBalanceUsd = toMoneyValue(accountBalanceItems.reduce((sum, item) => sum + item.valueUsd, 0));
-  const positiveFundsUsd = toMoneyValue(accountBalanceItems.filter((item) => item.valueUsd > 0).reduce((sum, item) => sum + item.valueUsd, 0));
-  const negativeBalancesUsd = toMoneyValue(accountBalanceItems.filter((item) => item.valueUsd < 0).reduce((sum, item) => sum + item.valueUsd, 0));
-  const balanceChartItems = [
-    ...accountBalanceItems,
-    {
-      id: "accounts-total",
-      label: "Total",
-      detail: `${snapshot.accounts.length} accounts`,
-      valueUsd: totalAccountBalanceUsd,
-      tone: totalAccountBalanceUsd >= 0 ? "info" : "bad",
-      isTotal: true
-    }
-  ];
-  const balanceAxisMaxUsd = niceAxisMax(Math.max(1, ...balanceChartItems.map((item) => Math.abs(item.valueUsd))));
-  const balanceChartWidth = Math.max(560, balanceChartItems.length * 88 + 92);
-  const balanceChartHeight = 318;
-  const balanceChartTop = 24;
-  const balanceChartRight = balanceChartWidth - 18;
-  const balanceChartBottom = balanceChartHeight - 70;
-  const balanceChartLeft = 66;
-  const balanceChartInnerHeight = balanceChartBottom - balanceChartTop;
-  const balanceChartInnerWidth = balanceChartRight - balanceChartLeft;
-  const balanceChartSlot = balanceChartInnerWidth / Math.max(1, balanceChartItems.length);
-  const balanceBarWidth = Math.min(42, Math.max(24, balanceChartSlot * 0.46));
-  const balanceChartTicks = [-balanceAxisMaxUsd, -balanceAxisMaxUsd / 2, 0, balanceAxisMaxUsd / 2, balanceAxisMaxUsd];
-  const balanceTooltipWidth = 178;
-  const balanceTooltipHeight = 60;
-  const balanceChartY = (valueUsd) => {
-    const value = Math.max(-balanceAxisMaxUsd, Math.min(balanceAxisMaxUsd, Number(valueUsd || 0)));
-    return balanceChartTop + ((balanceAxisMaxUsd - value) / (balanceAxisMaxUsd * 2)) * balanceChartInnerHeight;
-  };
-  const balanceZeroY = balanceChartY(0);
-  const activeChartItem = chartTooltip
-    ? balanceChartItems.find((item) => item.id === chartTooltip.id)
-    : null;
-  const billChartTotals = sortedRecurringBills.reduce((totals, bill) => {
-    const expectedUsd = billExpectedAmountUsd(bill, exchangeRate);
-    const actualUsd = billActualPaidUsd(bill, exchangeRate);
-
-    totals.expectedUsd = toMoneyValue(totals.expectedUsd + expectedUsd);
-
-    if (!bill.isPaid) {
-      totals.remainingUsd = toMoneyValue(totals.remainingUsd + expectedUsd);
-      return totals;
-    }
-
-    const paidBaseUsd = expectedUsd > 0 ? Math.min(actualUsd || expectedUsd, expectedUsd) : actualUsd;
-    totals.paidUsd = toMoneyValue(totals.paidUsd + paidBaseUsd);
-
-    if (actualUsd > expectedUsd) {
-      totals.overExpectedUsd = toMoneyValue(totals.overExpectedUsd + actualUsd - expectedUsd);
-    } else if (actualUsd < expectedUsd) {
-      totals.voidedOverflowUsd = toMoneyValue(totals.voidedOverflowUsd + expectedUsd - actualUsd);
-    }
-
-    return totals;
-  }, {
-    expectedUsd: 0,
-    remainingUsd: 0,
-    paidUsd: 0,
-    voidedOverflowUsd: 0,
-    overExpectedUsd: 0
-  });
-  const billPieLegendItems = [
-    { id: "remaining", label: "Remaining", valueUsd: billChartTotals.remainingUsd, tone: "warn" },
-    { id: "paid", label: "Paid", valueUsd: billChartTotals.paidUsd, tone: "good" },
-    { id: "voided", label: "Voided/Overflow", valueUsd: billChartTotals.voidedOverflowUsd, tone: "info" },
-    { id: "over", label: "Over expected", valueUsd: billChartTotals.overExpectedUsd, tone: "bad" }
-  ];
-  const billPieItems = billPieLegendItems.filter((item) => item.valueUsd > 0);
-  const billPieTotalUsd = toMoneyValue(billPieItems.reduce((sum, item) => sum + item.valueUsd, 0));
-  const billPieRadius = 42;
-  const billPieCircumference = 2 * Math.PI * billPieRadius;
-  let billPieRunningOffset = 0;
-  const billPieSegments = billPieItems.map((item) => {
-    const dash = billPieTotalUsd > 0 ? (item.valueUsd / billPieTotalUsd) * billPieCircumference : 0;
-    const segment = { ...item, dash, offset: billPieRunningOffset };
-    billPieRunningOffset += dash;
-    return segment;
-  });
-  const fundsExpenseSeries = useMemo(() => {
-    return buildFundsExpenseSeries(filteredFundsTransactions, exchangeRate);
-  }, [filteredFundsTransactions, exchangeRate]);
-  const latestFundsPoint = fundsExpenseSeries[fundsExpenseSeries.length - 1] || { incomeUsd: 0, expenseUsd: 0 };
-  const fundsIncomeUsd = toMoneyValue(latestFundsPoint.incomeUsd);
-  const fundsExpenseUsd = toMoneyValue(latestFundsPoint.expenseUsd);
-  const fundsNetUsd = toMoneyValue(fundsIncomeUsd - fundsExpenseUsd);
-  const fundsChartWidth = Math.max(620, fundsExpenseSeries.length * 22 + 108);
-  const fundsChartHeight = 260;
-  const fundsChartTop = 24;
-  const fundsChartRight = fundsChartWidth - 18;
-  const fundsChartBottom = fundsChartHeight - 42;
-  const fundsChartLeft = 62;
-  const fundsChartInnerWidth = fundsChartRight - fundsChartLeft;
-  const fundsChartInnerHeight = fundsChartBottom - fundsChartTop;
-  const fundsAxisMaxUsd = niceAxisMax(Math.max(1, ...fundsExpenseSeries.flatMap((item) => [item.incomeUsd, item.expenseUsd])));
-  const fundsChartTicks = [0, fundsAxisMaxUsd / 2, fundsAxisMaxUsd];
-  const fundsChartX = (index) => fundsChartLeft + (fundsExpenseSeries.length <= 1 ? 0 : (index / (fundsExpenseSeries.length - 1)) * fundsChartInnerWidth);
-  const fundsChartY = (valueUsd) => fundsChartTop + ((fundsAxisMaxUsd - Number(valueUsd || 0)) / fundsAxisMaxUsd) * fundsChartInnerHeight;
-  const fundsIncomePath = buildLinePath(fundsExpenseSeries, "incomeUsd", fundsChartX, fundsChartY);
-  const fundsExpensePath = buildLinePath(fundsExpenseSeries, "expenseUsd", fundsChartX, fundsChartY);
-  const fundsLabelSlots = Math.max(4, Math.floor(fundsChartInnerWidth / 120));
-  const fundsLabelStep = Math.max(1, Math.ceil(fundsExpenseSeries.length / fundsLabelSlots));
-  const connectionIssues = connections.filter((connection) => ["error", "needs_sync"].includes(connection.status));
-  const attentionItems = [
-    overdueBills.length > 0 ? `${overdueBills.length} overdue bill${overdueBills.length === 1 ? "" : "s"}.` : "",
-    snapshot.summary.dueSoonBills > 0 ? `${snapshot.summary.dueSoonBills} bill${snapshot.summary.dueSoonBills === 1 ? "" : "s"} due soon.` : "",
-    snapshot.summary.netUsd < 0 ? `This month is ${showCurrency(Math.abs(snapshot.summary.netUsd), "USD")} negative.` : "",
-    snapshot.plan.recurringRemainingUsd < 0 ? `Recurring bills exceed monthly income by ${showCurrency(Math.abs(snapshot.plan.recurringRemainingUsd), "USD")}.` : "",
-    connectionIssues.length > 0 ? `${connectionIssues.length} linked connection${connectionIssues.length === 1 ? "" : "s"} need attention.` : ""
-  ].filter(Boolean);
-  const disabled = !snapshot.configured;
-  const status = saving ? "Saving..." : notice || error;
+  const isBiweekly = document.salary.payFrequency === "biweekly";
+  const activeNav = NAV.find((item) => item.id === tab);
+  const undated = document.bills.filter((bill) => !bill.dueDay);
+  const saveLock = useRef(false);
 
   useEffect(() => {
-    const handleBeforeInstallPrompt = (event) => {
-      event.preventDefault();
-      setInstallPrompt(event);
+    const onPop = () => {
+      const next = new URL(window.location.href).searchParams.get("tab");
+      setTab(NAV.some((item) => item.id === next) ? next : "home");
     };
-
-    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
-    return () => window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(""), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+  useEffect(() => {
+    const timer = setInterval(
+      () => {
+        if (window.document.visibilityState === "visible") refreshRate(true);
+      },
+      60 * 60 * 1000,
+    );
+    return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    if (!transactionEditId && !transactionModalOpen) {
-      setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
-    }
-
-    setPlanForm({
-      monthlyIncomeUsd: String(convertAmount(snapshot.plan.monthlyIncomeUsd, "USD", displayCurrency, exchangeRate)),
-      biweeklyIncomeUsd: String(convertAmount(snapshot.plan.biweeklyIncomeUsd, "USD", displayCurrency, exchangeRate)),
-      biweeklyBillsUsd: String(convertAmount(snapshot.plan.biweeklyBillsUsd, "USD", displayCurrency, exchangeRate)),
-      biweeklySavingsUsd: String(convertAmount(snapshot.plan.biweeklySavingsUsd, "USD", displayCurrency, exchangeRate))
-    });
-  }, [snapshot.month, snapshot.accounts, snapshot.plan, transactionEditId, transactionModalOpen, displayCurrency, exchangeRate]);
-
-  useEffect(() => {
-    setTransactionPage(1);
-  }, [transactionDateFilter.from, transactionDateFilter.to]);
-
-  useEffect(() => {
-    if (transactionPage > transactionPageCount) {
-      setTransactionPage(transactionPageCount);
-    }
-  }, [transactionPage, transactionPageCount]);
-
-  function setTab(tab) {
-    const normalized = normalizeTab(tab);
-    setActiveTab(normalized);
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      params.set("tab", normalized);
-      params.set("month", snapshot.month);
-      window.history.replaceState(null, "", `/finance?${params.toString()}`);
-    }
-  }
-
-  function updateBillTooltip(event, item) {
-    const figure = event.currentTarget.closest(".finance-pie-chart");
-    const figureBounds = figure?.getBoundingClientRect();
-    const targetBounds = event.currentTarget.getBoundingClientRect();
-    const clientX = event.clientX || targetBounds.left + targetBounds.width / 2;
-    const clientY = event.clientY || targetBounds.top + targetBounds.height / 2;
-    const percent = billPieTotalUsd > 0 ? Math.round((item.valueUsd / billPieTotalUsd) * 100) : 0;
-
-    setBillTooltip({
-      id: item.id,
-      label: item.label,
-      value: showCurrency(item.valueUsd, "USD"),
-      detail: `${percent}% of tracked bills`,
-      x: figureBounds ? clientX - figureBounds.left : 70,
-      y: figureBounds ? clientY - figureBounds.top : 70
-    });
-  }
-
-  function hideBillTooltip() {
-    setBillTooltip(null);
-  }
-
-  async function callFinanceAction(action, data) {
-    const response = await fetch("/api/finance", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, data })
-    });
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) throw new Error(payload.error || "Finance action failed.");
-    return payload.result;
-  }
-
-  async function runAction(action, data, successMessage) {
-    setSaving(action);
-    setNotice("");
+  function navigate(next) {
+    setTab(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", next);
+    window.history.pushState({}, "", url);
     setError("");
-
+  }
+  function open(next) {
+    setError("");
+    setModal(next);
+  }
+  async function refreshRate(quiet = false) {
+    setRefreshing(true);
     try {
-      await callFinanceAction(action, data);
-      setNotice(successMessage);
-      router.refresh();
+      const response = await fetch("/api/finance/planner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "refreshRate" }),
+      });
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(result.error || "Could not refresh the exchange rate.");
+      setState((current) => ({
+        ...current,
+        exchangeRate: result.exchangeRate,
+      }));
+      if (!quiet)
+        setNotice(
+          result.exchangeRate.stale
+            ? "The rate provider is unavailable. Using the last reference rate."
+            : "Exchange rate is up to date.",
+        );
+    } catch (err) {
+      if (!quiet) setError(err.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+  async function save(next, message = "Changes saved.") {
+    if (saveLock.current || !state.configured) return false;
+    saveLock.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/finance/planner", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document: next, revision: state.revision }),
+      });
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(
+          response.status === 409
+            ? "This planner changed on another device. Reload the page before saving again; your current edits are still open."
+            : result.error || "Could not save your changes.",
+        );
+      setState(result);
+      setNotice(message);
+      setModal(null);
       return true;
     } catch (err) {
-      setError(err.message || "Finance action failed.");
+      setError(err.message);
       return false;
     } finally {
-      setSaving("");
+      saveLock.current = false;
+      setBusy(false);
     }
   }
-
-  async function installApp() {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    await installPrompt.userChoice.catch(() => {});
-    setInstallPrompt(null);
-    setToolbarOpen(false);
+  const upsert = (list, row) =>
+    list.some((item) => item.id === row.id)
+      ? list.map((item) => (item.id === row.id ? row : item))
+      : [...list, row];
+  const saveBill = (row) =>
+    save(
+      { ...document, bills: upsert(document.bills, row) },
+      "Bill saved. Your plans have been updated.",
+    );
+  const saveAllocation = (row) =>
+    save({ ...document, allocations: upsert(document.allocations, row) });
+  async function savePlan(row) {
+    if (
+      await save(
+        { ...document, plans: upsert(document.plans, row) },
+        "Budget plan saved.",
+      )
+    )
+      setSelectedPlanId(row.id);
   }
+  const saveEntry = (row) =>
+    savePlan({ ...plan, entries: upsert(plan.entries, row) });
 
-  async function submitPlan(event) {
-    event.preventDefault();
-    await runAction(
-      "updatePlan",
+  async function loadExample() {
+    const monthly = [
+      ["Google", 2, "USD", 18, "US Bank Credit"],
+      ["Discord", 10, "USD", 6, "US Bank Credit"],
+      ["ChatGPT", 20, "USD", 29, "US Bank Credit"],
+      ["Railway (webapp)", 30, "USD", 4, "US Bank Credit"],
+      ["Spotify", 169, "PHP", 28, "RCBC Gold Flex"],
+      ["Globe", 1500, "PHP", 11, "RCBC Gold Flex"],
+      ["Converge", 2500, "PHP", 28, "Cash"],
+      ["House", 37800, "PHP", null, "Cash"],
+    ].map(([name, value, currency, dueDay, paymentMethod]) => ({
+      id: uid(),
+      name,
+      amount: value,
+      currency,
+      cadence: "monthly",
+      dueDay,
+      dueMonths: [],
+      paymentMethod,
+      isAutopay: paymentMethod !== "Cash",
+    }));
+    const annual = [
+      ["Microsoft", 100, "USD", 9, [9], "US Bank Credit"],
+      ["Namecheap (Domain)", 20, "USD", 4, [6], "US Bank Credit"],
+      ["Car", 31500, "PHP", null, [3, 9], "Cash"],
+      ["Venture X", 395, "USD", null, [11], "Venture X"],
+    ].map(([name, value, currency, dueDay, dueMonths, paymentMethod]) => ({
+      id: uid(),
+      name,
+      amount: value,
+      currency,
+      cadence: "annual",
+      dueDay,
+      dueMonths,
+      paymentMethod,
+      isAutopay: paymentMethod !== "Cash",
+    }));
+    await save(
       {
-        monthlyIncomeUsd: toUsdFromDisplay(planForm.monthlyIncomeUsd),
-        biweeklyIncomeUsd: toUsdFromDisplay(planForm.biweeklyIncomeUsd),
-        biweeklyBillsUsd: toUsdFromDisplay(planForm.biweeklyBillsUsd),
-        biweeklySavingsUsd: toUsdFromDisplay(planForm.biweeklySavingsUsd)
+        ...document,
+        bills: [...monthly, ...annual],
+        allocations: [
+          ...document.allocations,
+          {
+            id: uid(),
+            name: "Savings",
+            amount: 500,
+            currency: "USD",
+            kind: "savings",
+          },
+        ],
       },
-      "Plan saved."
+      "Example bills added. You can edit every amount and date.",
     );
-  }
-
-  async function switchDisplayCurrency() {
-    const nextCurrency = displayCurrency === "USD" ? "PHP" : "USD";
-    await runAction(
-      "updateDisplayCurrency",
-      { currency: nextCurrency },
-      `Showing ${nextCurrency}.`
-    );
-    setToolbarOpen(false);
-  }
-
-  async function refreshExchangeRate() {
-    await runAction("refreshExchangeRate", {}, "Exchange rate refreshed.");
-  }
-
-  async function connectPlaid() {
-    setSaving("createPlaidLinkToken");
-    setNotice("");
-    setError("");
-
-    try {
-      const [{ linkToken }, Plaid] = await Promise.all([
-        callFinanceAction("createPlaidLinkToken", {}),
-        loadPlaidScript()
-      ]);
-
-      if (!linkToken || !Plaid?.create) throw new Error("Plaid Link did not initialize.");
-
-      const handler = Plaid.create({
-        token: linkToken,
-        onSuccess: async (publicToken, metadata) => {
-          setSaving("exchangePlaidPublicToken");
-          setNotice("");
-          setError("");
-
-          try {
-            await callFinanceAction("exchangePlaidPublicToken", { publicToken, metadata });
-            setNotice("Plaid account linked.");
-            router.refresh();
-          } catch (err) {
-            setError(err.message || "Plaid account link failed.");
-          } finally {
-            setSaving("");
-          }
-        },
-        onExit: (err) => {
-          if (err) setError(err.display_message || err.error_message || "Plaid Link was closed.");
-        }
-      });
-
-      handler.open();
-    } catch (err) {
-      setError(err.message || "Plaid Link failed.");
-    } finally {
-      setSaving("");
-    }
-  }
-
-  async function connectBrankas() {
-    setSaving("createBrankasLink");
-    setNotice("");
-    setError("");
-
-    try {
-      const result = await callFinanceAction("createBrankasLink", {});
-      if (!result?.url) throw new Error("Brankas did not return a link URL.");
-      window.location.assign(result.url);
-    } catch (err) {
-      setError(err.message || "Brankas Link failed.");
-      setSaving("");
-    }
-  }
-
-  async function syncConnection(connection) {
-    await runAction("syncConnection", { id: connection.id }, `${connection.institutionName} synced.`);
-  }
-
-  function openNewTransaction() {
-    setTab("transactions");
-    setTransactionEditId(null);
-    setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
-    setTransactionModalOpen(true);
-  }
-
-  function closeTransactionModal() {
-    setTransactionModalOpen(false);
-    setTransactionEditId(null);
-    setTransactionForm(defaultTransaction(snapshot.month, snapshot.accounts, displayCurrency));
-  }
-
-  async function submitTransaction(event) {
-    event.preventDefault();
-    const action = transactionEditId ? "updateTransaction" : "createTransaction";
-    const ok = await runAction(
-      action,
-      { ...transactionForm, id: transactionEditId },
-      transactionEditId ? "Transaction updated." : "Transaction added."
-    );
-
-    if (ok) {
-      closeTransactionModal();
-    }
-  }
-
-  function editTransaction(transaction) {
-    setTab("transactions");
-    setTransactionEditId(transaction.id);
-    setTransactionForm({
-      date: transaction.date,
-      kind: transaction.kind,
-      amount: String(transaction.amount),
-      currency: transaction.currency,
-      category: transaction.category,
-      accountId: transaction.accountId ? String(transaction.accountId) : "",
-      merchant: transaction.merchant,
-      note: transaction.note
-    });
-    setTransactionModalOpen(true);
-  }
-
-  function toggleTransactionGroup(groupId) {
-    setExpandedTransactionGroups((current) => {
-      const next = new Set(current);
-      if (next.has(groupId)) {
-        next.delete(groupId);
-      } else {
-        next.add(groupId);
-      }
-      return next;
-    });
-  }
-
-  async function deleteTransaction(transaction) {
-    if (!window.confirm("Delete this transaction?")) return;
-    const ok = await runAction("deleteTransaction", { id: transaction.id }, "Transaction deleted.");
-    if (ok && transactionEditId === transaction.id) {
-      closeTransactionModal();
-    }
-  }
-
-  function renderTransactionDetail(transaction, className = "") {
-    return (
-      <article key={transaction.id} className={`finance-transaction-detail ${className}`.trim()}>
-        <div className="finance-transaction-detail-main">
-          <span className="finance-transaction-detail-head">
-            <strong>{transactionTitle(transaction)}</strong>
-            <b className={transaction.kind === "income" ? "finance-good" : "finance-bad"}>
-              {showCurrency(transactionSignedNativeAmount(transaction), transaction.currency)}
-            </b>
-          </span>
-          <span className="finance-transaction-detail-meta">
-            <small>{formatShortDate(transaction.date)}</small>
-            <small>{transactionSourceLabel(transaction)}</small>
-            <small>{transaction.category}</small>
-            <small>{transaction.kind === "income" ? "Inflow" : "Outflow"}</small>
-            {transaction.pending ? <small className="finance-warn">Pending</small> : null}
-          </span>
-          {transaction.note ? <small className="finance-transaction-note">{transaction.note}</small> : null}
-        </div>
-        <div className="finance-transaction-actions">
-          <button type="button" onClick={() => editTransaction(transaction)} aria-label={`Edit ${transactionTitle(transaction)}`}>Edit</button>
-          <button type="button" onClick={() => deleteTransaction(transaction)} aria-label={`Delete ${transactionTitle(transaction)}`}>Delete</button>
-        </div>
-      </article>
-    );
-  }
-
-  function renderTransactionForm() {
-    return (
-      <form className="finance-form" onSubmit={submitTransaction}>
-        <div className="finance-form-grid">
-          <Field label="Date">
-            <input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm((form) => ({ ...form, date: event.target.value }))} required disabled={disabled} />
-          </Field>
-          <Field label="Type">
-            <select value={transactionForm.kind} onChange={(event) => setTransactionForm((form) => ({ ...form, kind: event.target.value }))} disabled={disabled}>
-              <option value="expense">Expense</option>
-              <option value="income">Income</option>
-            </select>
-          </Field>
-        </div>
-
-        <div className="finance-form-grid">
-          <Field label="Amount">
-            <input type="number" inputMode="decimal" step="0.01" min="0" value={transactionForm.amount} onChange={(event) => setTransactionForm((form) => ({ ...form, amount: event.target.value }))} required disabled={disabled} />
-          </Field>
-          <Field label="Currency">
-            <select value={transactionForm.currency} onChange={(event) => setTransactionForm((form) => ({ ...form, currency: event.target.value }))} disabled={disabled}>
-              <option value="USD">USD</option>
-              <option value="PHP">PHP</option>
-            </select>
-          </Field>
-        </div>
-
-        <Field label="Category">
-          <input list="finance-categories" value={transactionForm.category} onChange={(event) => setTransactionForm((form) => ({ ...form, category: event.target.value }))} required disabled={disabled} />
-        </Field>
-
-        <Field label="Account">
-          <select value={transactionForm.accountId} onChange={(event) => setTransactionForm((form) => ({ ...form, accountId: event.target.value }))} disabled={disabled}>
-            <option value="">Unassigned</option>
-            {snapshot.accounts.map((account) => (
-              <option key={account.id} value={account.id}>
-                {joinSourceParts([account.name, account.institutionName, account.provider])}
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        <Field label="Merchant or payer">
-          <input value={transactionForm.merchant} onChange={(event) => setTransactionForm((form) => ({ ...form, merchant: event.target.value }))} disabled={disabled} maxLength={120} />
-        </Field>
-
-        <Field label="Note">
-          <textarea value={transactionForm.note} onChange={(event) => setTransactionForm((form) => ({ ...form, note: event.target.value }))} disabled={disabled} maxLength={300} />
-        </Field>
-
-        <div className="finance-button-row">
-          <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>
-            {transactionEditId ? "Save" : "Add"}
-          </button>
-          <button type="button" onClick={closeTransactionModal}>
-            Cancel
-          </button>
-        </div>
-      </form>
-    );
-  }
-
-  async function submitBill(event) {
-    event.preventDefault();
-    const ok = await runAction(
-      "upsertBill",
-      {
-        ...billForm,
-        amountUsd: toUsdFromDisplay(billForm.amount),
-        amountPhp: toPhpFromDisplay(billForm.amount)
-      },
-      billForm.id ? "Bill saved." : "Bill added."
-    );
-    if (ok) setBillForm(defaultBill(displayCurrency));
-  }
-
-  function editBill(bill) {
-    setBillForm({
-      id: bill.id,
-      name: bill.name,
-      amount: String(convertAmount(bill.amountUsd, "USD", displayCurrency, exchangeRate)),
-      currency: displayCurrency,
-      dueLabel: bill.dueLabel,
-      paymentAccount: bill.paymentAccount,
-      isPaid: Boolean(bill.isManuallyPaid),
-      isAutopay: bill.isAutopay
-    });
-  }
-
-  async function deleteBill(bill) {
-    if (!window.confirm(`Delete ${bill.name}?`)) return;
-    const ok = await runAction("deleteBill", { id: bill.id }, "Bill deleted.");
-    if (ok && billForm.id === bill.id) setBillForm(defaultBill(displayCurrency));
-  }
-
-  async function toggleBill(bill, nextIsPaid = !bill.isManuallyPaid) {
-    await runAction(
-      "toggleBillPaid",
-      { id: bill.id, isPaid: nextIsPaid },
-      nextIsPaid ? "Bill marked paid." : "Bill marked unpaid."
-    );
-  }
-
-  async function submitGoal(event) {
-    event.preventDefault();
-    const ok = await runAction("upsertGoal", goalForm, goalForm.id ? "Goal saved." : "Goal added.");
-    if (ok) setGoalForm(defaultGoal(displayCurrency));
-  }
-
-  function editGoal(goal) {
-    setGoalForm({
-      id: goal.id,
-      name: goal.name,
-      currency: goal.currency,
-      targetAmount: String(goal.targetAmount),
-      savedAmount: String(goal.savedAmount),
-      category: goal.category || "",
-      note: goal.note || ""
-    });
-  }
-
-  async function deleteGoal(goal) {
-    if (!window.confirm(`Delete ${goal.name}?`)) return;
-    const ok = await runAction("deleteGoal", { id: goal.id }, "Goal deleted.");
-    if (ok && goalForm.id === goal.id) setGoalForm(defaultGoal(displayCurrency));
-  }
-
-  async function submitAccount(event) {
-    event.preventDefault();
-    const action = accountForm.id ? "updateAccount" : "createAccount";
-    const ok = await runAction(
-      action,
-      {
-        ...accountForm,
-        openingBalance: toUsdFromDisplay(accountForm.openingBalance)
-      },
-      accountForm.id ? "Account saved." : "Account added."
-    );
-    if (ok) setAccountForm(defaultAccount());
-  }
-
-  function editAccount(account) {
-    setAccountForm({
-      id: account.id,
-      name: account.name,
-      type: account.type,
-      openingBalance: String(convertAmount(account.openingBalance, "USD", displayCurrency, exchangeRate)),
-      color: account.color
-    });
-  }
-
-  async function archiveAccount(account) {
-    if (!window.confirm(`Archive ${account.name}?`)) return;
-    const ok = await runAction("archiveAccount", { id: account.id }, "Account archived.");
-    if (ok && accountForm.id === account.id) setAccountForm(defaultAccount());
   }
 
   return (
-    <div className="finance-app">
-      <div className="finance-floating-toolbar">
-        {toolbarOpen ? (
-          <div id="finance-toolbar-menu" className="finance-toolbar-menu" role="menu">
-            {installPrompt ? (
-              <button type="button" role="menuitem" onClick={installApp}>Install</button>
-            ) : null}
-            <button type="button" role="menuitem" onClick={() => { setTab("home"); setToolbarOpen(false); }}>Home</button>
-            <button type="button" role="menuitem" onClick={() => { setTab("profile"); setToolbarOpen(false); }}>Profile</button>
-            <button type="button" role="menuitem" onClick={switchDisplayCurrency}>
-              Show {displayCurrency === "USD" ? "PHP" : "USD"}
-            </button>
-            <button type="button" role="menuitem" onClick={() => signOut({ callbackUrl: "/finance/login" })}>Sign out</button>
+    <div className="fp-app">
+      <aside className="fp-sidebar">
+        <a
+          className="fp-brand"
+          href="/finance"
+          aria-label="Personal Finance overview"
+        >
+          <span>
+            <Icon name="wallet" size={24} />
+          </span>
+          <div>
+            personal<span>FINANCE</span>
           </div>
-        ) : null}
-        <button
-          type="button"
-          className={toolbarOpen ? "finance-toolbar-toggle active" : "finance-toolbar-toggle"}
-          aria-controls="finance-toolbar-menu"
-          aria-expanded={toolbarOpen}
-          aria-label="Finance actions"
-          onClick={() => setToolbarOpen((open) => !open)}
-        >
-          ...
-        </button>
-      </div>
-
-      {transactionModalOpen ? (
-        <div
-          className="finance-modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeTransactionModal();
-          }}
-        >
-          <section
-            className="finance-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="finance-transaction-modal-title"
-          >
-            <header className="finance-modal-header">
-              <h2 id="finance-transaction-modal-title">{transactionEditId ? "Edit Transaction" : "Add Transaction"}</h2>
-              <button type="button" onClick={closeTransactionModal} aria-label="Close transaction form">Close</button>
-            </header>
-            {renderTransactionForm()}
-          </section>
-        </div>
-      ) : null}
-
-      {activeTab !== "home" ? (
-        <>
-          <FinanceHeader onHome={() => setTab("home")} />
-
-          {!snapshot.configured ? (
-            <div className="finance-alert finance-alert-warn">
-              FINANCE_DATABASE_URL, DATABASE_URL, or MYSQL_URL is required before records can be saved.
-            </div>
-          ) : null}
-
-          {status ? (
-            <div className={error ? "finance-alert finance-alert-error" : "finance-alert"}>
-              {status}
-            </div>
-          ) : null}
-        </>
-      ) : null}
-
-      {activeTab === "home" ? (
-        <div className="finance-home-layout">
-          <main className="finance-home-main" aria-label="Finance dashboard">
-            <FinanceHeader onHome={() => setTab("home")} />
-
-            {!snapshot.configured ? (
-              <div className="finance-alert finance-alert-warn">
-                FINANCE_DATABASE_URL, DATABASE_URL, or MYSQL_URL is required before records can be saved.
-              </div>
-            ) : null}
-
-            {status ? (
-              <div className={error ? "finance-alert finance-alert-error" : "finance-alert"}>
-                {status}
-              </div>
-            ) : null}
-
-            <section className="finance-metric-grid">
-              <Metric label="Net" value={showCurrency(snapshot.summary.netUsd, "USD")} tone={snapshot.summary.netUsd >= 0 ? "good" : "bad"} detail={`${snapshot.summary.savingsRate}% saved`} />
-              <Metric label="Recurring" value={showCurrency(snapshot.plan.recurringUsd, "USD")} detail={`1 USD = ${exchangeRateMoney(snapshot.plan.exchangeRate)}`} />
-              <Metric label="Unpaid" value={snapshot.summary.unpaidBills} tone={snapshot.summary.unpaidBills ? "warn" : "good"} detail={`${snapshot.summary.dueSoonBills} due soon`} />
-              <Metric label="Balance" value={showCurrency(totalAccountBalanceUsd, "USD")} tone="info" detail={`${snapshot.accounts.length} accounts`} />
-            </section>
-
-          <section className="finance-home-charts">
-            <Panel title="Accounts" className="finance-chart-panel finance-accounts-panel">
-              <div className="finance-balance-summary">
-                <span>
-                  <b>{showCurrency(positiveFundsUsd, "USD")}</b>
-                  <small>funds</small>
-                </span>
-                <span>
-                  <b className={negativeBalancesUsd < 0 ? "finance-bad" : ""}>{showCurrency(negativeBalancesUsd, "USD")}</b>
-                  <small>credit debt</small>
-                </span>
-                <span>
-                  <b className={totalAccountBalanceUsd >= 0 ? "finance-info" : "finance-bad"}>{showCurrency(totalAccountBalanceUsd, "USD")}</b>
-                  <small>total</small>
-                </span>
-                <span>
-                  <b>{snapshot.accounts.length}</b>
-                  <small>accounts</small>
-                </span>
-              </div>
-
-              <figure className="finance-axis-chart">
-                <div className="finance-axis-scroll">
-                  <svg
-                    className="finance-axis-svg"
-                    viewBox={`0 0 ${balanceChartWidth} ${balanceChartHeight}`}
-                    role="img"
-                    aria-labelledby="finance-balance-chart-title finance-balance-chart-desc"
-                  >
-                    <title id="finance-balance-chart-title">Accounts</title>
-                    <desc id="finance-balance-chart-desc">Funds in every account, credit card balances as negative values, and the total balance.</desc>
-                    {balanceChartTicks.map((tick) => {
-                      const y = balanceChartY(tick);
-
-                      return (
-                        <g key={tick}>
-                          <line
-                            className={tick === 0 ? "finance-axis-zero-line" : "finance-axis-grid-line"}
-                            x1={balanceChartLeft}
-                            x2={balanceChartRight}
-                            y1={y}
-                            y2={y}
-                          />
-                          <text className="finance-axis-y-label" x={balanceChartLeft - 9} y={y + 4} textAnchor="end">
-                            {showCompactCurrency(tick, "USD")}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartLeft} y1={balanceChartTop} y2={balanceChartBottom} />
-                    <line className="finance-axis-line" x1={balanceChartLeft} x2={balanceChartRight} y1={balanceZeroY} y2={balanceZeroY} />
-                    <text className="finance-axis-title" x={balanceChartLeft} y={16}>Amount</text>
-                    <text className="finance-axis-title" x={balanceChartRight} y={balanceChartHeight - 12} textAnchor="end">Accounts</text>
-
-                    {balanceChartItems.map((item, index) => {
-                      const x = balanceChartLeft + index * balanceChartSlot + (balanceChartSlot - balanceBarWidth) / 2;
-                      const valueY = balanceChartY(item.valueUsd);
-                      const barY = Math.min(valueY, balanceZeroY);
-                      const barHeight = Math.max(2, Math.abs(balanceZeroY - valueY));
-                      const tooltipX = Math.min(
-                        balanceChartRight - balanceTooltipWidth,
-                        Math.max(balanceChartLeft, x + balanceBarWidth / 2 - balanceTooltipWidth / 2)
-                      );
-                      const tooltipY = item.valueUsd < 0
-                        ? Math.min(balanceChartBottom - balanceTooltipHeight, barY + barHeight + 10)
-                        : Math.max(balanceChartTop + 6, barY - balanceTooltipHeight - 10);
-                      const labelY = item.valueUsd < 0
-                        ? Math.min(balanceChartBottom + 18, barY + barHeight + 15)
-                        : Math.max(14, barY - 8);
-                      const labelClassName = item.valueUsd < 0 ? "finance-axis-value finance-axis-value-negative" : "finance-axis-value";
-                      const openTooltip = () => setChartTooltip({ id: item.id, x: tooltipX, y: tooltipY });
-
-                      return (
-                        <g
-                          key={item.id}
-                          className="finance-axis-bar-group"
-                          tabIndex={0}
-                          role="button"
-                          aria-label={`${item.label}: ${showCurrency(item.valueUsd, "USD")}. ${item.detail}`}
-                          onClick={openTooltip}
-                          onFocus={openTooltip}
-                          onBlur={() => setChartTooltip(null)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              openTooltip();
-                            }
-                          }}
-                          onPointerEnter={openTooltip}
-                          onPointerLeave={() => setChartTooltip(null)}
-                        >
-                          <title>{`${item.label}: ${showCurrency(item.valueUsd, "USD")} - ${item.detail}`}</title>
-                          <rect
-                            className={`finance-axis-bar finance-axis-${item.tone}${item.isTotal ? " finance-axis-total" : ""}`}
-                            x={x}
-                            y={barY}
-                            width={balanceBarWidth}
-                            height={barHeight}
-                            rx="5"
-                          />
-                          <text className={labelClassName} x={x + balanceBarWidth / 2} y={labelY} textAnchor="middle">
-                            {showCompactCurrency(item.valueUsd, "USD")}
-                          </text>
-                          <text className="finance-axis-x-label" x={x + balanceBarWidth / 2} y={balanceChartBottom + 38} textAnchor="middle">
-                            {shortChartLabel(item.label)}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    {activeChartItem && chartTooltip ? (
-                      <g className="finance-axis-tooltip" transform={`translate(${chartTooltip.x}, ${chartTooltip.y})`} pointerEvents="none">
-                        <rect width={balanceTooltipWidth} height={balanceTooltipHeight} rx="8" />
-                        <text className="finance-axis-tooltip-label" x="11" y="19">
-                          {shortChartLabel(activeChartItem.label, 22)}
-                        </text>
-                        <text className="finance-axis-tooltip-detail" x="11" y="38">
-                          {shortChartLabel(activeChartItem.detail, 28)}
-                        </text>
-                        <text className="finance-axis-tooltip-value" x={balanceTooltipWidth - 11} y="53" textAnchor="end">
-                          {showCurrency(activeChartItem.valueUsd, "USD")}
-                        </text>
-                      </g>
-                    ) : null}
-                  </svg>
-                </div>
-
-                <figcaption className="finance-chart-values">
-                  {balanceChartItems.map((item) => (
-                    <span key={item.id}>
-                      <i className={`finance-chart-dot finance-${item.tone}`} />
-                      <span>
-                        <strong>{item.label}</strong>
-                        <small>{item.detail}</small>
-                      </span>
-                      <b className={item.valueUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(item.valueUsd, "USD")}</b>
-                    </span>
-                  ))}
-                </figcaption>
-              </figure>
-            </Panel>
-
-            <Panel title="Bills" className="finance-chart-panel finance-bills-panel">
-              <figure className="finance-pie-chart">
-                <svg className="finance-pie-svg" viewBox="0 0 140 140" role="img" aria-labelledby="finance-bills-chart-title finance-bills-chart-desc">
-                  <title id="finance-bills-chart-title">Bills</title>
-                  <desc id="finance-bills-chart-desc">Remaining bills, paid bills, voided or overflow amount, and any paid amount over expected.</desc>
-                  <circle className="finance-pie-track" cx="70" cy="70" r={billPieRadius} />
-                  {billPieSegments.map((item) => (
-                    <circle
-                      key={item.id}
-                      className={`finance-pie-slice finance-pie-${item.tone}`}
-                      tabIndex={0}
-                      role="img"
-                      aria-label={`${item.label}: ${showCurrency(item.valueUsd, "USD")}`}
-                      cx="70"
-                      cy="70"
-                      r={billPieRadius}
-                      strokeDasharray={`${item.dash} ${Math.max(0, billPieCircumference - item.dash)}`}
-                      strokeDashoffset={-item.offset}
-                      transform="rotate(-90 70 70)"
-                      onPointerEnter={(event) => updateBillTooltip(event, item)}
-                      onPointerMove={(event) => updateBillTooltip(event, item)}
-                      onPointerLeave={hideBillTooltip}
-                      onFocus={(event) => updateBillTooltip(event, item)}
-                      onBlur={hideBillTooltip}
-                    >
-                      <title>{`${item.label}: ${showCurrency(item.valueUsd, "USD")}`}</title>
-                    </circle>
-                  ))}
-                  <text className="finance-pie-center-label" x="70" y="65" textAnchor="middle">Tracked</text>
-                  <text className="finance-pie-center-value" x="70" y="82" textAnchor="middle">{showCompactCurrency(billPieTotalUsd, "USD")}</text>
-                </svg>
-                {billTooltip ? (
-                  <div
-                    className="finance-pie-tooltip"
-                    style={{
-                      left: `${billTooltip.x}px`,
-                      top: `${billTooltip.y}px`
-                    }}
-                  >
-                    <strong>{billTooltip.label}</strong>
-                    <b>{billTooltip.value}</b>
-                    <small>{billTooltip.detail}</small>
-                  </div>
-                ) : null}
-              </figure>
-            </Panel>
-
-            <Panel
-              title="Funds / Expense"
-              className="finance-chart-panel finance-line-panel"
-              action={(
-                <div className="finance-chart-filter">
-                  <select
-                    aria-label="Funds chart range"
-                    value={fundsFilter.mode}
-                    onChange={(event) => setFundsFilter((filter) => ({ ...filter, mode: event.target.value }))}
-                  >
-                    <option value="month">Month</option>
-                    <option value="year">Year</option>
-                    <option value="payPeriod">Pay period</option>
-                    <option value="all">All</option>
-                  </select>
-                  {fundsFilter.mode === "month" ? (
-                    <select
-                      aria-label="Funds chart month"
-                      value={fundsFilter.month}
-                      onChange={(event) => setFundsFilter((filter) => ({ ...filter, month: event.target.value }))}
-                    >
-                      {fundsMonthOptions.map((month) => (
-                        <option key={month} value={month}>{formatMonthLabel(month)}</option>
-                      ))}
-                    </select>
-                  ) : null}
-                  {fundsFilter.mode === "year" ? (
-                    <select
-                      aria-label="Funds chart year"
-                      value={fundsFilter.year}
-                      onChange={(event) => setFundsFilter((filter) => ({ ...filter, year: event.target.value }))}
-                    >
-                      {fundsYearOptions.map((year) => (
-                        <option key={year} value={year}>{year}</option>
-                      ))}
-                    </select>
-                  ) : null}
-                  {fundsFilter.mode === "payPeriod" ? (
-                    <select
-                      aria-label="Funds chart pay period"
-                      value={activeFundsPayPeriod.id}
-                      onChange={(event) => setFundsFilter((filter) => ({ ...filter, payPeriod: event.target.value }))}
-                    >
-                      {fundsPayPeriodOptions.map((period) => (
-                        <option key={period.id} value={period.id}>{period.label}</option>
-                      ))}
-                    </select>
-                  ) : null}
-                </div>
-              )}
+        </a>
+        <p className="fp-nav-label">YOUR WORKSPACE</p>
+        <nav aria-label="Finance navigation">
+          {NAV.map((item) => (
+            <button
+              key={item.id}
+              aria-current={tab === item.id ? "page" : undefined}
+              className={tab === item.id ? "active" : ""}
+              onClick={() => navigate(item.id)}
             >
-              <figure className="finance-line-chart">
-                <div className="finance-chart-summary">
-                  <span>{fundsFilterDetail}</span>
-                  <b>{filteredFundsTransactions.length} transaction{filteredFundsTransactions.length === 1 ? "" : "s"}</b>
-                </div>
-                <div className="finance-line-scroll">
-                  <svg className="finance-line-svg" style={{ minWidth: `${fundsChartWidth}px` }} viewBox={`0 0 ${fundsChartWidth} ${fundsChartHeight}`} role="img" aria-labelledby="finance-funds-chart-title finance-funds-chart-desc">
-                    <title id="finance-funds-chart-title">Funds and expense</title>
-                    <desc id="finance-funds-chart-desc">Cumulative incoming and outbound totals across all transactions.</desc>
-                    {fundsChartTicks.map((tick) => {
-                      const y = fundsChartY(tick);
-
-                      return (
-                        <g key={tick}>
-                          <line className={tick === 0 ? "finance-axis-zero-line" : "finance-axis-grid-line"} x1={fundsChartLeft} x2={fundsChartRight} y1={y} y2={y} />
-                          <text className="finance-axis-y-label" x={fundsChartLeft - 9} y={y + 4} textAnchor="end">
-                            {showCompactCurrency(tick, "USD")}
-                          </text>
-                        </g>
-                      );
-                    })}
-                    <line className="finance-axis-line" x1={fundsChartLeft} x2={fundsChartLeft} y1={fundsChartTop} y2={fundsChartBottom} />
-                    <line className="finance-axis-line" x1={fundsChartLeft} x2={fundsChartRight} y1={fundsChartBottom} y2={fundsChartBottom} />
-                    <path className="finance-line-path finance-line-income" d={fundsIncomePath} />
-                    <path className="finance-line-path finance-line-expense" d={fundsExpensePath} />
-                    {fundsExpenseSeries.map((item, index) => {
-                      const showLabel = index === 0 || index === fundsExpenseSeries.length - 1 || index % fundsLabelStep === 0;
-                      const pointTitle = [
-                        transactionTitle(item.transaction),
-                        formatShortDate(item.date),
-                        showCurrency(transactionSignedNativeAmount(item.transaction), item.transaction?.currency || "USD"),
-                        transactionSourceLabel(item.transaction)
-                      ].filter(Boolean).join(" - ");
-
-                      return (
-                        <g key={item.id}>
-                          {showLabel ? (
-                            <text className="finance-axis-x-label" x={fundsChartX(index)} y={fundsChartBottom + 26} textAnchor="middle">
-                              {formatShortDate(item.date)}
-                            </text>
-                          ) : null}
-                          {item.transaction?.kind === "income" ? (
-                            <circle className="finance-line-point finance-line-income-point" cx={fundsChartX(index)} cy={fundsChartY(item.incomeUsd)} r="3.2">
-                              <title>{pointTitle}</title>
-                            </circle>
-                          ) : null}
-                          {item.transaction?.kind === "expense" ? (
-                            <circle className="finance-line-point finance-line-expense-point" cx={fundsChartX(index)} cy={fundsChartY(item.expenseUsd)} r="3.2">
-                              <title>{pointTitle}</title>
-                            </circle>
-                          ) : null}
-                        </g>
-                      );
-                    })}
-                  </svg>
-                </div>
-                <figcaption className="finance-line-legend">
-                  <span>
-                    <i className="finance-chart-dot finance-good" />
-                    <strong>Incoming</strong>
-                    <b className="finance-good">{showCurrency(fundsIncomeUsd, "USD")}</b>
-                  </span>
-                  <span>
-                    <i className="finance-chart-dot finance-bad" />
-                    <strong>Outbound</strong>
-                    <b className="finance-bad">{showCurrency(fundsExpenseUsd, "USD")}</b>
-                  </span>
-                  <span>
-                    <i className="finance-chart-dot finance-info" />
-                    <strong>Net</strong>
-                    <b className={fundsNetUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(fundsNetUsd, "USD")}</b>
-                  </span>
-                </figcaption>
-              </figure>
-            </Panel>
-          </section>
-
-          {attentionItems.length > 0 ? (
-            <Panel title="Needs Attention">
-              <div className="finance-list">
-                {attentionItems.map((item) => (
-                  <div key={item} className="finance-attention-item">{item}</div>
-                ))}
-              </div>
-            </Panel>
-          ) : null}
-          </main>
-
-          <aside className="finance-home-sidebar" aria-label="Finance quick lists">
-          <Panel title="Bills Left" action={<button type="button" onClick={() => setTab("bills")}>Open</button>}>
-            {unpaidBills.length === 0 ? (
-              <p className="finance-muted">No unpaid recurring bills.</p>
-            ) : (
-              <div className="finance-list">
-                {unpaidBills.slice(0, 5).map((bill) => {
-                  const overdue = overdueBillIds.has(bill.id);
-
-                  return (
-                    <article
-                      key={bill.id}
-                      className={overdue ? "finance-bill-left-item finance-bill-left-overdue" : "finance-bill-left-item"}
-                    >
-                      <div className="finance-bill-left-copy">
-                        <strong>{bill.name}</strong>
-                        <small>Due {formatBillDue(bill, snapshot.month)}{overdue ? " - overdue" : ""}</small>
-                        <small>{billSourceLabel(bill)}</small>
-                      </div>
-                      <div className="finance-bill-left-actions">
-                        <b>{showCurrency(bill.amountUsd, "USD")}</b>
-                        <button
-                          type="button"
-                          className="finance-pay-button finance-bill-left-pay"
-                          onClick={() => toggleBill(bill, true)}
-                          disabled={disabled || Boolean(saving)}
-                        >
-                          Paid
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="Recent Transactions" action={<button type="button" onClick={() => setTab("transactions")}>Open</button>}>
-            {recentTransactions.length === 0 ? (
-              <p className="finance-muted">No transactions for this month.</p>
-            ) : (
-              <div className="finance-list">
-                {recentTransactions.slice(0, 5).map((transaction) => (
-                  <article key={transaction.id} className="finance-list-row finance-list-row-card">
-                    <span>
-                      <strong>{transaction.merchant || transaction.category}</strong>
-                      <small>{formatShortDate(transaction.date)} - {transactionSourceLabel(transaction)}</small>
-                    </span>
-                    <b className={transaction.kind === "income" ? "finance-good" : "finance-bad"}>
-                      {showCurrency(transaction.amount, transaction.currency)}
-                    </b>
-                    <button type="button" onClick={() => editTransaction(transaction)} aria-label={`Edit ${transactionTitle(transaction)}`}>Edit</button>
-                  </article>
-                ))}
-              </div>
-            )}
-          </Panel>
-          </aside>
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
+              {tab === item.id && <i />}
+            </button>
+          ))}
+        </nav>
+        <div className="fp-sidebar-bottom">
+          <FinanceInstall />
+          <div className="fp-private">
+            <Icon name="lock" size={15} />
+            <span>Just for you. Always private.</span>
+          </div>
+          <div className="fp-owner">
+            <span className="fp-avatar">LB</span>
+            <div>
+              <strong>Personal workspace</strong>
+              <small>Owner access only</small>
+            </div>
+            <Button
+              icon="exit"
+              className="fp-icon-button"
+              aria-label="Sign out"
+              onClick={() => signOut({ callbackUrl: "/finance/login" })}
+            />
+          </div>
+          <a className="fp-back-link" href="/">
+            ← Back to portfolio
+          </a>
         </div>
-      ) : null}
-
-      {activeTab === "transactions" ? (
-        <main className="finance-stack finance-transactions-stack">
-          <Panel
-            title="Transaction History"
-            action={(
-              <div className="finance-panel-actions">
-                <span className="finance-panel-count">
-                  {filteredHistoryTransactions.length} transaction{filteredHistoryTransactions.length === 1 ? "" : "s"}
-                </span>
-                <button type="button" className="finance-primary" onClick={openNewTransaction} disabled={disabled}>Add</button>
-              </div>
+      </aside>
+      <div className="fp-main">
+        <header className="fp-topbar">
+          <span>
+            My workspace <span>/</span> <strong>{activeNav.label}</strong>
+          </span>
+          <div>
+            <span className="fp-private-badge">
+              <Icon name="lock" size={12} /> Private
+            </span>
+            <Button
+              icon="exit"
+              className="fp-icon-button fp-mobile-signout"
+              aria-label="Sign out"
+              onClick={() => signOut({ callbackUrl: "/finance/login" })}
+            />
+            <span className="fp-topbar-date">
+              {formatDate(localDate(), {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              })}
+            </span>
+          </div>
+        </header>
+        <main className="fp-content" id="finance-main">
+          <div className="fp-page-heading">
+            <div>
+              <p className="fp-eyebrow">A LITTLE CLARITY, EVERY PAYDAY</p>
+              <h1>
+                {tab === "home"
+                  ? "Your money, at a glance."
+                  : tab === "bills"
+                    ? "Everything that’s due."
+                    : tab === "spending"
+                      ? "Give every payday a plan."
+                      : "A plan for what’s ahead."}
+              </h1>
+              <p>
+                {tab === "home"
+                  ? "One place for your dollars, pesos, and peace of mind."
+                  : tab === "bills"
+                    ? "Monthly essentials and annual commitments, all accounted for."
+                    : tab === "spending"
+                      ? "Know what to set aside and what’s yours to spend."
+                      : "Try out dates, expenses, and currency moves before they happen."}
+              </p>
+            </div>
+            {tab === "bills" ? (
+              <Button
+                icon="plus"
+                variant="primary"
+                onClick={() => open({ type: "bill" })}
+              >
+                Add bill
+              </Button>
+            ) : tab === "plans" ? (
+              <Button
+                icon="plus"
+                variant="primary"
+                onClick={() => open({ type: "plan" })}
+              >
+                New plan
+              </Button>
+            ) : (
+              <span className="fp-heading-icon">
+                <Icon name={activeNav.icon} size={28} />
+              </span>
             )}
-          >
-            <div className="finance-transaction-history">
-              <div className="finance-transaction-filter" aria-label="Transaction date filter">
-                <label>
-                  <span>From</span>
-                  <input
-                    type="date"
-                    value={transactionDateFilter.from}
-                    onChange={(event) => setTransactionDateFilter((filter) => ({ ...filter, from: event.target.value }))}
-                  />
-                </label>
-                <label>
-                  <span>To</span>
-                  <input
-                    type="date"
-                    value={transactionDateFilter.to}
-                    onChange={(event) => setTransactionDateFilter((filter) => ({ ...filter, to: event.target.value }))}
-                  />
-                </label>
-                {transactionDateFilterActive ? (
-                  <button type="button" onClick={() => setTransactionDateFilter({ from: "", to: "" })}>
-                    Clear
-                  </button>
-                ) : null}
-              </div>
+          </div>
+          {!state.configured && (
+            <div className="fp-alert fp-alert-warning" role="status">
+              <strong>Storage isn’t connected yet.</strong>{" "}
+              {state.warning ||
+                "Connect your finance MySQL database to save across devices."}{" "}
+              Saving needs the database.
+            </div>
+          )}
+          {error && !modal && (
+            <div className="fp-alert fp-alert-error" role="alert">
+              {error}
+              <Button variant="text" onClick={() => window.location.reload()}>
+                Reload data
+              </Button>
+            </div>
+          )}
+          <div className="fp-rate-bar">
+            <div>
+              <span
+                className={`fp-live-dot ${state.exchangeRate.stale ? "fp-stale" : ""}`}
+              />
+              <strong>1 USD = {rateMoney(rate)}</strong>
+              <span>
+                {state.exchangeRate.stale
+                  ? "Fallback reference rate"
+                  : "Latest reference rate"}
+                {state.exchangeRate.date
+                  ? ` · ${formatDate(state.exchangeRate.date)}`
+                  : ""}
+              </span>
+            </div>
+            <Button
+              variant="text"
+              icon="refresh"
+              disabled={refreshing}
+              onClick={() => refreshRate()}
+            >
+              {refreshing ? "Refreshing…" : "Refresh rate"}
+            </Button>
+          </div>
+          {state.exchangeRate.stale && (
+            <p className="fp-rate-warning">
+              {state.exchangeRate.error ||
+                "The rate provider is unavailable. Conversions use the last available rate."}
+            </p>
+          )}
 
-              {filteredHistoryTransactions.length > 0 ? (
-                <div className="finance-transaction-pager" aria-label="Transaction pages">
+          {tab === "home" && (
+            <>
+              <section className="fp-metrics" aria-label="Monthly summary">
+                <Metric
+                  label="Monthly income"
+                  value={money(summary.monthlyUsd)}
+                  detail={`${money(summary.monthlyPhp, "PHP")} equivalent`}
+                  icon="coin"
+                />
+                <Metric
+                  label="Monthly bills"
+                  value={money(summary.monthlyCommitmentsUsd)}
+                  detail="Includes your annual bills reserve"
+                  icon="receipt"
+                />
+                <Metric
+                  label="Annual reserve / month"
+                  value={money(summary.annualMonthlyUsd)}
+                  detail={`${money(summary.annualUsd)} in annual commitments`}
+                  icon="calendar"
+                />
+                <Metric
+                  label="After monthly bills"
+                  value={money(summary.monthlyRemainingUsd)}
+                  detail="Before savings & everyday spending"
+                  icon="wallet"
+                  accent
+                />
+              </section>
+              <div className="fp-overview-grid">
+                <section className="fp-card fp-salary-card">
+                  <div className="fp-card-heading">
+                    <div>
+                      <span className="fp-section-number">01</span>
+                      <h2>Your monthly salary</h2>
+                    </div>
+                    <span className="fp-label-pill">USD ⇄ PHP</span>
+                  </div>
+                  <p className="fp-card-intro">
+                    Start with what comes in. The rest falls into place.
+                  </p>
+                  <SalaryEditor
+                    salary={document.salary}
+                    rate={rate}
+                    busy={busy}
+                    configured={state.configured}
+                    onSave={(salary) =>
+                      save(
+                        { ...document, salary },
+                        "Salary updated. All calculations are up to date.",
+                      )
+                    }
+                  />
+                </section>
+                <section className="fp-card">
+                  <div className="fp-card-heading">
+                    <div>
+                      <span className="fp-section-number">02</span>
+                      <h2>Your payday breakdown</h2>
+                    </div>
+                    <span className="fp-label-pill">
+                      {isBiweekly ? "Every 2 weeks" : "Twice a month"}
+                    </span>
+                  </div>
+                  <p className="fp-card-intro">
+                    Your spending plan, per pay period.
+                  </p>
+                  <SpendingTable
+                    document={document}
+                    summary={summary}
+                    rate={rate}
+                    compact
+                  />
+                  <Button
+                    variant="text"
+                    icon="arrow"
+                    onClick={() => navigate("spending")}
+                  >
+                    Open spending plan
+                  </Button>
+                </section>
+              </div>
+              <section className="fp-card">
+                <div className="fp-card-heading">
+                  <div>
+                    <span className="fp-section-number">03</span>
+                    <h2>Your commitments</h2>
+                    <span className="fp-count">{document.bills.length}</span>
+                  </div>
+                  <Button
+                    variant="text"
+                    icon="arrow"
+                    onClick={() => navigate("bills")}
+                  >
+                    View all bills
+                  </Button>
+                </div>
+                {document.bills.length ? (
+                  <div className="fp-commitments">
+                    {document.bills.slice(0, 6).map((bill) => (
+                      <button
+                        className="fp-commitment"
+                        key={bill.id}
+                        onClick={() => {
+                          setCadence(bill.cadence);
+                          navigate("bills");
+                        }}
+                      >
+                        <span
+                          className={`fp-bill-monogram fp-currency-${bill.currency.toLowerCase()}`}
+                        >
+                          {bill.name.slice(0, 1)}
+                        </span>
+                        <span>
+                          <strong>{bill.name}</strong>
+                          <small>
+                            <DueLabel bill={bill} /> · {bill.cadence}
+                          </small>
+                        </span>
+                        <b>{money(bill.amount, bill.currency)}</b>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty
+                    title="Let’s get your bills in order"
+                    action={
+                      <div className="fp-button-row">
+                        <Button
+                          icon="plus"
+                          variant="primary"
+                          onClick={() => open({ type: "bill" })}
+                        >
+                          Add a bill
+                        </Button>
+                        <Button onClick={() => open({ type: "example" })}>
+                          Use your workbook example
+                        </Button>
+                      </div>
+                    }
+                  >
+                    Add your own bills, or start with the examples from your
+                    workbook.
+                  </Empty>
+                )}
+              </section>
+            </>
+          )}
+
+          {tab === "bills" && (
+            <>
+              <section className="fp-card">
+                <div className="fp-card-heading fp-bill-heading">
+                  <div className="fp-segmented" aria-label="Bill frequency">
+                    {["monthly", "annual"].map((item) => (
+                      <button
+                        key={item}
+                        className={cadence === item ? "active" : ""}
+                        aria-pressed={cadence === item}
+                        onClick={() => setCadence(item)}
+                      >
+                        {item === "monthly" ? "Monthly bills" : "Annual bills"}
+                        <span>
+                          {
+                            document.bills.filter(
+                              (bill) => bill.cadence === item,
+                            ).length
+                          }
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="fp-currency-legend">
+                    <span>
+                      <i className="fp-dot fp-dot-usd" /> Paid in USD
+                    </span>
+                    <span>
+                      <i className="fp-dot fp-dot-php" /> Paid in PHP
+                    </span>
+                  </div>
+                </div>
+                <BillsTable
+                  bills={document.bills.filter(
+                    (bill) => bill.cadence === cadence,
+                  )}
+                  cadence={cadence}
+                  summary={summary}
+                  rate={rate}
+                  onAdd={() => open({ type: "bill" })}
+                  onEdit={(bill) => open({ type: "bill", bill })}
+                  onDelete={(row) =>
+                    open({ type: "delete", collection: "bills", row })
+                  }
+                />
+              </section>
+              <div className="fp-bills-bottom">
+                <div className="fp-info-card">
                   <span>
-                    Showing {transactionPageStart + 1}-{transactionPageEnd} of {filteredHistoryTransactions.length}
+                    <Icon name="calendar" />
                   </span>
                   <div>
-                    <button
-                      type="button"
-                      onClick={() => setTransactionPage((page) => Math.max(1, page - 1))}
-                      disabled={safeTransactionPage <= 1}
-                    >
-                      Previous
-                    </button>
-                    <b>Page {safeTransactionPage} of {transactionPageCount}</b>
-                    <button
-                      type="button"
-                      onClick={() => setTransactionPage((page) => Math.min(transactionPageCount, page + 1))}
-                      disabled={safeTransactionPage >= transactionPageCount}
-                    >
-                      Next
-                    </button>
+                    <h3>A head start on annual bills</h3>
+                    <p>
+                      Save <strong>{money(summary.annualMonthlyUsd)}</strong>{" "}
+                      each month toward your{" "}
+                      <strong>{money(summary.annualUsd)}</strong> annual total.
+                      This reserve is already included in your monthly bills.
+                    </p>
                   </div>
                 </div>
-              ) : null}
-
-              {allTransactions.length === 0 ? (
-                <p className="finance-muted">No transactions yet.</p>
-              ) : filteredHistoryTransactions.length === 0 ? (
-                <p className="finance-muted">No transactions match this date range.</p>
-              ) : (
-                <div className="finance-transaction-groups">
-                  {transactionGroups.map((group) => {
-                    if (group.itemCount <= 1 && group.transactions[0]) {
-                      return renderTransactionDetail(group.transactions[0], "finance-transaction-single-row");
+                <div className="fp-bill-remaining">
+                  <span>Monthly salary − all monthly commitments</span>
+                  <strong
+                    className={
+                      summary.monthlyRemainingUsd < 0 ? "fp-negative" : ""
                     }
-
-                    const expanded = expandedTransactionGroups.has(group.id);
-                    const varianceLabel = group.billVariance
-                      ? `${group.billVariance.type === "overflow" ? "Overflow" : "Over"} ${showCurrency(group.billVariance.amountUsd, "USD")}`
-                      : "";
-                    const groupDetail = group.type === "transfer"
-                      ? group.title === "Credit Card Payment" ? "paid" : "moved"
-                      : group.type === "adjustment"
-                        ? "reversed"
-                        : varianceLabel
-                          ? varianceLabel
-                          : `${group.itemCount} item${group.itemCount === 1 ? "" : "s"}`;
-
-                    return (
-                      <article key={group.id} className={`finance-transaction-group finance-transaction-group-${group.type}`}>
-                        <button
-                          type="button"
-                          className="finance-transaction-group-summary"
-                          aria-expanded={expanded}
-                          onClick={() => toggleTransactionGroup(group.id)}
-                        >
-                          <span className="finance-transaction-group-toggle" aria-hidden="true">{expanded ? "-" : "+"}</span>
-                          <span className="finance-transaction-group-copy">
-                            <strong>{group.title}</strong>
-                            <small>{group.subtitle}</small>
-                          </span>
-                          <span className="finance-transaction-group-amount">
-                            <b className={`finance-${group.tone}`}>{showCurrency(group.amountUsd, "USD")}</b>
-                            <small>{groupDetail}</small>
-                          </span>
-                        </button>
-
-                        {expanded ? (
-                          <div className="finance-transaction-group-body">
-                            {group.bill ? (
-                              <div className="finance-transaction-group-line finance-transaction-group-line-bill">
-                                <span>
-                                  <strong>Recurring bill</strong>
-                                  <small>Due {formatBillDue(group.bill, group.month || snapshot.month)} - {billSourceLabel(group.bill)}</small>
-                                </span>
-                                <b className="finance-bad">{showCurrency(-Number(group.bill.amountUsd || 0), "USD")}</b>
-                              </div>
-                            ) : null}
-
-                            {group.billVariance ? (
-                              <div className={`finance-transaction-group-line finance-transaction-group-line-variance finance-transaction-group-line-${group.billVariance.type}`}>
-                                <span>
-                                  <strong>{group.billVariance.type === "overflow" ? "Overflow" : "Over expected"}</strong>
-                                  <small>Expected {showCurrency(group.billVariance.expectedUsd, "USD")} - actual {showCurrency(group.billVariance.actualUsd, "USD")}</small>
-                                </span>
-                                <b className={group.billVariance.type === "overflow" ? "finance-good" : "finance-bad"}>
-                                  {showCurrency(group.billVariance.amountUsd, "USD")}
-                                </b>
-                              </div>
-                            ) : null}
-
-                            {group.transactions.map((transaction) => (
-                              renderTransactionDetail(transaction)
-                            ))}
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
+                  >
+                    {money(summary.monthlyRemainingUsd)}
+                  </strong>
+                  <small>
+                    {money(summary.monthlyRemainingPhp, "PHP")} remaining
+                  </small>
                 </div>
-              )}
-            </div>
-          </Panel>
-        </main>
-      ) : null}
+              </div>
+            </>
+          )}
 
-      {activeTab === "bills" ? (
-        <main className="finance-stack">
-          <Panel
-            title="Exchange Rate"
-            action={<button type="button" onClick={refreshExchangeRate} disabled={Boolean(saving)}>Refresh</button>}
-          >
-            <div className="finance-plan-grid">
-              <Metric label="USD to PHP" value={exchangeRateMoney(snapshot.plan.exchangeRate)} detail={snapshot.plan.exchangeRateSource || "Frankfurter"} />
-              <Metric label="Updated" value={snapshot.plan.exchangeRateDate || "Latest"} detail={formatRateTimestamp(snapshot.plan.exchangeRateUpdatedAt)} />
-            </div>
-          </Panel>
-
-          <Panel title="Plan">
-            <form className="finance-form" onSubmit={submitPlan}>
-              <Field label={`Monthly income ${displayCurrency}`}>
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={planForm.monthlyIncomeUsd} onChange={(event) => setPlanForm((form) => ({ ...form, monthlyIncomeUsd: event.target.value }))} disabled={disabled} />
-              </Field>
-              <div className="finance-form-grid">
-                <Field label={`Bi-weekly income ${displayCurrency}`}>
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={planForm.biweeklyIncomeUsd} onChange={(event) => setPlanForm((form) => ({ ...form, biweeklyIncomeUsd: event.target.value }))} disabled={disabled} />
-                </Field>
-                <Field label={`Bills set aside ${displayCurrency}`}>
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={planForm.biweeklyBillsUsd} onChange={(event) => setPlanForm((form) => ({ ...form, biweeklyBillsUsd: event.target.value }))} disabled={disabled} />
-                </Field>
-              </div>
-              <Field label={`Savings set aside ${displayCurrency}`}>
-                <input type="number" inputMode="decimal" step="0.01" min="0" value={planForm.biweeklySavingsUsd} onChange={(event) => setPlanForm((form) => ({ ...form, biweeklySavingsUsd: event.target.value }))} disabled={disabled} />
-              </Field>
-              <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>Save Plan</button>
-            </form>
-          </Panel>
-
-          <Panel title={billForm.id ? "Edit Bill" : "Add Bill"}>
-            <form className="finance-form" onSubmit={submitBill}>
-              <Field label="Name">
-                <input value={billForm.name} onChange={(event) => setBillForm((form) => ({ ...form, name: event.target.value }))} required disabled={disabled} maxLength={120} />
-              </Field>
-              <div className="finance-form-grid">
-                <Field label={`Amount ${displayCurrency}`}>
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={billForm.amount} onChange={(event) => setBillForm((form) => ({ ...form, amount: event.target.value, currency: displayCurrency }))} disabled={disabled} />
-                </Field>
-              </div>
-              <div className="finance-form-grid">
-                <Field label="Due">
-                  <input value={billForm.dueLabel} onChange={(event) => setBillForm((form) => ({ ...form, dueLabel: event.target.value }))} disabled={disabled} maxLength={40} />
-                </Field>
-                <Field label="Payment account/bank">
-                  <input value={billForm.paymentAccount} onChange={(event) => setBillForm((form) => ({ ...form, paymentAccount: event.target.value }))} disabled={disabled} maxLength={80} />
-                </Field>
-              </div>
-              <div className="finance-toggle-grid">
-                <label><input type="checkbox" checked={billForm.isPaid} onChange={(event) => setBillForm((form) => ({ ...form, isPaid: event.target.checked }))} disabled={disabled} /> Paid</label>
-                <label><input type="checkbox" checked={billForm.isAutopay} onChange={(event) => setBillForm((form) => ({ ...form, isAutopay: event.target.checked }))} disabled={disabled} /> Auto</label>
-              </div>
-              <div className="finance-button-row">
-                <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>
-                  {billForm.id ? "Save" : "Add"}
-                </button>
-                {billForm.id ? <button type="button" onClick={() => setBillForm(defaultBill(displayCurrency))}>Cancel</button> : null}
-              </div>
-            </form>
-          </Panel>
-
-          <Panel title="Recurring Bills">
-            {sortedRecurringBills.length === 0 ? (
-              <p className="finance-muted">No recurring bills yet.</p>
-            ) : (
-              <div className="finance-bill-list">
-                {sortedRecurringBills.map((bill) => {
-                  const overdue = overdueBillIds.has(bill.id);
-                  const autoPaid = bill.paidSource === "transaction";
-                  const billClassName = [
-                    "finance-bill",
-                    bill.isPaid ? "finance-bill-paid" : "",
-                    overdue ? "finance-bill-overdue" : ""
-                  ].filter(Boolean).join(" ");
-                  const statusClassName = [
-                    "finance-bill-status",
-                    bill.isPaid ? "finance-bill-status-paid" : overdue ? "finance-bill-status-overdue" : "finance-bill-status-open"
-                  ].join(" ");
-                  const statusLabel = autoPaid ? "Matched" : bill.isPaid ? "Paid" : overdue ? "Overdue" : "Open";
-
-                  return (
-                    <article key={bill.id} className={billClassName}>
-                      <span className={statusClassName}>{statusLabel}</span>
-                      <div>
-                        <strong>{bill.name}</strong>
-                        <span>Due {formatBillDue(bill, snapshot.month)} - {billSourceLabel(bill)}{bill.isAutopay ? " - auto" : ""}</span>
-                        {bill.matchedTransaction ? (
-                          <small>
-                            Matched {formatShortDate(bill.matchedTransaction.date)} - {bill.matchedTransaction.merchant || "Transaction"} - {transactionSourceLabel(bill.matchedTransaction)}
-                          </small>
-                        ) : null}
-                      </div>
-                      <b>{showCurrency(bill.amountUsd, "USD")}</b>
-                      <div className="finance-mini-actions">
-                        {autoPaid && !bill.isManuallyPaid ? (
-                          <button type="button" disabled>Matched</button>
-                        ) : (
-                          <button
-                            type="button"
-                            className={bill.isManuallyPaid ? "" : "finance-pay-button"}
-                            onClick={() => toggleBill(bill, !bill.isManuallyPaid)}
-                            disabled={disabled || Boolean(saving)}
-                          >
-                            {bill.isManuallyPaid ? "Mark unpaid" : "Paid"}
-                          </button>
-                        )}
-                        <button type="button" onClick={() => editBill(bill)}>Edit</button>
-                        <button type="button" onClick={() => deleteBill(bill)}>Delete</button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </Panel>
-        </main>
-      ) : null}
-
-      {activeTab === "profile" ? (
-        <main className="finance-stack">
-          <Panel
-            title="Linked Accounts"
-            action={(
-              <div className="finance-button-row">
-                <button type="button" onClick={connectPlaid} disabled={disabled || Boolean(saving)}>Plaid</button>
-                <button type="button" onClick={connectBrankas} disabled={disabled || Boolean(saving)}>Brankas</button>
-              </div>
-            )}
-          >
-            {connections.length === 0 ? (
-              <p className="finance-muted">No linked accounts yet.</p>
-            ) : (
-              <div className="finance-list">
-                {connections.map((connection) => (
-                  <article key={connection.id} className="finance-account-row">
-                    <div>
-                      <span style={{ background: colorForConnection(connection.provider) }} />
-                      <strong>{connection.institutionName}</strong>
-                      <small>{connection.provider} - {connection.status} - {formatRateTimestamp(connection.lastSyncedAt)}</small>
-                    </div>
-                    <button type="button" onClick={() => syncConnection(connection)} disabled={disabled || Boolean(saving)}>Sync</button>
-                  </article>
-                ))}
-              </div>
-            )}
-          </Panel>
-
-          <Panel title="Accounts">
-            {snapshot.accounts.length === 0 ? (
-              <p className="finance-muted">No accounts yet.</p>
-            ) : (
-              <div className="finance-list">
-                {snapshot.accounts.map((account) => (
-                  <article key={account.id} className="finance-account-row">
-                    <div>
-                      <span style={{ background: account.color }} />
-                      <strong>{account.name}</strong>
-                      <small>
-                        {account.isLinked ? `${account.institutionName || account.provider} - ` : ""}
-                        {account.type}
-                        {account.isLinked && account.currency !== displayCurrency ? ` - ${money(account.nativeCurrentBalance, account.currency)}` : ""}
-                      </small>
-                    </div>
-                    <b className={account.currentBalance >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(account.currentBalance, "USD")}</b>
-                    {account.isLinked ? null : (
-                      <div className="finance-mini-actions">
-                        <button type="button" onClick={() => editAccount(account)}>Edit</button>
-                        <button type="button" onClick={() => archiveAccount(account)}>Archive</button>
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
-            )}
-          </Panel>
-
-          <Panel title={accountForm.id ? "Edit Account" : "Add Account"}>
-            <form className="finance-form" onSubmit={submitAccount}>
-              <Field label="Name">
-                <input value={accountForm.name} onChange={(event) => setAccountForm((form) => ({ ...form, name: event.target.value }))} required disabled={disabled} maxLength={80} />
-              </Field>
-              <div className="finance-form-grid">
-                <Field label="Type">
-                  <select value={accountForm.type} onChange={(event) => setAccountForm((form) => ({ ...form, type: event.target.value }))} disabled={disabled}>
-                    {ACCOUNT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-                  </select>
-                </Field>
-                <Field label={`Opening ${displayCurrency}`}>
-                  <input type="number" inputMode="decimal" step="0.01" value={accountForm.openingBalance} onChange={(event) => setAccountForm((form) => ({ ...form, openingBalance: event.target.value }))} disabled={disabled} />
-                </Field>
-              </div>
-              <div className="finance-color-row">
-                {COLORS.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    aria-label={`Use color ${color}`}
-                    className={accountForm.color === color ? "finance-color-active" : ""}
-                    style={{ background: color }}
-                    onClick={() => setAccountForm((form) => ({ ...form, color }))}
-                    disabled={disabled}
-                  />
-                ))}
-              </div>
-              <div className="finance-button-row">
-                <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>{accountForm.id ? "Save" : "Add"}</button>
-                {accountForm.id ? <button type="button" onClick={() => setAccountForm(defaultAccount())}>Cancel</button> : null}
-              </div>
-            </form>
-          </Panel>
-
-          <Panel title="Goals">
-            {snapshot.goals.length === 0 ? (
-              <p className="finance-muted">No goals yet.</p>
-            ) : (
-              <div className="finance-goal-grid">
-                {snapshot.goals.map((goal) => (
-                  <article key={goal.id} className="finance-goal-card">
-                    <div>
-                      <strong>{goal.name}</strong>
-                      <span>{goal.category || "Goal"}</span>
-                    </div>
-                    <p>{showCurrency(goal.savedAmount, goal.currency)} of {showCurrency(goal.targetAmount, goal.currency)}</p>
-                    <div className={progressClass(goal.percent)}>
-                      <i style={{ width: `${Math.min(100, goal.percent)}%` }} />
-                    </div>
-                    <small>{goal.remaining > 0 ? `${showCurrency(goal.remaining, goal.currency)} left` : "Funded"}</small>
-                    {goal.note ? <p className="finance-note">{goal.note}</p> : null}
-                    <div className="finance-button-row">
-                      <button type="button" onClick={() => editGoal(goal)}>Edit</button>
-                      <button type="button" onClick={() => deleteGoal(goal)}>Delete</button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </Panel>
-
-          <Panel title={goalForm.id ? "Edit Goal" : "Add Goal"}>
-            <form className="finance-form" onSubmit={submitGoal}>
-              <Field label="Name">
-                <input value={goalForm.name} onChange={(event) => setGoalForm((form) => ({ ...form, name: event.target.value }))} required disabled={disabled} maxLength={120} />
-              </Field>
-              <div className="finance-form-grid">
-                <Field label="Currency">
-                  <select value={goalForm.currency} onChange={(event) => setGoalForm((form) => ({ ...form, currency: event.target.value }))} disabled={disabled}>
-                    <option value="USD">USD</option>
-                    <option value="PHP">PHP</option>
-                  </select>
-                </Field>
-                <Field label="Category">
-                  <input list="finance-categories" value={goalForm.category} onChange={(event) => setGoalForm((form) => ({ ...form, category: event.target.value }))} disabled={disabled} />
-                </Field>
-              </div>
-              <div className="finance-form-grid">
-                <Field label="Target">
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={goalForm.targetAmount} onChange={(event) => setGoalForm((form) => ({ ...form, targetAmount: event.target.value }))} required disabled={disabled} />
-                </Field>
-                <Field label="Saved">
-                  <input type="number" inputMode="decimal" step="0.01" min="0" value={goalForm.savedAmount} onChange={(event) => setGoalForm((form) => ({ ...form, savedAmount: event.target.value }))} disabled={disabled} />
-                </Field>
-              </div>
-              <Field label="Note">
-                <textarea value={goalForm.note} onChange={(event) => setGoalForm((form) => ({ ...form, note: event.target.value }))} disabled={disabled} maxLength={300} />
-              </Field>
-              <div className="finance-button-row">
-                <button type="submit" className="finance-primary" disabled={disabled || Boolean(saving)}>{goalForm.id ? "Save" : "Add"}</button>
-                {goalForm.id ? <button type="button" onClick={() => setGoalForm(defaultGoal(displayCurrency))}>Cancel</button> : null}
-              </div>
-            </form>
-          </Panel>
-
-          <Panel title="Six Month Trend">
-            <div className="finance-trend-list">
-              {snapshot.monthlySeries.map((item) => (
-                <div key={item.month} className="finance-trend-row">
-                  <span>{item.month}</span>
+          {tab === "spending" && (
+            <div className="fp-spending-layout">
+              <section className="fp-card fp-spending-card">
+                <div className="fp-card-heading">
                   <div>
-                    <i className="finance-trend-income" style={{ width: `${Math.max(4, (item.incomeUsd / maxTrend) * 100)}%` }} />
-                    <i className="finance-trend-expense" style={{ width: `${Math.max(4, (item.expensesUsd / maxTrend) * 100)}%` }} />
+                    <span className="fp-section-number">01</span>
+                    <h2>
+                      {isBiweekly ? "Biweekly" : "Twice-monthly"} spending plan
+                    </h2>
                   </div>
-                  <b className={item.netUsd >= 0 ? "finance-good" : "finance-bad"}>{showCurrency(item.netUsd, "USD")}</b>
+                  <span className="fp-label-pill">All totals in USD</span>
                 </div>
-              ))}
+                <SpendingTable
+                  document={document}
+                  summary={summary}
+                  rate={rate}
+                  onAdd={() => open({ type: "allocation" })}
+                  onEdit={(row) => open({ type: "allocation", row })}
+                  onDelete={(row) =>
+                    open({ type: "delete", collection: "allocations", row })
+                  }
+                />
+              </section>
+              <aside className="fp-spending-notes">
+                <div className="fp-info-card">
+                  <span>
+                    <Icon name="chart" />
+                  </span>
+                  <div>
+                    <h3>Built around your payday</h3>
+                    <p>
+                      {isBiweekly
+                        ? "Your monthly salary and bills are annualized, then divided across 26 pay periods."
+                        : "Your monthly salary and bills are split across 2 pay periods each month (24 per year)."}
+                    </p>
+                    <Button variant="text" onClick={() => navigate("home")}>
+                      Change pay frequency <Icon name="arrow" size={15} />
+                    </Button>
+                  </div>
+                </div>
+                <div className="fp-info-card">
+                  <span>
+                    <Icon name="globe" />
+                  </span>
+                  <div>
+                    <h3>Two currencies, one clear total</h3>
+                    <p>
+                      PHP bills are converted at {rateMoney(rate)} per dollar.
+                      Annual bills are set aside gradually, so they’re ready
+                      when due.
+                    </p>
+                  </div>
+                </div>
+                <div className="fp-mini-summary">
+                  <span>Allocated each payday</span>
+                  <strong>
+                    {money(
+                      summary.incomePerPeriodUsd -
+                        summary.unallocatedPerPeriodUsd,
+                    )}
+                  </strong>
+                  <div className="fp-progress">
+                    <span
+                      style={{
+                        width: `${Math.max(0, Math.min(100, summary.incomePerPeriodUsd ? ((summary.incomePerPeriodUsd - summary.unallocatedPerPeriodUsd) / summary.incomePerPeriodUsd) * 100 : 0))}%`,
+                      }}
+                    />
+                  </div>
+                  <small>
+                    {summary.unallocatedPerPeriodUsd < 0
+                      ? "Your plan exceeds your income. Adjust bills or allocations."
+                      : `${money(summary.unallocatedPerPeriodUsd)} available for everything else.`}
+                  </small>
+                </div>
+              </aside>
             </div>
-          </Panel>
-        </main>
-      ) : null}
+          )}
 
-      <datalist id="finance-categories">
-        {snapshot.categories.map((category) => (
-          <option key={category} value={category} />
-        ))}
-      </datalist>
+          {tab === "plans" && (
+            <>
+              {!document.plans.length ? (
+                <section className="fp-card">
+                  <Empty
+                    icon="calendar"
+                    title="Make room for what’s next"
+                    action={
+                      <Button
+                        icon="plus"
+                        variant="primary"
+                        onClick={() => open({ type: "plan" })}
+                      >
+                        Create a budget plan
+                      </Button>
+                    }
+                  >
+                    Choose your dates and starting balances. Your bills and
+                    paydays will fill themselves in.
+                  </Empty>
+                </section>
+              ) : (
+                <>
+                  <div className="fp-plan-selector">
+                    {document.plans.map((item) => (
+                      <button
+                        key={item.id}
+                        className={plan.id === item.id ? "active" : ""}
+                        onClick={() => setSelectedPlanId(item.id)}
+                      >
+                        <Icon name="calendar" size={17} />
+                        <span>
+                          {item.name}
+                          <small>
+                            {formatDate(item.startDate)} –{" "}
+                            {formatDate(item.endDate)}
+                          </small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <section className="fp-card">
+                    <div className="fp-card-heading">
+                      <div>
+                        <h2>{plan.name}</h2>
+                        <span className="fp-label-pill">Forecast</span>
+                      </div>
+                      <div className="fp-button-row">
+                        <Button
+                          icon="edit"
+                          onClick={() => open({ type: "plan", plan })}
+                        >
+                          Edit plan
+                        </Button>
+                        <Button
+                          icon="trash"
+                          className="fp-icon-button"
+                          aria-label={`Delete ${plan.name}`}
+                          onClick={() =>
+                            open({
+                              type: "delete",
+                              collection: "plans",
+                              row: plan,
+                            })
+                          }
+                        />
+                        <Button
+                          icon="plus"
+                          variant="primary"
+                          onClick={() => open({ type: "entry" })}
+                        >
+                          Add entry
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="fp-plan-summary">
+                      <div>
+                        <span>Date range</span>
+                        <strong>
+                          {formatDate(plan.startDate)} –{" "}
+                          {formatDate(plan.endDate)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Ending balance · USD</span>
+                        <strong
+                          className={
+                            (planRows.at(-1)?.balanceUsd ?? plan.openingUsd) < 0
+                              ? "fp-negative"
+                              : "fp-positive"
+                          }
+                        >
+                          {money(
+                            planRows.at(-1)?.balanceUsd ?? plan.openingUsd,
+                          )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Ending balance · PHP</span>
+                        <strong
+                          className={
+                            (planRows.at(-1)?.balancePhp ?? plan.openingPhp) < 0
+                              ? "fp-negative"
+                              : ""
+                          }
+                        >
+                          {money(
+                            planRows.at(-1)?.balancePhp ?? plan.openingPhp,
+                            "PHP",
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+                    {undated.length > 0 && (
+                      <p className="fp-plan-warning">
+                        {undated.map((bill) => bill.name).join(", ")}{" "}
+                        {undated.length === 1
+                          ? "needs a due date"
+                          : "need due dates"}{" "}
+                        to appear in this forecast.{" "}
+                        <button onClick={() => navigate("bills")}>
+                          Edit bills
+                        </button>
+                      </p>
+                    )}
+                    <Ledger
+                      plan={plan}
+                      rows={planRows}
+                      onEdit={(entry) => open({ type: "entry", entry })}
+                      onDelete={(row) => open({ type: "deleteEntry", row })}
+                    />
+                    <div className="fp-ledger-note">
+                      <Icon name="refresh" size={14} />
+                      Bills, salary, and conversions update with your current
+                      settings. Annual reserves aren’t deducted here; actual
+                      annual bills appear on their due dates.
+                    </div>
+                  </section>
+                </>
+              )}
+            </>
+          )}
+          <footer className="fp-footer">
+            <a className="fp-mobile-back" href="/">
+              ← Back to portfolio
+            </a>
+            <span>
+              <Icon name="lock" size={12} /> Your personal finance space
+            </span>
+            <span>
+              USD & PHP · Reference rates{" "}
+              {state.exchangeRate.source
+                ? `via ${state.exchangeRate.source}`
+                : "pending"}
+            </span>
+          </footer>
+        </main>
+      </div>
+      {notice && (
+        <div className="fp-toast" role="status">
+          <Icon name="check" size={17} />
+          {notice}
+        </div>
+      )}
+      {modal && (
+        <Modal
+          title={
+            modal.type === "bill"
+              ? modal.bill
+                ? "Edit bill"
+                : `Add ${cadence} bill`
+              : modal.type === "allocation"
+                ? modal.row
+                  ? "Edit allocation"
+                  : "Add an allocation"
+                : modal.type === "plan"
+                  ? modal.plan
+                    ? "Edit budget plan"
+                    : "Create a budget plan"
+                  : modal.type === "entry"
+                    ? modal.entry
+                      ? "Edit entry"
+                      : "Add a plan entry"
+                    : modal.type === "example"
+                      ? "Start with your workbook"
+                      : "Delete this item?"
+          }
+          onClose={() => setModal(null)}
+          busy={busy}
+        >
+          {error && (
+            <div className="fp-alert fp-alert-error" role="alert">
+              {error}
+            </div>
+          )}
+          {!state.configured && (
+            <div className="fp-alert fp-alert-warning">
+              Database storage is required to save changes. Connect MySQL using
+              the setup in README.md.
+            </div>
+          )}
+          {modal.type === "bill" && (
+            <BillForm
+              bill={modal.bill}
+              cadence={cadence}
+              rate={rate}
+              onSave={saveBill}
+              busy={busy}
+              disabled={!state.configured}
+            />
+          )}
+          {modal.type === "allocation" && (
+            <AllocationForm
+              row={modal.row}
+              onSave={saveAllocation}
+              busy={busy}
+              disabled={!state.configured}
+            />
+          )}
+          {modal.type === "plan" && (
+            <PlanForm
+              plan={modal.plan}
+              onSave={savePlan}
+              busy={busy}
+              disabled={!state.configured}
+            />
+          )}
+          {modal.type === "entry" && (
+            <EntryForm
+              entry={modal.entry}
+              plan={plan}
+              onSave={saveEntry}
+              busy={busy}
+              disabled={!state.configured}
+              rate={rate}
+            />
+          )}
+          {(modal.type === "delete" || modal.type === "deleteEntry") && (
+            <div className="fp-form">
+              <p>
+                Remove{" "}
+                <strong>{modal.row?.name || modal.row?.description}</strong>?{" "}
+                {modal.collection === "bills"
+                  ? "It will also be removed from every budget forecast."
+                  : "This cannot be undone."}
+              </p>
+              <div className="fp-button-row">
+                <Button onClick={() => setModal(null)}>Keep it</Button>
+                <Button
+                  variant="danger"
+                  disabled={busy || !state.configured}
+                  onClick={() =>
+                    modal.type === "deleteEntry"
+                      ? savePlan({
+                          ...plan,
+                          entries: plan.entries.filter(
+                            (item) => item.id !== modal.row.id,
+                          ),
+                        })
+                      : save(
+                          {
+                            ...document,
+                            [modal.collection]: document[
+                              modal.collection
+                            ].filter((item) => item.id !== modal.row.id),
+                          },
+                          "Item deleted.",
+                        )
+                  }
+                >
+                  {busy ? "Deleting…" : "Delete"}
+                </Button>
+              </div>
+            </div>
+          )}
+          {modal.type === "example" && (
+            <div className="fp-form">
+              <p>
+                Add the monthly and annual bills from your screenshots, plus a
+                $500 savings allocation. Amounts will use the current exchange
+                rate.
+              </p>
+              <p className="fp-inline-note">
+                House, Car, and Venture X need a specific due day before they
+                can appear in dated budget plans. You can edit every example
+                after adding it.
+              </p>
+              <Button
+                variant="primary"
+                disabled={
+                  busy || !state.configured || document.bills.length > 0
+                }
+                onClick={loadExample}
+              >
+                {busy ? "Adding…" : "Add example bills"}
+              </Button>
+            </div>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

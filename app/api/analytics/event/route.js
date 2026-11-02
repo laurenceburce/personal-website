@@ -15,7 +15,7 @@ const isAllowedEventType = (type) => {
   if (typeof type !== "string" || type.length === 0 || type.length > 50) return false;
   if (type === "time_on_page") return true;
   // Legacy formats kept for backward compatibility during transition
-  if (type === "download" || type === "link_click" || type === "sketch_share_created") return true;
+  if (type === "link_click" || type === "sketch_share_created") return true;
   // "Section: Label" — starts with a letter, contains colon separator
   return /^[A-Za-z]/.test(type) && type.includes(": ");
 };

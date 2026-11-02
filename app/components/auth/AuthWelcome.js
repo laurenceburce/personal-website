@@ -6,7 +6,7 @@ import { consumeAuthModalCallback } from "../../utils/authModal";
 
 const DEFAULT_TITLE = "Welcome";
 const DEFAULT_MESSAGE =
-  "Sign in to unlock downloads, chat, and contact features. You can still browse the portfolio without signing in.";
+  "Sign in to use chat and contact features. You can still browse the portfolio without signing in.";
 
 export default function AuthWelcome() {
   const [visible, setVisible] = useState(false);

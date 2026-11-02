@@ -7,18 +7,13 @@ export default function HeroSection() {
         </a>
         <div className="hero-copy">
           <p className="welcome-line">Hello, I&rsquo;m Laurence.</p>
-          <div className="hero-badge">
-            <span className="hero-badge-dot" aria-hidden="true" />
-            Available for new opportunities
-          </div>
           <p className="lead">
             Software engineer with 3+ years of experience building reliable{" "}
             enterprise applications, backend services, and AI-enabled tools
             for teams that need practical, maintainable solutions.
           </p>
           <p className="lead" style={{ marginTop: "1rem" }}>
-            Based in <strong>Santee, California</strong>; open to{" "}
-            <strong>San Diego</strong> or <strong>remote roles</strong>.
+            Based in <strong>Santee, California</strong>.
           </p>
         </div>
       </div>

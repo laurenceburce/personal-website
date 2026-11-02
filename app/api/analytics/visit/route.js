@@ -219,7 +219,6 @@ export async function POST(request) {
         topReferrers: [],
         deviceBreakdown: [],
         browserBreakdown: [],
-        topDownloads: [],
         topLinkClicks: [],
         avgTimeOnPageSeconds: null
       });

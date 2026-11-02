@@ -21,7 +21,7 @@ A responsive personal portfolio with dark/light theming, an AI-powered chat assi
 - `app/components/chat/ChatWidget.js` — Gemini-powered AI chat assistant
 - `app/components/auth/` — NextAuth OAuth sign-in flow and feature gating
 - `app/components/floating-toolbar/` — floating toolkit (sketch overlay, magnifier, calculator, virtual keyboard)
-- `app/api/` — API routes: contact, analytics, chat, auth, sketch-share, download, admin
+- `app/api/` — API routes: contact, analytics, chat, auth, sketch-share, admin
 - `app/admin/` — admin panel for visit and chat logs
 - `app/finance/` — private owner-only finance tracker
 - `app/globals.css` — theme, layout, responsive behavior, and animations
@@ -105,11 +105,41 @@ ignored whenever `NODE_ENV=production`):
 FINANCE_DEV_BYPASS=true
 ```
 
-The tracker needs the local database from step 2 (`npm run db:init:finance`)
-to hold real data — without it, it still loads, just empty.
+The planner uses the MySQL connection from step 2. Its new table is created
+automatically on the first authorized visit; existing monthly salary and bill
+records are imported once, and the previous tables are retained. Without a
+database, the interface loads with saving disabled.
 
-Finance's linked-bank-account sync (Plaid, Brankas) integrates with
-third-party services — see `.env.example` for their variables.
+The finance workspace has four views:
+
+- **Overview:** monthly salary in USD (default) or PHP with instant conversion.
+- **Bills:** monthly and annual bills, native payment currency, due day,
+  optional payment method/autopay, annual installments, and a monthly annual-bill reserve.
+- **Spending plan:** automatic per-pay income, USD/PHP bills, annual reserves,
+  and custom savings or expense allocations. Twice-monthly pay uses 24 periods;
+  every-two-weeks pay uses 26. Select the schedule and first payday under salary.
+- **Budget plans:** independent dated forecasts with starting USD/PHP balances,
+  automatic bills/paydays, custom income/expense entries, conversions, and running
+  balances in both currencies. Undated bills are flagged and excluded until dated.
+
+The exchange rate comes from Frankfurter's daily USD/PHP reference feed,
+cached for an hour with a manual refresh. It is not a bank's executable exchange
+quote; provider failures show a clearly marked last-known rate or estimate.
+Concurrent changes on another device are rejected instead of silently overwritten.
+
+For a starting point, choose **Use your workbook example** in the empty overview.
+It adds editable sample bills from the reference workbook; it does not record
+payments or move money. Budget plans are hypothetical and recalculate when
+salary, bills, or reference rates change.
+
+For phone access, deploy this app to your existing HTTPS host with the same
+MySQL, `AUTH_SECRET`, and OAuth settings. Open `/finance` on your phone and sign in with the
+owner account. The **On your phone** control explains installation (Safari:
+Share → Add to Home Screen; Android: browser menu → Install app). Saved changes
+share the same database across devices. The finance app requires a connection;
+its service worker caches only public icons and shows a generic offline screen.
+
+Run the finance calculation and validation checks with `npm run test:finance`.
 
 ### 5. Contact form (Resend)
 

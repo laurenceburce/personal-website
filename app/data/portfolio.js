@@ -30,7 +30,7 @@ export const projects = [
     title: "Personal Portfolio Website",
     period: "Apr 2022 – Present",
     description:
-      "Designed and built this responsive personal portfolio featuring dark/light theming, an AI-powered chat assistant, OAuth authentication, visitor analytics with a MySQL-backed admin panel, a sidebar contact form with email delivery, auth-gated document downloads, and an interactive floating toolkit with shareable page sketch annotations, magnifier, calculator, and virtual keyboard.",
+      "Designed and built this responsive personal portfolio featuring dark/light theming, an AI-powered chat assistant, OAuth authentication, visitor analytics with a MySQL-backed admin panel, a sidebar contact form with email delivery, and an interactive floating toolkit with shareable page sketch annotations, magnifier, calculator, and virtual keyboard.",
     tech: ["Next.js", "React", "CSS", "Google Gemini AI", "NextAuth", "MySQL", "Resend", "html2canvas"],
     link: "https://github.com/laurenceburce/personal-website"
   },

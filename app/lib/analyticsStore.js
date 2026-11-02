@@ -216,7 +216,7 @@ const ensureSchema = async () => {
       // v2 migration: fix label-only old events that landed in the ELSE branch of v1.
       // Those had no " | URL" separator, so LIKE patterns missed them and produced
       // "Link: Education" with event_value="Education". Reclassify to proper names.
-      // Also promotes old 'download' and 'sketch_share_created' types to new format.
+      // Also promotes the old 'sketch_share_created' type to the new format.
       const LINK_MIGRATION_V2_KEY = "link_events_migrated_v2";
       const [[migrationFlagV2]] = await pool.query(
         "SELECT counter_value FROM portfolio_analytics_counters WHERE counter_key = ? LIMIT 1",
@@ -224,7 +224,7 @@ const ensureSchema = async () => {
       );
 
       if (!migrationFlagV2?.counter_value) {
-        // Fix misclassified nav/contact/download "Link: X" events
+        // Fix misclassified nav/contact "Link: X" events
         await pool.query(`
           UPDATE portfolio_analytics_events
           SET
@@ -240,9 +240,6 @@ const ensureSchema = async () => {
               WHEN event_type = 'Link: LinkedIn Profile'    THEN 'Sidebar: LinkedIn'
               WHEN event_type = 'Link: Email Laurence'      THEN 'Sidebar: Email'
               WHEN event_type = 'Link: Call Laurence'       THEN 'Sidebar: Phone'
-              WHEN event_type = 'Link: /api/download/resume' THEN 'Download: Resume'
-              WHEN event_type = 'Link: Download Resume'     THEN 'Download: Resume'
-              WHEN event_type = 'Link: Download Cover Letter' THEN 'Download: Cover Letter'
               ELSE event_type
             END,
             event_value = CASE
@@ -251,21 +248,11 @@ const ensureSchema = async () => {
                 'Link: Skills', 'Link: Projects', 'Link: Home',
                 'Link: Laurence Alec Burce', 'Link: GitHub Profile',
                 'Link: LinkedIn Profile', 'Link: Email Laurence',
-                'Link: Call Laurence', 'Link: Download Resume',
-                'Link: Download Cover Letter'
+                'Link: Call Laurence'
               ) THEN ''
               ELSE event_value
             END
           WHERE event_type LIKE 'Link: %'
-        `);
-
-        await pool.query(`
-          UPDATE portfolio_analytics_events
-          SET
-            event_type  = CONCAT('Download: ', event_value),
-            event_value = ''
-          WHERE event_type = 'download'
-            AND event_value IN ('Resume', 'Cover Letter')
         `);
 
         await pool.query(`
@@ -329,25 +316,6 @@ const ensureSchema = async () => {
           WHERE event_type LIKE 'Link: Laurence%'
         `);
 
-        // "Link: /Laurence-Alec-Burce-%" — direct PDF download links from before gating.
-        // First char after the dash determines file:
-        //   C → Cover Letter  (e.g. /Laurence-Alec-Burce-Cover-Letter.pdf)
-        //   S → Resume        (e.g. /Laurence-Alec-Burce-Software-Engineer-Resume.pdf)
-        //   R → Resume        (e.g. /Laurence-Alec-Burce-Resume.pdf)
-        //   anything else     → generic Document
-        await pool.query(`
-          UPDATE portfolio_analytics_events
-          SET
-            event_type = CASE
-              WHEN event_type LIKE 'Link: /Laurence-Alec-Burce-C%' THEN 'Download: Cover Letter'
-              WHEN event_type LIKE 'Link: /Laurence-Alec-Burce-S%' THEN 'Download: Resume'
-              WHEN event_type LIKE 'Link: /Laurence-Alec-Burce-R%' THEN 'Download: Resume'
-              ELSE 'Download: Document'
-            END,
-            event_value = ''
-          WHERE event_type LIKE 'Link: /Laurence-Alec-Burce-%'
-        `);
-
         await pool.query(
           `INSERT INTO portfolio_analytics_counters (counter_key, counter_value) VALUES (?, 1)
            ON DUPLICATE KEY UPDATE counter_value = 1`,
@@ -394,9 +362,7 @@ const emptyStats = () => ({
   topReferrers: [],
   deviceBreakdown: [],
   browserBreakdown: [],
-  topDownloads: [],
   topLinkClicks: [],
-  downloadEvents: [],
   linkClickEvents: [],
   avgTimeOnPageSeconds: null,
   firstVisitAt: null
@@ -414,9 +380,7 @@ export async function getAnalyticsStats() {
     [referrerRows],
     [deviceRows],
     [browserRows],
-    [downloadRows],
     [linkClickRows],
-    [downloadEventRows],
     [linkClickEventRows],
     [timeRows],
     [firstVisitRows]
@@ -453,40 +417,17 @@ export async function getAnalyticsStats() {
     `),
     pool.query(`
       SELECT
-        CASE WHEN event_type = 'download' THEN event_value
-             ELSE SUBSTR(event_type, 11) END AS file,
-        COUNT(*) AS count
-      FROM portfolio_analytics_events
-      WHERE event_type = 'download' OR event_type LIKE 'Download: %'
-      GROUP BY file ORDER BY count DESC LIMIT 10
-    `),
-    pool.query(`
-      SELECT
         CASE WHEN event_type = 'link_click' THEN event_value ELSE event_type END AS link,
         COUNT(*) AS count
       FROM portfolio_analytics_events
       WHERE event_type = 'link_click'
          OR (event_type LIKE '%: %'
              AND event_type NOT LIKE 'Download: %'
+             AND event_type NOT LIKE 'Link: Download %'
+             AND event_type NOT LIKE 'Link: /%'
              AND event_type NOT LIKE 'Sketch: %'
              AND event_type != 'time_on_page')
       GROUP BY link ORDER BY count DESC LIMIT 20
-    `),
-    pool.query(`
-      SELECT
-        CASE WHEN e.event_type = 'download' THEN e.event_value
-             ELSE SUBSTR(e.event_type, 11) END AS file,
-        e.created_at,
-        e.visitor_id,
-        iv.email,
-        iv.name,
-        iv.auth_provider
-      FROM portfolio_analytics_events e
-      LEFT JOIN portfolio_analytics_identified_visitors iv
-        ON iv.visitor_id = e.visitor_id
-      WHERE e.event_type = 'download' OR e.event_type LIKE 'Download: %'
-      ORDER BY e.created_at DESC
-      LIMIT 25
     `),
     pool.query(`
       SELECT
@@ -503,6 +444,8 @@ export async function getAnalyticsStats() {
       WHERE e.event_type = 'link_click'
          OR (e.event_type LIKE '%: %'
              AND e.event_type NOT LIKE 'Download: %'
+             AND e.event_type NOT LIKE 'Link: Download %'
+             AND e.event_type NOT LIKE 'Link: /%'
              AND e.event_type NOT LIKE 'Sketch: %'
              AND e.event_type != 'time_on_page')
       ORDER BY e.created_at DESC
@@ -529,16 +472,7 @@ export async function getAnalyticsStats() {
     topReferrers: referrerRows.map((r) => ({ referrer: r.referrer, count: Number(r.count) })),
     deviceBreakdown: deviceRows.map((r) => ({ device: r.device_type, count: Number(r.count) })),
     browserBreakdown: browserRows.map((r) => ({ browser: r.browser, count: Number(r.count) })),
-    topDownloads: downloadRows.map((r) => ({ file: r.file, count: Number(r.count) })),
     topLinkClicks: linkClickRows.map((r) => ({ link: r.link, count: Number(r.count) })),
-    downloadEvents: downloadEventRows.map((r) => ({
-      file: r.file,
-      visitorId: r.visitor_id,
-      email: r.email || null,
-      name: r.name || "",
-      authProvider: r.auth_provider || "",
-      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at)
-    })),
     linkClickEvents: linkClickEventRows.map((r) => ({
       link: r.link,
       visitorId: r.visitor_id,

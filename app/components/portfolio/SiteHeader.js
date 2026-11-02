@@ -1,6 +1,4 @@
-import DownloadGate from "./DownloadGate";
 import { IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
-import { downloadLinks } from "./navigationLinks";
 import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
 
@@ -64,9 +62,6 @@ export default function SiteHeader({
                 <IconLinkedIn />
                 LinkedIn
               </a>
-            </div>
-            <div className="mobile-nav-downloads" aria-label="Downloads">
-              <DownloadGate links={downloadLinks} />
             </div>
           </div>
 

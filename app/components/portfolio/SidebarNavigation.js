@@ -3,9 +3,7 @@
 import { motion, useTransform } from "framer-motion";
 import { forwardRef } from "react";
 import useScrollProgress from "../../hooks/useScrollProgress";
-import DownloadGate from "./DownloadGate";
 import { IconGitHub, IconLinkedIn, IconMail, IconPhone, SidebarIcon } from "./icons";
-import { downloadLinks } from "./navigationLinks";
 import { SidebarAnalyticsPanel } from "./SidebarAnalytics";
 import ThemeSwitch from "./ThemeSwitch";
 
@@ -73,9 +71,6 @@ const SidebarNavigation = forwardRef(function SidebarNavigation({
             <IconLinkedIn />
             LinkedIn
           </a>
-        </div>
-        <div className="scroll-downloads" aria-label="Downloads">
-          <DownloadGate links={downloadLinks} />
         </div>
       </div>
       <nav className="scroll-nav" aria-label="Section navigation">
