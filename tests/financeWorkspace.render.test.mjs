@@ -8,6 +8,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as planner from "../app/lib/financePlanner.mjs";
 import * as insights from "../app/lib/financeInsights.mjs";
+import * as accountPlan from "../app/lib/financeAccountPlan.mjs";
 
 // Render the actual workspace and its child components with Next's JSX compiler.
 // Stylesheets do not affect the financial values asserted here.
@@ -33,6 +34,7 @@ function loadComponent(filename, reactOverride) {
     if (specifier.endsWith(".css")) return {};
     if (specifier === "../lib/financePlanner.mjs") return planner;
     if (specifier === "../lib/financeInsights.mjs") return insights;
+    if (specifier === "../lib/financeAccountPlan.mjs") return accountPlan;
     if (specifier.startsWith("./")) {
       return loadComponent(resolve(dirname(filename), `${specifier}.js`));
     }
@@ -49,7 +51,12 @@ const Workspace = loadComponent(
   fileURLToPath(new URL("../app/finance/FinanceAppClient.js", import.meta.url)),
 ).default;
 
-function fixture(tab, savedAmount, documentOverrides = {}) {
+function fixture(
+  tab,
+  savedAmount,
+  documentOverrides = {},
+  activityOverrides = {},
+) {
   const document = {
     salary: {
       amount: 2600,
@@ -103,12 +110,16 @@ function fixture(tab, savedAmount, documentOverrides = {}) {
       month: "2026-11",
       accounts: [],
       transactions: [],
+      ...activityOverrides,
     },
   };
 }
-function render(tab, savedAmount, documentOverrides) {
+function render(tab, savedAmount, documentOverrides, activityOverrides) {
   return renderToStaticMarkup(
-    createElement(Workspace, fixture(tab, savedAmount, documentOverrides)),
+    createElement(
+      Workspace,
+      fixture(tab, savedAmount, documentOverrides, activityOverrides),
+    ),
   );
 }
 const plain = (html) => html.replace(/<[^>]*>/g, "");
@@ -423,4 +434,98 @@ test("saving a monthly bill as payday switches to its new view and recomputes th
   assert.ok(html.includes("Total per payday"));
   assert.ok(html.includes("₱19,000.00"));
   assert.ok(!html.includes("₱38,000.00"));
+});
+
+test("salary, annual reserves and payday savings remain linked across the workspace and account forecasts", () => {
+  const accounts = [
+    {
+      id: 1,
+      name: "Checking",
+      institutionName: "Test Bank",
+      mask: "1001",
+      type: "checking",
+      currency: "USD",
+      nativeCurrentBalance: 1000,
+    },
+    {
+      id: 2,
+      name: "Savings",
+      institutionName: "Test Bank",
+      mask: "1002",
+      type: "savings",
+      currency: "USD",
+      nativeCurrentBalance: 503.7,
+    },
+    {
+      id: 28,
+      name: "Savings",
+      institutionName: "Test Bank",
+      mask: "1003",
+      type: "savings",
+      currency: "USD",
+      nativeCurrentBalance: 246.73,
+    },
+  ];
+  const base = fixture("plans", 0).snapshot.document;
+  const planner = {
+    salary: { ...base.salary, accountId: 1 },
+    bills: screenshotAnnualBills.map((bill) => ({
+      ...bill,
+      accountId: 1,
+      reserveAccountId: 2,
+      sourceAccountId: 1,
+    })),
+    allocations: [
+      {
+        id: "saving",
+        name: "Payday savings",
+        kind: "savings",
+        amount: 500,
+        currency: "USD",
+        accountId: 28,
+        sourceAccountId: 1,
+      },
+    ],
+    plans: [
+      {
+        ...base.plans[0],
+        startDate: "2026-11-02",
+        includeIncome: true,
+        includeAllocations: true,
+        includeAnnualReserve: true,
+        accountOpeningBalances: accounts.map((account) => ({
+          accountId: account.id,
+          balance: account.nativeCurrentBalance,
+        })),
+      },
+    ],
+  };
+  const activity = { accounts };
+  const plans = plain(render("plans", 0, planner, activity));
+  assert.ok(plans.includes("Projected balances by account"));
+  assert.ok(
+    plans.includes(
+      "Checking · ••1001Starting balance$1,000.00Projected ending balance$2,354.22",
+    ),
+  );
+  assert.ok(
+    plans.includes(
+      "Savings · ••1002Starting balance$503.70Projected ending balance$154.48Projected annual reserves$154.48",
+    ),
+  );
+  assert.ok(
+    plans.includes(
+      "Savings · ••1003Starting balance$246.73Projected ending balance$1,246.73Payday savings in this plan$1,000.00",
+    ),
+  );
+  assert.ok(plans.includes("Account movements"));
+  const settings = render("settings", 0, planner, activity);
+  assert.ok(settings.includes("Salary receiving account"));
+  assert.match(settings, /value="1" selected=""/);
+  const overview = plain(render("home", 0, planner, activity));
+  assert.ok(overview.includes("Your money by account"));
+  assert.ok(overview.includes("Saved for annual bills$503.70"));
+  assert.ok(overview.includes("Savings each payday$500.00"));
+  const spending = plain(render("spending", 0, planner, activity));
+  assert.ok(spending.includes("Savings · ••1003 · Test Bank · savings · USD"));
 });

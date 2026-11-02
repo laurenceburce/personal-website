@@ -67,7 +67,9 @@ function SourceLabel({ row }) {
     row.source === "manual"
       ? row.kind === "conversion"
         ? "Planned currency conversion"
-        : "Plan entry"
+        : row.kind === "transfer"
+          ? "Planned account transfer"
+          : "Plan entry"
       : labels[row.source] || "Plan flow";
   const matched = row.scheduledSource || row.matchedForecast?.source;
   const matchedLabel =
@@ -79,6 +81,16 @@ function SourceLabel({ row }) {
   const shortfallCurrency = row.currency || (row.php ? "PHP" : "USD");
   const grossAmount = row.grossAmount ?? row.amount;
   const annualPayment = row.annualPayment && Number.isFinite(grossAmount);
+  const sameAccountReserve =
+    row.source === "reserve" &&
+    row.reserveAllocations?.length > 0 &&
+    row.reserveAllocations.every(
+      (allocation) =>
+        allocation.sourceAccountId &&
+        allocation.reserveAccountId &&
+        Number(allocation.sourceAccountId) ===
+          Number(allocation.reserveAccountId),
+    );
   return (
     <>
       <small className="fpl-source-label">
@@ -104,6 +116,40 @@ function SourceLabel({ row }) {
         <small className="fpl-shortfall">
           Reserve shortfall: {money(row.reserveShortfall, shortfallCurrency)}
         </small>
+      )}
+      {row.accountNames?.length > 0 && (
+        <small className="fpl-account-label">
+          Accounts: {row.accountNames.join(" · ")}
+        </small>
+      )}
+      {sameAccountReserve && (
+        <small className="fpl-account-label">
+          Earmarked within the same account; bank balance stays unchanged.
+        </small>
+      )}
+      {row.accountMovements?.length > 0 && (
+        <details className="fpl-account-movements">
+          <summary>Account movements</summary>
+          <ul>
+            {row.accountMovements.map((movement, index) => (
+              <li key={`${movement.accountId}-${index}`}>
+                {movement.accountName || "Assigned account"}:{" "}
+                {signed(movement.amount, movement.currency)}
+                {Number.isFinite(movement.balanceDelta) &&
+                  movement.balanceDelta !== movement.amount && (
+                    <>
+                      {" "}
+                      · balance owed{" "}
+                      {signed(movement.balanceDelta, movement.currency)}
+                    </>
+                  )}
+                {movement.label && movement.label !== row.description && (
+                  <small>{movement.label}</small>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </>
   );

@@ -10,6 +10,25 @@ import * as planner from "../app/lib/financePlanner.mjs";
 const require = createRequire(import.meta.url);
 const componentUrl = new URL("../app/finance/FinanceBills.js", import.meta.url);
 const { transformSync } = require("next/dist/build/swc");
+const selectUrl = new URL(
+  "../app/finance/FinanceAccountSelect.js",
+  import.meta.url,
+);
+const selectCode = transformSync(await readFile(selectUrl, "utf8"), {
+  filename: fileURLToPath(selectUrl),
+  jsc: {
+    parser: { syntax: "ecmascript", jsx: true },
+    transform: { react: { runtime: "automatic" } },
+    target: "es2022",
+  },
+  module: { type: "commonjs" },
+}).code;
+const selectModule = { exports: {} };
+new Function("require", "module", "exports", selectCode)(
+  require,
+  selectModule,
+  selectModule.exports,
+);
 const { code } = transformSync(await readFile(componentUrl, "utf8"), {
   filename: fileURLToPath(componentUrl),
   jsc: {
@@ -24,6 +43,7 @@ function loadComponents(reactOverride) {
   const componentRequire = (specifier) => {
     if (specifier === "./finance-bills.css") return {};
     if (specifier === "../lib/financePlanner.mjs") return planner;
+    if (specifier === "./FinanceAccountSelect") return selectModule.exports;
     if (specifier === "react" && reactOverride) return reactOverride;
     return require(specifier);
   };
@@ -892,4 +912,218 @@ test("an annual editor without a salary schedule labels its fallback as an estim
   assert.match(html, /Estimate · Set your salary schedule/);
   assert.match(html, /Save \$3\.33\/payday/);
   assert.doesNotMatch(html, /undefined|NaN|Infinity/);
+});
+
+const linkedAccounts = [
+  {
+    id: 10,
+    name: "Checking",
+    currency: "USD",
+    type: "checking",
+    mask: "1234",
+    institutionName: "Example Bank",
+  },
+  {
+    id: 20,
+    name: "Savings",
+    currency: "USD",
+    type: "savings",
+    mask: "2345",
+    institutionName: "Example Bank",
+  },
+  {
+    id: 30,
+    name: "Savings",
+    currency: "USD",
+    type: "savings",
+    mask: "3456",
+    institutionName: "Example Bank",
+  },
+  {
+    id: 40,
+    name: "Peso savings",
+    currency: "PHP",
+    type: "savings",
+    mask: "4567",
+  },
+  {
+    id: 50,
+    name: "Credit card",
+    currency: "USD",
+    type: "credit",
+    mask: "5678",
+  },
+];
+
+test("account selectors distinguish matching-currency accounts and preserve unavailable assignments", () => {
+  const Select = selectModule.exports.default;
+  const html = renderToStaticMarkup(
+    createElement(Select, {
+      accounts: linkedAccounts,
+      currency: "USD",
+      value: 20,
+    }),
+  );
+  assert.match(html, /Savings · ••2345 · Example Bank · savings · USD/);
+  assert.match(html, /Savings · ••3456 · Example Bank · savings · USD/);
+  assert.doesNotMatch(html, /Peso savings/);
+  const unavailable = renderToStaticMarkup(
+    createElement(Select, {
+      accounts: [
+        ...linkedAccounts,
+        { id: 60, name: "Old account", currency: "USD", isArchived: true },
+      ],
+      currency: "USD",
+      value: 60,
+    }),
+  );
+  assert.match(unavailable, /value="60" disabled="" selected=""/);
+  assert.match(unavailable, /Old account · USD — choose another/);
+  const required = renderToStaticMarkup(
+    createElement(Select, {
+      accounts: linkedAccounts,
+      currency: "USD",
+      value: null,
+      allowNone: false,
+      required: true,
+    }),
+  );
+  assert.match(
+    required,
+    /option value="" disabled="" selected="">Choose an account/,
+  );
+});
+
+test("annual bills display and save separate payment, reserve, and funding accounts", () => {
+  const bill = {
+    ...baseBill,
+    accountId: 10,
+    reserveAccountId: 20,
+    sourceAccountId: 10,
+  };
+  const html = renderToStaticMarkup(
+    createElement(BillForm, {
+      bill,
+      cadence: "annual",
+      rate: 63,
+      accounts: linkedAccounts,
+      salary: annualSalary,
+      asOf: "2026-07-02",
+      onSave() {},
+    }),
+  );
+  assert.match(html, /Pay from account \(optional\)/);
+  assert.match(html, /Annual savings account \(optional\)/);
+  assert.match(html, /Fund reserve from \(optional\)/);
+  assert.match(html, /Salary receiving account/);
+  const table = renderTable([bill], { accounts: linkedAccounts });
+  assert.match(table, /Pay from: Checking · ••1234/);
+  assert.match(table, /Reserve: Savings · ••2345/);
+  const result = submitDraft(
+    {
+      cadence: "annual",
+      dueDay: "28",
+      dueMonths: [11],
+      accountId: "10",
+      reserveAccountId: "20",
+      sourceAccountId: "10",
+    },
+    { accounts: linkedAccounts },
+  );
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.saved.accountId, 10);
+  assert.equal(result.saved.reserveAccountId, 20);
+  assert.equal(result.saved.sourceAccountId, 10);
+  const monthly = submitDraft(
+    { accountId: 10, reserveAccountId: 20, sourceAccountId: 10 },
+    { accounts: linkedAccounts },
+  );
+  assert.equal(monthly.saved.reserveAccountId, null);
+  assert.equal(monthly.saved.sourceAccountId, null);
+});
+
+test("bill account validation rejects unavailable, wrong-currency and credit reserve assignments", () => {
+  for (const accountId of [999, 40]) {
+    const result = submitDraft({ accountId }, { accounts: linkedAccounts });
+    assert.equal(result.saved, undefined);
+    assert.match(result.errors[0], /available USD payment account/);
+  }
+  const creditReserve = submitDraft(
+    { cadence: "annual", dueDay: 9, dueMonths: [11], reserveAccountId: 50 },
+    { accounts: linkedAccounts },
+  );
+  assert.equal(creditReserve.saved, undefined);
+  assert.match(creditReserve.errors[0], /savings, checking, or cash/);
+  const archived = submitDraft(
+    { accountId: 10 },
+    {
+      accounts: linkedAccounts.map((account) =>
+        account.id === 10 ? { ...account, isArchived: true } : account,
+      ),
+    },
+  );
+  assert.equal(archived.saved, undefined);
+});
+
+test("changing a bill currency clears all account assignments before saving", () => {
+  const state = [];
+  let cursor = 0;
+  const components = loadComponents({
+    ...require("react"),
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in state))
+        state[index] = typeof initial === "function" ? initial() : initial;
+      return [
+        state[index],
+        (next) => {
+          state[index] = typeof next === "function" ? next(state[index]) : next;
+        },
+      ];
+    },
+  });
+  const renderForm = () => {
+    cursor = 0;
+    return components.BillForm({
+      bill: {
+        ...baseBill,
+        accountId: 10,
+        reserveAccountId: 20,
+        sourceAccountId: 10,
+      },
+      cadence: "annual",
+      accounts: linkedAccounts,
+      rate: 63,
+      onSave() {},
+    });
+  };
+  const findField = (node, label) => {
+    if (!node?.props) return null;
+    if (node.props.label === label) return node;
+    for (const child of Array.isArray(node.props.children)
+      ? node.props.children
+      : [node.props.children]) {
+      const found = findField(child, label);
+      if (found) return found;
+    }
+    return null;
+  };
+  let form = renderForm();
+  findField(form, "Paid in").props.children.props.onChange({
+    target: { value: "PHP" },
+  });
+  form = renderForm();
+  assert.equal(
+    findField(form, "Pay from account (optional)").props.children.props.value,
+    null,
+  );
+  assert.equal(
+    findField(form, "Annual savings account (optional)").props.children.props
+      .value,
+    null,
+  );
+  assert.equal(
+    findField(form, "Fund reserve from (optional)").props.children.props.value,
+    null,
+  );
 });

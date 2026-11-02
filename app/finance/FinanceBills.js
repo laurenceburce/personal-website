@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import FinanceAccountSelect, {
+  financeAccountLabel,
+} from "./FinanceAccountSelect";
 import {
   annualSavingsTarget,
   addDays,
@@ -191,6 +194,7 @@ export function DueLabel({ bill, salary, asOf = localDate() }) {
 
 export function BillForm({
   bill,
+  accounts = [],
   cadence,
   rate,
   salary,
@@ -211,6 +215,9 @@ export function BillForm({
       isAutopay: false,
       ...bill,
       savedAmount: bill?.savedAmount ?? 0,
+      accountId: bill?.accountId ?? null,
+      reserveAccountId: bill?.reserveAccountId ?? null,
+      sourceAccountId: bill?.sourceAccountId ?? null,
       dueMonths: bill?.dueMonths?.length
         ? [...bill.dueMonths]
         : [Number(localDate().slice(5, 7))],
@@ -249,6 +256,41 @@ export function BillForm({
         "Enter an amount from 0.01 to 999,999,999 with up to two decimal places.",
       );
     const savedAmount = annual ? Number(draft.savedAmount ?? 0) : 0;
+    for (const [field, label] of [
+      ["accountId", "payment account"],
+      ...(annual
+        ? [
+            ["reserveAccountId", "annual savings account"],
+            ["sourceAccountId", "reserve funding account"],
+          ]
+        : []),
+    ]) {
+      if (
+        draft[field] !== null &&
+        draft[field] !== undefined &&
+        draft[field] !== ""
+      ) {
+        const selected = accounts.find(
+          (account) => String(account.id) === String(draft[field]),
+        );
+        if (
+          !selected ||
+          selected.isArchived ||
+          selected.is_archived ||
+          selected.currency !== draft.currency
+        )
+          return setError(
+            `Choose an available ${draft.currency} ${label}, or leave it unassigned.`,
+          );
+        if (
+          field === "reserveAccountId" &&
+          ["credit", "loan"].includes(selected.type)
+        )
+          return setError(
+            "Choose a savings, checking, or cash account for annual reserves.",
+          );
+      }
+    }
     if (
       annual &&
       (!Number.isFinite(savedAmount) ||
@@ -309,6 +351,13 @@ export function BillForm({
       name,
       amount: roundMoney(value),
       savedAmount: roundMoney(savedAmount),
+      accountId: draft.accountId ? Number(draft.accountId) : null,
+      reserveAccountId:
+        annual && draft.reserveAccountId
+          ? Number(draft.reserveAccountId)
+          : null,
+      sourceAccountId:
+        annual && draft.sourceAccountId ? Number(draft.sourceAccountId) : null,
       currency: draft.currency,
       cadence: draft.cadence,
       dueDay,
@@ -361,7 +410,16 @@ export function BillForm({
         <Field label="Paid in">
           <select
             value={draft.currency}
-            onChange={(event) => set("currency", event.target.value)}
+            onChange={(event) => {
+              setDraft((current) => ({
+                ...current,
+                currency: event.target.value,
+                accountId: null,
+                reserveAccountId: null,
+                sourceAccountId: null,
+              }));
+              setError("");
+            }}
           >
             <option value="USD">USD · US dollar</option>
             <option value="PHP">PHP · Philippine peso</option>
@@ -563,6 +621,46 @@ export function BillForm({
           </small>
         </fieldset>
       )}
+      <Field
+        label="Pay from account (optional)"
+        hint="Used for scheduled bill payments and account forecasts."
+      >
+        <FinanceAccountSelect
+          accounts={accounts}
+          currency={draft.currency}
+          value={draft.accountId}
+          onChange={(value) => set("accountId", value)}
+        />
+      </Field>
+      {annual && (
+        <>
+          <Field
+            label="Annual savings account (optional)"
+            hint="Where this bill’s saved funds and payday reserves are allocated. Choosing an account does not move money."
+          >
+            <FinanceAccountSelect
+              accounts={accounts.filter(
+                (account) => !["credit", "loan"].includes(account.type),
+              )}
+              currency={draft.currency}
+              value={draft.reserveAccountId}
+              onChange={(value) => set("reserveAccountId", value)}
+            />
+          </Field>
+          <Field
+            label="Fund reserve from (optional)"
+            hint="Defaults to your salary receiving account. Currency conversion needs a separate planned conversion."
+          >
+            <FinanceAccountSelect
+              accounts={accounts}
+              currency={draft.currency}
+              value={draft.sourceAccountId}
+              emptyLabel="Salary receiving account"
+              onChange={(value) => set("sourceAccountId", value)}
+            />
+          </Field>
+        </>
+      )}
       <Field label="Payment method (optional)">
         <input
           maxLength={80}
@@ -604,6 +702,7 @@ export function BillForm({
 
 export function BillsTable({
   bills,
+  accounts = [],
   cadence,
   summary,
   rate,
@@ -975,6 +1074,41 @@ export function BillsTable({
                   <td data-label="Auto payment">
                     <span>{bill.paymentMethod || "—"}</span>
                     <small>{bill.isAutopay ? "Automatic" : "Manual"}</small>
+                    {bill.accountId && (
+                      <small>
+                        Pay from:{" "}
+                        {financeAccountLabel(
+                          accounts.find(
+                            (account) =>
+                              String(account.id) === String(bill.accountId),
+                          ),
+                        )}
+                      </small>
+                    )}
+                    {annual && bill.reserveAccountId && (
+                      <small>
+                        Reserve:{" "}
+                        {financeAccountLabel(
+                          accounts.find(
+                            (account) =>
+                              String(account.id) ===
+                              String(bill.reserveAccountId),
+                          ),
+                        )}
+                      </small>
+                    )}
+                    {annual && bill.sourceAccountId && (
+                      <small>
+                        Reserve funding:{" "}
+                        {financeAccountLabel(
+                          accounts.find(
+                            (account) =>
+                              String(account.id) ===
+                              String(bill.sourceAccountId),
+                          ),
+                        )}
+                      </small>
+                    )}
                   </td>
                   <td data-label="Actions">
                     <div className="fp-row-actions">

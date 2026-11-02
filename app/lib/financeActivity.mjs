@@ -151,6 +151,14 @@ export function mapFinanceActivityAccount(row) {
     institutionName: row.institution_name || "",
     connectionId: row.connection_id ? Number(row.connection_id) : null,
     isLinked,
+    mask: row.account_mask || "",
+    officialName: row.official_name || "",
+    isArchived: Boolean(row.is_archived || row.merged_into_account_id),
+    isSyncExcluded: Boolean(row.is_sync_excluded),
+    mergedIntoAccountId: row.merged_into_account_id
+      ? Number(row.merged_into_account_id)
+      : null,
+    connectionStatus: row.connection_status || "",
     color: row.color || "#34d399",
   };
 }

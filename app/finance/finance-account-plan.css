@@ -1,0 +1,106 @@
+.fap-section {
+  margin: 24px 0;
+  min-width: 0;
+}
+.fap-section > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.fap-section h2,
+.fap-section h3,
+.fap-section h4 {
+  margin: 0;
+  color: #305c48;
+  font-size: 14px;
+}
+.fap-section header p {
+  margin: 7px 0 0;
+  color: #65766a;
+  font-size: 11px;
+  line-height: 1.7;
+  max-width: 700px;
+}
+.fap-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 255px), 1fr));
+  gap: 12px;
+}
+.fap-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid #dfe9e1;
+  border-radius: 9px;
+  background: #f9fcf9;
+}
+.fap-card h3,
+.fap-card h4 {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.fap-card dl {
+  margin: 12px 0 0;
+  font-size: 11px;
+}
+.fap-card dl > div {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 9px;
+}
+.fap-card dt {
+  color: #65766a;
+}
+.fap-card dd {
+  margin: 0;
+  font-weight: 600;
+  color: #305c48;
+  white-space: nowrap;
+}
+.fap-warning,
+.fap-warnings {
+  color: #a05d35;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.fap-warnings {
+  padding: 12px 12px 12px 28px;
+  border-radius: 7px;
+  background: #fff7e9;
+}
+.fap-warning {
+  margin-bottom: 0;
+}
+.fp-account-openings {
+  border: 1px solid #dfe9e1;
+  border-radius: 8px;
+  padding: 14px;
+}
+.fp-account-openings summary {
+  color: #305c48;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fp-account-openings .fp-field {
+  margin-top: 12px;
+}
+.fpl-account-movements {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #65766a;
+}
+.fpl-account-movements summary {
+  cursor: pointer;
+}
+.fpl-account-movements ul {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+}
+.fpl-account-movements li {
+  margin: 3px 0;
+}

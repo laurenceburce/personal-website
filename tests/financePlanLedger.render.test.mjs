@@ -320,3 +320,141 @@ test("recorded matches, future dates and reserve shortfalls stay visible alongsi
   assert.match(html, /class="fp-running fp-negative">-₱8,500\.00/);
   assert.ok(html.includes("Planned currency conversion"));
 });
+
+test("account transfers show both native account movements while aggregate available funds stay unchanged", () => {
+  const html = render([
+    row({
+      id: "savings-transfer",
+      source: "manual",
+      kind: "transfer",
+      description: "Move payday savings",
+      accountNames: ["Checking · •1234", "Savings · •3456"],
+      accountMovements: [
+        {
+          accountId: 1,
+          accountName: "Checking · •1234",
+          amount: -500,
+          currency: "USD",
+          kind: "transfer",
+          balanceDelta: -500,
+        },
+        {
+          accountId: 2,
+          accountName: "Savings · •3456",
+          amount: 500,
+          currency: "USD",
+          kind: "transfer",
+          balanceDelta: 500,
+        },
+      ],
+    }),
+  ]);
+  const cellsInRow = cells(findRow(html, "fpl-row-manual"));
+  assert.equal(cellsInRow.length, 9);
+  assert.equal(cellsInRow[2], "—");
+  assert.equal(cellsInRow[4], "$750.00");
+  assert.match(html, /Planned account transfer/);
+  assert.match(html, /<summary>Account movements<\/summary>/);
+  assert.match(plain(html), /Checking · •1234: -\$500\.00/);
+  assert.match(plain(html), /Savings · •3456: \+\$500\.00/);
+});
+
+test("credit account movements retain cash direction and explain the opposite balance-owed change", () => {
+  const html = render([
+    row({
+      description: "Credit purchase",
+      accountNames: ["Credit card · •5678"],
+      accountMovements: [
+        {
+          accountId: 3,
+          accountName: "Credit card · •5678",
+          amount: -25,
+          currency: "USD",
+          kind: "payment",
+          balanceDelta: 25,
+        },
+      ],
+    }),
+  ]);
+  assert.match(
+    plain(html),
+    /Credit card · •5678: -\$25\.00 · balance owed \+\$25\.00/,
+  );
+});
+
+test("earmarking an annual reserve inside one account records no bank movement", () => {
+  const html = render([
+    row({
+      source: "reserve",
+      kind: "reserve",
+      description: "Set aside for annual bills",
+      usd: -20,
+      reserveDeltaUsd: 20,
+      reserveUsd: 220,
+      accountNames: ["Annual savings · •2345"],
+      accountMovements: [],
+      reserveAllocations: [
+        { billId: "fee", amount: 20, sourceAccountId: 2, reserveAccountId: 2 },
+      ],
+    }),
+  ]);
+  assert.match(
+    html,
+    /Earmarked within the same account; bank balance stays unchanged/,
+  );
+  assert.doesNotMatch(html, /<summary>Account movements<\/summary>/);
+  assert.match(plain(html), /-\$20\.00/);
+  assert.match(plain(html), /\+\$20\.00 set aside/);
+});
+
+test("annual account movements keep the gross bill and reserve coverage visible", () => {
+  const html = render([
+    row({
+      annualPayment: true,
+      description: "Venture X",
+      currency: "USD",
+      amount: 395,
+      grossAmount: 395,
+      reserveUsed: 100,
+      reserveShortfall: 295,
+      usd: -295,
+      accountNames: ["Annual savings · •2345", "Checking · •1234"],
+      accountMovements: [
+        {
+          accountId: 2,
+          accountName: "Annual savings · •2345",
+          amount: -100,
+          currency: "USD",
+          kind: "transfer",
+          label: "Use annual reserve · Venture X",
+          balanceDelta: -100,
+        },
+        {
+          accountId: 1,
+          accountName: "Checking · •1234",
+          amount: 100,
+          currency: "USD",
+          kind: "transfer",
+          label: "Use annual reserve · Venture X",
+          balanceDelta: 100,
+        },
+        {
+          accountId: 1,
+          accountName: "Checking · •1234",
+          amount: -395,
+          currency: "USD",
+          kind: "payment",
+          label: "Venture X",
+          balanceDelta: -395,
+        },
+      ],
+    }),
+  ]);
+  assert.match(
+    html,
+    /Total bill \$395\.00 · \$100\.00 from reserves · \$295\.00 additional cash/,
+  );
+  assert.match(plain(html), /Annual savings · •2345: -\$100\.00/);
+  assert.match(plain(html), /Checking · •1234: \+\$100\.00/);
+  assert.match(plain(html), /Checking · •1234: -\$395\.00/);
+});

@@ -176,8 +176,29 @@ The finance workspace separates recorded activity from your plans:
   details. Search and filter history, edit manual entries, and view bank imports.
 - **Bank accounts:** connect US accounts through Plaid, view native balances,
   and sync transactions. Production and sandbox connections are clearly labeled.
+  Use **Update accounts** on an existing connection when adding another bank
+  account. Account identities and masked account numbers keep confirmed copies
+  from a re-link together while distinct savings accounts stay separate.
+  **Find duplicate accounts** previews confirmed identity matches before merging;
+  merged accounts retain their transaction history and planner assignments.
+  Cross-connection copies are excluded from totals without deleting their source
+  rows. Removing an account hides it from active tracking and future syncs;
+  unlinking a connection revokes access and retains its historical transactions.
+  Add a manual USD/PHP account for cash or a bank without a connected provider;
+  its native opening balance and recorded movements are tracked in the app.
 - **Salary & settings:** monthly salary with instant USD/PHP conversion and
   the first payday used by forecasts.
+  Choose the account receiving salary. Each bill can select a payment account;
+  annual bills can also select a reserve savings account and funding source.
+  Payday savings select a destination account and optional source (defaulting
+  to the salary account in the same currency). Account cards show annual funds
+  reserved, planned payday savings, and any reserve balance exceeding bank funds.
+  Budget plans project native account balances and transfers alongside available
+  funds. Account starting balances can be set for the plan's first date; otherwise
+  current bank balances are used and already-posted history is excluded from
+  that account forecast. Manual transfers preserve total funds; cross-currency
+  moves require an explicit conversion. Assignments and projections never move
+  bank funds or change synced balances.
 
 Overview income/spending totals exclude pending and future-dated transactions,
 bank transfers, and loan-payment categories. Planned salary, recurring bills,

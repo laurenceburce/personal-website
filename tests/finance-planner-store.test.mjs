@@ -1,13 +1,61 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDefaultFinancePlanner, validateFinancePlanner } from "../app/lib/financePlannerStore.js";
+import {
+  createDefaultFinancePlanner,
+  validateFinancePlanner,
+  validateFinancePlannerAccounts,
+} from "../app/lib/financePlannerStore.js";
 
 const document = () => ({
-  salary: { amount: 2000, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-06" },
-  bills: [{ id: "bill-1", name: " Microsoft ", amount: 100, currency: "USD", cadence: "annual", dueDay: 9, dueMonths: [9], paymentMethod: "US Bank Credit", isAutopay: true }],
-  allocations: [{ id: "saving-1", name: "Savings", amount: 500, currency: "USD", kind: "savings" }],
-  plans: [{ id: "plan-1", name: "November", startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 750, openingPhp: 0, includeIncome: true,
-    entries: [{ id: "conversion-1", date: "2026-11-06", description: "Convert for bills", kind: "conversion", amount: 333.09, currency: "USD" }] }]
+  salary: {
+    amount: 2000,
+    currency: "USD",
+    payFrequency: "semimonthly",
+    firstPayDate: "2026-11-06",
+  },
+  bills: [
+    {
+      id: "bill-1",
+      name: " Microsoft ",
+      amount: 100,
+      currency: "USD",
+      cadence: "annual",
+      dueDay: 9,
+      dueMonths: [9],
+      paymentMethod: "US Bank Credit",
+      isAutopay: true,
+    },
+  ],
+  allocations: [
+    {
+      id: "saving-1",
+      name: "Savings",
+      amount: 500,
+      currency: "USD",
+      kind: "savings",
+    },
+  ],
+  plans: [
+    {
+      id: "plan-1",
+      name: "November",
+      startDate: "2026-11-01",
+      endDate: "2026-11-30",
+      openingUsd: 750,
+      openingPhp: 0,
+      includeIncome: true,
+      entries: [
+        {
+          id: "conversion-1",
+          date: "2026-11-06",
+          description: "Convert for bills",
+          kind: "conversion",
+          amount: 333.09,
+          currency: "USD",
+        },
+      ],
+    },
+  ],
 });
 
 test("default is an empty personal planner with a USD salary and real local date", () => {
@@ -18,13 +66,195 @@ test("default is an empty personal planner with a USD salary and real local date
   assert.deepEqual(validateFinancePlanner(planner), planner);
 });
 
+test("planner account links and native opening balances round trip as positive numeric identifiers", () => {
+  const planner = document();
+  planner.salary.accountId = "1";
+  Object.assign(planner.bills[0], {
+    accountId: 4,
+    reserveAccountId: 2,
+    sourceAccountId: 1,
+  });
+  Object.assign(planner.allocations[0], { accountId: 3, sourceAccountId: 1 });
+  planner.plans[0].accountOpeningBalances = [
+    { accountId: "1", balance: -25.126 },
+    { accountId: 2, balance: 500 },
+  ];
+  Object.assign(planner.plans[0].entries[0], {
+    fromAccountId: 1,
+    toAccountId: 5,
+  });
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.salary.accountId, 1);
+  assert.equal(clean.bills[0].reserveAccountId, 2);
+  assert.equal(clean.bills[0].sourceAccountId, 1);
+  assert.equal(clean.allocations[0].accountId, 3);
+  assert.deepEqual(clean.plans[0].accountOpeningBalances, [
+    { accountId: 1, balance: -25.13 },
+    { accountId: 2, balance: 500 },
+  ]);
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  assert.deepEqual(planner, before);
+});
+
+test("manual transfers require two distinct accounts and reject unsafe account IDs", () => {
+  const planner = document();
+  Object.assign(planner.plans[0].entries[0], {
+    kind: "transfer",
+    fromAccountId: "1",
+    toAccountId: "2",
+  });
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.plans[0].entries[0].fromAccountId, 1);
+  assert.equal(clean.plans[0].entries[0].toAccountId, 2);
+  for (const [fromAccountId, toAccountId] of [
+    [1, 1],
+    [null, 2],
+    [1, null],
+    ["bad", 2],
+    [1, 2.5],
+  ]) {
+    planner.plans[0].entries[0].fromAccountId = fromAccountId;
+    planner.plans[0].entries[0].toAccountId = toAccountId;
+    assert.throws(() => validateFinancePlanner(planner), /accounts|account/);
+  }
+  for (const value of [
+    -1,
+    0,
+    true,
+    {},
+    [],
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+    "1e2",
+  ]) {
+    const current = document();
+    current.salary.accountId = value;
+    assert.throws(() => validateFinancePlanner(current), /valid account/);
+  }
+});
+
+test("account validation requires native currencies and active funding accounts, while retaining removed historical links", () => {
+  const planner = validateFinancePlanner(document());
+  planner.salary.accountId = 1;
+  planner.bills[0].reserveAccountId = 2;
+  const accounts = [
+    { id: 1, currency: "USD", account_type: "checking", is_archived: 0 },
+    { id: 2, currency: "USD", account_type: "savings", is_archived: 0 },
+  ];
+  assert.deepEqual(validateFinancePlannerAccounts(planner, accounts), [1, 2]);
+  assert.throws(
+    () =>
+      validateFinancePlannerAccounts(planner, [
+        { ...accounts[0], currency: "PHP" },
+        accounts[1],
+      ]),
+    /currency must match USD/,
+  );
+  assert.throws(
+    () =>
+      validateFinancePlannerAccounts(planner, [
+        accounts[0],
+        { ...accounts[1], account_type: "credit" },
+      ]),
+    /must hold funds/,
+  );
+  assert.throws(
+    () =>
+      validateFinancePlannerAccounts(planner, [
+        { ...accounts[0], is_archived: 1 },
+        accounts[1],
+      ]),
+    /unavailable/,
+  );
+  assert.doesNotThrow(() =>
+    validateFinancePlannerAccounts(
+      planner,
+      [{ ...accounts[0], is_archived: 1 }, accounts[1]],
+      planner,
+    ),
+  );
+  const changed = structuredClone(planner);
+  changed.salary.accountId = 3;
+  assert.throws(
+    () => validateFinancePlannerAccounts(changed, accounts, planner),
+    /unavailable/,
+  );
+  planner.plans[0].entries[0].fromAccountId = 1;
+  planner.plans[0].entries[0].toAccountId = 2;
+  assert.throws(
+    () => validateFinancePlannerAccounts(planner, accounts),
+    /currency must match PHP/,
+  );
+});
+
+test("account opening balances reject duplicate IDs and invalid native values", () => {
+  for (const opening of [
+    [
+      { accountId: 1, balance: 1 },
+      { accountId: 1, balance: 2 },
+    ],
+    [{ accountId: null, balance: 1 }],
+    [{ accountId: 1, balance: Infinity }],
+    [{ accountId: 1, balance: "100" }],
+    null,
+  ]) {
+    const planner = document();
+    planner.plans[0].accountOpeningBalances = opening;
+    assert.throws(
+      () => validateFinancePlanner(planner),
+      /opening balance|opening balances/,
+    );
+  }
+});
+
+test("merged account aliases stay unavailable even if an older sync unarchives them", () => {
+  const planner = validateFinancePlanner(document());
+  planner.salary.accountId = 7;
+  const accounts = [
+    {
+      id: 7,
+      currency: "USD",
+      account_type: "checking",
+      is_archived: 0,
+      merged_into_account_id: 1,
+    },
+  ];
+  assert.throws(
+    () => validateFinancePlannerAccounts(planner, accounts),
+    /unavailable/,
+  );
+  assert.doesNotThrow(() =>
+    validateFinancePlannerAccounts(planner, accounts, planner),
+  );
+  assert.throws(
+    () =>
+      validateFinancePlannerAccounts(planner, [
+        {
+          ...accounts[0],
+          merged_into_account_id: null,
+          mergedIntoAccountId: 1,
+        },
+      ]),
+    /unavailable/,
+  );
+});
+
 test("round trips annual installments, savings and two-currency conversion entries", () => {
   const planner = document();
   planner.bills[0].dueMonths = [9, 3, 9];
   const clean = validateFinancePlanner(planner);
   assert.equal(clean.bills[0].name, "Microsoft");
   assert.deepEqual(clean.bills[0].dueMonths, [3, 9]);
-  assert.deepEqual(clean.plans[0].entries, planner.plans[0].entries);
+  assert.deepEqual(
+    clean.plans[0].entries,
+    planner.plans[0].entries.map((entry) => ({
+      ...entry,
+      accountId: null,
+      fromAccountId: null,
+      toAccountId: null,
+    })),
+  );
 });
 
 test("legacy annual bills receive zero saved funds without changing their source document", () => {
@@ -40,7 +270,12 @@ test("legacy annual bills receive zero saved funds without changing their source
 test("annual saved funds round trip in the bill currency and can exceed the yearly cost", () => {
   const planner = document();
   planner.bills[0].savedAmount = 150.126;
-  planner.bills.push({ ...planner.bills[0], id: "php-bill", currency: "PHP", savedAmount: 12600.5 });
+  planner.bills.push({
+    ...planner.bills[0],
+    id: "php-bill",
+    currency: "PHP",
+    savedAmount: 12600.5,
+  });
   const clean = validateFinancePlanner(planner);
   assert.equal(clean.bills[0].amount, 100);
   assert.equal(clean.bills[0].savedAmount, 150.13);
@@ -49,21 +284,43 @@ test("annual saved funds round trip in the bill currency and can exceed the year
   assert.equal(clean.bills[1].currency, "PHP");
   assert.deepEqual(validateFinancePlanner(clean), clean);
   planner.bills[0].savedAmount = 999_999_999;
-  assert.equal(validateFinancePlanner(planner).bills[0].savedAmount, 999_999_999);
+  assert.equal(
+    validateFinancePlanner(planner).bills[0].savedAmount,
+    999_999_999,
+  );
 });
 
 test("annual saved funds reject negative, nonfinite, nonnumeric and excessive values", () => {
-  for (const savedAmount of [-0.01, NaN, Infinity, -Infinity, 1_000_000_000, "100", null, true, {}, []]) {
+  for (const savedAmount of [
+    -0.01,
+    NaN,
+    Infinity,
+    -Infinity,
+    1_000_000_000,
+    "100",
+    null,
+    true,
+    {},
+    [],
+  ]) {
     const planner = document();
     planner.bills[0].savedAmount = savedAmount;
-    assert.throws(() => validateFinancePlanner(planner), /Saved amount/, `saved amount ${String(savedAmount)}`);
+    assert.throws(
+      () => validateFinancePlanner(planner),
+      /Saved amount/,
+      `saved amount ${String(savedAmount)}`,
+    );
   }
 });
 
 test("monthly bills normalize stale annual saved funds to zero", () => {
   for (const savedAmount of [undefined, 100, 999_999_999, null, "stale"]) {
     const planner = document();
-    Object.assign(planner.bills[0], { cadence: "monthly", dueMonths: [], savedAmount });
+    Object.assign(planner.bills[0], {
+      cadence: "monthly",
+      dueMonths: [],
+      savedAmount,
+    });
     const clean = validateFinancePlanner(planner);
     assert.equal(clean.bills[0].savedAmount, 0);
     assert.deepEqual(validateFinancePlanner(clean), clean);
@@ -82,11 +339,17 @@ test("rejects invalid calendar dates instead of silently rolling them forward", 
   planner.salary.firstPayDate = "2026-02-29";
   assert.throws(() => validateFinancePlanner(planner), /valid date/);
   planner.salary.firstPayDate = "2028-02-29";
-  assert.equal(validateFinancePlanner(planner).salary.firstPayDate, "2028-02-29");
+  assert.equal(
+    validateFinancePlanner(planner).salary.firstPayDate,
+    "2028-02-29",
+  );
 });
 
 test("rejects unknown currencies and pay schedules", () => {
-  for (const [key, value] of [["currency", "EUR"], ["payFrequency", "weekly"]]) {
+  for (const [key, value] of [
+    ["currency", "EUR"],
+    ["payFrequency", "weekly"],
+  ]) {
     const planner = document();
     planner.salary[key] = value;
     assert.throws(() => validateFinancePlanner(planner), /invalid/);
@@ -104,7 +367,10 @@ test("rejects NaN, infinity, negative and out of bounds monthly salary", () => {
 test("requires an annual due month and allows an open due day for both bill frequencies", () => {
   const planner = document();
   planner.bills[0].dueMonths = [];
-  assert.throws(() => validateFinancePlanner(planner), /at least one due month/);
+  assert.throws(
+    () => validateFinancePlanner(planner),
+    /at least one due month/,
+  );
   planner.bills[0].cadence = "monthly";
   planner.bills[0].dueDay = null;
   assert.equal(validateFinancePlanner(planner).bills[0].dueDay, null);
@@ -115,30 +381,61 @@ test("requires an annual due month and allows an open due day for both bill freq
 
 test("monthly payments normalize two due days without changing the total monthly bill amount", () => {
   const planner = document();
-  Object.assign(planner.bills[0], { cadence: "monthly", amount: 100.01, dueDay: 20, dueDays: [20, 5, 20], dueMonths: [] });
+  Object.assign(planner.bills[0], {
+    cadence: "monthly",
+    amount: 100.01,
+    dueDay: 20,
+    dueDays: [20, 5, 20],
+    dueMonths: [],
+  });
   const bill = validateFinancePlanner(planner).bills[0];
   assert.deepEqual(bill.dueDays, [5, 20]);
   assert.equal(bill.dueDay, 5);
   assert.equal(bill.amount, 100.01);
-  assert.deepEqual(validateFinancePlanner({ ...planner, bills: [bill] }).bills[0], bill);
+  assert.deepEqual(
+    validateFinancePlanner({ ...planner, bills: [bill] }).bills[0],
+    bill,
+  );
 });
 
 test("legacy monthly due days are preserved and explicit empty dates remain open", () => {
   const planner = document();
-  Object.assign(planner.bills[0], { cadence: "monthly", dueDay: 11, dueMonths: [] });
+  Object.assign(planner.bills[0], {
+    cadence: "monthly",
+    dueDay: 11,
+    dueMonths: [],
+  });
   assert.deepEqual(validateFinancePlanner(planner).bills[0].dueDays, [11]);
   planner.bills[0].dueDays = [];
   const open = validateFinancePlanner(planner).bills[0];
   assert.deepEqual(open.dueDays, []);
   assert.equal(open.dueDay, null);
-  assert.equal(validateFinancePlanner(planner).salary.payFrequency, "semimonthly");
+  assert.equal(
+    validateFinancePlanner(planner).salary.payFrequency,
+    "semimonthly",
+  );
 });
 
 test("monthly schedules reject more than two unique dates and invalid day values", () => {
-  for (const dueDays of [[1, 15, 30], [0, 15], [15, 32], [1.5], ["15"], null, "1,15"]) {
+  for (const dueDays of [
+    [1, 15, 30],
+    [0, 15],
+    [15, 32],
+    [1.5],
+    ["15"],
+    null,
+    "1,15",
+  ]) {
     const planner = document();
-    Object.assign(planner.bills[0], { cadence: "monthly", dueMonths: [], dueDays });
-    assert.throws(() => validateFinancePlanner(planner), /two monthly due days/);
+    Object.assign(planner.bills[0], {
+      cadence: "monthly",
+      dueMonths: [],
+      dueDays,
+    });
+    assert.throws(
+      () => validateFinancePlanner(planner),
+      /two monthly due days/,
+    );
   }
 });
 
@@ -154,8 +451,14 @@ test("annual month schedules retain their single due day independently of monthl
 test("payday bills round trip the full amount per payday with salary-owned dates", () => {
   const planner = document();
   Object.assign(planner.bills[0], {
-    name: "House", cadence: "payday", currency: "PHP", amount: 19000.01,
-    dueDay: 14, dueDays: [14, 28], dueMonths: [3, 9], savedAmount: 100,
+    name: "House",
+    cadence: "payday",
+    currency: "PHP",
+    amount: 19000.01,
+    dueDay: 14,
+    dueDays: [14, 28],
+    dueMonths: [3, 9],
+    savedAmount: 100,
   });
   const before = structuredClone(planner);
   const clean = validateFinancePlanner(planner);
@@ -173,7 +476,12 @@ test("payday bills round trip the full amount per payday with salary-owned dates
 test("payday bills do not require fixed dates and discard stale calendar or annual fields", () => {
   for (const stale of [
     { dueDay: undefined, dueDays: undefined, dueMonths: undefined },
-    { dueDay: 99, dueDays: "old dates", dueMonths: "old months", savedAmount: "old savings" },
+    {
+      dueDay: 99,
+      dueDays: "old dates",
+      dueMonths: "old months",
+      savedAmount: "old savings",
+    },
     { dueDay: "14", dueDays: [0, 32], dueMonths: [0, 13], savedAmount: -100 },
   ]) {
     const planner = document();
@@ -188,13 +496,21 @@ test("payday bills do not require fixed dates and discard stale calendar or annu
 
 test("payday bills still validate the payment amount, currency, name and autopay", () => {
   for (const [key, value] of [
-    ["amount", -1], ["amount", Infinity], ["amount", "19000"],
-    ["amount", 1_000_000_000], ["currency", "EUR"], ["name", ""],
-    ["isAutopay", "false"], ["cadence", "weekly"],
+    ["amount", -1],
+    ["amount", Infinity],
+    ["amount", "19000"],
+    ["amount", 1_000_000_000],
+    ["currency", "EUR"],
+    ["name", ""],
+    ["isAutopay", "false"],
+    ["cadence", "weekly"],
   ]) {
     const planner = document();
     Object.assign(planner.bills[0], { cadence: "payday", [key]: value });
-    assert.throws(() => validateFinancePlanner(planner), `${key} remains validated`);
+    assert.throws(
+      () => validateFinancePlanner(planner),
+      `${key} remains validated`,
+    );
   }
 });
 
@@ -212,18 +528,36 @@ test("legacy plans default to full money flow and distinct zero opening annual r
 
 test("plans retain selected flow switches and native opening annual reserves", () => {
   const planner = document();
-  Object.assign(planner.plans[0], { includeTransactions: false, includeAllocations: false, includeAnnualReserve: false, openingReserveUsd: 120.126, openingReservePhp: 6500.50 });
+  Object.assign(planner.plans[0], {
+    includeTransactions: false,
+    includeAllocations: false,
+    includeAnnualReserve: false,
+    openingReserveUsd: 120.126,
+    openingReservePhp: 6500.5,
+  });
   const clean = validateFinancePlanner(planner).plans[0];
   assert.equal(clean.includeTransactions, false);
   assert.equal(clean.includeAllocations, false);
   assert.equal(clean.includeAnnualReserve, false);
   assert.equal(clean.openingReserveUsd, 120.13);
   assert.equal(clean.openingReservePhp, 6500.5);
-  assert.deepEqual(validateFinancePlanner({ ...planner, plans: [clean] }).plans[0], clean);
+  assert.deepEqual(
+    validateFinancePlanner({ ...planner, plans: [clean] }).plans[0],
+    clean,
+  );
 });
 
 test("reserve balances cannot be negative or nonnumeric and flow switches must be booleans", () => {
-  for (const [key, value] of [["openingReserveUsd", -1], ["openingReservePhp", null], ["openingReservePhp", "500"], ["openingReserveUsd", Infinity], ["openingReserveUsd", 1_000_000_000], ["includeTransactions", "false"], ["includeAllocations", null], ["includeAnnualReserve", 0]]) {
+  for (const [key, value] of [
+    ["openingReserveUsd", -1],
+    ["openingReservePhp", null],
+    ["openingReservePhp", "500"],
+    ["openingReserveUsd", Infinity],
+    ["openingReserveUsd", 1_000_000_000],
+    ["includeTransactions", "false"],
+    ["includeAllocations", null],
+    ["includeAnnualReserve", 0],
+  ]) {
     const planner = document();
     planner.plans[0][key] = value;
     assert.throws(() => validateFinancePlanner(planner));
@@ -231,7 +565,13 @@ test("reserve balances cannot be negative or nonnumeric and flow switches must b
 });
 
 test("rejects invalid due days, due months and automatic payment flags", () => {
-  for (const [key, value] of [["dueDay", 32], ["dueDay", 1.5], ["dueMonths", [0]], ["dueMonths", [13]], ["isAutopay", "false"]]) {
+  for (const [key, value] of [
+    ["dueDay", 32],
+    ["dueDay", 1.5],
+    ["dueMonths", [0]],
+    ["dueMonths", [13]],
+    ["isAutopay", "false"],
+  ]) {
     const planner = document();
     planner.bills[0][key] = value;
     assert.throws(() => validateFinancePlanner(planner));
@@ -247,7 +587,10 @@ test("rejects duplicate IDs to prevent ambiguous edits", () => {
 test("rejects inverted dates, plans over two years and out of range entries", () => {
   const planner = document();
   planner.plans[0].endDate = "2026-10-31";
-  assert.throws(() => validateFinancePlanner(planner), /dates must be in order/);
+  assert.throws(
+    () => validateFinancePlanner(planner),
+    /dates must be in order/,
+  );
   planner.plans[0].endDate = "2029-11-30";
   assert.throws(() => validateFinancePlanner(planner), /two years/);
   planner.plans[0].endDate = "2026-11-30";
@@ -268,9 +611,15 @@ test("strips arbitrary properties and prototype names from stored records", () =
 
 test("caps row counts and total UTF-8 document size", () => {
   const planner = document();
-  planner.bills = Array.from({ length: 301 }, (_, index) => ({ ...planner.bills[0], id: `bill-${index}` }));
+  planner.bills = Array.from({ length: 301 }, (_, index) => ({
+    ...planner.bills[0],
+    id: `bill-${index}`,
+  }));
   assert.throws(() => validateFinancePlanner(planner), /at most 300/);
   planner.bills = [];
   planner.ignored = "x".repeat(1_000_000);
-  assert.throws(() => validateFinancePlanner(planner), (error) => error.status === 413);
+  assert.throws(
+    () => validateFinancePlanner(planner),
+    (error) => error.status === 413,
+  );
 });

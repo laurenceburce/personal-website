@@ -1374,3 +1374,122 @@
     transition: none !important;
   }
 }
+.fa-button-row,
+.fa-connection-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fa-bank-intro > .fa-button-row {
+  justify-content: flex-end;
+}
+.fa-connection {
+  flex-wrap: wrap;
+}
+.fa-connection-actions {
+  margin-left: auto;
+}
+.fa-account-mask {
+  display: block;
+  color: #65766a;
+  font-size: 11px;
+  margin-top: 3px;
+}
+.fa-account-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.fa-account-allocations {
+  padding: 12px 0;
+  border-top: 1px solid #e8eee6;
+  font-size: 11px;
+  color: #65766a;
+}
+.fa-account-allocations > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 5px 12px;
+  margin: 5px 0;
+}
+.fa-account-allocations b {
+  color: #355a42;
+  font-variant-numeric: tabular-nums;
+}
+.fa-account-allocations > small {
+  display: block;
+  margin-top: 7px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.fa-account-allocations > p {
+  font-size: 11px !important;
+  line-height: 1.7 !important;
+  margin: 8px 0 !important;
+}
+.fa-removal-confirmation {
+  flex-basis: 100%;
+  margin-top: 12px;
+  padding: 13px;
+  border: 1px solid #ead7cb;
+  border-radius: 7px;
+  background: #fff8f3;
+}
+.fa-removal-confirmation > p,
+.fa-repair-preview > p,
+.fa-repair-preview li {
+  font-size: 11px !important;
+  color: #6c675e !important;
+  line-height: 1.7 !important;
+  margin: 0 0 10px !important;
+}
+.fa-button.fa-danger {
+  color: #984c3d;
+  border-color: #e6c9bd;
+}
+.fa-repair-preview {
+  margin-bottom: 18px;
+}
+.fa-repair-preview > h3 {
+  font-size: 13px !important;
+  color: #355a42;
+  margin: 0 0 8px;
+}
+@media (max-width: 760px) {
+  .fa-bank-intro > .fa-button-row,
+  .fa-connection-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .fa-connection-actions .fa-button {
+    flex: 1 1 auto;
+  }
+  .fa-removal-confirmation .fa-button-row .fa-button {
+    flex: 1;
+  }
+}
+.fa-manual-account-form {
+  margin-bottom: 18px;
+}
+.fa-manual-account-form > h3 {
+  font-size: 14px !important;
+  color: #355a42;
+  margin: 0 0 8px;
+}
+.fa-manual-account-form > p {
+  font-size: 11px !important;
+  line-height: 1.7 !important;
+  color: #65766a !important;
+  margin: 0 0 16px !important;
+}
+.fa-manual-account-form > fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.fa-manual-account-form .fa-button-row {
+  margin-top: 16px;
+}

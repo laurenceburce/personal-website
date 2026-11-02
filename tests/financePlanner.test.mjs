@@ -1375,7 +1375,12 @@ test("payday contributions add to each item's saved money before its annual paym
   assert.equal(funding.length, 2);
   assert.ok(funding.every((row) => row.amount === 147.5));
   assert.deepEqual(funding[0].reserveAllocations, [
-    { billId: "Venture X", amount: 147.5 },
+    {
+      billId: "Venture X",
+      amount: 147.5,
+      reserveAccountId: null,
+      sourceAccountId: null,
+    },
   ]);
   const payment = rows.find((row) => row.annualPayment);
   assert.equal(payment.reserveUsed, 395);
@@ -1408,7 +1413,12 @@ test("fully funded annual bills skip set-asides until payment then resume fundin
   assert.equal(rows[0].reserveUsd, 0);
   assert.equal(rows[1].amount, 16.46);
   assert.deepEqual(rows[1].reserveAllocations, [
-    { billId: "Venture X", amount: 16.46 },
+    {
+      billId: "Venture X",
+      amount: 16.46,
+      reserveAccountId: null,
+      sourceAccountId: null,
+    },
   ]);
   assert.equal(rows[1].reserveUsd, 16.46);
   assert.equal(rows[1].balanceUsd, 483.54);
@@ -1524,8 +1534,18 @@ test("payday reserves are earmarked for their bill even when another annual bill
   assert.equal(payment.reserveUsd, 146.67);
   assert.equal(rows.at(-1).reserveUsd, 203.34);
   assert.deepEqual(rows[0].reserveAllocations, [
-    { billId: "Venture X", amount: 240 },
-    { billId: "Microsoft", amount: 46.67 },
+    {
+      billId: "Venture X",
+      amount: 240,
+      reserveAccountId: null,
+      sourceAccountId: null,
+    },
+    {
+      billId: "Microsoft",
+      amount: 46.67,
+      reserveAccountId: null,
+      sourceAccountId: null,
+    },
   ]);
 });
 

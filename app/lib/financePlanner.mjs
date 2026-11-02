@@ -487,9 +487,14 @@ function normalizedDescription(value) {
 
 function forecastMatchesTransaction(forecast, transaction) {
   if (
-    forecast.kind === "conversion" ||
+    ["conversion", "transfer"].includes(forecast.kind) ||
     forecast.kind !== transaction.kind ||
     forecast.currency !== transaction.currency
+  )
+    return false;
+  if (
+    forecast.accountId != null &&
+    Number(forecast.accountId) !== Number(transaction.accountId)
   )
     return false;
   if (Math.abs(forecast.amount - transaction.amount) > 0.0100001) return false;
@@ -600,6 +605,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       description: "Salary",
       kind: "income",
       source: "salary",
+      accountId: salary.accountId ?? null,
       paydayDate: occurrence.date,
       ...nativeFlow(occurrence.amount, occurrence.currency, "income"),
     });
@@ -618,6 +624,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         kind: "expense",
         source: "bill",
         annualPayment: bill.cadence === "annual",
+        accountId: bill.accountId ?? null,
+        reserveAccountId: bill.reserveAccountId ?? null,
+        sourceAccountId: bill.sourceAccountId ?? salary.accountId ?? null,
         ...nativeFlow(occurrence.amount, occurrence.currency, "expense"),
       });
   }
@@ -629,6 +638,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     )
       continue;
     const flow = nativeFlow(entry.amount, entry.currency, entry.kind);
+    if (entry.kind === "transfer") {
+      flow.usd = 0;
+      flow.php = 0;
+    }
     if (entry.kind === "conversion") {
       if (entry.currency === "PHP")
         flow.usd = convert(entry.amount, "PHP", "USD", rate);
@@ -641,6 +654,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       description: entry.description,
       kind: entry.kind,
       source: "manual",
+      accountId: entry.accountId ?? null,
+      fromAccountId: entry.fromAccountId ?? null,
+      toAccountId: entry.toAccountId ?? null,
       ...flow,
     });
   }
@@ -686,6 +702,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         provider: transaction.provider || "",
         accountName: transaction.accountName || "",
         accountType: transaction.accountType || "",
+        accountId: transaction.accountId ?? null,
         kind: transaction.kind,
         source: "transaction",
         scheduled: transaction.date > today,
@@ -732,6 +749,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     };
     if (matched.billId !== undefined) transaction.billId = matched.billId;
     if (matched.entryId !== undefined) transaction.entryId = matched.entryId;
+    if (matched.reserveAccountId !== undefined)
+      transaction.reserveAccountId = matched.reserveAccountId;
+    if (matched.sourceAccountId !== undefined)
+      transaction.sourceAccountId = matched.sourceAccountId;
     transaction.annualPayment = Boolean(matched.annualPayment);
     if (matched.source === "salary")
       actualPayDates.set(matched.date, transaction.date);
@@ -759,6 +780,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           .filter((bill) => bill.currency === currency)
           .map((bill) => ({
             billId: bill.id,
+            reserveAccountId: bill.reserveAccountId ?? null,
+            sourceAccountId: bill.sourceAccountId ?? salary.accountId ?? null,
             amount: 0,
           }));
         if (!reserveAllocations.length) continue;
@@ -787,6 +810,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           kind: "expense",
           source: "allocation",
           allocationKind: allocation.kind,
+          accountId: allocation.accountId ?? null,
+          sourceAccountId:
+            allocation.sourceAccountId ?? salary.accountId ?? null,
           ...nativeFlow(allocation.amount, allocation.currency, "expense"),
         });
       }
@@ -860,7 +886,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   for (const row of rows) {
     if (row.source === "reserve") {
       const reserveAllocations = row.reserveAllocations
-        .map(({ billId }) => {
+        .map(({ billId, reserveAccountId, sourceAccountId }) => {
           const key = reserveKey(billId, row.currency);
           const state = billFunding.get(key);
           const savedAmount = billReserves.get(key) || 0;
@@ -909,7 +935,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
             key,
             roundMoney((billReserves.get(key) || 0) + amount),
           );
-          return { billId, amount };
+          return { billId, amount, reserveAccountId, sourceAccountId };
         })
         .filter((allocation) => allocation.amount > 0);
       const amount = roundMoney(

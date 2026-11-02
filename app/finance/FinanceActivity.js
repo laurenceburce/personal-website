@@ -8,6 +8,9 @@ import {
   money,
 } from "../lib/financePlanner.mjs";
 import { getFinanceInsights } from "../lib/financeInsights.mjs";
+import FinanceAccountSelect, {
+  financeAccountLabel,
+} from "./FinanceAccountSelect";
 import "./finance-activity.css";
 
 const PLAID_SCRIPT = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
@@ -161,8 +164,11 @@ export function QuickTransactionForm({
     accountId: transaction?.accountId ?? null,
   }));
   const [formError, setFormError] = useState("");
-  const supportedAccounts = accounts.filter((account) =>
-    ["USD", "PHP"].includes(account.currency),
+  const supportedAccounts = accounts.filter(
+    (account) =>
+      ["USD", "PHP"].includes(account.currency) &&
+      !account.isArchived &&
+      !account.is_archived,
   );
   const selectedAccount = supportedAccounts.find(
     (account) => String(account.id) === String(draft.accountId),
@@ -216,6 +222,12 @@ export function QuickTransactionForm({
     }
     if (selectedAccount && draft.currency !== selectedAccount.currency) {
       setFormError("Use the account’s currency, or choose Unassigned / cash.");
+      return;
+    }
+    if (draft.accountId && !selectedAccount) {
+      setFormError(
+        "Choose an available account, or leave this transaction unassigned.",
+      );
       return;
     }
     onSave({
@@ -360,12 +372,13 @@ export function QuickTransactionForm({
             </label>
             <label className="fa-field fa-wide">
               <span>Account (optional)</span>
-              <select
-                value={draft.accountId ?? ""}
-                onChange={(event) => {
-                  const accountId = event.target.value
-                    ? Number(event.target.value)
-                    : null;
+              <FinanceAccountSelect
+                accounts={accounts.filter((account) =>
+                  ["USD", "PHP"].includes(account.currency),
+                )}
+                emptyLabel="Unassigned / cash"
+                value={draft.accountId}
+                onChange={(accountId) => {
                   const account = supportedAccounts.find(
                     (item) => item.id === accountId,
                   );
@@ -376,19 +389,7 @@ export function QuickTransactionForm({
                   }));
                   setFormError("");
                 }}
-              >
-                <option value="">Unassigned / cash</option>
-                {draft.accountId && !selectedAccount && (
-                  <option value={draft.accountId}>
-                    Unavailable account — choose another
-                  </option>
-                )}
-                {supportedAccounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name} · {account.currency}
-                  </option>
-                ))}
-              </select>
+              />
               <small>
                 {selectedAccount?.isLinked
                   ? "Record only transactions not already imported from your bank. Manual entries affect spending totals; bank-reported balances update through sync."
@@ -448,9 +449,18 @@ export function TransactionsPanel({
   const [kind, setKind] = useState("all");
   const [category, setCategory] = useState("all");
   const [status, setStatus] = useState("all");
+  const [accountFilter, setAccountFilter] = useState("all");
   const [page, setPage] = useState(1);
   const selectedMonth = month || activity.month || localDate().slice(0, 7);
   const today = localDate();
+  const knownAccounts = [
+    ...(activity.accounts || []),
+    ...(activity.archivedAccounts || []),
+  ];
+  const accountFor = (row) =>
+    knownAccounts.find(
+      (account) => String(account.id) === String(row.accountId),
+    );
   const monthRows = useMemo(
     () =>
       (activity.transactions || [])
@@ -467,6 +477,12 @@ export function TransactionsPanel({
       monthRows.filter((row) => {
         if (kind !== "all" && row.kind !== kind) return false;
         if (category !== "all" && row.category !== category) return false;
+        if (accountFilter === "unassigned" && row.accountId) return false;
+        if (
+          !["all", "unassigned"].includes(accountFilter) &&
+          String(row.accountId) !== accountFilter
+        )
+          return false;
         if (status === "pending" && !row.pending) return false;
         if (status === "posted" && (row.pending || row.date > today))
           return false;
@@ -479,6 +495,7 @@ export function TransactionsPanel({
           row.category,
           row.note,
           row.accountName,
+          accountFor(row)?.mask,
           row.institutionName,
           row.provider,
         ]
@@ -487,7 +504,17 @@ export function TransactionsPanel({
           .toLowerCase();
         return !search.trim() || text.includes(search.trim().toLowerCase());
       }),
-    [monthRows, search, kind, category, status, today],
+    [
+      monthRows,
+      search,
+      kind,
+      category,
+      status,
+      accountFilter,
+      today,
+      activity.accounts,
+      activity.archivedAccounts,
+    ],
   );
   const categories = [
     ...new Set([
@@ -495,6 +522,17 @@ export function TransactionsPanel({
       ...(category !== "all" ? [category] : []),
     ]),
   ].sort();
+  const accountOptions = new Map(
+    knownAccounts.map((account) => [String(account.id), account]),
+  );
+  for (const row of monthRows) {
+    if (row.accountId && !accountOptions.has(String(row.accountId)))
+      accountOptions.set(String(row.accountId), {
+        id: row.accountId,
+        name: row.accountName || "Account",
+        currency: row.currency,
+      });
+  }
   const totals = useMemo(
     () =>
       getFinanceInsights({
@@ -506,7 +544,10 @@ export function TransactionsPanel({
       }),
     [activity, rate, selectedMonth, currency, today],
   );
-  useEffect(() => setPage(1), [selectedMonth, search, kind, category, status]);
+  useEffect(
+    () => setPage(1),
+    [selectedMonth, search, kind, category, status, accountFilter],
+  );
   const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const visibleRows = rows.slice(
@@ -514,13 +555,18 @@ export function TransactionsPanel({
     currentPage * PAGE_SIZE,
   );
   const hasFilters = Boolean(
-    search || kind !== "all" || category !== "all" || status !== "all",
+    search ||
+    kind !== "all" ||
+    category !== "all" ||
+    status !== "all" ||
+    accountFilter !== "all",
   );
   const clearFilters = () => {
     setSearch("");
     setKind("all");
     setCategory("all");
     setStatus("all");
+    setAccountFilter("all");
   };
 
   return (
@@ -569,6 +615,22 @@ export function TransactionsPanel({
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
+          </label>
+          <label className="fa-filter">
+            <span className="fa-sr-only">Account filter</span>
+            <select
+              value={accountFilter}
+              onChange={(event) => setAccountFilter(event.target.value)}
+            >
+              <option value="all">All accounts</option>
+              <option value="unassigned">Unassigned / cash</option>
+              {[...accountOptions.values()].map((account) => (
+                <option key={account.id} value={account.id}>
+                  {financeAccountLabel(account)}
+                  {account.isArchived ? " · Removed" : ""}
+                </option>
+              ))}
+            </select>
           </label>
           <label className="fa-filter">
             <span className="fa-sr-only">Transaction type</span>
@@ -704,9 +766,13 @@ export function TransactionsPanel({
                       <td data-label="Account / source">
                         <span>
                           {row.accountName ||
+                            accountFor(row)?.name ||
                             (row.provider
                               ? "Bank account"
                               : "Unassigned / cash")}
+                          {accountFor(row)?.mask
+                            ? ` · ••${accountFor(row).mask}`
+                            : ""}
                         </span>
                         <small>
                           {row.institutionName ||
@@ -882,7 +948,7 @@ function clearLinkSession() {
   }
 }
 
-function saveLinkSession(result) {
+function saveLinkSession(result, connectionId = null) {
   const providerExpiry = Date.parse(result.expiration || "");
   const expiresAt = Math.min(
     Number.isFinite(providerExpiry)
@@ -893,7 +959,7 @@ function saveLinkSession(result) {
   try {
     window.sessionStorage.setItem(
       PLAID_SESSION_KEY,
-      JSON.stringify({ token: result.linkToken, expiresAt }),
+      JSON.stringify({ token: result.linkToken, expiresAt, connectionId }),
     );
   } catch {
     /* Link still works without redirect resumption. */
@@ -910,6 +976,7 @@ function clearOAuthQuery() {
 
 export function BankAccountsPanel({
   activity,
+  accountAllocations = [],
   rate,
   currency = "USD",
   busy = false,
@@ -920,6 +987,16 @@ export function BankAccountsPanel({
 }) {
   const [pending, setPending] = useState("");
   const [linkStatus, setLinkStatus] = useState("");
+  const [confirmation, setConfirmation] = useState(null);
+  const [repairPreview, setRepairPreview] = useState(null);
+  const [manualAccountOpen, setManualAccountOpen] = useState(false);
+  const [manualAccount, setManualAccount] = useState({
+    name: "",
+    type: "cash",
+    currency: "USD",
+    openingBalance: "0",
+  });
+  const [manualAccountError, setManualAccountError] = useState("");
   const handlerRef = useRef(null);
   const lockRef = useRef(false);
   const mountedRef = useRef(true);
@@ -961,7 +1038,7 @@ export function BankAccountsPanel({
       clearOAuthQuery();
       return;
     }
-    startPlaid(saved.token, window.location.href);
+    startPlaid(saved.token, window.location.href, saved.connectionId || null);
     // Resume once per mounted bank view, preserving Plaid's full redirect URL.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activity.configured, plaid.configured]);
@@ -978,7 +1055,11 @@ export function BankAccountsPanel({
     }
   }
 
-  async function startPlaid(token = null, receivedRedirectUri = null) {
+  async function startPlaid(
+    token = null,
+    receivedRedirectUri = null,
+    connectionId = null,
+  ) {
     if (lockRef.current || busy) return;
     lockRef.current = true;
     setPending("link");
@@ -989,13 +1070,18 @@ export function BankAccountsPanel({
     );
     try {
       const result = token
-        ? { linkToken: token }
-        : await callbacks.current.onAction("createPlaidLinkToken", {});
+        ? { linkToken: token, connectionId }
+        : await callbacks.current.onAction(
+            "createPlaidLinkToken",
+            connectionId ? { connectionId } : {},
+          );
+      const updatingConnectionId =
+        Number(result?.connectionId || connectionId) || null;
       if (!result?.linkToken)
         throw new Error(
           "The bank connection service did not return a usable session. Please try again.",
         );
-      if (!token) saveLinkSession(result);
+      if (!token) saveLinkSession(result, updatingConnectionId);
       const sdk = await loadPlaidScript();
       if (!mountedRef.current) {
         clearLinkSession();
@@ -1019,18 +1105,26 @@ export function BankAccountsPanel({
           }
           let exchanged = false;
           try {
-            if (!publicToken)
-              throw new Error(
-                "The bank did not return a usable authorization. Please connect again.",
-              );
-            await callbacks.current.onAction("exchangePlaidPublicToken", {
-              publicToken,
-              metadata: { institution: metadata?.institution || null },
-            });
+            if (updatingConnectionId) {
+              await callbacks.current.onAction("syncConnection", {
+                id: updatingConnectionId,
+              });
+            } else {
+              if (!publicToken)
+                throw new Error(
+                  "The bank did not return a usable authorization. Please connect again.",
+                );
+              await callbacks.current.onAction("exchangePlaidPublicToken", {
+                publicToken,
+                metadata: { institution: metadata?.institution || null },
+              });
+            }
             exchanged = true;
             await callbacks.current.onRefresh();
             callbacks.current.onNotice?.(
-              "Bank connected. Your balances and transactions are up to date.",
+              updatingConnectionId
+                ? "Bank accounts updated on the existing connection."
+                : "Bank connected. Your balances and transactions are up to date.",
             );
           } catch (error) {
             if (!exchanged) await callbacks.current.onRefresh().catch(() => {});
@@ -1114,6 +1208,93 @@ export function BankAccountsPanel({
     });
   }
 
+  function removeSelected() {
+    const selection = confirmation;
+    if (!selection) return;
+    return runAction(`${selection.kind}:${selection.id}`, async () => {
+      await callbacks.current.onAction(
+        selection.kind === "account" ? "removeAccount" : "unlinkConnection",
+        { id: selection.id },
+      );
+      setConfirmation(null);
+      await callbacks.current.onRefresh();
+      callbacks.current.onNotice?.(
+        selection.kind === "account"
+          ? "Account removed from the active view. Transaction history is retained."
+          : "Bank connection unlinked. Transaction history is retained.",
+      );
+    });
+  }
+
+  function removalConfirmation(kind, id) {
+    if (confirmation?.kind !== kind || confirmation.id !== id) return null;
+    return (
+      <div className="fa-removal-confirmation" role="alert">
+        <p>
+          {kind === "account"
+            ? "Remove this account from active tracking? Its transactions and saved assignments remain in history, and syncing will not add it back."
+            : "Unlink this bank connection? Syncing stops and its accounts leave the active view. Existing transactions and saved assignments remain in history."}
+        </p>
+        <div className="fa-button-row">
+          <ActionButton
+            className="fa-danger"
+            disabled={working}
+            onClick={removeSelected}
+          >
+            {kind === "account" ? "Remove account" : "Unlink connection"}
+          </ActionButton>
+          <ActionButton
+            disabled={working}
+            onClick={() => setConfirmation(null)}
+          >
+            Keep it
+          </ActionButton>
+        </div>
+      </div>
+    );
+  }
+
+  function addManualAccount(event) {
+    event.preventDefault();
+    if (working || unavailable) return;
+    const name = manualAccount.name.trim();
+    const openingBalance = Number(manualAccount.openingBalance);
+    if (!name || name.length > 80)
+      return setManualAccountError(
+        "Enter an account name of up to 80 characters.",
+      );
+    if (
+      !Number.isFinite(openingBalance) ||
+      Math.abs(openingBalance) > 999999999 ||
+      Math.abs(openingBalance * 100 - Math.round(openingBalance * 100)) >
+        0.00001
+    )
+      return setManualAccountError(
+        "Enter a valid opening balance below one billion with up to two decimal places.",
+      );
+    return runAction("create-account", async () => {
+      await callbacks.current.onAction("createAccount", {
+        name,
+        type: manualAccount.type,
+        currency: manualAccount.currency,
+        openingBalance,
+        color: "#548564",
+      });
+      setManualAccountOpen(false);
+      setManualAccount({
+        name: "",
+        type: "cash",
+        currency: "USD",
+        openingBalance: "0",
+      });
+      setManualAccountError("");
+      callbacks.current.onNotice?.(
+        "Manual account added. You can now assign bills, transactions, and savings to it.",
+      );
+      await callbacks.current.onRefresh();
+    });
+  }
+
   return (
     <section className="fa-bank-section">
       <div className="fa-bank-intro">
@@ -1124,19 +1305,219 @@ export function BankAccountsPanel({
             plan.
           </p>
         </div>
-        <ActionButton
-          icon="refresh"
-          disabled={working || unavailable}
-          onClick={() =>
-            runAction("refresh", async () => {
-              await callbacks.current.onRefresh();
-              callbacks.current.onNotice?.("Account view refreshed.");
-            })
-          }
-        >
-          {pending === "refresh" ? "Refreshing…" : "Refresh view"}
-        </ActionButton>
+        <div className="fa-button-row">
+          <ActionButton
+            icon="plus"
+            disabled={working || unavailable}
+            onClick={() => {
+              setManualAccountOpen((open) => !open);
+              setManualAccountError("");
+            }}
+          >
+            Add manual account
+          </ActionButton>
+          <ActionButton
+            icon="refresh"
+            disabled={working || unavailable}
+            onClick={() =>
+              runAction("refresh", async () => {
+                await callbacks.current.onRefresh();
+                callbacks.current.onNotice?.("Account view refreshed.");
+              })
+            }
+          >
+            {pending === "refresh" ? "Refreshing…" : "Refresh view"}
+          </ActionButton>
+          <ActionButton
+            icon="refresh"
+            disabled={working || unavailable || !plaid.configured}
+            onClick={() =>
+              runAction("repair-preview", async () => {
+                const result = await callbacks.current.onAction(
+                  "repairDuplicateAccounts",
+                  { preview: true },
+                );
+                setRepairPreview(result);
+              })
+            }
+          >
+            {pending === "repair-preview"
+              ? "Checking…"
+              : "Find duplicate accounts"}
+          </ActionButton>
+        </div>
       </div>
+      {manualAccountOpen && (
+        <form
+          className="fa-card fa-manual-account-form"
+          onSubmit={addManualAccount}
+        >
+          <h3>Add a manually tracked account</h3>
+          <p>
+            Track an existing cash or bank account in this app, including PHP
+            accounts. This does not open a bank account or connect to a bank.
+          </p>
+          <fieldset disabled={working || unavailable}>
+            <legend className="fa-sr-only">Manual account details</legend>
+            <div className="fa-details-grid">
+              <label className="fa-field fa-wide">
+                <span>Account name</span>
+                <input
+                  required
+                  maxLength={80}
+                  autoFocus
+                  value={manualAccount.name}
+                  placeholder="e.g. PHP cash, RCBC checking"
+                  onChange={(event) => {
+                    setManualAccount((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }));
+                    setManualAccountError("");
+                  }}
+                />
+              </label>
+              <label className="fa-field">
+                <span>Account type</span>
+                <select
+                  value={manualAccount.type}
+                  onChange={(event) =>
+                    setManualAccount((current) => ({
+                      ...current,
+                      type: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="cash">Cash</option>
+                  <option value="checking">Checking</option>
+                  <option value="savings">Savings</option>
+                  <option value="credit">Credit card</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label className="fa-field">
+                <span>Account currency</span>
+                <select
+                  value={manualAccount.currency}
+                  onChange={(event) =>
+                    setManualAccount((current) => ({
+                      ...current,
+                      currency: event.target.value,
+                    }))
+                  }
+                >
+                  <option value="USD">USD · US dollar</option>
+                  <option value="PHP">PHP · Peso</option>
+                </select>
+              </label>
+              <label className="fa-field fa-wide">
+                <span>Opening balance · {manualAccount.currency}</span>
+                <input
+                  required
+                  type="number"
+                  step="0.01"
+                  min="-999999999"
+                  max="999999999"
+                  inputMode="decimal"
+                  value={manualAccount.openingBalance}
+                  onChange={(event) => {
+                    setManualAccount((current) => ({
+                      ...current,
+                      openingBalance: event.target.value,
+                    }));
+                    setManualAccountError("");
+                  }}
+                />
+                <small>
+                  Use the account’s native currency. Manual transactions update
+                  this tracked balance; credit accounts use a positive amount
+                  for money owed.
+                </small>
+              </label>
+            </div>
+            {manualAccountError && (
+              <p className="fa-negative" role="alert">
+                {manualAccountError}
+              </p>
+            )}
+            <div className="fa-button-row">
+              <button type="submit" className="fa-button fa-primary">
+                {pending === "create-account"
+                  ? "Adding…"
+                  : "Add tracked account"}
+              </button>
+              <ActionButton
+                onClick={() => {
+                  setManualAccountOpen(false);
+                  setManualAccountError("");
+                }}
+              >
+                Cancel
+              </ActionButton>
+            </div>
+          </fieldset>
+        </form>
+      )}
+      {repairPreview && (
+        <div className="fa-card fa-repair-preview" role="status">
+          <h3>
+            {repairPreview.duplicateAccounts > 0
+              ? `${repairPreview.duplicateAccounts} duplicate account${repairPreview.duplicateAccounts === 1 ? "" : "s"} found`
+              : "No confirmed duplicates found"}
+          </h3>
+          <p>
+            Matches use bank-provided account identity. Distinct savings
+            accounts stay separate. Transaction history and account assignments
+            are retained.
+          </p>
+          {repairPreview.groups?.length > 0 && (
+            <ul>
+              {repairPreview.groups.map((group) => (
+                <li key={group.canonicalId}>
+                  {group.name || "Account"}
+                  {group.mask ? ` · ••${group.mask}` : ""} · {group.currency} ·{" "}
+                  {group.duplicateIds.length} duplicate
+                  {group.duplicateIds.length === 1 ? "" : "s"}
+                </li>
+              ))}
+            </ul>
+          )}
+          {repairPreview.warnings?.map((warning, index) => (
+            <p key={index}>{warning}</p>
+          ))}
+          <div className="fa-button-row">
+            {repairPreview.duplicateAccounts > 0 && (
+              <ActionButton
+                primary
+                disabled={working}
+                onClick={() =>
+                  runAction("repair", async () => {
+                    const result = await callbacks.current.onAction(
+                      "repairDuplicateAccounts",
+                      { preview: false },
+                    );
+                    setRepairPreview(null);
+                    await callbacks.current.onRefresh();
+                    callbacks.current.onNotice?.(
+                      `${result.mergedAccounts || 0} duplicate accounts merged. History and assignments were preserved.`,
+                    );
+                  })
+                }
+              >
+                {pending === "repair"
+                  ? "Merging…"
+                  : "Merge confirmed duplicates"}
+              </ActionButton>
+            )}
+            <ActionButton
+              disabled={working}
+              onClick={() => setRepairPreview(null)}
+            >
+              Close
+            </ActionButton>
+          </div>
+        </div>
+      )}
       <div className="fa-bank-providers">
         <article className="fa-provider-card">
           <div className="fa-provider-heading">
@@ -1245,6 +1626,9 @@ export function BankAccountsPanel({
         ) : (
           <div className="fa-accounts-grid">
             {activity.accounts.map((account) => {
+              const allocation = accountAllocations.find(
+                (item) => String(item.accountId) === String(account.id),
+              );
               const liability = ["credit", "loan"].includes(account.type);
               const balance = account.nativeCurrentBalance;
               const hasBalance =
@@ -1279,6 +1663,11 @@ export function BankAccountsPanel({
                     </span>
                     <div>
                       <h3>{account.name}</h3>
+                      {account.mask && (
+                        <small className="fa-account-mask">
+                          Account ending {account.mask}
+                        </small>
+                      )}
                       <p>
                         {account.institutionName ||
                           (account.isLinked
@@ -1330,6 +1719,87 @@ export function BankAccountsPanel({
                         </small>
                       )}
                   </div>
+                  {allocation &&
+                    (allocation.roles?.length > 0 ||
+                      allocation.annualReserved > 0) && (
+                      <div className="fa-account-allocations">
+                        {allocation.annualReserved > 0 && (
+                          <div>
+                            <span>Allocated to annual bills</span>
+                            <b>
+                              {money(
+                                allocation.annualReserved,
+                                account.currency,
+                              )}
+                            </b>
+                          </div>
+                        )}
+                        {allocation.annualPerPayday > 0 && (
+                          <div>
+                            <span>Annual bills each payday</span>
+                            <b>
+                              {money(
+                                allocation.annualPerPayday,
+                                account.currency,
+                              )}
+                            </b>
+                          </div>
+                        )}
+                        {allocation.savingsPerPayday > 0 && (
+                          <div>
+                            <span>Savings each payday</span>
+                            <b>
+                              {money(
+                                allocation.savingsPerPayday,
+                                account.currency,
+                              )}
+                            </b>
+                          </div>
+                        )}
+                        {allocation.salaryPerPayday > 0 && (
+                          <div>
+                            <span>Receives salary each payday</span>
+                            <b>
+                              {money(
+                                allocation.salaryPerPayday,
+                                account.currency,
+                              )}
+                            </b>
+                          </div>
+                        )}
+                        {allocation.bankBalance !== null &&
+                          allocation.bankBalance !== undefined &&
+                          allocation.annualReserved > 0 && (
+                            <div>
+                              <span>Balance outside annual reserves</span>
+                              <b>
+                                {money(
+                                  allocation.unallocatedBalance,
+                                  account.currency,
+                                )}
+                              </b>
+                            </div>
+                          )}
+                        {allocation.overassigned > 0 && (
+                          <p className="fa-negative">
+                            Annual allocations exceed this bank balance by{" "}
+                            {money(allocation.overassigned, account.currency)}.
+                            Update saved balances or account assignments.
+                          </p>
+                        )}
+                        {allocation.roles?.length > 0 && (
+                          <small>
+                            {[
+                              ...new Set(
+                                allocation.roles
+                                  .map((role) => role.name)
+                                  .filter(Boolean),
+                              ),
+                            ].join(" · ")}
+                          </small>
+                        )}
+                      </div>
+                    )}
                   <footer>
                     <span
                       className={`fa-account-source ${account.isLinked ? "fa-is-linked" : ""}`}
@@ -1347,6 +1817,19 @@ export function BankAccountsPanel({
                         </small>
                       )}
                   </footer>
+                  <div className="fa-account-controls">
+                    <ActionButton
+                      icon="trash"
+                      disabled={working || unavailable}
+                      onClick={() =>
+                        setConfirmation({ kind: "account", id: account.id })
+                      }
+                      aria-label={`Remove ${financeAccountLabel(account)}`}
+                    >
+                      Remove
+                    </ActionButton>
+                  </div>
+                  {removalConfirmation("account", account.id)}
                 </article>
               );
             })}
@@ -1378,6 +1861,16 @@ export function BankAccountsPanel({
                       ? "Authorization saved; imports unavailable"
                       : `Last sync: ${syncTimestamp(connection.lastSyncedAt)}`}
                   </small>
+                  <small>
+                    {
+                      (activity.accounts || []).filter(
+                        (account) =>
+                          String(account.connectionId) ===
+                          String(connection.id),
+                      ).length
+                    }{" "}
+                    active accounts
+                  </small>
                   <span
                     className={`fa-connection-status ${connection.status !== "active" ? "fa-status-attention" : ""}`}
                   >
@@ -1392,17 +1885,49 @@ export function BankAccountsPanel({
                             ).replaceAll("_", " ")}
                   </span>
                 </div>
-                {connection.provider === "plaid" && (
-                  <ActionButton
-                    icon="refresh"
-                    disabled={working || unavailable || !plaid.configured}
-                    onClick={() => syncConnection(connection)}
-                  >
-                    {pending === `sync:${connection.id}`
-                      ? "Syncing…"
-                      : "Sync now"}
-                  </ActionButton>
-                )}
+                <div className="fa-connection-actions">
+                  {connection.provider === "plaid" &&
+                    !["disconnected", "superseded", "removed"].includes(
+                      connection.status,
+                    ) && (
+                      <>
+                        <ActionButton
+                          icon="plus"
+                          disabled={working || unavailable || !plaid.configured}
+                          onClick={() => startPlaid(null, null, connection.id)}
+                        >
+                          Update accounts
+                        </ActionButton>
+                        <ActionButton
+                          icon="refresh"
+                          disabled={working || unavailable || !plaid.configured}
+                          onClick={() => syncConnection(connection)}
+                        >
+                          {pending === `sync:${connection.id}`
+                            ? "Syncing…"
+                            : "Sync now"}
+                        </ActionButton>
+                      </>
+                    )}
+                  {!["disconnected", "superseded", "removed"].includes(
+                    connection.status,
+                  ) && (
+                    <ActionButton
+                      icon="trash"
+                      disabled={working || unavailable}
+                      onClick={() =>
+                        setConfirmation({
+                          kind: "connection",
+                          id: connection.id,
+                        })
+                      }
+                      aria-label={`Unlink ${connection.institutionName || providerName(connection.provider)} connection`}
+                    >
+                      Unlink
+                    </ActionButton>
+                  )}
+                </div>
+                {removalConfirmation("connection", connection.id)}
               </div>
             ))}
           </div>

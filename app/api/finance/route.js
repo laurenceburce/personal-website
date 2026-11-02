@@ -3,6 +3,8 @@ import { requireFinanceAccess } from "../../lib/financeAuth";
 import { isAllowedOrigin } from "../utils/origin";
 import {
   archiveFinanceAccount,
+  unlinkFinanceConnection,
+  repairDuplicateFinanceAccounts,
   createBrankasLink,
   createFinanceAccount,
   createFinanceTransaction,
@@ -104,7 +106,7 @@ export async function POST(request) {
       case "createPlaidLinkToken":
         return json({
           ok: true,
-          result: await createPlaidLinkToken(access.email),
+          result: await createPlaidLinkToken(access.email, data),
         });
       case "exchangePlaidPublicToken":
         return json({ ok: true, result: await exchangePlaidPublicToken(data) });
@@ -151,7 +153,18 @@ export async function POST(request) {
           result: await updateFinanceAccount(data.id, data),
         });
       case "archiveAccount":
+      case "removeAccount":
         return json({ ok: true, result: await archiveFinanceAccount(data.id) });
+      case "unlinkConnection":
+        return json({
+          ok: true,
+          result: await unlinkFinanceConnection(data.id),
+        });
+      case "repairDuplicateAccounts":
+        return json({
+          ok: true,
+          result: await repairDuplicateFinanceAccounts(data),
+        });
       case "upsertBudget":
         return json({ ok: true, result: await upsertFinanceBudget(data) });
       case "deleteBudget":

@@ -13,6 +13,16 @@ import {
   money,
   salaryOccurrences,
 } from "../lib/financePlanner.mjs";
+import {
+  buildAccountPlan,
+  getFinanceAccountAllocations,
+} from "../lib/financeAccountPlan.mjs";
+import FinanceAccountSelect, {
+  financeAccountLabel,
+} from "./FinanceAccountSelect";
+import FinanceAccountPlanView, {
+  AccountAllocationSummary,
+} from "./FinanceAccountPlanView";
 import FinanceInstall from "./FinanceInstall";
 import FinanceOverview from "./FinanceOverview";
 import Ledger from "./FinancePlanLedger";
@@ -294,6 +304,7 @@ function SpendingTable({
   onEdit,
   onDelete,
   compact = false,
+  accounts = [],
 }) {
   const rows = [
     [
@@ -364,8 +375,8 @@ function SpendingTable({
           Annual payments need{" "}
           {fundingMoney(summary.annualImmediateUsd, summary.annualImmediatePhp)}{" "}
           before the next eligible payday. This amount needs available cash in
-          addition to regular payday contributions; budget plans show it on
-          the payment date.
+          addition to regular payday contributions; budget plans show it on the
+          payment date.
         </p>
       )}
       {summary.annualEstimatedCount > 0 && (
@@ -393,6 +404,18 @@ function SpendingTable({
               <small>
                 {row.kind === "savings" ? "Savings" : "Expense"} ·{" "}
                 {money(row.amount, row.currency)} per period
+                {row.accountId && (
+                  <>
+                    {" "}
+                    ·{" "}
+                    {financeAccountLabel(
+                      accounts.find(
+                        (account) =>
+                          Number(account.id) === Number(row.accountId),
+                      ),
+                    )}
+                  </>
+                )}
               </small>
             )}
           </div>
@@ -433,7 +456,14 @@ function SpendingTable({
   );
 }
 
-function SalaryEditor({ salary, rate, onSave, busy, configured }) {
+function SalaryEditor({
+  salary,
+  rate,
+  accounts = [],
+  onSave,
+  busy,
+  configured,
+}) {
   const [draft, setDraft] = useState(salary);
   useEffect(() => setDraft(salary), [salary]);
   const changed = JSON.stringify(draft) !== JSON.stringify(salary);
@@ -474,10 +504,26 @@ function SalaryEditor({ salary, rate, onSave, busy, configured }) {
         <Field label="Paid in">
           <CurrencySelect
             value={draft.currency}
-            onChange={(value) => set("currency", value)}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                currency: value,
+                accountId: null,
+              }))
+            }
           />
         </Field>
       </div>
+      <Field label="Salary receiving account">
+        <FinanceAccountSelect
+          accounts={accounts.filter(
+            (account) => !["credit", "loan"].includes(account.type),
+          )}
+          value={draft.accountId}
+          currency={draft.currency}
+          onChange={(value) => set("accountId", value)}
+        />
+      </Field>
       <div className="fp-salary-converted">
         <Icon name="refresh" size={16} />
         <span>
@@ -554,7 +600,14 @@ function SalaryEditor({ salary, rate, onSave, busy, configured }) {
   );
 }
 
-function AllocationForm({ row, onSave, busy, disabled }) {
+function AllocationForm({
+  row,
+  accounts = [],
+  salary,
+  onSave,
+  busy,
+  disabled,
+}) {
   const [draft, setDraft] = useState(
     row || { name: "", amount: "", currency: "USD", kind: "savings" },
   );
@@ -597,7 +650,14 @@ function AllocationForm({ row, onSave, busy, disabled }) {
         <Field label="Currency">
           <CurrencySelect
             value={draft.currency}
-            onChange={(value) => set("currency", value)}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                currency: value,
+                accountId: null,
+                sourceAccountId: null,
+              }))
+            }
           />
         </Field>
       </div>
@@ -610,9 +670,44 @@ function AllocationForm({ row, onSave, busy, disabled }) {
           <option value="expense">Expense</option>
         </select>
       </Field>
+      <Field
+        label={
+          draft.kind === "savings" ? "Save to account" : "Pay from account"
+        }
+      >
+        <FinanceAccountSelect
+          accounts={
+            draft.kind === "savings"
+              ? accounts.filter(
+                  (account) => !["credit", "loan"].includes(account.type),
+                )
+              : accounts
+          }
+          value={draft.accountId}
+          currency={draft.currency}
+          onChange={(value) => set("accountId", value)}
+        />
+      </Field>
+      {draft.kind === "savings" && (
+        <Field
+          label="Transfer from"
+          hint="Defaults to your salary receiving account when it uses the same currency."
+        >
+          <FinanceAccountSelect
+            accounts={accounts}
+            value={draft.sourceAccountId}
+            currency={draft.currency}
+            emptyLabel={
+              salary?.accountId ? "Salary receiving account" : "Unassigned"
+            }
+            onChange={(value) => set("sourceAccountId", value)}
+          />
+        </Field>
+      )}
       <p className="fp-inline-note">
         This allocation is deducted from each pay period’s remaining funds.
-        Budget plans use their own dated entries.
+        Budget plans project the movement between the selected accounts each
+        payday. Assignments do not initiate bank transfers.
       </p>
       <Button type="submit" variant="primary" disabled={busy || disabled}>
         {busy ? "Saving…" : "Save allocation"}
@@ -621,7 +716,7 @@ function AllocationForm({ row, onSave, busy, disabled }) {
   );
 }
 
-function PlanForm({ plan, document, onSave, busy, disabled }) {
+function PlanForm({ plan, document, accounts = [], onSave, busy, disabled }) {
   const today = localDate();
   const [draft, setDraft] = useState({
     name: "",
@@ -636,6 +731,7 @@ function PlanForm({ plan, document, onSave, busy, disabled }) {
     openingReserveUsd: 0,
     openingReservePhp: 0,
     entries: [],
+    accountOpeningBalances: [],
     ...plan,
   });
   const set = (key, value) =>
@@ -653,6 +749,12 @@ function PlanForm({ plan, document, onSave, busy, disabled }) {
           openingPhp: amount(draft.openingPhp),
           openingReserveUsd: amount(draft.openingReserveUsd),
           openingReservePhp: amount(draft.openingReservePhp),
+          accountOpeningBalances: (draft.accountOpeningBalances || []).map(
+            (row) => ({
+              accountId: row.accountId,
+              balance: amount(row.balance),
+            }),
+          ),
         });
       }}
     >
@@ -686,6 +788,77 @@ function PlanForm({ plan, document, onSave, busy, disabled }) {
           />
         </Field>
       </div>
+      {accounts.length > 0 && (
+        <details className="fp-account-openings">
+          <summary>Starting balances by account</summary>
+          <p className="fp-inline-note">
+            Account forecasts use current synced balances unless you set
+            starting balances here. For a historical or future plan, enter the
+            balance before the first day’s flows. Credit balances are money
+            owed.
+          </p>
+          <Button
+            type="button"
+            variant="text"
+            onClick={() =>
+              set(
+                "accountOpeningBalances",
+                accounts
+                  .filter(
+                    (account) =>
+                      account.nativeCurrentBalance != null &&
+                      Number.isFinite(Number(account.nativeCurrentBalance)),
+                  )
+                  .map((account) => ({
+                    accountId: Number(account.id),
+                    balance: account.nativeCurrentBalance,
+                  })),
+              )
+            }
+          >
+            Use current account balances
+          </Button>
+          {(draft.accountOpeningBalances || []).map((row) => {
+            const account = accounts.find(
+              (item) => Number(item.id) === Number(row.accountId),
+            );
+            return (
+              <Field
+                key={row.accountId}
+                label={`${account?.institutionName || "Account"} · ${account?.name || row.accountId}${account?.mask ? ` · ••${account.mask}` : ""} · ${account?.currency || ""}`}
+              >
+                <input
+                  type="number"
+                  step="0.01"
+                  min="-999999999"
+                  max="999999999"
+                  required
+                  value={row.balance}
+                  onChange={(event) =>
+                    set(
+                      "accountOpeningBalances",
+                      draft.accountOpeningBalances.map((item) =>
+                        item.accountId === row.accountId
+                          ? { ...item, balance: event.target.value }
+                          : item,
+                      ),
+                    )
+                  }
+                />
+              </Field>
+            );
+          })}
+          {draft.accountOpeningBalances?.length > 0 && (
+            <Button
+              type="button"
+              variant="text"
+              onClick={() => set("accountOpeningBalances", [])}
+            >
+              Use live balances instead
+            </Button>
+          )}
+        </details>
+      )}
       <div className="fp-form-grid">
         <Field label="Starting available balance · USD">
           <input
@@ -808,7 +981,15 @@ function PlanForm({ plan, document, onSave, busy, disabled }) {
   );
 }
 
-function EntryForm({ entry, plan, onSave, busy, disabled, rate }) {
+function EntryForm({
+  entry,
+  plan,
+  accounts = [],
+  onSave,
+  busy,
+  disabled,
+  rate,
+}) {
   const [draft, setDraft] = useState(
     entry || {
       date: plan.startDate,
@@ -850,6 +1031,7 @@ function EntryForm({ entry, plan, onSave, busy, disabled, rate }) {
           >
             <option value="expense">Expense / savings</option>
             <option value="income">Income</option>
+            <option value="transfer">Transfer between accounts</option>
             <option value="conversion">Currency conversion</option>
           </select>
         </Field>
@@ -883,10 +1065,71 @@ function EntryForm({ entry, plan, onSave, busy, disabled, rate }) {
         >
           <CurrencySelect
             value={draft.currency}
-            onChange={(value) => set("currency", value)}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                currency: value,
+                accountId: null,
+                fromAccountId: null,
+                toAccountId: null,
+              }))
+            }
           />
         </Field>
       </div>
+      {draft.kind === "transfer" || draft.kind === "conversion" ? (
+        <div className="fp-form-grid">
+          <Field label="From account">
+            <FinanceAccountSelect
+              accounts={accounts}
+              currency={draft.currency}
+              value={draft.fromAccountId}
+              onChange={(value) => set("fromAccountId", value)}
+              allowNone={draft.kind !== "transfer"}
+              required={draft.kind === "transfer"}
+            />
+          </Field>
+          <Field label="To account">
+            <FinanceAccountSelect
+              accounts={accounts.filter(
+                (account) => Number(account.id) !== Number(draft.fromAccountId),
+              )}
+              currency={
+                draft.kind === "conversion"
+                  ? draft.currency === "USD"
+                    ? "PHP"
+                    : "USD"
+                  : draft.currency
+              }
+              value={draft.toAccountId}
+              onChange={(value) => set("toAccountId", value)}
+              allowNone={draft.kind !== "transfer"}
+              required={draft.kind === "transfer"}
+            />
+          </Field>
+        </div>
+      ) : (
+        <Field
+          label={
+            draft.kind === "income"
+              ? "Receive into account"
+              : "Pay from account"
+          }
+        >
+          <FinanceAccountSelect
+            accounts={accounts}
+            currency={draft.currency}
+            value={draft.accountId}
+            onChange={(value) => set("accountId", value)}
+          />
+        </Field>
+      )}
+      {draft.kind === "transfer" && (
+        <p className="fp-inline-note">
+          This planned transfer moves money between accounts and leaves your
+          total funds unchanged. No bank transfer is initiated.
+        </p>
+      )}
       {draft.kind === "conversion" && (
         <p className="fp-conversion-note">
           Receive{" "}
@@ -938,6 +1181,11 @@ export default function FinanceAppClient({
   const [notice, setNotice] = useState("");
   const document = state.document;
   const rate = state.exchangeRate.rate;
+  const accounts = activity.accounts || [];
+  const accountAllocations = useMemo(
+    () => getFinanceAccountAllocations(document, accounts, rate, today),
+    [document, accounts, rate, today],
+  );
   const summary = useMemo(
     () => getSummary(document, rate, today),
     [document, rate, today],
@@ -962,6 +1210,17 @@ export default function FinanceAppClient({
           })
         : [],
     [plan, document, rate, planActivity, today],
+  );
+  const accountPlan = useMemo(
+    () =>
+      plan
+        ? buildAccountPlan(plan, document, rate, {
+            accounts,
+            rows: planRows,
+            today,
+          })
+        : null,
+    [plan, document, rate, accounts, planRows, today],
   );
   const planRecordsMatch = Boolean(
     plan &&
@@ -1556,16 +1815,23 @@ export default function FinanceAppClient({
                     : "Your overview could not be refreshed. Try again above."}
                 </div>
               ) : (
-                <FinanceOverview
-                  document={document}
-                  activity={activity}
-                  rate={rate}
-                  month={selectedMonth}
-                  currency={displayCurrency}
-                  today={today}
-                  onAddTransaction={() => open({ type: "transaction" })}
-                  onNavigate={navigate}
-                />
+                <>
+                  <FinanceOverview
+                    document={document}
+                    activity={activity}
+                    rate={rate}
+                    month={selectedMonth}
+                    currency={displayCurrency}
+                    today={today}
+                    onAddTransaction={() => open({ type: "transaction" })}
+                    onNavigate={navigate}
+                  />
+                  <AccountAllocationSummary
+                    allocations={accountAllocations}
+                    accounts={accounts}
+                    onNavigate={navigate}
+                  />
+                </>
               )}
             </div>
           )}
@@ -1595,15 +1861,21 @@ export default function FinanceAppClient({
           {tab === "accounts" && (
             <BankAccountsPanel
               activity={activity}
+              accountAllocations={accountAllocations}
               rate={rate}
               currency={displayCurrency}
               busy={busy}
               onAction={performAction}
               onRefresh={async () => {
-                if (!(await loadActivity()))
+                const [loaded, response] = await Promise.all([
+                  loadActivity(),
+                  fetch("/api/finance/planner", { cache: "no-store" }),
+                ]);
+                if (!loaded || !response.ok)
                   throw new Error(
                     "Your connection was saved, but account data could not be refreshed. Use Refresh activity to try again.",
                   );
+                setState(await response.json());
               }}
               onNotice={setNotice}
               onError={setError}
@@ -1625,6 +1897,7 @@ export default function FinanceAppClient({
                 </p>
                 <SalaryEditor
                   salary={document.salary}
+                  accounts={accounts}
                   rate={rate}
                   busy={busy}
                   configured={state.configured}
@@ -1711,6 +1984,7 @@ export default function FinanceAppClient({
                   rate={rate}
                   salary={document.salary}
                   asOf={today}
+                  accounts={accounts}
                   onAdd={() => open({ type: "bill" })}
                   onEdit={(bill) => open({ type: "bill", bill })}
                   onDelete={(row) =>
@@ -1816,6 +2090,7 @@ export default function FinanceAppClient({
                 </div>
                 <SpendingTable
                   document={document}
+                  accounts={accounts}
                   summary={summary}
                   rate={rate}
                   onAdd={() => open({ type: "allocation" })}
@@ -2096,11 +2371,14 @@ export default function FinanceAppClient({
                     ) : (
                       <Ledger
                         plan={plan}
-                        rows={planRows}
+                        rows={accountPlan?.rows || planRows}
                         openingReserve={planOpeningReserve}
                         onEdit={(entry) => open({ type: "entry", entry })}
                         onDelete={(row) => open({ type: "deleteEntry", row })}
                       />
+                    )}
+                    {!planWaitingForRecords && (
+                      <FinanceAccountPlanView projection={accountPlan} />
                     )}
                     <p className="fp-plan-flow-note">
                       This plan includes dated bills and your plan entries
@@ -2232,6 +2510,7 @@ export default function FinanceAppClient({
               rate={rate}
               salary={document.salary}
               asOf={today}
+              accounts={accounts}
               onSave={saveBill}
               busy={busy}
               disabled={!state.configured}
@@ -2240,6 +2519,8 @@ export default function FinanceAppClient({
           {modal.type === "allocation" && (
             <AllocationForm
               row={modal.row}
+              accounts={accounts}
+              salary={document.salary}
               onSave={saveAllocation}
               busy={busy}
               disabled={!state.configured}
@@ -2249,6 +2530,7 @@ export default function FinanceAppClient({
             <PlanForm
               plan={modal.plan}
               document={document}
+              accounts={accounts}
               onSave={savePlan}
               busy={busy}
               disabled={!state.configured}
@@ -2258,6 +2540,7 @@ export default function FinanceAppClient({
             <EntryForm
               entry={modal.entry}
               plan={plan}
+              accounts={accounts}
               onSave={saveEntry}
               busy={busy}
               disabled={!state.configured}

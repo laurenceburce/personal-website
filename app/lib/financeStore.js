@@ -1,7 +1,19 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
-import { financeActivityWindow, financeProviderStatus, mapFinanceActivityAccount, validateFinanceTransactionInput } from "./financeActivity.mjs";
+import {
+  financeActivityWindow,
+  financeProviderStatus,
+  mapFinanceActivityAccount,
+  validateFinanceTransactionInput,
+} from "./financeActivity.mjs";
 import { financePlanActivityRange } from "./financePlanActivity.mjs";
+import {
+  financeAccountDuplicateGroups,
+  findFinanceAccountIdentityMatch,
+  financeTransactionDuplicatePairs,
+  remapFinancePlannerAccountIds,
+  confirmedFinanceAccountGroups,
+} from "./financeAccountIdentity.mjs";
 
 export const FINANCE_OWNER_EMAIL = "laurenceburce@gmail.com";
 export const FINANCE_BRANKAS_STATE_COOKIE = "finance_brankas_state";
@@ -13,7 +25,7 @@ export const FINANCE_ACCOUNT_TYPES = [
   "cash",
   "investment",
   "loan",
-  "other"
+  "other",
 ];
 
 export const FINANCE_DEFAULT_CATEGORIES = [
@@ -32,7 +44,7 @@ export const FINANCE_DEFAULT_CATEGORIES = [
   "Entertainment",
   "PC Build",
   "Other",
-  "Uncategorized"
+  "Uncategorized",
 ];
 
 const PLAN_DEFAULTS = {
@@ -41,20 +53,90 @@ const PLAN_DEFAULTS = {
   displayCurrency: "USD",
   biweeklyIncomeUsd: 1000,
   biweeklyBillsUsd: 400,
-  biweeklySavingsUsd: 500
+  biweeklySavingsUsd: 500,
 };
 
 const STARTER_BILLS = [
-  { name: "Google", amountUsd: 2, amountPhp: 116, dueLabel: "18", paymentAccount: "US Bank Credit", isAutopay: true },
-  { name: "Microsoft", amountUsd: 10, amountPhp: 580, dueLabel: "7", paymentAccount: "US Bank Credit", isAutopay: true },
-  { name: "Discord", amountUsd: 10, amountPhp: 580, dueLabel: "7", paymentAccount: "US Bank Credit", isAutopay: true },
-  { name: "ChatGPT", amountUsd: 20, amountPhp: 1160, dueLabel: "28", paymentAccount: "US Bank Credit", isAutopay: true },
-  { name: "Railway", amountUsd: 5, amountPhp: 290, dueLabel: "4", paymentAccount: "US Bank Credit", isAutopay: true },
-  { name: "Namecheap", amountUsd: 1.5, amountPhp: 87, dueLabel: "4", paymentAccount: "US Bank Credit", isAutopay: true },
-  { name: "Spotify", amountUsd: 2.91, amountPhp: 169, dueLabel: "28", paymentAccount: "GCash", isAutopay: true },
-  { name: "Globe", amountUsd: 25.86, amountPhp: 1500, dueLabel: "11", paymentAccount: "RCBC Flex", isAutopay: true },
-  { name: "Converge", amountUsd: 43.1, amountPhp: 2500, dueLabel: "28", paymentAccount: "", isAutopay: false },
-  { name: "House", amountUsd: 689.66, amountPhp: 40000, dueLabel: "Saturday", paymentAccount: "", isAutopay: false }
+  {
+    name: "Google",
+    amountUsd: 2,
+    amountPhp: 116,
+    dueLabel: "18",
+    paymentAccount: "US Bank Credit",
+    isAutopay: true,
+  },
+  {
+    name: "Microsoft",
+    amountUsd: 10,
+    amountPhp: 580,
+    dueLabel: "7",
+    paymentAccount: "US Bank Credit",
+    isAutopay: true,
+  },
+  {
+    name: "Discord",
+    amountUsd: 10,
+    amountPhp: 580,
+    dueLabel: "7",
+    paymentAccount: "US Bank Credit",
+    isAutopay: true,
+  },
+  {
+    name: "ChatGPT",
+    amountUsd: 20,
+    amountPhp: 1160,
+    dueLabel: "28",
+    paymentAccount: "US Bank Credit",
+    isAutopay: true,
+  },
+  {
+    name: "Railway",
+    amountUsd: 5,
+    amountPhp: 290,
+    dueLabel: "4",
+    paymentAccount: "US Bank Credit",
+    isAutopay: true,
+  },
+  {
+    name: "Namecheap",
+    amountUsd: 1.5,
+    amountPhp: 87,
+    dueLabel: "4",
+    paymentAccount: "US Bank Credit",
+    isAutopay: true,
+  },
+  {
+    name: "Spotify",
+    amountUsd: 2.91,
+    amountPhp: 169,
+    dueLabel: "28",
+    paymentAccount: "GCash",
+    isAutopay: true,
+  },
+  {
+    name: "Globe",
+    amountUsd: 25.86,
+    amountPhp: 1500,
+    dueLabel: "11",
+    paymentAccount: "RCBC Flex",
+    isAutopay: true,
+  },
+  {
+    name: "Converge",
+    amountUsd: 43.1,
+    amountPhp: 2500,
+    dueLabel: "28",
+    paymentAccount: "",
+    isAutopay: false,
+  },
+  {
+    name: "House",
+    amountUsd: 689.66,
+    amountPhp: 40000,
+    dueLabel: "Saturday",
+    paymentAccount: "",
+    isAutopay: false,
+  },
 ];
 
 const STARTER_GOALS = [
@@ -64,7 +146,7 @@ const STARTER_GOALS = [
     targetAmount: 1400,
     savedAmount: 1320.4,
     category: "PC Build",
-    note: "CPU, motherboard, and RAM."
+    note: "CPU, motherboard, and RAM.",
   },
   {
     name: "PC Build - Phase 2",
@@ -72,7 +154,7 @@ const STARTER_GOALS = [
     targetAmount: 2850,
     savedAmount: 0,
     category: "PC Build",
-    note: "GPU, main monitor, and PSU."
+    note: "GPU, main monitor, and PSU.",
   },
   {
     name: "PC Build - Phase 3",
@@ -80,7 +162,7 @@ const STARTER_GOALS = [
     targetAmount: 1650,
     savedAmount: 140,
     category: "PC Build",
-    note: "Extra monitors, case, and cooling."
+    note: "Extra monitors, case, and cooling.",
   },
   {
     name: "PH Reserve",
@@ -88,8 +170,8 @@ const STARTER_GOALS = [
     targetAmount: 500000,
     savedAmount: 77500,
     category: "Reserve",
-    note: "Large one-time obligations reserve from the workbook."
-  }
+    note: "Large one-time obligations reserve from the workbook.",
+  },
 ];
 
 const ACCOUNT_TYPE_SET = new Set(FINANCE_ACCOUNT_TYPES);
@@ -119,13 +201,15 @@ const getPool = async () => {
   if (!isConfigured()) return null;
 
   if (!poolPromise) {
-    poolPromise = Promise.resolve(mysql.createPool({
-      uri: getDatabaseUrl(),
-      connectionLimit: 4,
-      connectTimeout: 5000,
-      waitForConnections: true,
-      enableKeepAlive: true
-    }));
+    poolPromise = Promise.resolve(
+      mysql.createPool({
+        uri: getDatabaseUrl(),
+        connectionLimit: 4,
+        connectTimeout: 5000,
+        waitForConnections: true,
+        enableKeepAlive: true,
+      }),
+    );
   }
 
   return poolPromise;
@@ -265,21 +349,113 @@ const ensureFinanceSchema = async () => {
         )
       `);
 
-      await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'");
-      await runMigration(pool, "ALTER TABLE personal_finance_budgets ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD COLUMN current_balance DECIMAL(13,2) NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD COLUMN available_balance DECIMAL(13,2) NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD COLUMN external_provider VARCHAR(32) NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD COLUMN external_account_id VARCHAR(160) NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD COLUMN connection_id BIGINT UNSIGNED NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD UNIQUE KEY personal_finance_accounts_external_idx (external_provider, external_account_id)");
-      await runMigration(pool, "ALTER TABLE personal_finance_accounts ADD INDEX personal_finance_accounts_connection_idx (connection_id)");
-      await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD COLUMN external_provider VARCHAR(32) NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD COLUMN external_transaction_id VARCHAR(180) NULL");
-      await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD COLUMN pending TINYINT(1) NOT NULL DEFAULT 0");
-      await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD UNIQUE KEY personal_finance_transactions_external_idx (external_provider, external_transaction_id)");
-    })().catch((error) => { schemaReadyPromise = null; throw error; });
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_budgets ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN current_balance DECIMAL(13,2) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN available_balance DECIMAL(13,2) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN external_provider VARCHAR(32) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN external_account_id VARCHAR(160) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN connection_id BIGINT UNSIGNED NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN account_mask VARCHAR(16) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN official_name VARCHAR(160) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN persistent_account_id VARCHAR(160) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN is_sync_excluded TINYINT(1) NOT NULL DEFAULT 0",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN merged_into_account_id BIGINT UNSIGNED NULL",
+      );
+      await pool.query(`CREATE TABLE IF NOT EXISTS personal_finance_account_aliases (
+        provider VARCHAR(32) NOT NULL, external_account_id VARCHAR(160) NOT NULL,
+        account_id BIGINT UNSIGNED NOT NULL, connection_id BIGINT UNSIGNED NULL,
+        created_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL,
+        PRIMARY KEY(provider, external_account_id), INDEX(account_id), INDEX(connection_id)
+      )`);
+      await pool.query(`CREATE TABLE IF NOT EXISTS personal_finance_account_merges (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, source_account_id BIGINT UNSIGNED NOT NULL,
+        canonical_account_id BIGINT UNSIGNED NOT NULL, identity_reason VARCHAR(80) NOT NULL,
+        account_snapshot LONGTEXT NOT NULL, merged_at DATETIME(3) NOT NULL
+      )`);
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD UNIQUE KEY personal_finance_accounts_external_idx (external_provider, external_account_id)",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD INDEX personal_finance_accounts_connection_idx (connection_id)",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN external_provider VARCHAR(32) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN external_transaction_id VARCHAR(180) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN pending TINYINT(1) NOT NULL DEFAULT 0",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN import_account_key VARCHAR(160) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN import_connection_id BIGINT UNSIGNED NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN duplicate_of_id BIGINT UNSIGNED NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN is_provider_removed TINYINT(1) NOT NULL DEFAULT 0",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_transactions ADD UNIQUE KEY personal_finance_transactions_external_idx (external_provider, external_transaction_id)",
+      );
+    })().catch((error) => {
+      schemaReadyPromise = null;
+      throw error;
+    });
   }
 
   await schemaReadyPromise;
@@ -319,11 +495,16 @@ function cleanProvider(value) {
 }
 
 function getTokenSecret() {
-  const secret = process.env.FINANCE_TOKEN_SECRET
-    || process.env.AUTH_SECRET
-    || process.env.NEXTAUTH_SECRET
-    || "";
-  if (!secret) throw appError("FINANCE_TOKEN_SECRET or AUTH_SECRET is required for linked account storage.", 503);
+  const secret =
+    process.env.FINANCE_TOKEN_SECRET ||
+    process.env.AUTH_SECRET ||
+    process.env.NEXTAUTH_SECRET ||
+    "";
+  if (!secret)
+    throw appError(
+      "FINANCE_TOKEN_SECRET or AUTH_SECRET is required for linked account storage.",
+      503,
+    );
   return crypto.createHash("sha256").update(secret).digest();
 }
 
@@ -333,9 +514,14 @@ function encryptSecret(value) {
 
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(TOKEN_ALGORITHM, getTokenSecret(), iv);
-  const encrypted = Buffer.concat([cipher.update(plainText, "utf8"), cipher.final()]);
+  const encrypted = Buffer.concat([
+    cipher.update(plainText, "utf8"),
+    cipher.final(),
+  ]);
   const tag = cipher.getAuthTag();
-  return [iv, tag, encrypted].map((part) => part.toString("base64url")).join(".");
+  return [iv, tag, encrypted]
+    .map((part) => part.toString("base64url"))
+    .join(".");
 }
 
 function decryptSecret(value) {
@@ -343,17 +529,18 @@ function decryptSecret(value) {
   if (!encryptedValue) return "";
 
   const [ivText, tagText, encryptedText] = encryptedValue.split(".");
-  if (!ivText || !tagText || !encryptedText) throw appError("Stored account token is invalid.", 500);
+  if (!ivText || !tagText || !encryptedText)
+    throw appError("Stored account token is invalid.", 500);
 
   const decipher = crypto.createDecipheriv(
     TOKEN_ALGORITHM,
     getTokenSecret(),
-    Buffer.from(ivText, "base64url")
+    Buffer.from(ivText, "base64url"),
   );
   decipher.setAuthTag(Buffer.from(tagText, "base64url"));
   return Buffer.concat([
     decipher.update(Buffer.from(encryptedText, "base64url")),
-    decipher.final()
+    decipher.final(),
   ]).toString("utf8");
 }
 
@@ -376,27 +563,43 @@ function requirePlaidConfig() {
   const clientId = process.env.PLAID_CLIENT_ID;
   const secret = process.env.PLAID_SECRET;
   if (!clientId || !secret) {
-    throw appError("Plaid is not configured. Add PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV.", 503);
+    throw appError(
+      "Plaid is not configured. Add PLAID_CLIENT_ID, PLAID_SECRET, and PLAID_ENV.",
+      503,
+    );
   }
   getTokenSecret();
-  if (!["sandbox", "development", "production"].includes(String(process.env.PLAID_ENV || "sandbox").toLowerCase())) {
-    throw appError("PLAID_ENV must be sandbox, development, or production.", 503);
+  if (
+    !["sandbox", "development", "production"].includes(
+      String(process.env.PLAID_ENV || "sandbox").toLowerCase(),
+    )
+  ) {
+    throw appError(
+      "PLAID_ENV must be sandbox, development, or production.",
+      503,
+    );
   }
   return { clientId, secret };
 }
 
 function plaidTransactionsDaysRequested() {
-  const requestedDays = Number(process.env.PLAID_TRANSACTIONS_DAYS_REQUESTED || 730);
+  const requestedDays = Number(
+    process.env.PLAID_TRANSACTIONS_DAYS_REQUESTED || 730,
+  );
   if (!Number.isFinite(requestedDays)) return 730;
   return Math.max(1, Math.min(730, Math.round(requestedDays)));
 }
 
 function requireBrankasConfig() {
-  const linkUrl = process.env.BRANKAS_LINK_URL || process.env.BRANKAS_STATIC_LINK_URL || "";
+  const linkUrl =
+    process.env.BRANKAS_LINK_URL || process.env.BRANKAS_STATIC_LINK_URL || "";
   const redirectUri = process.env.BRANKAS_REDIRECT_URI || "";
 
   if (!linkUrl) {
-    throw appError("Brankas is not configured. Add BRANKAS_LINK_URL from your Brankas Data/Statement dashboard.", 503);
+    throw appError(
+      "Brankas is not configured. Add BRANKAS_LINK_URL from your Brankas Data/Statement dashboard.",
+      503,
+    );
   }
 
   try {
@@ -431,10 +634,15 @@ function buildBrankasLinkUrl(email, state) {
 }
 
 function cleanCallbackParams(params) {
-  return Object.fromEntries(Object.entries(params || {})
-    .map(([key, value]) => [cleanText(key, 80), Array.isArray(value) ? value[0] : value])
-    .filter(([key, value]) => key && value !== undefined && value !== null)
-    .map(([key, value]) => [key, cleanText(value, 1000)]));
+  return Object.fromEntries(
+    Object.entries(params || {})
+      .map(([key, value]) => [
+        cleanText(key, 80),
+        Array.isArray(value) ? value[0] : value,
+      ])
+      .filter(([key, value]) => key && value !== undefined && value !== null)
+      .map(([key, value]) => [key, cleanText(value, 1000)]),
+  );
 }
 
 async function plaidRequest(endpoint, data = {}) {
@@ -446,13 +654,16 @@ async function plaidRequest(endpoint, data = {}) {
     body: JSON.stringify({
       client_id: clientId,
       secret,
-      ...data
-    })
+      ...data,
+    }),
   });
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok || payload?.error_code) {
-    const message = payload?.error_message || payload?.display_message || "Plaid request failed.";
+    const message =
+      payload?.error_message ||
+      payload?.display_message ||
+      "Plaid request failed.";
     throw appError(message, response.status || 502);
   }
 
@@ -545,10 +756,11 @@ function settingDate(settings, key) {
 async function fetchUsdPhpRate() {
   const response = await fetch("https://api.frankfurter.dev/v2/rate/USD/PHP", {
     headers: { Accept: "application/json" },
-    next: { revalidate: 60 * 60 * 12 }
+    next: { revalidate: 60 * 60 * 12 },
   });
 
-  if (!response.ok) throw appError("Unable to refresh USD/PHP exchange rate.", 502);
+  if (!response.ok)
+    throw appError("Unable to refresh USD/PHP exchange rate.", 502);
 
   const payload = await response.json();
   const rate = Number(payload?.rate);
@@ -560,13 +772,14 @@ async function fetchUsdPhpRate() {
   return {
     rate: toMoney(rate),
     date: cleanText(payload?.date, 20),
-    source: "Frankfurter"
+    source: "Frankfurter",
   };
 }
 
 async function refreshExchangeRateIfStale(pool, settings, force = false) {
   const updatedAt = settingDate(settings, "exchangeRateUpdatedAt");
-  const isFresh = updatedAt && Date.now() - updatedAt.getTime() < EXCHANGE_RATE_MAX_AGE_MS;
+  const isFresh =
+    updatedAt && Date.now() - updatedAt.getTime() < EXCHANGE_RATE_MAX_AGE_MS;
 
   if (!force && isFresh) return settings;
 
@@ -577,7 +790,7 @@ async function refreshExchangeRateIfStale(pool, settings, force = false) {
       upsertSetting(pool, "exchangeRate", rate.rate),
       upsertSetting(pool, "exchangeRateUpdatedAt", now),
       upsertSetting(pool, "exchangeRateDate", rate.date),
-      upsertSetting(pool, "exchangeRateSource", rate.source)
+      upsertSetting(pool, "exchangeRateSource", rate.source),
     ]);
 
     return {
@@ -585,7 +798,7 @@ async function refreshExchangeRateIfStale(pool, settings, force = false) {
       exchangeRate: String(rate.rate),
       exchangeRateUpdatedAt: now,
       exchangeRateDate: rate.date,
-      exchangeRateSource: rate.source
+      exchangeRateSource: rate.source,
     };
   } catch (error) {
     if (force) throw error;
@@ -627,7 +840,14 @@ function hasTextMatch(first, second) {
   return rightTokens.every((token) => left.includes(token));
 }
 
-const MATCH_FEE_WORDS = new Set(["fee", "fees", "charge", "charges", "maintenance", "service"]);
+const MATCH_FEE_WORDS = new Set([
+  "fee",
+  "fees",
+  "charge",
+  "charges",
+  "maintenance",
+  "service",
+]);
 
 function matchTokens(value) {
   return normalizeMatchText(value).split(" ").filter(Boolean);
@@ -638,8 +858,17 @@ function hasMatchToken(value, tokens) {
 }
 
 function billAllowsFeeTransaction(bill, transaction) {
-  const transactionText = [transaction.merchant, transaction.note, transaction.category].filter(Boolean).join(" ");
-  const transactionLooksLikeFee = hasMatchToken(transactionText, MATCH_FEE_WORDS);
+  const transactionText = [
+    transaction.merchant,
+    transaction.note,
+    transaction.category,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const transactionLooksLikeFee = hasMatchToken(
+    transactionText,
+    MATCH_FEE_WORDS,
+  );
   if (!transactionLooksLikeFee) return true;
   return hasMatchToken(bill.name, MATCH_FEE_WORDS);
 }
@@ -665,7 +894,9 @@ function billDueDateForMonth(dueLabel, month) {
 
 function distanceInDays(firstDate, secondDate) {
   if (!firstDate || !secondDate) return 0;
-  return Math.abs(Math.round((firstDate.getTime() - secondDate.getTime()) / 86400000));
+  return Math.abs(
+    Math.round((firstDate.getTime() - secondDate.getTime()) / 86400000),
+  );
 }
 
 function transactionAmountUsd(transaction, exchangeRate) {
@@ -694,40 +925,81 @@ function scoreRecurringBillTransaction(bill, transaction, exchangeRate, month) {
   const actualAmountUsd = transactionAmountUsd(transaction, exchangeRate);
   const amountMatched = isCloseAmount(expectedAmountUsd, actualAmountUsd);
 
-  const merchantText = [transaction.merchant, transaction.note, transaction.category].filter(Boolean).join(" ");
-  const sourceText = [transaction.accountName, transaction.institutionName, transaction.provider].filter(Boolean).join(" ");
+  const merchantText = [
+    transaction.merchant,
+    transaction.note,
+    transaction.category,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const sourceText = [
+    transaction.accountName,
+    transaction.institutionName,
+    transaction.provider,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const nameMatched = hasTextMatch(merchantText, bill.name);
-  const sourceMatched = bill.paymentAccount ? hasTextMatch(sourceText, bill.paymentAccount) : false;
+  const sourceMatched = bill.paymentAccount
+    ? hasTextMatch(sourceText, bill.paymentAccount)
+    : false;
 
   if (!nameMatched || !billAllowsFeeTransaction(bill, transaction)) return null;
 
   const transactionDate = new Date(`${transaction.date}T12:00:00Z`);
   const dueDate = billDueDateForMonth(bill.dueLabel, month);
   const dateDistance = dueDate ? distanceInDays(transactionDate, dueDate) : 0;
-  const dateScore = dueDate ? (dateDistance <= 7 ? 2 : dateDistance <= 14 ? 1 : -1) : 0;
+  const dateScore = dueDate
+    ? dateDistance <= 7
+      ? 2
+      : dateDistance <= 14
+        ? 1
+        : -1
+    : 0;
 
   return {
-    score: (nameMatched ? 5 : 0) + (amountMatched ? 2 : 0) + (sourceMatched ? 3 : 0) + dateScore,
+    score:
+      (nameMatched ? 5 : 0) +
+      (amountMatched ? 2 : 0) +
+      (sourceMatched ? 3 : 0) +
+      dateScore,
     dateDistance,
-    transaction
+    transaction,
   };
 }
 
 function findRecurringBillMatch(bill, transactions, exchangeRate, month) {
   const matches = transactions
-    .map((transaction) => scoreRecurringBillTransaction(bill, transaction, exchangeRate, month))
+    .map((transaction) =>
+      scoreRecurringBillTransaction(bill, transaction, exchangeRate, month),
+    )
     .filter(Boolean)
-    .sort((first, second) => second.score - first.score || first.dateDistance - second.dateDistance);
+    .sort(
+      (first, second) =>
+        second.score - first.score || first.dateDistance - second.dateDistance,
+    );
 
   return matches[0]?.transaction || null;
 }
 
-function attachRecurringBillMatches(recurringBills, transactions, exchangeRate, month) {
+function attachRecurringBillMatches(
+  recurringBills,
+  transactions,
+  exchangeRate,
+  month,
+) {
   const usedTransactionIds = new Set();
 
   return recurringBills.map((bill) => {
-    const availableTransactions = transactions.filter((transaction) => !usedTransactionIds.has(transaction.id));
-    const matchedTransaction = findRecurringBillMatch(bill, availableTransactions, exchangeRate, month);
+    const availableTransactions = transactions.filter(
+      (transaction) => !usedTransactionIds.has(transaction.id),
+    );
+    const matchedTransaction = findRecurringBillMatch(
+      bill,
+      availableTransactions,
+      exchangeRate,
+      month,
+    );
     if (matchedTransaction) usedTransactionIds.add(matchedTransaction.id);
 
     const compactMatch = matchedTransaction
@@ -739,7 +1011,7 @@ function attachRecurringBillMatches(recurringBills, transactions, exchangeRate, 
           currency: matchedTransaction.currency,
           accountName: matchedTransaction.accountName,
           institutionName: matchedTransaction.institutionName,
-          provider: matchedTransaction.provider
+          provider: matchedTransaction.provider,
         }
       : null;
 
@@ -748,7 +1020,7 @@ function attachRecurringBillMatches(recurringBills, transactions, exchangeRate, 
       isManuallyPaid: bill.isPaid,
       isPaid: Boolean(bill.isPaid || compactMatch),
       paidSource: bill.isPaid ? "manual" : compactMatch ? "transaction" : "",
-      matchedTransaction: compactMatch
+      matchedTransaction: compactMatch,
     };
   });
 }
@@ -771,8 +1043,14 @@ function mapTransaction(row) {
     provider: row.external_provider || "",
     externalId: row.external_transaction_id || "",
     pending: Boolean(row.pending),
-    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
+    createdAt:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : String(row.created_at),
+    updatedAt:
+      row.updated_at instanceof Date
+        ? row.updated_at.toISOString()
+        : String(row.updated_at),
   };
 }
 
@@ -783,9 +1061,18 @@ function mapConnection(row) {
     institutionId: row.institution_id || "",
     institutionName: row.institution_name || row.provider,
     status: row.status || "active",
-    lastSyncedAt: row.last_synced_at instanceof Date ? row.last_synced_at.toISOString() : row.last_synced_at || null,
-    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
-    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at)
+    lastSyncedAt:
+      row.last_synced_at instanceof Date
+        ? row.last_synced_at.toISOString()
+        : row.last_synced_at || null,
+    createdAt:
+      row.created_at instanceof Date
+        ? row.created_at.toISOString()
+        : String(row.created_at),
+    updatedAt:
+      row.updated_at instanceof Date
+        ? row.updated_at.toISOString()
+        : String(row.updated_at),
   };
 }
 
@@ -794,51 +1081,103 @@ function mapConnection(row) {
 export async function getFinanceActivity({ month } = {}) {
   const window = financeActivityWindow(month);
   const empty = {
-    configured: false, month: window.month, historyStart: window.historyStart, historyEnd: window.historyEnd,
-    accounts: [], connections: [], transactions: [], categories: [...FINANCE_DEFAULT_CATEGORIES],
-    providers: financeProviderStatus(), limitHit: false
+    configured: false,
+    month: window.month,
+    historyStart: window.historyStart,
+    historyEnd: window.historyEnd,
+    accounts: [],
+    archivedAccounts: [],
+    connections: [],
+    transactions: [],
+    categories: [...FINANCE_DEFAULT_CATEGORIES],
+    providers: financeProviderStatus(),
+    limitHit: false,
   };
   try {
     const database = await ensureFinanceSchema();
-    if (!database) return { ...empty, warning: "Connect your finance database to record transactions and connect bank accounts." };
-    const [accountResult, connectionResult, transactionResult] = await Promise.all([
-      database.query(`
-        SELECT a.*, c.institution_name,
+    if (!database)
+      return {
+        ...empty,
+        warning:
+          "Connect your finance database to record transactions and connect bank accounts.",
+      };
+    const [accountResult, connectionResult, transactionResult] =
+      await Promise.all([
+        database.query(
+          `
+        SELECT a.*, c.institution_name, c.status AS connection_status,
           (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
            FROM personal_finance_transactions t
            WHERE t.account_id = a.id AND t.currency = a.currency
-             AND t.pending = 0 AND t.transaction_date <= ?) AS native_movement
+             AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date <= ?) AS native_movement
         FROM personal_finance_accounts a
         LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
-        WHERE a.is_archived = 0 ORDER BY a.name, a.id
-      `, [window.today]),
-      database.query(`SELECT id, provider, institution_id, institution_name, status, last_synced_at, created_at, updated_at
+        ORDER BY a.name, a.id
+      `,
+          [window.today],
+        ),
+        database.query(`SELECT id, provider, institution_id, institution_name, status, last_synced_at, created_at, updated_at
         FROM personal_finance_connections ORDER BY updated_at DESC, id DESC`),
-      database.query(`
+        database.query(
+          `
         SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
           a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
         FROM personal_finance_transactions t
         LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
         LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
-        WHERE t.transaction_date >= ? AND t.transaction_date < ?
+        WHERE t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date >= ? AND t.transaction_date < ?
         ORDER BY t.transaction_date DESC, t.id DESC LIMIT 5001
-      `, [window.historyStart, window.nextMonthStart])
-    ]);
-    const accountRows = accountResult[0];
+      `,
+          [window.historyStart, window.nextMonthStart],
+        ),
+      ]);
+    const accountRows = accountResult[0].filter(
+      (row) => !row.is_archived && !row.merged_into_account_id,
+    );
     const transactionRows = transactionResult[0];
     const accounts = accountRows.map(mapFinanceActivityAccount).filter(Boolean);
-    const transactions = transactionRows.slice(0, 5000).map(mapTransaction).filter((row) => CURRENCY_SET.has(row.currency));
+    const transactions = transactionRows
+      .slice(0, 5000)
+      .map(mapTransaction)
+      .filter((row) => CURRENCY_SET.has(row.currency));
     const warnings = [];
-    if (accounts.length !== accountRows.length || transactions.length !== Math.min(transactionRows.length, 5000)) warnings.push("Accounts or transactions outside USD and PHP are excluded from this workspace.");
+    if (
+      accounts.length !== accountRows.length ||
+      transactions.length !== Math.min(transactionRows.length, 5000)
+    )
+      warnings.push(
+        "Accounts or transactions outside USD and PHP are excluded from this workspace.",
+      );
     const limitHit = transactionRows.length > 5000;
-    if (limitHit) warnings.push("Only the newest 5,000 transactions in this six-month window are loaded. Activity totals and charts may be incomplete.");
+    if (limitHit)
+      warnings.push(
+        "Only the newest 5,000 transactions in this six-month window are loaded. Activity totals and charts may be incomplete.",
+      );
     return {
-      ...empty, configured: true, accounts, connections: connectionResult[0].map(mapConnection), transactions, limitHit,
-      categories: [...new Set([...FINANCE_DEFAULT_CATEGORIES, ...transactions.map((row) => row.category)])].sort(),
-      ...(warnings.length ? { warning: warnings.join(" ") } : {})
+      ...empty,
+      configured: true,
+      accounts,
+      archivedAccounts: accountResult[0]
+        .filter((row) => row.is_archived || row.merged_into_account_id)
+        .map(mapFinanceActivityAccount)
+        .filter(Boolean),
+      connections: connectionResult[0].map(mapConnection),
+      transactions,
+      limitHit,
+      categories: [
+        ...new Set([
+          ...FINANCE_DEFAULT_CATEGORIES,
+          ...transactions.map((row) => row.category),
+        ]),
+      ].sort(),
+      ...(warnings.length ? { warning: warnings.join(" ") } : {}),
     };
   } catch {
-    return { ...empty, warning: "Your finance activity database is temporarily unavailable. Saved accounts and transactions have not been changed. Reload to try again." };
+    return {
+      ...empty,
+      warning:
+        "Your finance activity database is temporarily unavailable. Saved accounts and transactions have not been changed. Reload to try again.",
+    };
   }
 }
 
@@ -846,28 +1185,59 @@ export async function getFinanceActivity({ month } = {}) {
 // recorded flow in that bounded range without contacting or synchronizing banks.
 export async function getFinancePlanActivity({ startDate, endDate } = {}) {
   const range = financePlanActivityRange({ startDate, endDate });
-  const empty = { configured: false, ...range, transactions: [], limitHit: false };
+  const empty = {
+    configured: false,
+    ...range,
+    transactions: [],
+    limitHit: false,
+  };
   try {
     const database = await ensureFinanceSchema();
-    if (!database) return { ...empty, warning: "Connect your finance database to include recorded transactions in this plan." };
-    const [rows] = await database.query(`
+    if (!database)
+      return {
+        ...empty,
+        warning:
+          "Connect your finance database to include recorded transactions in this plan.",
+      };
+    const [rows] = await database.query(
+      `
       SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
         a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
       FROM personal_finance_transactions t
       LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
       LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
-      WHERE t.transaction_date >= ? AND t.transaction_date <= ?
+      WHERE t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date >= ? AND t.transaction_date <= ?
       ORDER BY t.transaction_date ASC, t.id ASC LIMIT 10001
-    `, [range.from, range.to]);
+    `,
+      [range.from, range.to],
+    );
     const selected = rows.slice(0, 10000).map(mapTransaction);
-    const transactions = selected.filter((row) => CURRENCY_SET.has(row.currency));
+    const transactions = selected.filter((row) =>
+      CURRENCY_SET.has(row.currency),
+    );
     const limitHit = rows.length > 10000;
     const warnings = [];
-    if (transactions.length !== selected.length) warnings.push("Recorded transactions outside USD and PHP are excluded from this plan.");
-    if (limitHit) warnings.push("Only the first 10,000 recorded transactions in this range are included. Plan balances may be incomplete.");
-    return { ...empty, configured: true, transactions, limitHit, ...(warnings.length ? { warning: warnings.join(" ") } : {}) };
+    if (transactions.length !== selected.length)
+      warnings.push(
+        "Recorded transactions outside USD and PHP are excluded from this plan.",
+      );
+    if (limitHit)
+      warnings.push(
+        "Only the first 10,000 recorded transactions in this range are included. Plan balances may be incomplete.",
+      );
+    return {
+      ...empty,
+      configured: true,
+      transactions,
+      limitHit,
+      ...(warnings.length ? { warning: warnings.join(" ") } : {}),
+    };
   } catch {
-    return { ...empty, warning: "Recorded transactions could not be loaded. Your saved records have not been changed; retry to include them in this plan." };
+    return {
+      ...empty,
+      warning:
+        "Recorded transactions could not be loaded. Your saved records have not been changed; retry to include them in this plan.",
+    };
   }
 }
 
@@ -888,14 +1258,18 @@ function buildEmptyDashboard(month) {
     starterAvailable: true,
     plan: {
       ...PLAN_DEFAULTS,
-      monthlyIncomePhp: PLAN_DEFAULTS.monthlyIncomeUsd * PLAN_DEFAULTS.exchangeRate,
-      biweeklyRemainingUsd: PLAN_DEFAULTS.biweeklyIncomeUsd - PLAN_DEFAULTS.biweeklyBillsUsd - PLAN_DEFAULTS.biweeklySavingsUsd,
+      monthlyIncomePhp:
+        PLAN_DEFAULTS.monthlyIncomeUsd * PLAN_DEFAULTS.exchangeRate,
+      biweeklyRemainingUsd:
+        PLAN_DEFAULTS.biweeklyIncomeUsd -
+        PLAN_DEFAULTS.biweeklyBillsUsd -
+        PLAN_DEFAULTS.biweeklySavingsUsd,
       recurringUsd: 0,
       recurringPhp: 0,
       recurringRemainingUsd: PLAN_DEFAULTS.monthlyIncomeUsd,
       exchangeRateUpdatedAt: null,
       exchangeRateDate: "",
-      exchangeRateSource: ""
+      exchangeRateSource: "",
     },
     summary: {
       incomeUsd: 0,
@@ -907,8 +1281,8 @@ function buildEmptyDashboard(month) {
       totalBalanceUsd: 0,
       savingsRate: 0,
       unpaidBills: 0,
-      dueSoonBills: 0
-    }
+      dueSoonBills: 0,
+    },
   };
 }
 
@@ -931,9 +1305,11 @@ export async function getFinanceDashboard({ month } = {}) {
     recurringResult,
     goalsResult,
     categoriesResult,
-    seriesResult
+    seriesResult,
   ] = await Promise.all([
-    pool.query("SELECT setting_key, setting_value FROM personal_finance_settings"),
+    pool.query(
+      "SELECT setting_key, setting_value FROM personal_finance_settings",
+    ),
     pool.query(`
       SELECT id, provider, institution_id, institution_name, status, last_synced_at, created_at, updated_at
       FROM personal_finance_connections
@@ -973,8 +1349,8 @@ export async function getFinanceDashboard({ month } = {}) {
       LEFT JOIN personal_finance_connections c
         ON c.id = a.connection_id
       LEFT JOIN personal_finance_transactions t
-        ON t.account_id = a.id
-      WHERE a.is_archived = 0
+        ON t.account_id = a.id AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+      WHERE a.is_archived = 0 AND a.merged_into_account_id IS NULL
       GROUP BY
         a.id,
         a.name,
@@ -992,7 +1368,8 @@ export async function getFinanceDashboard({ month } = {}) {
         c.institution_name
       ORDER BY a.name ASC
     `),
-    pool.query(`
+    pool.query(
+      `
       SELECT
         t.id,
         DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
@@ -1017,11 +1394,13 @@ export async function getFinanceDashboard({ month } = {}) {
         ON a.id = t.account_id
       LEFT JOIN personal_finance_connections c
         ON c.id = a.connection_id
-      WHERE t.transaction_date >= ?
+      WHERE t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date >= ?
         AND t.transaction_date < ?
       ORDER BY t.transaction_date DESC, t.id DESC
       LIMIT 500
-    `, [monthStart, nextMonthStart]),
+    `,
+      [monthStart, nextMonthStart],
+    ),
     pool.query(`
       SELECT
         t.id,
@@ -1047,14 +1426,18 @@ export async function getFinanceDashboard({ month } = {}) {
         ON a.id = t.account_id
       LEFT JOIN personal_finance_connections c
         ON c.id = a.connection_id
+      WHERE t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
       ORDER BY t.transaction_date DESC, t.id DESC
     `),
-    pool.query(`
+    pool.query(
+      `
       SELECT id, budget_month, category, amount, currency, created_at, updated_at
       FROM personal_finance_budgets
       WHERE budget_month = ?
       ORDER BY category ASC
-    `, [safeMonth]),
+    `,
+      [safeMonth],
+    ),
     pool.query(`
       SELECT id, name, amount_usd, amount_php, due_label, payment_account, is_paid, is_autopay, display_order, created_at, updated_at
       FROM personal_finance_recurring_bills
@@ -1066,14 +1449,15 @@ export async function getFinanceDashboard({ month } = {}) {
       ORDER BY display_order ASC, id ASC
     `),
     pool.query(`
-      SELECT category FROM personal_finance_transactions WHERE category != '' GROUP BY category
+      SELECT category FROM personal_finance_transactions WHERE duplicate_of_id IS NULL AND is_provider_removed = 0 AND category != '' GROUP BY category
       UNION
       SELECT category FROM personal_finance_budgets WHERE category != '' GROUP BY category
       UNION
       SELECT category FROM personal_finance_goals WHERE category != '' GROUP BY category
       ORDER BY category ASC
     `),
-    pool.query(`
+    pool.query(
+      `
       SELECT
         DATE_FORMAT(transaction_date, '%Y-%m') AS budget_month,
         SUM(CASE
@@ -1093,11 +1477,13 @@ export async function getFinanceDashboard({ month } = {}) {
           ELSE 0
         END) AS expenses_php
       FROM personal_finance_transactions
-      WHERE transaction_date >= ?
+      WHERE duplicate_of_id IS NULL AND is_provider_removed = 0 AND transaction_date >= ?
         AND transaction_date < ?
       GROUP BY budget_month
       ORDER BY budget_month ASC
-    `, [seriesStart, nextMonthStart])
+    `,
+      [seriesStart, nextMonthStart],
+    ),
   ]);
 
   const [settingsRows] = settingsResult;
@@ -1111,37 +1497,69 @@ export async function getFinanceDashboard({ month } = {}) {
   const [categoryRows] = categoriesResult;
   const [seriesRows] = seriesResult;
 
-  let settings = Object.fromEntries(settingsRows.map((row) => [row.setting_key, row.setting_value]));
+  let settings = Object.fromEntries(
+    settingsRows.map((row) => [row.setting_key, row.setting_value]),
+  );
   settings = await refreshExchangeRateIfStale(pool, settings);
-  const exchangeRate = Math.max(1, settingNumber(settings, "exchangeRate", PLAN_DEFAULTS.exchangeRate));
-  const displayCurrency = cleanCurrency(settings.displayCurrency || PLAN_DEFAULTS.displayCurrency);
+  const exchangeRate = Math.max(
+    1,
+    settingNumber(settings, "exchangeRate", PLAN_DEFAULTS.exchangeRate),
+  );
+  const displayCurrency = cleanCurrency(
+    settings.displayCurrency || PLAN_DEFAULTS.displayCurrency,
+  );
   const plan = {
-    monthlyIncomeUsd: settingNumber(settings, "monthlyIncomeUsd", PLAN_DEFAULTS.monthlyIncomeUsd),
+    monthlyIncomeUsd: settingNumber(
+      settings,
+      "monthlyIncomeUsd",
+      PLAN_DEFAULTS.monthlyIncomeUsd,
+    ),
     exchangeRate,
     displayCurrency,
-    biweeklyIncomeUsd: settingNumber(settings, "biweeklyIncomeUsd", PLAN_DEFAULTS.biweeklyIncomeUsd),
-    biweeklyBillsUsd: settingNumber(settings, "biweeklyBillsUsd", PLAN_DEFAULTS.biweeklyBillsUsd),
-    biweeklySavingsUsd: settingNumber(settings, "biweeklySavingsUsd", PLAN_DEFAULTS.biweeklySavingsUsd),
+    biweeklyIncomeUsd: settingNumber(
+      settings,
+      "biweeklyIncomeUsd",
+      PLAN_DEFAULTS.biweeklyIncomeUsd,
+    ),
+    biweeklyBillsUsd: settingNumber(
+      settings,
+      "biweeklyBillsUsd",
+      PLAN_DEFAULTS.biweeklyBillsUsd,
+    ),
+    biweeklySavingsUsd: settingNumber(
+      settings,
+      "biweeklySavingsUsd",
+      PLAN_DEFAULTS.biweeklySavingsUsd,
+    ),
     exchangeRateUpdatedAt: settings.exchangeRateUpdatedAt || null,
     exchangeRateDate: settings.exchangeRateDate || "",
-    exchangeRateSource: settings.exchangeRateSource || ""
+    exchangeRateSource: settings.exchangeRateSource || "",
   };
 
   const connections = connectionRows.map(mapConnection);
   const accounts = accountRows.map((row) => {
     const openingBalance = toMoney(row.opening_balance);
-    const transactionTotal = toMoney(toMoney(row.transaction_usd) + (toMoney(row.transaction_php) / exchangeRate));
+    const transactionTotal = toMoney(
+      toMoney(row.transaction_usd) +
+        toMoney(row.transaction_php) / exchangeRate,
+    );
     const currency = cleanCurrency(row.currency || "USD");
-    const hasLinkedBalance = row.current_balance !== null && row.current_balance !== undefined;
-    const nativeCurrentBalance = hasLinkedBalance ? toMoney(row.current_balance) : toMoney(openingBalance + transactionTotal);
-    const nativeAvailableBalance = row.available_balance !== null && row.available_balance !== undefined
-      ? toMoney(row.available_balance)
-      : null;
+    const hasLinkedBalance =
+      row.current_balance !== null && row.current_balance !== undefined;
+    const nativeCurrentBalance = hasLinkedBalance
+      ? toMoney(row.current_balance)
+      : toMoney(openingBalance + transactionTotal);
+    const nativeAvailableBalance =
+      row.available_balance !== null && row.available_balance !== undefined
+        ? toMoney(row.available_balance)
+        : null;
     const isLiability = ["credit", "loan"].includes(row.account_type);
     const rawCurrentBalance = hasLinkedBalance
       ? convertToUsd(nativeCurrentBalance, currency, exchangeRate)
       : toMoney(openingBalance + transactionTotal);
-    const currentBalance = isLiability ? toMoney(-Math.abs(rawCurrentBalance)) : toMoney(rawCurrentBalance);
+    const currentBalance = isLiability
+      ? toMoney(-Math.abs(rawCurrentBalance))
+      : toMoney(rawCurrentBalance);
     return {
       id: Number(row.id),
       name: row.name,
@@ -1150,7 +1568,10 @@ export async function getFinanceDashboard({ month } = {}) {
       transactionTotal,
       currentBalance,
       nativeCurrentBalance,
-      availableBalance: nativeAvailableBalance === null ? null : convertToUsd(nativeAvailableBalance, currency, exchangeRate),
+      availableBalance:
+        nativeAvailableBalance === null
+          ? null
+          : convertToUsd(nativeAvailableBalance, currency, exchangeRate),
       nativeAvailableBalance,
       currency,
       provider: row.external_provider || "",
@@ -1158,7 +1579,7 @@ export async function getFinanceDashboard({ month } = {}) {
       connectionId: row.connection_id ? Number(row.connection_id) : null,
       institutionName: row.institution_name || "",
       isLinked: Boolean(row.external_provider && row.external_account_id),
-      color: row.color || DEFAULT_COLOR
+      color: row.color || DEFAULT_COLOR,
     };
   });
 
@@ -1170,7 +1591,7 @@ export async function getFinanceDashboard({ month } = {}) {
     category: row.category,
     amount: toMoney(row.amount),
     currency: row.currency || "USD",
-    amountUsd: convertToUsd(row.amount, row.currency || "USD", exchangeRate)
+    amountUsd: convertToUsd(row.amount, row.currency || "USD", exchangeRate),
   }));
 
   const rawRecurringBills = recurringRows.map((row) => ({
@@ -1182,9 +1603,14 @@ export async function getFinanceDashboard({ month } = {}) {
     paymentAccount: row.payment_account || "",
     isPaid: Boolean(row.is_paid),
     isAutopay: Boolean(row.is_autopay),
-    displayOrder: Number(row.display_order || 0)
+    displayOrder: Number(row.display_order || 0),
   }));
-  const recurringBills = attachRecurringBillMatches(rawRecurringBills, transactions, exchangeRate, safeMonth);
+  const recurringBills = attachRecurringBillMatches(
+    rawRecurringBills,
+    transactions,
+    exchangeRate,
+    safeMonth,
+  );
 
   const goals = goalRows.map((row) => {
     const targetAmount = toMoney(row.target_amount);
@@ -1199,30 +1625,56 @@ export async function getFinanceDashboard({ month } = {}) {
       note: row.note || "",
       displayOrder: Number(row.display_order || 0),
       remaining: toMoney(targetAmount - savedAmount),
-      percent: targetAmount > 0 ? Math.min(999, Math.round((savedAmount / targetAmount) * 100)) : 0
+      percent:
+        targetAmount > 0
+          ? Math.min(999, Math.round((savedAmount / targetAmount) * 100))
+          : 0,
     };
   });
 
-  const incomeUsd = toMoney(transactions
-    .filter((transaction) => transaction.kind === "income")
-    .reduce((sum, transaction) => sum + convertToUsd(transaction.amount, transaction.currency, exchangeRate), 0));
-  const expensesUsd = toMoney(transactions
-    .filter((transaction) => transaction.kind === "expense")
-    .reduce((sum, transaction) => sum + convertToUsd(transaction.amount, transaction.currency, exchangeRate), 0));
-  const budgetTotalUsd = toMoney(budgets.reduce((sum, budget) => sum + budget.amountUsd, 0));
+  const incomeUsd = toMoney(
+    transactions
+      .filter((transaction) => transaction.kind === "income")
+      .reduce(
+        (sum, transaction) =>
+          sum +
+          convertToUsd(transaction.amount, transaction.currency, exchangeRate),
+        0,
+      ),
+  );
+  const expensesUsd = toMoney(
+    transactions
+      .filter((transaction) => transaction.kind === "expense")
+      .reduce(
+        (sum, transaction) =>
+          sum +
+          convertToUsd(transaction.amount, transaction.currency, exchangeRate),
+        0,
+      ),
+  );
+  const budgetTotalUsd = toMoney(
+    budgets.reduce((sum, budget) => sum + budget.amountUsd, 0),
+  );
 
   const spendByCategory = {};
   for (const transaction of transactions) {
     if (transaction.kind !== "expense") continue;
     const category = transaction.category || "Uncategorized";
-    spendByCategory[category] = toMoney((spendByCategory[category] || 0) + convertToUsd(transaction.amount, transaction.currency, exchangeRate));
+    spendByCategory[category] = toMoney(
+      (spendByCategory[category] || 0) +
+        convertToUsd(transaction.amount, transaction.currency, exchangeRate),
+    );
   }
 
-  const budgetByCategory = Object.fromEntries(budgets.map((budget) => [budget.category, budget]));
-  const categoryNames = Array.from(new Set([
-    ...budgets.map((budget) => budget.category),
-    ...Object.keys(spendByCategory)
-  ])).sort((a, b) => a.localeCompare(b));
+  const budgetByCategory = Object.fromEntries(
+    budgets.map((budget) => [budget.category, budget]),
+  );
+  const categoryNames = Array.from(
+    new Set([
+      ...budgets.map((budget) => budget.category),
+      ...Object.keys(spendByCategory),
+    ]),
+  ).sort((a, b) => a.localeCompare(b));
 
   const categorySpend = categoryNames.map((category) => {
     const spent = toMoney(spendByCategory[category] || 0);
@@ -1234,22 +1686,33 @@ export async function getFinanceDashboard({ month } = {}) {
       spentUsd: spent,
       budgetUsd: budgetAmount,
       remainingUsd: toMoney(budgetAmount - spent),
-      percent: budgetAmount > 0 ? Math.min(999, Math.round((spent / budgetAmount) * 100)) : 0
+      percent:
+        budgetAmount > 0
+          ? Math.min(999, Math.round((spent / budgetAmount) * 100))
+          : 0,
     };
   });
 
-  const allCategories = Array.from(new Set([
-    ...FINANCE_DEFAULT_CATEGORIES,
-    ...categoryRows.map((row) => row.category).filter(Boolean)
-  ])).sort((a, b) => a.localeCompare(b));
+  const allCategories = Array.from(
+    new Set([
+      ...FINANCE_DEFAULT_CATEGORIES,
+      ...categoryRows.map((row) => row.category).filter(Boolean),
+    ]),
+  ).sort((a, b) => a.localeCompare(b));
 
-  const seriesByMonth = Object.fromEntries(seriesRows.map((row) => [
-    row.budget_month,
-    {
-      income: toMoney(toMoney(row.income_usd) + (toMoney(row.income_php) / exchangeRate)),
-      expenses: toMoney(toMoney(row.expenses_usd) + (toMoney(row.expenses_php) / exchangeRate))
-    }
-  ]));
+  const seriesByMonth = Object.fromEntries(
+    seriesRows.map((row) => [
+      row.budget_month,
+      {
+        income: toMoney(
+          toMoney(row.income_usd) + toMoney(row.income_php) / exchangeRate,
+        ),
+        expenses: toMoney(
+          toMoney(row.expenses_usd) + toMoney(row.expenses_php) / exchangeRate,
+        ),
+      },
+    ]),
+  );
 
   const monthlySeries = Array.from({ length: 6 }, (_, index) => {
     const seriesMonth = addMonths(safeMonth, index - 5);
@@ -1258,12 +1721,16 @@ export async function getFinanceDashboard({ month } = {}) {
       month: seriesMonth,
       incomeUsd: values.income,
       expensesUsd: values.expenses,
-      netUsd: toMoney(values.income - values.expenses)
+      netUsd: toMoney(values.income - values.expenses),
     };
   });
 
-  const recurringUsd = toMoney(recurringBills.reduce((sum, bill) => sum + bill.amountUsd, 0));
-  const recurringPhp = toMoney(recurringBills.reduce((sum, bill) => sum + bill.amountPhp, 0));
+  const recurringUsd = toMoney(
+    recurringBills.reduce((sum, bill) => sum + bill.amountUsd, 0),
+  );
+  const recurringPhp = toMoney(
+    recurringBills.reduce((sum, bill) => sum + bill.amountPhp, 0),
+  );
   const dueSoonBills = recurringBills.filter((bill) => {
     if (bill.isPaid) return false;
     const day = Number(bill.dueLabel);
@@ -1275,10 +1742,12 @@ export async function getFinanceDashboard({ month } = {}) {
   const enrichedPlan = {
     ...plan,
     monthlyIncomePhp: toMoney(plan.monthlyIncomeUsd * exchangeRate),
-    biweeklyRemainingUsd: toMoney(plan.biweeklyIncomeUsd - plan.biweeklyBillsUsd - plan.biweeklySavingsUsd),
+    biweeklyRemainingUsd: toMoney(
+      plan.biweeklyIncomeUsd - plan.biweeklyBillsUsd - plan.biweeklySavingsUsd,
+    ),
     recurringUsd,
     recurringPhp,
-    recurringRemainingUsd: toMoney(plan.monthlyIncomeUsd - recurringUsd)
+    recurringRemainingUsd: toMoney(plan.monthlyIncomeUsd - recurringUsd),
   };
 
   return {
@@ -1303,11 +1772,16 @@ export async function getFinanceDashboard({ month } = {}) {
       budgetTotalUsd,
       budgetUsedUsd: expensesUsd,
       budgetRemainingUsd: toMoney(budgetTotalUsd - expensesUsd),
-      totalBalanceUsd: toMoney(accounts.reduce((sum, account) => sum + account.currentBalance, 0)),
-      savingsRate: incomeUsd > 0 ? Math.round(((incomeUsd - expensesUsd) / incomeUsd) * 100) : 0,
+      totalBalanceUsd: toMoney(
+        accounts.reduce((sum, account) => sum + account.currentBalance, 0),
+      ),
+      savingsRate:
+        incomeUsd > 0
+          ? Math.round(((incomeUsd - expensesUsd) / incomeUsd) * 100)
+          : 0,
       unpaidBills: recurringBills.filter((bill) => !bill.isPaid).length,
-      dueSoonBills
-    }
+      dueSoonBills,
+    },
   };
 }
 
@@ -1318,20 +1792,36 @@ async function upsertSetting(pool, key, value) {
      ON DUPLICATE KEY UPDATE
        setting_value = VALUES(setting_value),
        updated_at = VALUES(updated_at)`,
-    [key, String(value), new Date()]
+    [key, String(value), new Date()],
   );
 }
 
 export async function updateFinancePlan(data) {
   const pool = requirePool(await ensureFinanceSchema());
   const values = {
-    monthlyIncomeUsd: cleanPositiveAmount(data?.monthlyIncomeUsd, "Monthly income"),
-    biweeklyIncomeUsd: cleanPositiveAmount(data?.biweeklyIncomeUsd, "Bi-weekly income"),
-    biweeklyBillsUsd: cleanOptionalAmount(data?.biweeklyBillsUsd, "Bi-weekly bills"),
-    biweeklySavingsUsd: cleanOptionalAmount(data?.biweeklySavingsUsd, "Bi-weekly savings")
+    monthlyIncomeUsd: cleanPositiveAmount(
+      data?.monthlyIncomeUsd,
+      "Monthly income",
+    ),
+    biweeklyIncomeUsd: cleanPositiveAmount(
+      data?.biweeklyIncomeUsd,
+      "Bi-weekly income",
+    ),
+    biweeklyBillsUsd: cleanOptionalAmount(
+      data?.biweeklyBillsUsd,
+      "Bi-weekly bills",
+    ),
+    biweeklySavingsUsd: cleanOptionalAmount(
+      data?.biweeklySavingsUsd,
+      "Bi-weekly savings",
+    ),
   };
 
-  await Promise.all(Object.entries(values).map(([key, value]) => upsertSetting(pool, key, value)));
+  await Promise.all(
+    Object.entries(values).map(([key, value]) =>
+      upsertSetting(pool, key, value),
+    ),
+  );
   return values;
 }
 
@@ -1344,14 +1834,18 @@ export async function updateFinanceDisplayCurrency(currency) {
 
 export async function refreshFinanceExchangeRate() {
   const pool = requirePool(await ensureFinanceSchema());
-  const [settingsRows] = await pool.query("SELECT setting_key, setting_value FROM personal_finance_settings");
-  const settings = Object.fromEntries(settingsRows.map((row) => [row.setting_key, row.setting_value]));
+  const [settingsRows] = await pool.query(
+    "SELECT setting_key, setting_value FROM personal_finance_settings",
+  );
+  const settings = Object.fromEntries(
+    settingsRows.map((row) => [row.setting_key, row.setting_value]),
+  );
   const refreshed = await refreshExchangeRateIfStale(pool, settings, true);
   return {
     exchangeRate: Number(refreshed.exchangeRate),
     exchangeRateUpdatedAt: refreshed.exchangeRateUpdatedAt,
     exchangeRateDate: refreshed.exchangeRateDate,
-    exchangeRateSource: refreshed.exchangeRateSource
+    exchangeRateSource: refreshed.exchangeRateSource,
   };
 }
 
@@ -1359,7 +1853,11 @@ export async function seedFinanceStarter() {
   const pool = requirePool(await ensureFinanceSchema());
   const now = new Date();
 
-  await Promise.all(Object.entries(PLAN_DEFAULTS).map(([key, value]) => upsertSetting(pool, key, value)));
+  await Promise.all(
+    Object.entries(PLAN_DEFAULTS).map(([key, value]) =>
+      upsertSetting(pool, key, value),
+    ),
+  );
 
   for (const [index, bill] of STARTER_BILLS.entries()) {
     await pool.query(
@@ -1383,8 +1881,8 @@ export async function seedFinanceStarter() {
         bill.isAutopay ? 1 : 0,
         index + 1,
         now,
-        now
-      ]
+        now,
+      ],
     );
   }
 
@@ -1410,8 +1908,8 @@ export async function seedFinanceStarter() {
         goal.note,
         index + 1,
         now,
-        now
-      ]
+        now,
+      ],
     );
   }
 
@@ -1420,21 +1918,49 @@ export async function seedFinanceStarter() {
 
 async function validateTransactionAccount(pool, accountId, currency) {
   if (accountId === null) return;
-  const [accounts] = await pool.query("SELECT id, currency FROM personal_finance_accounts WHERE id = ? AND is_archived = 0 LIMIT 1", [accountId]);
-  if (!accounts.length) throw appError("The selected account is unavailable. Choose another account or leave it unassigned.", 400);
-  if (accounts[0].currency !== currency) throw appError("The transaction currency must match the account currency. Choose another account or leave it unassigned.", 400);
+  const [accounts] = await pool.query(
+    "SELECT id, currency FROM personal_finance_accounts WHERE id = ? AND is_archived = 0 AND merged_into_account_id IS NULL LIMIT 1",
+    [accountId],
+  );
+  if (!accounts.length)
+    throw appError(
+      "The selected account is unavailable. Choose another account or leave it unassigned.",
+      400,
+    );
+  if (accounts[0].currency !== currency)
+    throw appError(
+      "The transaction currency must match the account currency. Choose another account or leave it unassigned.",
+      400,
+    );
 }
 
 async function requireManualTransaction(pool, transactionId) {
-  if (transactionId === null) throw appError("Choose a valid transaction.", 400);
-  const [rows] = await pool.query("SELECT id, external_provider, external_transaction_id FROM personal_finance_transactions WHERE id = ? LIMIT 1", [transactionId]);
+  if (transactionId === null)
+    throw appError("Choose a valid transaction.", 400);
+  const [rows] = await pool.query(
+    "SELECT id, external_provider, external_transaction_id FROM personal_finance_transactions WHERE id = ? LIMIT 1",
+    [transactionId],
+  );
   if (!rows.length) throw appError("Transaction was not found.", 404);
-  if (rows[0].external_provider || rows[0].external_transaction_id) throw appError("Bank-imported transactions are read-only. Correct the source record through your bank and sync again.", 409);
+  if (rows[0].external_provider || rows[0].external_transaction_id)
+    throw appError(
+      "Bank-imported transactions are read-only. Correct the source record through your bank and sync again.",
+      409,
+    );
 }
 
 export async function createFinanceTransaction(data) {
   const clean = validateFinanceTransactionInput(data);
-  const { date: transactionDate, kind, accountId, category, merchant, note, amount, currency } = clean;
+  const {
+    date: transactionDate,
+    kind,
+    accountId,
+    category,
+    merchant,
+    note,
+    amount,
+    currency,
+  } = clean;
   const pool = requirePool(await ensureFinanceSchema());
   const now = new Date();
   await validateTransactionAccount(pool, accountId, currency);
@@ -1443,7 +1969,18 @@ export async function createFinanceTransaction(data) {
     `INSERT INTO personal_finance_transactions
        (transaction_date, kind, account_id, category, merchant, note, amount, currency, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [transactionDate, kind, accountId, category, merchant, note, amount, currency, now, now]
+    [
+      transactionDate,
+      kind,
+      accountId,
+      category,
+      merchant,
+      note,
+      amount,
+      currency,
+      now,
+      now,
+    ],
   );
 
   return { id: Number(result.insertId) };
@@ -1451,7 +1988,16 @@ export async function createFinanceTransaction(data) {
 
 export async function updateFinanceTransaction(id, data) {
   const clean = validateFinanceTransactionInput(data);
-  const { date: transactionDate, kind, accountId, category, merchant, note, amount, currency } = clean;
+  const {
+    date: transactionDate,
+    kind,
+    accountId,
+    category,
+    merchant,
+    note,
+    amount,
+    currency,
+  } = clean;
   const transactionId = cleanId(id, "Transaction");
   const pool = requirePool(await ensureFinanceSchema());
   await requireManualTransaction(pool, transactionId);
@@ -1470,7 +2016,18 @@ export async function updateFinanceTransaction(id, data) {
          updated_at = ?
      WHERE id = ? AND (external_provider IS NULL OR external_provider = '')
        AND (external_transaction_id IS NULL OR external_transaction_id = '')`,
-    [transactionDate, kind, accountId, category, merchant, note, amount, currency, new Date(), transactionId]
+    [
+      transactionDate,
+      kind,
+      accountId,
+      category,
+      merchant,
+      note,
+      amount,
+      currency,
+      new Date(),
+      transactionId,
+    ],
   );
 
   return { id: transactionId };
@@ -1480,7 +2037,10 @@ export async function deleteFinanceTransaction(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const transactionId = cleanId(id, "Transaction");
   await requireManualTransaction(pool, transactionId);
-  await pool.query("DELETE FROM personal_finance_transactions WHERE id = ? AND (external_provider IS NULL OR external_provider = '') AND (external_transaction_id IS NULL OR external_transaction_id = '')", [transactionId]);
+  await pool.query(
+    "DELETE FROM personal_finance_transactions WHERE id = ? AND (external_provider IS NULL OR external_provider = '') AND (external_transaction_id IS NULL OR external_transaction_id = '')",
+    [transactionId],
+  );
   return { id: transactionId };
 }
 
@@ -1491,16 +2051,20 @@ export async function createFinanceAccount(data) {
   if (!name) throw appError("Account name is required.");
 
   const accountType = cleanAccountType(data?.type);
-  const openingBalance = cleanSignedAmount(data?.openingBalance || 0, "Opening balance");
+  const openingBalance = cleanSignedAmount(
+    data?.openingBalance || 0,
+    "Opening balance",
+  );
   const color = cleanColor(data?.color);
   const currency = String(data?.currency || "USD").toUpperCase();
-  if (!CURRENCY_SET.has(currency)) throw appError("Choose USD or PHP for this account.");
+  if (!CURRENCY_SET.has(currency))
+    throw appError("Choose USD or PHP for this account.");
 
   const [result] = await pool.query(
     `INSERT INTO personal_finance_accounts
        (name, account_type, opening_balance, currency, color, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [name, accountType, openingBalance, currency, color, now, now]
+    [name, accountType, openingBalance, currency, color, now, now],
   );
 
   return { id: Number(result.insertId) };
@@ -1513,7 +2077,10 @@ export async function updateFinanceAccount(id, data) {
   if (!name) throw appError("Account name is required.");
 
   const accountType = cleanAccountType(data?.type);
-  const openingBalance = cleanSignedAmount(data?.openingBalance || 0, "Opening balance");
+  const openingBalance = cleanSignedAmount(
+    data?.openingBalance || 0,
+    "Opening balance",
+  );
   const color = cleanColor(data?.color);
 
   await pool.query(
@@ -1524,7 +2091,7 @@ export async function updateFinanceAccount(id, data) {
          color = ?,
          updated_at = ?
      WHERE id = ?`,
-    [name, accountType, openingBalance, color, new Date(), accountId]
+    [name, accountType, openingBalance, color, new Date(), accountId],
   );
 
   return { id: accountId };
@@ -1533,9 +2100,14 @@ export async function updateFinanceAccount(id, data) {
 export async function archiveFinanceAccount(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const accountId = cleanId(id, "Account");
+  const [rows] = await pool.query(
+    "SELECT id FROM personal_finance_accounts WHERE id = ?",
+    [accountId],
+  );
+  if (!rows.length) throw appError("Account was not found.", 404);
   await pool.query(
-    "UPDATE personal_finance_accounts SET is_archived = 1, updated_at = ? WHERE id = ?",
-    [new Date(), accountId]
+    "UPDATE personal_finance_accounts SET is_archived = 1, is_sync_excluded = 1, updated_at = ? WHERE id = ?",
+    [new Date(), accountId],
   );
   return { id: accountId };
 }
@@ -1558,7 +2130,7 @@ export async function upsertFinanceBudget(data) {
        amount = VALUES(amount),
        currency = VALUES(currency),
        updated_at = VALUES(updated_at)`,
-    [budgetMonth, category, amount, currency, now, now]
+    [budgetMonth, category, amount, currency, now, now],
   );
 
   return { id: Number(result.insertId || 0), month: budgetMonth, category };
@@ -1567,7 +2139,9 @@ export async function upsertFinanceBudget(data) {
 export async function deleteFinanceBudget(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const budgetId = cleanId(id, "Budget");
-  await pool.query("DELETE FROM personal_finance_budgets WHERE id = ?", [budgetId]);
+  await pool.query("DELETE FROM personal_finance_budgets WHERE id = ?", [
+    budgetId,
+  ]);
   return { id: budgetId };
 }
 
@@ -1597,7 +2171,17 @@ export async function upsertFinanceBill(data) {
            is_autopay = ?,
            updated_at = ?
        WHERE id = ?`,
-      [name, amountUsd, amountPhp, dueLabel, paymentAccount, isPaid ? 1 : 0, isAutopay ? 1 : 0, now, id]
+      [
+        name,
+        amountUsd,
+        amountPhp,
+        dueLabel,
+        paymentAccount,
+        isPaid ? 1 : 0,
+        isAutopay ? 1 : 0,
+        now,
+        id,
+      ],
     );
     return { id };
   }
@@ -1614,7 +2198,17 @@ export async function upsertFinanceBill(data) {
        is_paid = VALUES(is_paid),
        is_autopay = VALUES(is_autopay),
        updated_at = VALUES(updated_at)`,
-    [name, amountUsd, amountPhp, dueLabel, paymentAccount, isPaid ? 1 : 0, isAutopay ? 1 : 0, now, now]
+    [
+      name,
+      amountUsd,
+      amountPhp,
+      dueLabel,
+      paymentAccount,
+      isPaid ? 1 : 0,
+      isAutopay ? 1 : 0,
+      now,
+      now,
+    ],
   );
 
   return { id: Number(result.insertId || 0) };
@@ -1625,7 +2219,7 @@ export async function toggleFinanceBillPaid(id, isPaid) {
   const billId = cleanId(id, "Bill");
   await pool.query(
     "UPDATE personal_finance_recurring_bills SET is_paid = ?, updated_at = ? WHERE id = ?",
-    [cleanBoolean(isPaid) ? 1 : 0, new Date(), billId]
+    [cleanBoolean(isPaid) ? 1 : 0, new Date(), billId],
   );
   return { id: billId };
 }
@@ -1633,7 +2227,10 @@ export async function toggleFinanceBillPaid(id, isPaid) {
 export async function deleteFinanceBill(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const billId = cleanId(id, "Bill");
-  await pool.query("DELETE FROM personal_finance_recurring_bills WHERE id = ?", [billId]);
+  await pool.query(
+    "DELETE FROM personal_finance_recurring_bills WHERE id = ?",
+    [billId],
+  );
   return { id: billId };
 }
 
@@ -1661,7 +2258,7 @@ export async function upsertFinanceGoal(data) {
            note = ?,
            updated_at = ?
        WHERE id = ?`,
-      [name, currency, targetAmount, savedAmount, category, note, now, id]
+      [name, currency, targetAmount, savedAmount, category, note, now, id],
     );
     return { id };
   }
@@ -1677,7 +2274,7 @@ export async function upsertFinanceGoal(data) {
        category = VALUES(category),
        note = VALUES(note),
        updated_at = VALUES(updated_at)`,
-    [name, currency, targetAmount, savedAmount, category, note, now, now]
+    [name, currency, targetAmount, savedAmount, category, note, now, now],
   );
 
   return { id: Number(result.insertId || 0) };
@@ -1690,7 +2287,7 @@ export async function deleteFinanceGoal(id) {
   return { id: goalId };
 }
 
-export async function createPlaidLinkToken(email) {
+export async function createPlaidLinkToken(email, data = {}) {
   requirePlaidConfig();
 
   const products = String(process.env.PLAID_PRODUCTS || "transactions")
@@ -1707,27 +2304,50 @@ export async function createPlaidLinkToken(email) {
     products,
     country_codes: countryCodes,
     user: {
-      client_user_id: stableFinanceUserId(email)
+      client_user_id: stableFinanceUserId(email),
     },
     account_filters: {
       depository: { account_subtypes: ["checking", "savings"] },
-      credit: { account_subtypes: ["credit card"] }
-    }
+      credit: { account_subtypes: ["credit card"] },
+    },
   };
 
   if (products.includes("transactions")) {
     body.transactions = {
-      days_requested: plaidTransactionsDaysRequested()
+      days_requested: plaidTransactionsDaysRequested(),
     };
   }
 
-  if (process.env.PLAID_REDIRECT_URI) body.redirect_uri = process.env.PLAID_REDIRECT_URI;
+  const connectionId = cleanId(data?.connectionId, "Connection");
+  if (connectionId) {
+    const pool = requirePool(await ensureFinanceSchema());
+    const [rows] = await pool.query(
+      "SELECT provider, status, encrypted_access_token FROM personal_finance_connections WHERE id = ?",
+      [connectionId],
+    );
+    const connection = rows[0];
+    if (
+      !connection ||
+      connection.provider !== "plaid" ||
+      ["disconnected", "superseded"].includes(connection.status) ||
+      !connection.encrypted_access_token
+    )
+      throw appError("Choose an active Plaid connection to update.", 400);
+    body.access_token = decryptSecret(connection.encrypted_access_token);
+    body.update = { account_selection_enabled: true };
+    delete body.products;
+    delete body.transactions;
+  }
+
+  if (process.env.PLAID_REDIRECT_URI)
+    body.redirect_uri = process.env.PLAID_REDIRECT_URI;
 
   const payload = await plaidRequest("/link/token/create", body);
   return {
     linkToken: payload.link_token,
     expiration: payload.expiration || null,
-    environment: String(process.env.PLAID_ENV || "sandbox").toLowerCase()
+    connectionId,
+    environment: String(process.env.PLAID_ENV || "sandbox").toLowerCase(),
   };
 }
 
@@ -1739,17 +2359,25 @@ export async function exchangePlaidPublicToken(data) {
   const metadata = data?.metadata || {};
   const institution = metadata?.institution || {};
   const exchanged = await plaidRequest("/item/public_token/exchange", {
-    public_token: publicToken
+    public_token: publicToken,
   });
 
   const accessToken = exchanged?.access_token;
   const itemId = cleanText(exchanged?.item_id, 160);
-  if (!accessToken || !itemId) throw appError("Plaid did not return a usable account token.", 502);
+  if (!accessToken || !itemId)
+    throw appError("Plaid did not return a usable account token.", 502);
 
   const now = new Date();
   const provider = "plaid";
-  const institutionId = cleanText(institution?.institution_id || metadata?.institution_id, 120);
-  const institutionName = cleanText(institution?.name || metadata?.institution_name || "Plaid account", 160, "Plaid account");
+  const institutionId = cleanText(
+    institution?.institution_id || metadata?.institution_id,
+    120,
+  );
+  const institutionName = cleanText(
+    institution?.name || metadata?.institution_name || "Plaid account",
+    160,
+    "Plaid account",
+  );
 
   const [result] = await pool.query(
     `INSERT INTO personal_finance_connections
@@ -1761,11 +2389,21 @@ export async function exchangePlaidPublicToken(data) {
        encrypted_access_token = VALUES(encrypted_access_token),
        status = 'active',
        updated_at = VALUES(updated_at)`,
-    [provider, institutionId || null, institutionName, itemId, encryptSecret(accessToken), now, now]
+    [
+      provider,
+      institutionId || null,
+      institutionName,
+      itemId,
+      encryptSecret(accessToken),
+      now,
+      now,
+    ],
   );
 
   const insertedConnectionId = Number(result.insertId || 0);
-  const connectionId = insertedConnectionId || await getConnectionIdByItem(pool, provider, itemId);
+  const connectionId =
+    insertedConnectionId ||
+    (await getConnectionIdByItem(pool, provider, itemId));
   const synced = await syncPlaidConnection(pool, connectionId, accessToken);
   return { id: connectionId, ...synced };
 }
@@ -1774,19 +2412,30 @@ export async function syncFinanceConnection(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const connectionId = cleanId(id, "Connection");
   const [rows] = await pool.query(
-    `SELECT id, provider, encrypted_access_token, sync_cursor
+    `SELECT id, provider, status, encrypted_access_token, sync_cursor
      FROM personal_finance_connections
      WHERE id = ?
      LIMIT 1`,
-    [connectionId]
+    [connectionId],
   );
   const connection = rows[0];
   if (!connection) throw appError("Connection was not found.", 404);
+  if (
+    ["disconnected", "superseded"].includes(connection.status) ||
+    !connection.encrypted_access_token
+  )
+    throw appError(
+      "This connection is unlinked. Connect it again before syncing.",
+      409,
+    );
 
   const provider = cleanProvider(connection.provider);
   if (provider === "plaid") return syncPlaidConnection(pool, connectionId);
   if (provider === "brankas") {
-    throw appError("Brankas connection is saved, but sync needs Brankas Data/Statement account and transaction endpoint details before it can pull balances and transactions.", 503);
+    throw appError(
+      "Brankas connection is saved, but sync needs Brankas Data/Statement account and transaction endpoint details before it can pull balances and transactions.",
+      503,
+    );
   }
 
   throw appError("This connection provider cannot be synced yet.", 503);
@@ -1798,9 +2447,15 @@ export async function createBrankasLink(email) {
   const state = crypto.randomBytes(32).toString("hex");
   const hash = crypto.createHash("sha256").update(state).digest("hex");
   const url = buildBrankasLinkUrl(email, state);
-  await upsertSetting(pool, "brankasLinkState", JSON.stringify({ hash, expires: Date.now() + 10 * 60_000 }));
+  await upsertSetting(
+    pool,
+    "brankasLinkState",
+    JSON.stringify({ hash, expires: Date.now() + 10 * 60_000 }),
+  );
   return {
-    url, state, expiresIn: 600
+    url,
+    state,
+    expiresIn: 600,
   };
 }
 
@@ -1808,46 +2463,76 @@ export async function saveBrankasCallback(params, expectedState) {
   const pool = requirePool(await ensureFinanceSchema());
   const payload = cleanCallbackParams(params);
   const state = payload.state || "";
-  if (!/^[a-f0-9]{64}$/.test(state) || typeof expectedState !== "string" || !/^[a-f0-9]{64}$/.test(expectedState)
-      || !crypto.timingSafeEqual(Buffer.from(state), Buffer.from(expectedState))) {
-    throw appError("This bank authorization could not be verified. Start connecting Brankas again from Accounts.", 400);
+  if (
+    !/^[a-f0-9]{64}$/.test(state) ||
+    typeof expectedState !== "string" ||
+    !/^[a-f0-9]{64}$/.test(expectedState) ||
+    !crypto.timingSafeEqual(Buffer.from(state), Buffer.from(expectedState))
+  ) {
+    throw appError(
+      "This bank authorization could not be verified. Start connecting Brankas again from Accounts.",
+      400,
+    );
   }
   const hash = crypto.createHash("sha256").update(state).digest("hex");
-  const tokenSource = payload.code
-    || payload.consent_id
-    || payload.customer_id
-    || payload.request_id
-    || payload.reference_id;
-  if (!tokenSource || tokenSource === "{}") throw appError("Brankas did not return a usable callback payload.", 400);
+  const tokenSource =
+    payload.code ||
+    payload.consent_id ||
+    payload.customer_id ||
+    payload.request_id ||
+    payload.reference_id;
+  if (!tokenSource || tokenSource === "{}")
+    throw appError("Brankas did not return a usable callback payload.", 400);
 
-  const tokenHash = crypto.createHash("sha256").update(tokenSource).digest("hex").slice(0, 48);
+  const tokenHash = crypto
+    .createHash("sha256")
+    .update(tokenSource)
+    .digest("hex")
+    .slice(0, 48);
   const itemId = cleanText(
-    payload.consent_id
-      || payload.customer_id
-      || payload.request_id
-      || payload.reference_id
-      || tokenHash,
+    payload.consent_id ||
+      payload.customer_id ||
+      payload.request_id ||
+      payload.reference_id ||
+      tokenHash,
     160,
-    tokenHash
+    tokenHash,
   );
   const institutionName = cleanText(
-    payload.institution_name || payload.bank_name || process.env.BRANKAS_INSTITUTION_NAME || "Brankas",
+    payload.institution_name ||
+      payload.bank_name ||
+      process.env.BRANKAS_INSTITUTION_NAME ||
+      "Brankas",
     160,
-    "Brankas"
+    "Brankas",
   );
   const now = new Date();
 
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const [stateRows] = await connection.query("SELECT setting_value FROM personal_finance_settings WHERE setting_key = 'brankasLinkState' FOR UPDATE");
+    const [stateRows] = await connection.query(
+      "SELECT setting_value FROM personal_finance_settings WHERE setting_key = 'brankasLinkState' FOR UPDATE",
+    );
     let storedState;
-    try { storedState = JSON.parse(stateRows[0]?.setting_value || "null"); } catch { /* Invalid state is rejected below. */ }
-    if (!storedState || storedState.hash !== hash || !Number.isFinite(storedState.expires) || storedState.expires < Date.now()) {
-      throw appError("This bank authorization expired or was already used. Start connecting Brankas again from Accounts.", 400);
+    try {
+      storedState = JSON.parse(stateRows[0]?.setting_value || "null");
+    } catch {
+      /* Invalid state is rejected below. */
+    }
+    if (
+      !storedState ||
+      storedState.hash !== hash ||
+      !Number.isFinite(storedState.expires) ||
+      storedState.expires < Date.now()
+    ) {
+      throw appError(
+        "This bank authorization expired or was already used. Start connecting Brankas again from Accounts.",
+        400,
+      );
     }
     const [result] = await connection.query(
-    `INSERT INTO personal_finance_connections
+      `INSERT INTO personal_finance_connections
        (provider, institution_name, item_id, encrypted_access_token, status, created_at, updated_at)
      VALUES ('brankas', ?, ?, ?, 'linked', ?, ?)
      ON DUPLICATE KEY UPDATE
@@ -1855,136 +2540,254 @@ export async function saveBrankasCallback(params, expectedState) {
        encrypted_access_token = VALUES(encrypted_access_token),
        status = 'linked',
        updated_at = VALUES(updated_at)`,
-    [institutionName, itemId, encryptSecret(JSON.stringify(payload)), now, now]
-  );
+      [
+        institutionName,
+        itemId,
+        encryptSecret(JSON.stringify(payload)),
+        now,
+        now,
+      ],
+    );
 
     const insertedConnectionId = Number(result.insertId || 0);
-    const connectionId = insertedConnectionId || await getConnectionIdByItem(connection, "brankas", itemId);
-    await connection.query("DELETE FROM personal_finance_settings WHERE setting_key = 'brankasLinkState'");
+    const connectionId =
+      insertedConnectionId ||
+      (await getConnectionIdByItem(connection, "brankas", itemId));
+    await connection.query(
+      "DELETE FROM personal_finance_settings WHERE setting_key = 'brankasLinkState'",
+    );
     await connection.commit();
     return { id: connectionId, status: "linked" };
   } catch (error) {
     await connection.rollback().catch(() => {});
     throw error;
-  } finally { connection.release(); }
+  } finally {
+    connection.release();
+  }
 }
 
 async function getConnectionIdByItem(pool, provider, itemId) {
   const [rows] = await pool.query(
     "SELECT id FROM personal_finance_connections WHERE provider = ? AND item_id = ? LIMIT 1",
-    [provider, itemId]
+    [provider, itemId],
   );
   return Number(rows[0]?.id || 0);
 }
 
 async function getAccountIdByProvider(pool, provider, accountId) {
   const [rows] = await pool.query(
-    "SELECT id FROM personal_finance_accounts WHERE external_provider = ? AND external_account_id = ? LIMIT 1",
-    [provider, accountId]
+    `SELECT a.id FROM personal_finance_account_aliases x
+     JOIN personal_finance_accounts a ON a.id = x.account_id
+     WHERE x.provider = ? AND x.external_account_id = ?
+     UNION ALL
+     SELECT COALESCE(merged_into_account_id, id) AS id FROM personal_finance_accounts
+     WHERE external_provider = ? AND external_account_id = ? LIMIT 1`,
+    [provider, accountId, provider, accountId],
   );
   return Number(rows[0]?.id || 0);
 }
 
-async function syncPlaidConnection(pool, connectionId, accessTokenOverride = "") {
+async function syncPlaidConnection(
+  pool,
+  connectionId,
+  accessTokenOverride = "",
+) {
   const [connectionRows] = await pool.query(
-    `SELECT id, institution_name, encrypted_access_token, sync_cursor
+    `SELECT id, institution_name, status, encrypted_access_token, sync_cursor
      FROM personal_finance_connections
      WHERE id = ?
      LIMIT 1`,
-    [connectionId]
+    [connectionId],
   );
   const connection = connectionRows[0];
   if (!connection) throw appError("Plaid connection was not found.", 404);
+  if (
+    ["disconnected", "superseded"].includes(connection.status) ||
+    (!accessTokenOverride && !connection.encrypted_access_token)
+  )
+    throw appError(
+      "This connection is unlinked. Connect it again before syncing.",
+      409,
+    );
 
-  const accessToken = accessTokenOverride || decryptSecret(connection.encrypted_access_token);
+  const accessToken =
+    accessTokenOverride || decryptSecret(connection.encrypted_access_token);
   let accountSync = { accounts: 0 };
   let transactionSync = { added: 0, modified: 0, removed: 0 };
 
   try {
-    accountSync = await syncPlaidAccounts(pool, connectionId, accessToken, connection.institution_name || "Plaid");
-    transactionSync = await syncPlaidTransactions(pool, connectionId, accessToken, connection.sync_cursor || null);
+    accountSync = await syncPlaidAccounts(
+      pool,
+      connectionId,
+      accessToken,
+      connection.institution_name || "Plaid",
+    );
+    transactionSync = await syncPlaidTransactions(
+      pool,
+      connectionId,
+      accessToken,
+      connection.sync_cursor || null,
+    );
     await pool.query(
-      "UPDATE personal_finance_connections SET status = 'active', last_synced_at = ?, updated_at = ? WHERE id = ?",
-      [new Date(), new Date(), connectionId]
+      "UPDATE personal_finance_connections SET status = 'active', last_synced_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('disconnected', 'superseded')",
+      [new Date(), new Date(), connectionId],
     );
   } catch (error) {
     await pool.query(
-      "UPDATE personal_finance_connections SET status = 'needs_sync', updated_at = ? WHERE id = ?",
-      [new Date(), connectionId]
+      "UPDATE personal_finance_connections SET status = 'needs_sync', updated_at = ? WHERE id = ? AND status NOT IN ('disconnected', 'superseded')",
+      [new Date(), connectionId],
     );
     throw error;
   }
 
   return {
     accounts: accountSync.accounts,
-    transactions: transactionSync
+    transactions: transactionSync,
   };
 }
 
-async function syncPlaidAccounts(pool, connectionId, accessToken, fallbackInstitutionName) {
+async function syncPlaidAccounts(
+  pool,
+  connectionId,
+  accessToken,
+  fallbackInstitutionName,
+) {
   const payload = await plaidRequest("/accounts/balance/get", {
-    access_token: accessToken
+    access_token: accessToken,
   });
-  const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
-  const now = new Date();
-  let saved = 0;
-
-  if (payload?.item?.institution_id) {
-    await pool.query(
-      `UPDATE personal_finance_connections
-       SET institution_id = COALESCE(institution_id, ?),
-           updated_at = ?
-       WHERE id = ?`,
-      [cleanText(payload.item.institution_id, 120), now, connectionId]
+  const database = await pool.getConnection();
+  try {
+    await database.beginTransaction();
+    const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
+    const now = new Date();
+    if (payload?.item?.institution_id)
+      await database.query(
+        "UPDATE personal_finance_connections SET institution_id = COALESCE(institution_id, ?), updated_at = ? WHERE id = ?",
+        [cleanText(payload.item.institution_id, 120), now, connectionId],
+      );
+    const [connectionRows] = await database.query(
+      "SELECT institution_id, status FROM personal_finance_connections WHERE id = ? FOR UPDATE",
+      [connectionId],
     );
-  }
-
-  for (const account of accounts) {
-    const balances = account?.balances || {};
-    const externalAccountId = cleanText(account?.account_id, 160);
-    if (!externalAccountId) continue;
-
-    // Retain a provider's native currency; never label an unsupported balance USD.
-    const currency = String(balances?.iso_currency_code || balances?.unofficial_currency_code || "").toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency)) continue;
-    const name = cleanText(account?.official_name || account?.name || fallbackInstitutionName, 80, fallbackInstitutionName);
-    const accountType = mapProviderAccountType(account?.type, account?.subtype);
-    const currentBalance = balances?.current === null || balances?.current === undefined ? null : toMoney(balances.current);
-    const availableBalance = balances?.available === null || balances?.available === undefined
-      ? null
-      : toMoney(balances.available);
-
-    await pool.query(
-      `INSERT INTO personal_finance_accounts
-         (name, account_type, opening_balance, currency, current_balance, available_balance, external_provider, external_account_id, connection_id, color, created_at, updated_at)
-       VALUES (?, ?, 0, ?, ?, ?, 'plaid', ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE
-         name = VALUES(name),
-         account_type = VALUES(account_type),
-         currency = VALUES(currency),
-         current_balance = VALUES(current_balance),
-         available_balance = VALUES(available_balance),
-         connection_id = VALUES(connection_id),
-         color = VALUES(color),
-         is_archived = 0,
-         updated_at = VALUES(updated_at)`,
-      [
-        name,
-        accountType,
-        currency,
-        currentBalance,
-        availableBalance,
-        externalAccountId,
-        connectionId,
-        colorForProvider("plaid"),
-        now,
-        now
-      ]
+    if (["disconnected", "superseded"].includes(connectionRows[0]?.status))
+      throw appError(
+        "This connection no longer syncs. Use the current bank connection.",
+        409,
+      );
+    const institutionId =
+      connectionRows[0]?.institution_id || payload?.item?.institution_id || "";
+    let saved = 0;
+    const seenAccounts = [];
+    for (const account of accounts) {
+      const externalId = cleanText(account?.account_id, 160);
+      const balances = account?.balances || {};
+      const currency = String(
+        balances.iso_currency_code || balances.unofficial_currency_code || "",
+      ).toUpperCase();
+      if (!externalId || !/^[A-Z]{3}$/.test(currency)) continue;
+      const name = cleanText(
+        account.official_name || account.name || fallbackInstitutionName,
+        80,
+        fallbackInstitutionName,
+      );
+      const type = mapProviderAccountType(account.type, account.subtype);
+      const mask = cleanText(account.mask, 16);
+      const official = cleanText(account.official_name || account.name, 160);
+      const persistent = cleanText(account.persistent_account_id, 160);
+      const current =
+        balances.current == null ? null : toMoney(balances.current);
+      const available =
+        balances.available == null ? null : toMoney(balances.available);
+      let accountId = await getAccountIdByProvider(
+        database,
+        "plaid",
+        externalId,
+      );
+      if (!accountId) {
+        const [existing] =
+          await database.query(`SELECT a.*, c.institution_id FROM personal_finance_accounts a
+        LEFT JOIN personal_finance_connections c ON c.id = a.connection_id WHERE a.external_provider = 'plaid'`);
+        accountId = Number(
+          findFinanceAccountIdentityMatch(
+            {
+              external_provider: "plaid",
+              institution_id: institutionId,
+              persistent_account_id: persistent,
+              account_mask: mask,
+              official_name: official,
+              name,
+              account_type: type,
+              currency,
+              connection_id: connectionId,
+            },
+            existing,
+          )?.id || 0,
+        );
+      }
+      if (accountId) {
+        await database.query(
+          `UPDATE personal_finance_accounts SET name = ?, account_type = ?, currency = ?,
+        current_balance = ?, available_balance = ?, account_mask = ?, official_name = ?,
+        persistent_account_id = COALESCE(NULLIF(?, ''), persistent_account_id),
+        connection_id = GREATEST(COALESCE(connection_id, 0), ?),
+        is_archived = IF(is_sync_excluded = 1, 1, 0), updated_at = ? WHERE id = ?`,
+          [
+            name,
+            type,
+            currency,
+            current,
+            available,
+            mask || null,
+            official || null,
+            persistent,
+            connectionId,
+            now,
+            accountId,
+          ],
+        );
+      } else {
+        const [result] = await database.query(
+          `INSERT INTO personal_finance_accounts
+        (name, account_type, opening_balance, currency, current_balance, available_balance,
+         external_provider, external_account_id, connection_id, account_mask, official_name,
+         persistent_account_id, color, created_at, updated_at)
+        VALUES (?, ?, 0, ?, ?, ?, 'plaid', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            name,
+            type,
+            currency,
+            current,
+            available,
+            externalId,
+            connectionId,
+            mask || null,
+            official || null,
+            persistent || null,
+            colorForProvider("plaid"),
+            now,
+            now,
+          ],
+        );
+        accountId = Number(result.insertId);
+      }
+      await saveAccountAlias(database, externalId, accountId, connectionId);
+      seenAccounts.push(accountId);
+      saved += 1;
+    }
+    await database.query(
+      `UPDATE personal_finance_accounts SET is_archived = 1, updated_at = NOW(3)
+    WHERE connection_id = ? AND external_provider = 'plaid' AND merged_into_account_id IS NULL
+    ${seenAccounts.length ? `AND id NOT IN (${seenAccounts.map(() => "?").join(",")})` : ""}`,
+      [connectionId, ...seenAccounts],
     );
-    saved += 1;
+    await database.commit();
+    return { accounts: saved };
+  } catch (error) {
+    await database.rollback().catch(() => {});
+    throw error;
+  } finally {
+    database.release();
   }
-
-  return { accounts: saved };
 }
 
 async function syncPlaidTransactions(pool, connectionId, accessToken, cursor) {
@@ -1995,68 +2798,141 @@ async function syncPlaidTransactions(pool, connectionId, accessToken, cursor) {
   let removed = 0;
 
   while (hasMore) {
+    // Provider requests must finish before opening a database transaction.
     const payload = await plaidRequest("/transactions/sync", {
       access_token: accessToken,
       cursor: nextCursor,
-      count: 500
+      count: 500,
     });
-
-    for (const transaction of [...(payload.added || []), ...(payload.modified || [])]) {
-      const wasModified = (payload.modified || []).some((item) => item.transaction_id === transaction.transaction_id);
-      await upsertPlaidTransaction(pool, transaction);
-      if (wasModified) modified += 1;
-      else added += 1;
-    }
-
-    for (const transaction of payload.removed || []) {
-      const externalTransactionId = cleanText(transaction?.transaction_id, 180);
-      if (!externalTransactionId) continue;
-      await pool.query(
-        "DELETE FROM personal_finance_transactions WHERE external_provider = 'plaid' AND external_transaction_id = ?",
-        [externalTransactionId]
+    const pageCursor = payload.next_cursor || nextCursor;
+    const pageHasMore = Boolean(payload.has_more);
+    const database = await pool.getConnection();
+    let pageAdded = 0;
+    let pageModified = 0;
+    let pageRemoved = 0;
+    try {
+      await database.beginTransaction();
+      const [connectionRows] = await database.query(
+        "SELECT status FROM personal_finance_connections WHERE id = ? FOR UPDATE",
+        [connectionId],
       );
-      removed += 1;
+      if (
+        !connectionRows.length ||
+        ["disconnected", "superseded"].includes(connectionRows[0]?.status)
+      )
+        throw appError("This connection no longer syncs.", 409);
+      // Different Items can import the same physical account. Serialize those
+      // pages on canonical account IDs before reading or publishing their rows.
+      const [linkedAccounts] = await database.query(
+        `SELECT a.id FROM personal_finance_accounts a
+        WHERE a.id IN (SELECT x.account_id FROM personal_finance_account_aliases x
+          WHERE x.provider = 'plaid' AND x.connection_id = ?)
+        ORDER BY a.id FOR UPDATE`,
+        [connectionId],
+      );
+      const modifiedIds = new Set(
+        (payload.modified || []).map((row) => row.transaction_id),
+      );
+      for (const transaction of [
+        ...(payload.added || []),
+        ...(payload.modified || []),
+      ]) {
+        const imported = await upsertPlaidTransaction(
+          database,
+          transaction,
+          connectionId,
+        );
+        if (!imported) continue;
+        if (modifiedIds.has(transaction.transaction_id)) pageModified += 1;
+        else pageAdded += 1;
+      }
+      for (const transaction of payload.removed || []) {
+        const externalTransactionId = cleanText(
+          transaction?.transaction_id,
+          180,
+        );
+        if (!externalTransactionId) continue;
+        await markPlaidTransactionRemoved(
+          database,
+          externalTransactionId,
+          connectionId,
+        );
+        pageRemoved += 1;
+      }
+      for (const account of linkedAccounts)
+        await collapseDuplicateAccountTransactions(
+          database,
+          Number(account.id),
+        );
+      // Keep the original restart cursor until the complete pagination succeeds.
+      // Earlier committed pages are replay-safe through provider IDs if a later
+      // page fetch fails; the final page and cursor become visible together.
+      if (!pageHasMore)
+        await database.query(
+          "UPDATE personal_finance_connections SET sync_cursor = ?, last_synced_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('disconnected', 'superseded')",
+          [pageCursor, new Date(), new Date(), connectionId],
+        );
+      await database.commit();
+    } catch (error) {
+      await database.rollback().catch(() => {});
+      throw error;
+    } finally {
+      database.release();
     }
-
-    nextCursor = payload.next_cursor || nextCursor;
-    hasMore = Boolean(payload.has_more);
+    added += pageAdded;
+    modified += pageModified;
+    removed += pageRemoved;
+    nextCursor = pageCursor;
+    hasMore = pageHasMore;
   }
-
-  await pool.query(
-    "UPDATE personal_finance_connections SET sync_cursor = ?, last_synced_at = ?, updated_at = ? WHERE id = ?",
-    [nextCursor, new Date(), new Date(), connectionId]
-  );
-
   return { added, modified, removed };
 }
 
-async function upsertPlaidTransaction(pool, transaction) {
+async function upsertPlaidTransaction(pool, transaction, connectionId) {
   const externalTransactionId = cleanText(transaction?.transaction_id, 180);
   if (!externalTransactionId) return;
-  const currency = String(transaction?.iso_currency_code || transaction?.unofficial_currency_code || "").toUpperCase();
+  const currency = String(
+    transaction?.iso_currency_code ||
+      transaction?.unofficial_currency_code ||
+      "",
+  ).toUpperCase();
   if (!/^[A-Z]{3}$/.test(currency)) return;
 
   const externalAccountId = cleanText(transaction?.account_id, 160);
-  const accountId = externalAccountId ? await getAccountIdByProvider(pool, "plaid", externalAccountId) : null;
+  const accountId = externalAccountId
+    ? await getAccountIdByProvider(pool, "plaid", externalAccountId)
+    : null;
+  if (accountId) {
+    const [accountRows] = await pool.query(
+      "SELECT is_sync_excluded FROM personal_finance_accounts WHERE id = ?",
+      [accountId],
+    );
+    if (accountRows[0]?.is_sync_excluded) return;
+  }
   const plaidAmount = Number(transaction?.amount || 0);
   const kind = plaidAmount < 0 ? "income" : "expense";
   const category = cleanText(
-    humanizeCategory(transaction?.personal_finance_category?.primary)
-      || transaction?.category?.[0]
-      || transaction?.category
-      || "Uncategorized",
+    humanizeCategory(transaction?.personal_finance_category?.primary) ||
+      transaction?.category?.[0] ||
+      transaction?.category ||
+      "Uncategorized",
     80,
-    "Uncategorized"
+    "Uncategorized",
   );
-  const merchant = cleanText(transaction?.merchant_name || transaction?.name || "", 120);
+  const merchant = cleanText(
+    transaction?.merchant_name || transaction?.name || "",
+    120,
+  );
   const amount = toMoney(Math.abs(plaidAmount));
-  const date = cleanDate(transaction?.date || new Date().toISOString().slice(0, 10));
+  const date = cleanDate(
+    transaction?.date || new Date().toISOString().slice(0, 10),
+  );
   const now = new Date();
 
   await pool.query(
     `INSERT INTO personal_finance_transactions
-       (transaction_date, kind, account_id, category, merchant, note, amount, currency, external_provider, external_transaction_id, pending, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, '', ?, ?, 'plaid', ?, ?, ?, ?)
+       (transaction_date, kind, account_id, category, merchant, note, amount, currency, external_provider, external_transaction_id, pending, import_account_key, import_connection_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, '', ?, ?, 'plaid', ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        transaction_date = VALUES(transaction_date),
        kind = VALUES(kind),
@@ -2066,6 +2942,9 @@ async function upsertPlaidTransaction(pool, transaction) {
        amount = VALUES(amount),
        currency = VALUES(currency),
        pending = VALUES(pending),
+       is_provider_removed = 0,
+       import_account_key = VALUES(import_account_key),
+       import_connection_id = VALUES(import_connection_id),
        updated_at = VALUES(updated_at)`,
     [
       date,
@@ -2077,10 +2956,13 @@ async function upsertPlaidTransaction(pool, transaction) {
       currency,
       externalTransactionId,
       transaction?.pending ? 1 : 0,
+      externalAccountId,
+      connectionId,
       now,
-      now
-    ]
+      now,
+    ],
   );
+  return true;
 }
 
 function humanizeCategory(value) {
@@ -2092,4 +2974,379 @@ function humanizeCategory(value) {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+async function saveAccountAlias(database, externalId, accountId, connectionId) {
+  await database.query(
+    `INSERT INTO personal_finance_account_aliases
+    (provider, external_account_id, account_id, connection_id, created_at, updated_at)
+    VALUES ('plaid', ?, ?, ?, NOW(3), NOW(3))
+    ON DUPLICATE KEY UPDATE account_id = VALUES(account_id), connection_id = VALUES(connection_id), updated_at = NOW(3)`,
+    [externalId, accountId, connectionId],
+  );
+}
+
+async function collapseDuplicateAccountTransactions(database, accountId) {
+  const [rows] = await database.query(
+    `SELECT *, DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date
+    FROM personal_finance_transactions WHERE account_id = ? AND external_provider = 'plaid' AND is_provider_removed = 0
+    ORDER BY id`,
+    [accountId],
+  );
+  const duplicates = financeTransactionDuplicatePairs(rows);
+  // One atomic update promotes surviving copies after removals without exposing a
+  // transient double-counted snapshot between clearing and setting the flags.
+  const cases = duplicates.map(() => "WHEN ? THEN ?").join(" ");
+  await database.query(
+    `UPDATE personal_finance_transactions SET duplicate_of_id = ${duplicates.length ? `CASE id ${cases} ELSE NULL END` : "NULL"}
+    WHERE account_id = ? AND external_provider = 'plaid'`,
+    [...duplicates.flatMap((pair) => [pair.id, pair.canonicalId]), accountId],
+  );
+  return duplicates.length;
+}
+
+/** Archive locally, retaining transaction history and planner references. */
+export async function unlinkFinanceConnection(id) {
+  const database = requirePool(await ensureFinanceSchema());
+  const connectionId = cleanId(id, "Connection");
+  const [rows] = await database.query(
+    "SELECT provider, status, encrypted_access_token FROM personal_finance_connections WHERE id = ?",
+    [connectionId],
+  );
+  const existing = rows[0];
+  if (!existing) throw appError("Connection was not found.", 404);
+  if (existing.status === "disconnected")
+    return { id: connectionId, status: "disconnected" };
+  if (existing.provider === "plaid" && existing.encrypted_access_token) {
+    try {
+      await plaidRequest("/item/remove", {
+        access_token: decryptSecret(existing.encrypted_access_token),
+      });
+    } catch (error) {
+      // A previously revoked token is already disconnected. Network errors remain retryable.
+      if (
+        !/INVALID_ACCESS_TOKEN|ITEM_NOT_FOUND|INVALID_ITEM|access token.*invalid/i.test(
+          error.message || "",
+        )
+      )
+        throw appError(
+          "The bank connection could not be revoked. Try unlinking again.",
+          502,
+        );
+    }
+  }
+  const transaction = await database.getConnection();
+  try {
+    await transaction.beginTransaction();
+    await transaction.query(
+      "UPDATE personal_finance_connections SET status = 'disconnected', encrypted_access_token = NULL, sync_cursor = NULL, updated_at = NOW(3) WHERE id = ?",
+      [connectionId],
+    );
+    await transaction.query(
+      "UPDATE personal_finance_accounts SET is_archived = 1, updated_at = NOW(3) WHERE connection_id = ?",
+      [connectionId],
+    );
+    await transaction.commit();
+    return { id: connectionId, status: "disconnected" };
+  } catch (error) {
+    await transaction.rollback().catch(() => {});
+    throw error;
+  } finally {
+    transaction.release();
+  }
+}
+
+async function readAccountIdentityRows(database, lock = false) {
+  const [rows] =
+    await database.query(`SELECT a.*, c.institution_id, c.status AS connection_status
+    FROM personal_finance_accounts a LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+    WHERE a.external_provider = 'plaid' ORDER BY a.id${lock ? " FOR UPDATE" : ""}`);
+  return rows;
+}
+
+function publicAccountMergeGroup(group) {
+  const account = group.accounts[0];
+  return {
+    canonicalId: group.canonicalId,
+    duplicateIds: group.duplicateIds,
+    reason: group.reason,
+    name: account.name,
+    type: account.account_type,
+    currency: account.currency,
+    mask: account.account_mask || "",
+  };
+}
+
+/** Explicit repair action; preview does not mutate financial records or refresh balances. */
+export async function repairDuplicateFinanceAccounts({
+  preview = true,
+  confirmedPairs = [],
+} = {}) {
+  const database = requirePool(await ensureFinanceSchema());
+  const initial = await readAccountIdentityRows(database);
+  const warnings = [];
+  const refreshed = initial.map((row) => ({ ...row }));
+  const [connections] =
+    await database.query(`SELECT id, institution_id, status, encrypted_access_token
+    FROM personal_finance_connections WHERE provider = 'plaid' AND status NOT IN ('disconnected', 'superseded')`);
+  for (const connection of connections) {
+    if (!connection.encrypted_access_token) continue;
+    try {
+      const payload = await plaidRequest("/accounts/get", {
+        access_token: decryptSecret(connection.encrypted_access_token),
+      });
+      const institutionId =
+        connection.institution_id || payload?.item?.institution_id || "";
+      for (const account of payload.accounts || []) {
+        const row = refreshed.find(
+          (candidate) => candidate.external_account_id === account.account_id,
+        );
+        if (!row) continue;
+        Object.assign(row, {
+          institution_id: institutionId,
+          account_mask: cleanText(account.mask, 16) || null,
+          official_name:
+            cleanText(account.official_name || account.name, 160) || null,
+          persistent_account_id:
+            cleanText(account.persistent_account_id, 160) || null,
+        });
+      }
+    } catch {
+      warnings.push(
+        `Connection ${connection.id} could not refresh its identity details. Accounts without a confirmed match are kept separate.`,
+      );
+    }
+  }
+  let groups = financeAccountDuplicateGroups(refreshed);
+  groups.push(
+    ...confirmedFinanceAccountGroups(refreshed, confirmedPairs, groups),
+  );
+  let publicGroups = groups.map(publicAccountMergeGroup);
+  if (preview !== false) {
+    const matched = new Set(
+      groups.flatMap((group) =>
+        group.accounts.map((account) => Number(account.id)),
+      ),
+    );
+    return {
+      preview: true,
+      groups: publicGroups,
+      duplicateAccounts: groups.reduce(
+        (sum, group) => sum + group.duplicateIds.length,
+        0,
+      ),
+      warnings,
+      unmatchedAccounts: refreshed
+        .filter(
+          (account) =>
+            !matched.has(Number(account.id)) && !account.merged_into_account_id,
+        )
+        .map((account) => ({
+          id: Number(account.id),
+          name: account.name,
+          officialName: account.official_name || "",
+          type: account.account_type,
+          currency: account.currency,
+          mask: account.account_mask || "",
+          institutionId: account.institution_id || "",
+          connectionId: Number(account.connection_id),
+          hasPersistentId: Boolean(account.persistent_account_id),
+        })),
+    };
+  }
+  const transaction = await database.getConnection();
+  let duplicateTransactions = 0;
+  const redundantConnectionIds = [];
+  try {
+    await transaction.beginTransaction();
+    const lockedAccounts = await readAccountIdentityRows(transaction, true);
+    // Provider reads happen outside the transaction. Re-read lifecycle flags
+    // under lock so a concurrent local removal or unlink is never undone.
+    const currentAccounts = lockedAccounts.map((row) => {
+      const metadata = refreshed.find(
+        (candidate) => Number(candidate.id) === Number(row.id),
+      );
+      return metadata
+        ? {
+            ...row,
+            account_mask: metadata.account_mask,
+            official_name: metadata.official_name,
+            persistent_account_id: metadata.persistent_account_id,
+          }
+        : row;
+    });
+    groups = financeAccountDuplicateGroups(currentAccounts);
+    groups.push(
+      ...confirmedFinanceAccountGroups(currentAccounts, confirmedPairs, groups),
+    );
+    publicGroups = groups.map(publicAccountMergeGroup);
+    for (const row of refreshed)
+      await transaction.query(
+        `UPDATE personal_finance_accounts
+      SET account_mask = ?, official_name = ?, persistent_account_id = ? WHERE id = ?`,
+        [
+          row.account_mask || null,
+          row.official_name || null,
+          row.persistent_account_id || null,
+          row.id,
+        ],
+      );
+    // Establish provenance before moving rows, so two real same-day purchases are retained.
+    await transaction.query(`UPDATE personal_finance_transactions t JOIN personal_finance_accounts a ON a.id = t.account_id
+      SET t.import_account_key = a.external_account_id, t.import_connection_id = a.connection_id
+      WHERE t.external_provider = 'plaid' AND t.import_account_key IS NULL`);
+    const replacements = new Map();
+    const affectedConnections = new Set();
+    for (const group of groups) {
+      const active = (account) =>
+        !["disconnected", "superseded"].includes(account.connection_status);
+      const latest = [...group.accounts].sort(
+        (a, b) =>
+          Number(active(b)) - Number(active(a)) ||
+          Number(b.connection_id) - Number(a.connection_id) ||
+          new Date(b.updated_at) - new Date(a.updated_at),
+      )[0];
+      const excluded = group.accounts.some(
+        (account) => account.is_sync_excluded,
+      );
+      const archived =
+        excluded ||
+        !group.accounts.some(
+          (account) => !account.is_archived && active(account),
+        );
+      for (const account of group.accounts) {
+        if (account.connection_id)
+          affectedConnections.add(Number(account.connection_id));
+        if (account.external_account_id)
+          await saveAccountAlias(
+            transaction,
+            account.external_account_id,
+            group.canonicalId,
+            account.connection_id,
+          );
+      }
+      for (const duplicateId of group.duplicateIds) {
+        replacements.set(duplicateId, group.canonicalId);
+        const duplicate = group.accounts.find(
+          (account) => Number(account.id) === duplicateId,
+        );
+        await transaction.query(
+          `INSERT INTO personal_finance_account_merges
+          (source_account_id, canonical_account_id, identity_reason, account_snapshot, merged_at)
+          VALUES (?, ?, ?, ?, NOW(3))`,
+          [
+            duplicateId,
+            group.canonicalId,
+            group.reason,
+            JSON.stringify(duplicate),
+          ],
+        );
+        await transaction.query(
+          "UPDATE personal_finance_transactions SET account_id = ? WHERE account_id = ?",
+          [group.canonicalId, duplicateId],
+        );
+        await transaction.query(
+          "UPDATE personal_finance_account_aliases SET account_id = ?, updated_at = NOW(3) WHERE account_id = ?",
+          [group.canonicalId, duplicateId],
+        );
+        await transaction.query(
+          "UPDATE personal_finance_accounts SET is_archived = 1, merged_into_account_id = ?, updated_at = NOW(3) WHERE id = ?",
+          [group.canonicalId, duplicateId],
+        );
+      }
+      await transaction.query(
+        `UPDATE personal_finance_accounts SET connection_id = ?, current_balance = ?, available_balance = ?,
+        account_mask = ?, official_name = ?, persistent_account_id = ?, is_sync_excluded = ?, is_archived = ?, updated_at = NOW(3) WHERE id = ?`,
+        [
+          latest.connection_id,
+          latest.current_balance,
+          latest.available_balance,
+          latest.account_mask || null,
+          latest.official_name || null,
+          latest.persistent_account_id || null,
+          excluded ? 1 : 0,
+          archived ? 1 : 0,
+          group.canonicalId,
+        ],
+      );
+      duplicateTransactions += await collapseDuplicateAccountTransactions(
+        transaction,
+        group.canonicalId,
+      );
+    }
+    if (replacements.size) {
+      try {
+        const [planners] = await transaction.query(
+          "SELECT document, revision FROM personal_finance_planner WHERE id = 1 FOR UPDATE",
+        );
+        if (planners[0]) {
+          const original =
+            typeof planners[0].document === "string"
+              ? JSON.parse(planners[0].document)
+              : planners[0].document;
+          const remapped = remapFinancePlannerAccountIds(
+            original,
+            replacements,
+          );
+          if (JSON.stringify(remapped) !== JSON.stringify(original))
+            await transaction.query(
+              "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1",
+              [JSON.stringify(remapped)],
+            );
+        }
+      } catch (error) {
+        if (error.errno !== 1146) throw error;
+      }
+    }
+    for (const connectionId of affectedConnections) {
+      const [active] = await transaction.query(
+        "SELECT id FROM personal_finance_accounts WHERE connection_id = ? AND is_archived = 0 LIMIT 1",
+        [connectionId],
+      );
+      if (!active.length) {
+        await transaction.query(
+          "UPDATE personal_finance_connections SET status = 'superseded', updated_at = NOW(3) WHERE id = ? AND status != 'disconnected'",
+          [connectionId],
+        );
+        redundantConnectionIds.push(connectionId);
+      }
+    }
+    await transaction.commit();
+    return {
+      preview: false,
+      groups: publicGroups,
+      mergedAccounts: replacements.size,
+      duplicateTransactions,
+      redundantConnectionIds,
+      warnings,
+    };
+  } catch (error) {
+    await transaction.rollback().catch(() => {});
+    throw error;
+  } finally {
+    transaction.release();
+  }
+}
+
+async function markPlaidTransactionRemoved(database, externalId, connectionId) {
+  const [rows] = await database.query(
+    `SELECT t.id, t.duplicate_of_id, a.connection_id AS owner_connection_id
+    FROM personal_finance_transactions t LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
+    WHERE t.external_provider = 'plaid' AND t.external_transaction_id = ?`,
+    [externalId],
+  );
+  const row = rows[0];
+  if (!row) return;
+  if (Number(row.owner_connection_id) === Number(connectionId)) {
+    const canonical = Number(row.duplicate_of_id || row.id);
+    await database.query(
+      "UPDATE personal_finance_transactions SET is_provider_removed = 1, updated_at = NOW(3) WHERE id = ? OR duplicate_of_id = ?",
+      [canonical, canonical],
+    );
+  } else {
+    await database.query(
+      "UPDATE personal_finance_transactions SET is_provider_removed = 1, updated_at = NOW(3) WHERE id = ?",
+      [row.id],
+    );
+  }
 }
