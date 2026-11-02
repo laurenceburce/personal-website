@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
 import { financeActivityWindow, financeProviderStatus, mapFinanceActivityAccount, validateFinanceTransactionInput } from "./financeActivity.mjs";
+import { financePlanActivityRange } from "./financePlanActivity.mjs";
 
 export const FINANCE_OWNER_EMAIL = "laurenceburce@gmail.com";
 export const FINANCE_BRANKAS_STATE_COOKIE = "finance_brankas_state";
@@ -838,6 +839,35 @@ export async function getFinanceActivity({ month } = {}) {
     };
   } catch {
     return { ...empty, warning: "Your finance activity database is temporarily unavailable. Saved accounts and transactions have not been changed. Reload to try again." };
+  }
+}
+
+// Plans can span more than the overview's six months. Return every supported
+// recorded flow in that bounded range without contacting or synchronizing banks.
+export async function getFinancePlanActivity({ startDate, endDate } = {}) {
+  const range = financePlanActivityRange({ startDate, endDate });
+  const empty = { configured: false, ...range, transactions: [], limitHit: false };
+  try {
+    const database = await ensureFinanceSchema();
+    if (!database) return { ...empty, warning: "Connect your finance database to include recorded transactions in this plan." };
+    const [rows] = await database.query(`
+      SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+        a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
+      FROM personal_finance_transactions t
+      LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
+      LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+      WHERE t.transaction_date >= ? AND t.transaction_date <= ?
+      ORDER BY t.transaction_date ASC, t.id ASC LIMIT 10001
+    `, [range.from, range.to]);
+    const selected = rows.slice(0, 10000).map(mapTransaction);
+    const transactions = selected.filter((row) => CURRENCY_SET.has(row.currency));
+    const limitHit = rows.length > 10000;
+    const warnings = [];
+    if (transactions.length !== selected.length) warnings.push("Recorded transactions outside USD and PHP are excluded from this plan.");
+    if (limitHit) warnings.push("Only the first 10,000 recorded transactions in this range are included. Plan balances may be incomplete.");
+    return { ...empty, configured: true, transactions, limitHit, ...(warnings.length ? { warning: warnings.join(" ") } : {}) };
+  } catch {
+    return { ...empty, warning: "Recorded transactions could not be loaded. Your saved records have not been changed; retry to include them in this plan." };
   }
 }
 

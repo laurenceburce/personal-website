@@ -1,0 +1,98 @@
+.fp-app .fpl-table {
+  min-width: 1210px;
+  table-layout: auto;
+}
+.fp-app .fpl-table th,
+.fp-app .fpl-table td {
+  white-space: nowrap;
+}
+.fp-app .fpl-table th {
+  vertical-align: bottom;
+}
+.fp-app .fpl-table th:nth-child(2),
+.fp-app .fpl-table td:nth-child(2) {
+  min-width: 225px;
+  max-width: 340px;
+  white-space: normal;
+}
+.fp-app .fpl-table td:nth-child(2) strong {
+  display: block;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.fp-app .fpl-table td:nth-child(2) small {
+  display: block;
+  line-height: 1.65;
+  margin-top: 3px;
+}
+.fp-app .fpl-table td:nth-child(n + 3):nth-child(-n + 8) {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 111px;
+}
+.fp-app .fpl-table th:nth-child(n + 3):nth-child(-n + 8) {
+  text-align: right;
+}
+.fp-app .fpl-table th:nth-child(5),
+.fp-app .fpl-table td:nth-child(5) {
+  border-left: 1px solid #e1e9df;
+}
+.fp-app .fpl-table .fpl-reserve-balance {
+  background: #edf7f3;
+  border-left: 1px solid #dbe9e0;
+  color: #386d53;
+}
+.fp-app .fpl-table th.fpl-reserve-balance {
+  background: #e5f2eb;
+  color: #376349;
+}
+.fp-app .fpl-table .fpl-reserve-change {
+  margin-top: 5px;
+  color: #47765a;
+  font-size: 10px;
+}
+.fp-app .fpl-table .fpl-match-note {
+  color: #3e7755;
+}
+.fp-app .fpl-table .fpl-shortfall {
+  color: #a14e3d;
+}
+.fp-app .fpl-row-reserve td:first-child,
+.fp-app .fpl-row-reserveRelease td:first-child {
+  border-left: 3px solid #8ab9a2;
+}
+.fp-app .fpl-row-reserve td:nth-child(2),
+.fp-app .fpl-row-reserveRelease td:nth-child(2) {
+  background: #f6faf7;
+}
+.fp-app .fpl-row-transaction td:first-child {
+  border-left: 3px solid #94b4ce;
+}
+.fp-app .fpl-scroll:focus-visible {
+  outline: 3px solid #7dc7aa;
+  outline-offset: 3px;
+}
+.fp-app .fpl-legend {
+  margin: 14px 0 0;
+  color: #617568;
+  font-size: 11px;
+  line-height: 1.8;
+}
+@media (max-width: 760px) {
+  .fp-app .fpl-table {
+    min-width: 1210px;
+  }
+  .fp-app .fpl-table th,
+  .fp-app .fpl-table td {
+    padding: 12px 11px;
+  }
+  .fp-app .fpl-table th {
+    font-size: 10px;
+  }
+  .fp-app .fpl-table td:nth-child(2) small {
+    font-size: 11px;
+  }
+  .fp-app .fpl-legend {
+    font-size: 11px;
+  }
+}

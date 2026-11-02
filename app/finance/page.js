@@ -2,7 +2,10 @@ import { redirect } from "next/navigation";
 import FinanceAppClient from "./FinanceAppClient";
 import { getFinanceAccess } from "../lib/financeAuth";
 import { getFinancePlanner } from "../lib/financePlannerStore";
-import { getFinanceActivity } from "../lib/financeStore";
+import {
+  getFinanceActivity,
+  getFinancePlanActivity,
+} from "../lib/financeStore";
 import { localDate } from "../lib/financePlanner.mjs";
 
 export const dynamic = "force-dynamic";
@@ -76,11 +79,22 @@ export default async function FinancePage({ searchParams }) {
     getFinancePlanner(),
     getFinanceActivity({ month }),
   ]);
+  const firstPlan = snapshot.document.plans[0];
+  const planActivity =
+    ["plans", "budget"].includes(tab) &&
+    firstPlan?.includeTransactions !== false &&
+    firstPlan
+      ? await getFinancePlanActivity({
+          startDate: firstPlan.startDate,
+          endDate: firstPlan.endDate,
+        })
+      : null;
 
   return (
     <FinanceAppClient
       snapshot={snapshot}
       initialActivity={activity}
+      initialPlanActivity={planActivity}
       initialTab={tab}
     />
   );

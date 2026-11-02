@@ -1,0 +1,80 @@
+.fb-bills {
+  min-width: 0;
+}
+.fb-bills-table th small {
+  display: block;
+  margin-top: 5px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.fp-app .fb-bills-table th,
+.fp-app .fb-bills-table th small {
+  font-size: 11px;
+}
+.fb-bills-table .fb-target {
+  min-width: 132px;
+}
+.fb-bills-table .fb-target strong,
+.fb-bills-table .fb-target small {
+  display: block;
+}
+.fb-bills-table .fb-target small {
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.fb-target-note {
+  margin: 15px 0 0;
+  max-width: 840px;
+  color: #65766a;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.fb-form .fb-error {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid #efd5cb;
+  border-radius: 7px;
+  background: #fff5f1;
+  color: #984c3d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.fb-split-detail {
+  margin-top: 3px;
+  line-height: 1.5;
+}
+.fp-app .fb-form .fp-field > span,
+.fp-app .fb-form .fp-field small,
+.fp-app .fb-form .fp-month-field legend,
+.fp-app .fb-form .fp-month-field label,
+.fp-app .fb-form .fp-month-field > small {
+  font-size: 11px;
+}
+@media (min-width: 761px) {
+  .fb-annual-table {
+    min-width: 930px;
+  }
+  .fb-annual-table th,
+  .fb-annual-table td {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+@media (max-width: 760px) {
+  .fp-app .fb-bills-table tbody td::before {
+    font-size: 11px;
+    letter-spacing: 0.2px;
+  }
+  .fp-app .fb-bills-table tbody td small,
+  .fp-app .fb-bills-table tbody .fp-equivalent {
+    font-size: 11px;
+  }
+  .fb-bills-table .fb-target {
+    min-width: 0;
+  }
+  .fb-target-note {
+    margin-top: 12px;
+  }
+}

@@ -7,7 +7,7 @@
     "build": "next build && node scripts/copy-standalone-assets.mjs",
     "start": "node .next/standalone/server.js",
     "lint": "next lint",
-    "test:finance": "node --test tests/financePlanner.test.mjs tests/finance-planner-store.test.mjs tests/financeInsights.test.mjs tests/financeActivityStore.test.mjs tests/financeOverview.render.test.mjs tests/financeActivity.render.test.mjs",
+    "test:finance": "node --test tests/financePlanner.test.mjs tests/finance-planner-store.test.mjs tests/financeInsights.test.mjs tests/financeActivityStore.test.mjs tests/financeOverview.render.test.mjs tests/financeActivity.render.test.mjs tests/financePlanActivity.test.mjs tests/financeBills.render.test.mjs tests/financePlanLedger.render.test.mjs",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f mysql",

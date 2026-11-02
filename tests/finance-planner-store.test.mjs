@@ -13,6 +13,7 @@ const document = () => ({
 test("default is an empty personal planner with a USD salary and real local date", () => {
   const planner = createDefaultFinancePlanner();
   assert.equal(planner.salary.currency, "USD");
+  assert.equal(planner.salary.payFrequency, "biweekly");
   assert.match(planner.salary.firstPayDate, /^\d{4}-\d{2}-\d{2}$/);
   assert.deepEqual(validateFinancePlanner(planner), planner);
 });
@@ -67,6 +68,76 @@ test("requires an annual due month and allows an open due day for both bill freq
   planner.bills[0].cadence = "annual";
   planner.bills[0].dueMonths = [11];
   assert.equal(validateFinancePlanner(planner).bills[0].dueDay, null);
+});
+
+test("monthly payments normalize two due days without changing the total monthly bill amount", () => {
+  const planner = document();
+  Object.assign(planner.bills[0], { cadence: "monthly", amount: 100.01, dueDay: 20, dueDays: [20, 5, 20], dueMonths: [] });
+  const bill = validateFinancePlanner(planner).bills[0];
+  assert.deepEqual(bill.dueDays, [5, 20]);
+  assert.equal(bill.dueDay, 5);
+  assert.equal(bill.amount, 100.01);
+  assert.deepEqual(validateFinancePlanner({ ...planner, bills: [bill] }).bills[0], bill);
+});
+
+test("legacy monthly due days are preserved and explicit empty dates remain open", () => {
+  const planner = document();
+  Object.assign(planner.bills[0], { cadence: "monthly", dueDay: 11, dueMonths: [] });
+  assert.deepEqual(validateFinancePlanner(planner).bills[0].dueDays, [11]);
+  planner.bills[0].dueDays = [];
+  const open = validateFinancePlanner(planner).bills[0];
+  assert.deepEqual(open.dueDays, []);
+  assert.equal(open.dueDay, null);
+  assert.equal(validateFinancePlanner(planner).salary.payFrequency, "semimonthly");
+});
+
+test("monthly schedules reject more than two unique dates and invalid day values", () => {
+  for (const dueDays of [[1, 15, 30], [0, 15], [15, 32], [1.5], ["15"], null, "1,15"]) {
+    const planner = document();
+    Object.assign(planner.bills[0], { cadence: "monthly", dueMonths: [], dueDays });
+    assert.throws(() => validateFinancePlanner(planner), /two monthly due days/);
+  }
+});
+
+test("annual month schedules retain their single due day independently of monthly split dates", () => {
+  const planner = document();
+  planner.bills[0].dueDays = [4, 19];
+  const annual = validateFinancePlanner(planner).bills[0];
+  assert.equal(annual.dueDay, 9);
+  assert.deepEqual(annual.dueMonths, [9]);
+  assert.deepEqual(annual.dueDays, []);
+});
+
+test("legacy plans default to full money flow and distinct zero opening annual reserves", () => {
+  const plan = validateFinancePlanner(document()).plans[0];
+  assert.equal(plan.includeIncome, true);
+  assert.equal(plan.includeTransactions, true);
+  assert.equal(plan.includeAllocations, true);
+  assert.equal(plan.includeAnnualReserve, true);
+  assert.equal(plan.openingReserveUsd, 0);
+  assert.equal(plan.openingReservePhp, 0);
+  assert.equal(plan.openingUsd, 750);
+  assert.equal(plan.openingPhp, 0);
+});
+
+test("plans retain selected flow switches and native opening annual reserves", () => {
+  const planner = document();
+  Object.assign(planner.plans[0], { includeTransactions: false, includeAllocations: false, includeAnnualReserve: false, openingReserveUsd: 120.126, openingReservePhp: 6500.50 });
+  const clean = validateFinancePlanner(planner).plans[0];
+  assert.equal(clean.includeTransactions, false);
+  assert.equal(clean.includeAllocations, false);
+  assert.equal(clean.includeAnnualReserve, false);
+  assert.equal(clean.openingReserveUsd, 120.13);
+  assert.equal(clean.openingReservePhp, 6500.5);
+  assert.deepEqual(validateFinancePlanner({ ...planner, plans: [clean] }).plans[0], clean);
+});
+
+test("reserve balances cannot be negative or nonnumeric and flow switches must be booleans", () => {
+  for (const [key, value] of [["openingReserveUsd", -1], ["openingReservePhp", null], ["openingReservePhp", "500"], ["openingReserveUsd", Infinity], ["openingReserveUsd", 1_000_000_000], ["includeTransactions", "false"], ["includeAllocations", null], ["includeAnnualReserve", 0]]) {
+    const planner = document();
+    planner.plans[0][key] = value;
+    assert.throws(() => validateFinancePlanner(planner));
+  }
 });
 
 test("rejects invalid due days, due months and automatic payment flags", () => {

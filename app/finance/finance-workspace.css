@@ -1,4 +1,78 @@
 /* Navigation and controls shared by the planning and recorded-activity views. */
+.fp-payday-preview {
+  margin-top: 18px;
+  padding: 14px;
+  background: #f0f6f2;
+  border: 1px solid #dce8df;
+  border-radius: 8px;
+}
+.fp-payday-preview > strong {
+  display: block;
+  font-size: 11px;
+  color: #3a6750;
+  margin-bottom: 9px;
+}
+.fp-payday-preview > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.fp-payday-preview > div > span {
+  font-size: 12px;
+  font-weight: 650;
+  color: #365d46;
+}
+.fp-payday-preview small {
+  display: block;
+  font-size: 10px;
+  color: #65766a;
+  margin-top: 3px;
+  font-weight: 400;
+}
+.fp-payday-preview > small {
+  margin-top: 11px;
+}
+.fp-app .fp-plan-flow-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.fp-app .fp-plan-flow-summary > div:first-child strong {
+  font-size: 21px;
+}
+.fp-app .fp-plan-date-range {
+  color: #65766a;
+  font-size: 12px;
+  margin-bottom: 18px;
+}
+.fp-app .fp-plan-flow-note {
+  color: #65766a;
+  font-size: 11px;
+  line-height: 1.8;
+  margin: 15px 0;
+}
+@media (max-width: 1100px) {
+  .fp-app .fp-plan-flow-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  .fp-app .fp-plan-flow-summary > div {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+    padding: 13px;
+  }
+  .fp-app .fp-plan-flow-summary strong,
+  .fp-app .fp-plan-flow-summary > div:first-child strong {
+    font-size: 18px;
+  }
+  .fp-salary-editor .fp-form-footer {
+    flex-wrap: wrap;
+  }
+  .fp-salary-editor .fp-form-footer > small {
+    max-width: 100%;
+  }
+}
 .fp-app .fp-sidebar {
   overflow-y: auto;
 }

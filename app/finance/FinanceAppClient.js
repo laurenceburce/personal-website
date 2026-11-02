@@ -10,9 +10,12 @@ import {
   localDate,
   addDays,
   money,
+  salaryOccurrences,
 } from "../lib/financePlanner.mjs";
 import FinanceInstall from "./FinanceInstall";
 import FinanceOverview from "./FinanceOverview";
+import Ledger from "./FinancePlanLedger";
+import { BillForm, BillsTable } from "./FinanceBills";
 import {
   QuickTransactionForm,
   TransactionsPanel,
@@ -268,26 +271,6 @@ function Modal({ title, children, onClose, busy }) {
     </dialog>
   );
 }
-function DueLabel({ bill }) {
-  if (!bill.dueDay)
-    return (
-      <span className="fp-needs-date">
-        Date not set
-        {bill.cadence === "annual"
-          ? ` · ${bill.dueMonths.map((month) => MONTHS[month - 1]).join(", ")}`
-          : ""}
-      </span>
-    );
-  return bill.cadence === "annual" ? (
-    <>
-      {bill.dueMonths
-        .map((month) => `${MONTHS[month - 1]} ${bill.dueDay}`)
-        .join(" · ")}
-    </>
-  ) : (
-    <>Day {bill.dueDay}</>
-  );
-}
 function Empty({ icon = "receipt", title, children, action }) {
   return (
     <div className="fp-empty">
@@ -412,6 +395,13 @@ function SalaryEditor({ salary, rate, onSave, busy, configured }) {
   const changed = JSON.stringify(draft) !== JSON.stringify(salary);
   const set = (key, value) =>
     setDraft((current) => ({ ...current, [key]: value }));
+  const previewStart =
+    draft.firstPayDate > localDate() ? draft.firstPayDate : localDate();
+  const upcomingPaydays = salaryOccurrences(
+    draft,
+    previewStart,
+    addDays(previewStart, 75),
+  ).slice(0, 4);
   return (
     <form
       className="fp-salary-editor"
@@ -468,13 +458,13 @@ function SalaryEditor({ salary, rate, onSave, busy, configured }) {
             value={draft.payFrequency}
             onChange={(e) => set("payFrequency", e.target.value)}
           >
-            <option value="semimonthly">Twice a month · 24/year</option>
-            <option value="biweekly">Every 2 weeks · 26/year</option>
+            <option value="biweekly">Every 2 weeks · 14 days apart</option>
+            <option value="semimonthly">Twice a month · fixed dates</option>
           </select>
         </Field>
         <Field
-          label="First payday"
-          hint="Used to schedule income in budget plans."
+          label="First payday / schedule anchor"
+          hint="Every-two-weeks schedules repeat exactly 14 days from this date."
         >
           <input
             type="date"
@@ -483,6 +473,23 @@ function SalaryEditor({ salary, rate, onSave, busy, configured }) {
             onChange={(e) => set("firstPayDate", e.target.value)}
           />
         </Field>
+      </div>
+      <div className="fp-payday-preview" aria-live="polite">
+        <strong>Next paydays</strong>
+        <div>
+          {upcomingPaydays.map((payday) => (
+            <span key={payday.date}>
+              {formatDate(payday.date, { year: "numeric" })}
+              <small>{money(payday.amount, payday.currency)}</small>
+            </span>
+          ))}
+        </div>
+        {changed && (
+          <small>
+            Save your salary and schedule to apply these dates to every budget
+            plan.
+          </small>
+        )}
       </div>
       <div className="fp-form-footer">
         <small>
@@ -499,168 +506,6 @@ function SalaryEditor({ salary, rate, onSave, busy, configured }) {
           {busy ? "Saving…" : "Save salary"}
         </Button>
       </div>
-    </form>
-  );
-}
-
-function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
-  const [draft, setDraft] = useState(
-    bill || {
-      name: "",
-      amount: "",
-      currency: "USD",
-      cadence,
-      dueDay: "",
-      dueMonths: [Number(localDate().slice(5, 7))],
-      paymentMethod: "",
-      isAutopay: false,
-    },
-  );
-  const set = (key, value) =>
-    setDraft((current) => ({ ...current, [key]: value }));
-  const annual = draft.cadence === "annual";
-  return (
-    <form
-      className="fp-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSave({
-          ...draft,
-          id: draft.id || uid(),
-          amount: amount(draft.amount),
-          dueDay: draft.dueDay ? Number(draft.dueDay) : null,
-        });
-      }}
-    >
-      <Field label="Item">
-        <input
-          required
-          autoFocus
-          maxLength={120}
-          placeholder="e.g. Google, rent, car insurance"
-          value={draft.name}
-          onChange={(e) => set("name", e.target.value)}
-        />
-      </Field>
-      <div className="fp-form-grid">
-        <Field label={annual ? "Total annual amount" : "Monthly amount"}>
-          <input
-            required
-            type="number"
-            min="0.01"
-            max="999999999"
-            step="0.01"
-            inputMode="decimal"
-            value={draft.amount}
-            onChange={(e) => set("amount", e.target.value)}
-          />
-        </Field>
-        <Field label="Paid in">
-          <CurrencySelect
-            value={draft.currency}
-            onChange={(value) => set("currency", value)}
-          />
-        </Field>
-      </div>
-      <div
-        className={`fp-conversion-note fp-currency-${draft.currency.toLowerCase()}`}
-      >
-        {money(
-          convert(
-            draft.amount,
-            draft.currency,
-            draft.currency === "USD" ? "PHP" : "USD",
-            rate,
-          ),
-          draft.currency === "USD" ? "PHP" : "USD",
-        )}{" "}
-        equivalent
-        {annual && (
-          <> · Save {money(amount(draft.amount) / 12, draft.currency)}/month</>
-        )}
-      </div>
-      <div className="fp-form-grid">
-        <Field label="Repeats">
-          <select
-            value={draft.cadence}
-            onChange={(e) => set("cadence", e.target.value)}
-          >
-            <option value="monthly">Monthly</option>
-            <option value="annual">Annually</option>
-          </select>
-        </Field>
-        <Field label="Due day" hint="Shorter months use their last day.">
-          <input
-            type="number"
-            min="1"
-            max="31"
-            step="1"
-            placeholder="1–31 (optional)"
-            value={draft.dueDay ?? ""}
-            onChange={(e) => set("dueDay", e.target.value)}
-          />
-        </Field>
-      </div>
-      {annual && (
-        <fieldset className="fp-month-field">
-          <legend>Payment month{draft.dueMonths.length > 1 ? "s" : ""}</legend>
-          <div>
-            {MONTHS.map((name, index) => (
-              <label key={name}>
-                <input
-                  type="checkbox"
-                  checked={draft.dueMonths.includes(index + 1)}
-                  onChange={(e) =>
-                    set(
-                      "dueMonths",
-                      e.target.checked
-                        ? [...draft.dueMonths, index + 1].sort((a, b) => a - b)
-                        : draft.dueMonths.filter(
-                            (month) => month !== index + 1,
-                          ),
-                    )
-                  }
-                />
-                {name}
-              </label>
-            ))}
-          </div>
-          <small>
-            Select multiple months to split the annual total into equal
-            installments.
-          </small>
-        </fieldset>
-      )}
-      <Field label="Payment method (optional)">
-        <input
-          maxLength={80}
-          placeholder="e.g. US Bank Credit, RCBC, cash"
-          value={draft.paymentMethod}
-          onChange={(e) => set("paymentMethod", e.target.value)}
-        />
-      </Field>
-      <label className="fp-checkbox">
-        <input
-          type="checkbox"
-          checked={draft.isAutopay}
-          onChange={(e) => set("isAutopay", e.target.checked)}
-        />
-        Automatic payment is enabled
-      </label>
-      {!draft.dueDay && (
-        <p className="fp-inline-note">
-          Add a due day to include this bill automatically in dated budget
-          plans.
-        </p>
-      )}
-      <Button
-        type="submit"
-        variant="primary"
-        icon="check"
-        disabled={busy || disabled || (annual && !draft.dueMonths.length)}
-      >
-        {busy ? "Saving…" : bill ? "Save changes" : "Add bill"}
-      </Button>
     </form>
   );
 }
@@ -734,17 +579,21 @@ function AllocationForm({ row, onSave, busy, disabled }) {
 
 function PlanForm({ plan, onSave, busy, disabled }) {
   const today = localDate();
-  const [draft, setDraft] = useState(
-    plan || {
-      name: "",
-      startDate: today,
-      endDate: addDays(today, 30),
-      openingUsd: 0,
-      openingPhp: 0,
-      includeIncome: true,
-      entries: [],
-    },
-  );
+  const [draft, setDraft] = useState({
+    name: "",
+    startDate: today,
+    endDate: addDays(today, 30),
+    openingUsd: 0,
+    openingPhp: 0,
+    includeIncome: true,
+    includeTransactions: true,
+    includeAllocations: true,
+    includeAnnualReserve: true,
+    openingReserveUsd: 0,
+    openingReservePhp: 0,
+    entries: [],
+    ...plan,
+  });
   const set = (key, value) =>
     setDraft((current) => ({ ...current, [key]: value }));
   return (
@@ -757,6 +606,8 @@ function PlanForm({ plan, onSave, busy, disabled }) {
           id: draft.id || uid(),
           openingUsd: amount(draft.openingUsd),
           openingPhp: amount(draft.openingPhp),
+          openingReserveUsd: amount(draft.openingReserveUsd),
+          openingReservePhp: amount(draft.openingReservePhp),
         });
       }}
     >
@@ -791,7 +642,7 @@ function PlanForm({ plan, onSave, busy, disabled }) {
         </Field>
       </div>
       <div className="fp-form-grid">
-        <Field label="Starting balance · USD">
+        <Field label="Starting available balance · USD">
           <input
             required
             type="number"
@@ -802,7 +653,7 @@ function PlanForm({ plan, onSave, busy, disabled }) {
             onChange={(e) => set("openingUsd", e.target.value)}
           />
         </Field>
-        <Field label="Starting balance · PHP">
+        <Field label="Starting available balance · PHP">
           <input
             required
             type="number"
@@ -814,6 +665,36 @@ function PlanForm({ plan, onSave, busy, disabled }) {
           />
         </Field>
       </div>
+      <div className="fp-form-grid">
+        <Field label="Already reserved for annual bills · USD">
+          <input
+            required
+            type="number"
+            min="0"
+            max="999999999"
+            step="0.01"
+            value={draft.openingReserveUsd}
+            onChange={(event) => set("openingReserveUsd", event.target.value)}
+          />
+        </Field>
+        <Field label="Already reserved for annual bills · PHP">
+          <input
+            required
+            type="number"
+            min="0"
+            max="999999999"
+            step="0.01"
+            value={draft.openingReservePhp}
+            onChange={(event) => set("openingReservePhp", event.target.value)}
+          />
+        </Field>
+      </div>
+      <p className="fp-inline-note">
+        Enter balances at the start of the first date, before that day’s flows.
+        Available balances exclude money already reserved for annual bills.
+        Enter actual reserved funds; savings targets are not assumed to be money
+        you have saved.
+      </p>
       <label className="fp-checkbox">
         <input
           type="checkbox"
@@ -822,10 +703,37 @@ function PlanForm({ plan, onSave, busy, disabled }) {
         />
         Include scheduled salary payments
       </label>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={draft.includeTransactions}
+          onChange={(event) => set("includeTransactions", event.target.checked)}
+        />
+        Include recorded and scheduled one-time transactions
+      </label>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={draft.includeAllocations}
+          onChange={(event) => set("includeAllocations", event.target.checked)}
+        />
+        Include savings and expense allocations each payday
+      </label>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={draft.includeAnnualReserve}
+          onChange={(event) =>
+            set("includeAnnualReserve", event.target.checked)
+          }
+        />
+        Set aside money for annual bills each payday
+      </label>
       <p className="fp-inline-note">
-        Bills with due dates appear automatically. Each plan is a forecast; it
-        doesn’t record real payments. Changes to salary, bills, or the exchange
-        rate update every forecast.
+        Bills with due dates appear automatically. Annual set-asides reduce
+        available funds and increase your reserve. When an annual bill is paid,
+        the plan uses that reserve first. Matched recorded payments replace
+        scheduled flows. Plans do not move money or record bank payments.
       </p>
       <Button type="submit" variant="primary" disabled={busy || disabled}>
         {busy ? "Saving…" : plan ? "Save plan" : "Create plan"}
@@ -935,302 +843,11 @@ function EntryForm({ entry, plan, onSave, busy, disabled, rate }) {
   );
 }
 
-function BillsTable({
-  bills,
-  cadence,
-  summary,
-  rate,
-  onAdd,
-  onEdit,
-  onDelete,
-}) {
-  if (!bills.length && !(cadence === "monthly" && summary.annualUsd > 0))
-    return (
-      <Empty
-        title={`Your ${cadence} bills go here`}
-        action={
-          <Button icon="plus" variant="primary" onClick={onAdd}>
-            Add your first bill
-          </Button>
-        }
-      >
-        Enter the amount in the currency you actually pay. We’ll handle the
-        conversion.
-      </Empty>
-    );
-  return (
-    <div className="fp-table-wrap">
-      <table className="fp-table fp-bills-table">
-        <thead>
-          <tr>
-            <th>Item</th>
-            <th>Amount · USD</th>
-            <th>Amount · PHP</th>
-            {cadence === "annual" && <th>Save / month</th>}
-            <th>Due date</th>
-            <th>Auto payment</th>
-            <th>
-              <span className="fp-sr-only">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {bills.map((bill) => (
-            <tr key={bill.id}>
-              <td data-label="Item">
-                <span className="fp-bill-name">
-                  <span
-                    className={`fp-bill-monogram fp-currency-${bill.currency.toLowerCase()}`}
-                  >
-                    {bill.name.slice(0, 1).toUpperCase()}
-                  </span>
-                  <span>
-                    <strong>{bill.name}</strong>
-                    <small>
-                      Paid in {bill.currency}
-                      {cadence === "annual" && bill.dueMonths.length > 1
-                        ? ` · ${bill.dueMonths.length} installments`
-                        : ""}
-                    </small>
-                  </span>
-                </span>
-              </td>
-              <td data-label="USD">
-                <span
-                  className={
-                    bill.currency === "USD"
-                      ? "fp-native fp-currency-usd"
-                      : "fp-equivalent"
-                  }
-                >
-                  {money(convert(bill.amount, bill.currency, "USD", rate))}
-                </span>
-              </td>
-              <td data-label="PHP">
-                <span
-                  className={
-                    bill.currency === "PHP"
-                      ? "fp-native fp-currency-php"
-                      : "fp-equivalent"
-                  }
-                >
-                  {money(
-                    convert(bill.amount, bill.currency, "PHP", rate),
-                    "PHP",
-                  )}
-                </span>
-              </td>
-              {cadence === "annual" && (
-                <td data-label="Save / month">
-                  <strong>
-                    {money(
-                      convert(bill.amount / 12, bill.currency, "USD", rate),
-                    )}
-                  </strong>
-                  <small>
-                    {money(
-                      convert(bill.amount / 12, bill.currency, "PHP", rate),
-                      "PHP",
-                    )}
-                  </small>
-                </td>
-              )}
-              <td data-label="Due date">
-                <DueLabel bill={bill} />
-              </td>
-              <td data-label="Auto payment">
-                <span>{bill.paymentMethod || "—"}</span>
-                <small>{bill.isAutopay ? "Automatic" : "Manual"}</small>
-              </td>
-              <td data-label="Actions">
-                <div className="fp-row-actions">
-                  <Button
-                    icon="edit"
-                    className="fp-icon-button"
-                    aria-label={`Edit ${bill.name}`}
-                    onClick={() => onEdit(bill)}
-                  />
-                  <Button
-                    icon="trash"
-                    className="fp-icon-button"
-                    aria-label={`Delete ${bill.name}`}
-                    onClick={() => onDelete(bill)}
-                  />
-                </div>
-              </td>
-            </tr>
-          ))}
-          {cadence === "monthly" && (
-            <tr className="fp-reserve-row">
-              <td data-label="Item">
-                <strong>Annual bills reserve</strong>
-                <small>Set aside each month</small>
-              </td>
-              <td data-label="USD">
-                <strong>{money(summary.annualMonthlyUsd)}</strong>
-              </td>
-              <td data-label="PHP">
-                <strong>{money(summary.annualMonthlyPhp, "PHP")}</strong>
-              </td>
-              <td data-label="Due date">Monthly savings</td>
-              <td data-label="Auto payment">For your annual bills</td>
-              <td />
-            </tr>
-          )}
-        </tbody>
-        <tfoot>
-          <tr>
-            <td>
-              {cadence === "annual" ? "Annual total" : "Total monthly bills"}
-            </td>
-            <td>
-              {money(
-                cadence === "annual"
-                  ? summary.annualUsd
-                  : summary.monthlyCommitmentsUsd,
-              )}
-            </td>
-            <td>
-              {money(
-                cadence === "annual"
-                  ? summary.annualPhp
-                  : summary.monthlyCommitmentsPhp,
-                "PHP",
-              )}
-            </td>
-            {cadence === "annual" && (
-              <td>
-                {money(summary.annualMonthlyUsd)}
-                <small>per month</small>
-              </td>
-            )}
-            <td colSpan="3" />
-          </tr>
-        </tfoot>
-      </table>
-    </div>
-  );
-}
-
-function Ledger({ plan, rows, onEdit, onDelete }) {
-  return (
-    <div
-      className="fp-table-wrap fp-ledger-wrap"
-      role="region"
-      aria-label="Budget running balance, scroll horizontally on small screens"
-      tabIndex={0}
-    >
-      <table className="fp-table fp-ledger">
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Description</th>
-            <th>USD</th>
-            <th>PHP</th>
-            <th className="fp-running">Balance · USD</th>
-            <th className="fp-running">Balance · PHP</th>
-            <th>
-              <span className="fp-sr-only">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr className="fp-opening-row">
-            <td>{formatDate(plan.startDate)}</td>
-            <td>
-              <strong>Starting balance</strong>
-            </td>
-            <td>—</td>
-            <td>—</td>
-            <td className="fp-running">{money(plan.openingUsd)}</td>
-            <td className="fp-running">{money(plan.openingPhp, "PHP")}</td>
-            <td />
-          </tr>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td>{formatDate(row.date)}</td>
-              <td>
-                <strong>{row.description}</strong>
-                <small>
-                  {row.source === "salary"
-                    ? "Scheduled income"
-                    : row.source === "bill"
-                      ? "Automatic bill"
-                      : row.kind === "conversion"
-                        ? "Currency conversion"
-                        : "Your entry"}
-                </small>
-              </td>
-              <td
-                className={
-                  row.usd < 0
-                    ? "fp-negative"
-                    : row.usd > 0
-                      ? "fp-positive"
-                      : "fp-zero"
-                }
-              >
-                {row.usd ? signed(row.usd, "USD") : "—"}
-              </td>
-              <td
-                className={
-                  row.php < 0
-                    ? "fp-negative"
-                    : row.php > 0
-                      ? "fp-positive"
-                      : "fp-zero"
-                }
-              >
-                {row.php ? signed(row.php, "PHP") : "—"}
-              </td>
-              <td
-                className={`fp-running ${row.balanceUsd < 0 ? "fp-negative" : ""}`}
-              >
-                {money(row.balanceUsd)}
-              </td>
-              <td
-                className={`fp-running ${row.balancePhp < 0 ? "fp-negative" : ""}`}
-              >
-                {money(row.balancePhp, "PHP")}
-              </td>
-              <td>
-                {row.source === "manual" && (
-                  <div className="fp-row-actions">
-                    <Button
-                      icon="edit"
-                      className="fp-icon-button"
-                      aria-label={`Edit ${row.description}`}
-                      onClick={() =>
-                        onEdit(
-                          plan.entries.find((item) => item.id === row.entryId),
-                        )
-                      }
-                    />
-                    <Button
-                      icon="trash"
-                      className="fp-icon-button"
-                      aria-label={`Delete ${row.description}`}
-                      onClick={() =>
-                        onDelete(
-                          plan.entries.find((item) => item.id === row.entryId),
-                        )
-                      }
-                    />
-                  </div>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 export default function FinanceAppClient({
   snapshot,
   initialTab,
   initialActivity,
+  initialPlanActivity = null,
 }) {
   const [state, setState] = useState(snapshot);
   const [tab, setTab] = useState(normalizeTab(initialTab));
@@ -1239,6 +856,10 @@ export default function FinanceAppClient({
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState("");
+  const [planActivity, setPlanActivity] = useState(initialPlanActivity);
+  const [planActivityLoading, setPlanActivityLoading] = useState(false);
+  const [planActivityError, setPlanActivityError] = useState("");
+  const [recordRefreshVersion, setRecordRefreshVersion] = useState(0);
   const [cadence, setCadence] = useState("monthly");
   const [modal, setModal] = useState(null);
   const [selectedPlanId, setSelectedPlanId] = useState(
@@ -1255,16 +876,55 @@ export default function FinanceAppClient({
     document.plans.find((item) => item.id === selectedPlanId) ||
     document.plans[0];
   const planRows = useMemo(
-    () => (plan ? buildPlanRows(plan, document, rate) : []),
-    [plan, document, rate],
+    () =>
+      plan
+        ? buildPlanRows(plan, document, rate, {
+            transactions:
+              planActivity?.from === plan.startDate &&
+              planActivity?.to === plan.endDate
+                ? planActivity.transactions
+                : [],
+          })
+        : [],
+    [plan, document, rate, planActivity],
+  );
+  const planRecordsMatch = Boolean(
+    plan &&
+    planActivity?.from === plan.startDate &&
+    planActivity?.to === plan.endDate,
+  );
+  const planWaitingForRecords = Boolean(
+    plan &&
+    plan.includeTransactions !== false &&
+    !planRecordsMatch &&
+    !planActivityError,
   );
   const isBiweekly = document.salary.payFrequency === "biweekly";
   const activeNav = NAV.find((item) => item.id === tab);
   const undated = document.bills.filter((bill) => !bill.dueDay);
   const saveLock = useRef(false);
   const activityRequest = useRef(0);
+  const planActivityRequest = useRef(0);
   const selectedMonthRef = useRef(selectedMonth);
   const pageCopy = PAGE_COPY[tab];
+  useEffect(() => {
+    if (tab !== "plans" || !plan || plan.includeTransactions === false) return;
+    if (
+      recordRefreshVersion === 0 &&
+      planActivity?.configured &&
+      planActivity.from === plan.startDate &&
+      planActivity.to === plan.endDate
+    )
+      return;
+    loadPlanActivity(plan);
+  }, [
+    tab,
+    plan?.id,
+    plan?.startDate,
+    plan?.endDate,
+    plan?.includeTransactions,
+    recordRefreshVersion,
+  ]);
 
   useEffect(() => {
     const onPop = () => {
@@ -1332,13 +992,53 @@ export default function FinanceAppClient({
         throw new Error(
           result.error || "Could not refresh your transactions and accounts.",
         );
-      if (requestId === activityRequest.current) setActivity(result);
+      if (requestId === activityRequest.current) {
+        setActivity(result);
+        setRecordRefreshVersion((version) => version + 1);
+      }
       return true;
     } catch (err) {
       if (requestId === activityRequest.current) setActivityError(err.message);
       return false;
     } finally {
       if (requestId === activityRequest.current) setActivityLoading(false);
+    }
+  }
+  async function loadPlanActivity(targetPlan = plan) {
+    if (!targetPlan || targetPlan.includeTransactions === false) return true;
+    const requestId = ++planActivityRequest.current;
+    setPlanActivityLoading(true);
+    setPlanActivityError("");
+    try {
+      const query = new URLSearchParams({
+        start: targetPlan.startDate,
+        end: targetPlan.endDate,
+      });
+      const response = await fetch(`/api/finance/plan-activity?${query}`, {
+        cache: "no-store",
+      });
+      const result = await response.json();
+      if (!response.ok)
+        throw new Error(
+          result.error ||
+            "Recorded money flows could not be loaded for these dates.",
+        );
+      if (requestId === planActivityRequest.current) {
+        setPlanActivity(result);
+        if (!result.configured)
+          setPlanActivityError(
+            result.warning ||
+              "Recorded money flows are unavailable. The plan currently contains scheduled flows and your plan entries only.",
+          );
+      }
+      return result.configured;
+    } catch (err) {
+      if (requestId === planActivityRequest.current)
+        setPlanActivityError(err.message);
+      return false;
+    } finally {
+      if (requestId === planActivityRequest.current)
+        setPlanActivityLoading(false);
     }
   }
   function changeMonth(month) {
@@ -2068,7 +1768,10 @@ export default function FinanceAppClient({
                       <button
                         key={item.id}
                         className={plan.id === item.id ? "active" : ""}
-                        onClick={() => setSelectedPlanId(item.id)}
+                        onClick={() => {
+                          setPlanActivityError("");
+                          setSelectedPlanId(item.id);
+                        }}
                       >
                         <Icon name="calendar" size={17} />
                         <span>
@@ -2085,9 +1788,20 @@ export default function FinanceAppClient({
                     <div className="fp-card-heading">
                       <div>
                         <h2>{plan.name}</h2>
-                        <span className="fp-label-pill">Forecast</span>
+                        <span className="fp-label-pill">Money flow</span>
                       </div>
                       <div className="fp-button-row">
+                        {plan.includeTransactions !== false && (
+                          <Button
+                            icon="refresh"
+                            disabled={planActivityLoading}
+                            onClick={() => loadPlanActivity(plan)}
+                          >
+                            {planActivityLoading
+                              ? "Refreshing flows…"
+                              : "Refresh flows"}
+                          </Button>
+                        )}
                         <Button
                           icon="edit"
                           onClick={() => open({ type: "plan", plan })}
@@ -2115,16 +1829,14 @@ export default function FinanceAppClient({
                         </Button>
                       </div>
                     </div>
-                    <div className="fp-plan-summary">
+                    <p className="fp-plan-date-range">
+                      {formatDate(plan.startDate, { year: "numeric" })} –{" "}
+                      {formatDate(plan.endDate, { year: "numeric" })} · Balances
+                      begin before the first day’s flows.
+                    </p>
+                    <div className="fp-plan-summary fp-plan-flow-summary">
                       <div>
-                        <span>Date range</span>
-                        <strong>
-                          {formatDate(plan.startDate)} –{" "}
-                          {formatDate(plan.endDate)}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Ending balance · USD</span>
+                        <span>Available funds · USD</span>
                         <strong
                           className={
                             (planRows.at(-1)?.balanceUsd ?? plan.openingUsd) < 0
@@ -2132,13 +1844,15 @@ export default function FinanceAppClient({
                               : "fp-positive"
                           }
                         >
-                          {money(
-                            planRows.at(-1)?.balanceUsd ?? plan.openingUsd,
-                          )}
+                          {planWaitingForRecords
+                            ? "—"
+                            : money(
+                                planRows.at(-1)?.balanceUsd ?? plan.openingUsd,
+                              )}
                         </strong>
                       </div>
                       <div>
-                        <span>Ending balance · PHP</span>
+                        <span>Available funds · PHP</span>
                         <strong
                           className={
                             (planRows.at(-1)?.balancePhp ?? plan.openingPhp) < 0
@@ -2146,13 +1860,80 @@ export default function FinanceAppClient({
                               : ""
                           }
                         >
-                          {money(
-                            planRows.at(-1)?.balancePhp ?? plan.openingPhp,
-                            "PHP",
-                          )}
+                          {planWaitingForRecords
+                            ? "—"
+                            : money(
+                                planRows.at(-1)?.balancePhp ?? plan.openingPhp,
+                                "PHP",
+                              )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Annual reserve · USD</span>
+                        <strong>
+                          {planWaitingForRecords
+                            ? "—"
+                            : money(
+                                planRows.at(-1)?.reserveUsd ??
+                                  plan.openingReserveUsd ??
+                                  0,
+                              )}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Annual reserve · PHP</span>
+                        <strong>
+                          {planWaitingForRecords
+                            ? "—"
+                            : money(
+                                planRows.at(-1)?.reservePhp ??
+                                  plan.openingReservePhp ??
+                                  0,
+                                "PHP",
+                              )}
                         </strong>
                       </div>
                     </div>
+                    {plan.includeTransactions !== false &&
+                      planActivityError && (
+                        <div
+                          className="fp-alert fp-alert-warning"
+                          role="status"
+                        >
+                          {planActivityError}{" "}
+                          {planRecordsMatch
+                            ? "Review the loaded records before relying on the ending balances."
+                            : "Scheduled flows and your plan entries are shown without recorded transactions."}
+                          <Button
+                            variant="text"
+                            onClick={() => loadPlanActivity(plan)}
+                          >
+                            Retry recorded flows
+                          </Button>
+                        </div>
+                      )}
+                    {plan.includeTransactions !== false &&
+                      planRecordsMatch &&
+                      planActivity?.warning &&
+                      !planActivityError && (
+                        <div
+                          className="fp-alert fp-alert-warning"
+                          role="status"
+                        >
+                          {planActivity.warning}
+                        </div>
+                      )}
+                    {plan.includeTransactions !== false &&
+                      planRecordsMatch &&
+                      planActivity?.transactions.some(
+                        (transaction) => transaction.pending,
+                      ) && (
+                        <p className="fp-plan-flow-note">
+                          Pending bank entries are not deducted until posted.
+                          Scheduled bill payments remain in the plan until a
+                          matching recorded payment replaces them.
+                        </p>
+                      )}
                     {undated.length > 0 && (
                       <p className="fp-plan-warning">
                         {undated.map((bill) => bill.name).join(", ")}{" "}
@@ -2165,18 +1946,34 @@ export default function FinanceAppClient({
                         </button>
                       </p>
                     )}
-                    <Ledger
-                      plan={plan}
-                      rows={planRows}
-                      onEdit={(entry) => open({ type: "entry", entry })}
-                      onDelete={(row) => open({ type: "deleteEntry", row })}
-                    />
-                    <div className="fp-ledger-note">
-                      <Icon name="refresh" size={14} />
-                      Bills, salary, and conversions update with your current
-                      settings. Annual reserves aren’t deducted here; actual
-                      annual bills appear on their due dates.
-                    </div>
+                    {planWaitingForRecords ? (
+                      <div className="fp-card fp-loading-state" role="status">
+                        Loading recorded money flows for these dates…
+                      </div>
+                    ) : (
+                      <Ledger
+                        plan={plan}
+                        rows={planRows}
+                        onEdit={(entry) => open({ type: "entry", entry })}
+                        onDelete={(row) => open({ type: "deleteEntry", row })}
+                      />
+                    )}
+                    <p className="fp-plan-flow-note">
+                      This plan includes dated bills and your plan entries
+                      {plan.includeIncome ? ", scheduled salary" : ""}
+                      {plan.includeAllocations !== false
+                        ? ", payday savings and expense allocations"
+                        : ""}
+                      {plan.includeAnnualReserve !== false
+                        ? ", annual-bill set-asides"
+                        : ""}
+                      {plan.includeTransactions !== false
+                        ? ", and recorded transactions across the full date range (including transfers)"
+                        : ""}
+                      . Matching posted flows replace their scheduled rows. Add
+                      currency-conversion entries when one currency needs
+                      funding.
+                    </p>
                   </section>
                 </>
               )}

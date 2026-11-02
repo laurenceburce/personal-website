@@ -29,7 +29,7 @@ function today() {
 
 export function createDefaultFinancePlanner() {
   return {
-    salary: { amount: 2000, currency: "USD", payFrequency: "semimonthly", firstPayDate: today() },
+    salary: { amount: 2000, currency: "USD", payFrequency: "biweekly", firstPayDate: today() },
     bills: [], allocations: [], plans: []
   };
 }
@@ -98,8 +98,18 @@ export function validateFinancePlanner(value) {
     },
     bills: rows(source.bills, "Bills", 300, (bill) => {
       const cadence = oneOf(bill.cadence, ["monthly", "annual"], "Bill frequency");
-      const dueDay = bill.dueDay;
-      if (dueDay !== null && (!Number.isInteger(dueDay) || dueDay < 1 || dueDay > 31)) throw plannerError("Bill due day must be between 1 and 31, or left open.");
+      const legacyDueDay = bill.dueDay ?? null;
+      if (legacyDueDay !== null && (!Number.isInteger(legacyDueDay) || legacyDueDay < 1 || legacyDueDay > 31)) throw plannerError("Bill due day must be between 1 and 31, or left open.");
+      let dueDays = [];
+      if (cadence === "monthly") {
+        const inputDays = bill.dueDays === undefined ? (legacyDueDay === null ? [] : [legacyDueDay]) : bill.dueDays;
+        if (!Array.isArray(inputDays) || inputDays.length > 31 || inputDays.some((day) => !Number.isInteger(day) || day < 1 || day > 31)) {
+          throw plannerError("Choose up to two monthly due days between 1 and 31.");
+        }
+        dueDays = [...new Set(inputDays)].sort((a, b) => a - b);
+        if (dueDays.length > 2) throw plannerError("Choose up to two monthly due days between 1 and 31.");
+      }
+      const dueDay = cadence === "monthly" ? (dueDays[0] ?? null) : legacyDueDay;
       if (!Array.isArray(bill.dueMonths) || bill.dueMonths.length > 12 || bill.dueMonths.some((month) => !Number.isInteger(month) || month < 1 || month > 12)) {
         throw plannerError("Bill due months must be between 1 and 12.");
       }
@@ -107,7 +117,7 @@ export function validateFinancePlanner(value) {
       if (cadence === "annual" && !dueMonths.length) throw plannerError("Choose at least one due month for annual bills.");
       return {
         name: text(bill.name, "Bill item", 120), amount: amount(bill.amount, "Bill amount"),
-        currency: oneOf(bill.currency, ["USD", "PHP"], "Bill currency"), cadence, dueDay,
+        currency: oneOf(bill.currency, ["USD", "PHP"], "Bill currency"), cadence, dueDay, dueDays,
         dueMonths: cadence === "annual" ? dueMonths : [],
         paymentMethod: text(bill.paymentMethod, "Payment method", 80, true),
         isAutopay: boolean(bill.isAutopay, "Automatic payment")
@@ -128,7 +138,12 @@ export function validateFinancePlanner(value) {
         name: text(plan.name, "Plan name", 120), startDate, endDate,
         openingUsd: amount(plan.openingUsd, "Opening USD balance", true),
         openingPhp: amount(plan.openingPhp, "Opening PHP balance", true),
+        openingReserveUsd: amount(plan.openingReserveUsd === undefined ? 0 : plan.openingReserveUsd, "Opening annual reserve USD"),
+        openingReservePhp: amount(plan.openingReservePhp === undefined ? 0 : plan.openingReservePhp, "Opening annual reserve PHP"),
         includeIncome: boolean(plan.includeIncome, "Include salary"),
+        includeTransactions: plan.includeTransactions === undefined ? true : boolean(plan.includeTransactions, "Include recorded transactions"),
+        includeAllocations: plan.includeAllocations === undefined ? true : boolean(plan.includeAllocations, "Include payday allocations"),
+        includeAnnualReserve: plan.includeAnnualReserve === undefined ? true : boolean(plan.includeAnnualReserve, "Include annual reserves"),
         entries: rows(plan.entries, "Plan entries", 1000, (entry) => {
           const entryDate = date(entry.date, "Entry date");
           if (entryDate < startDate || entryDate > endDate) throw plannerError("Entry dates must be within the plan's date range.");

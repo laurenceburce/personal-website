@@ -1,18 +1,55 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  addDays, billOccurrences, buildPlanRows, convert, formatDate, getSummary, localDate, salaryOccurrences
+  addDays,
+  annualSavingsTarget,
+  billDueDays,
+  billOccurrences,
+  buildPlanRows,
+  convert,
+  formatDate,
+  getSummary,
+  localDate,
+  salaryOccurrences,
 } from "../app/lib/financePlanner.mjs";
 
-const salary = { amount: 2000, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-06" };
-const monthly = (id, amount, currency = "USD", dueDay = 18) => ({ id, name: id, amount, currency, cadence: "monthly", dueDay, dueMonths: [] });
-const annual = (id, amount, currency = "USD", dueDay = 9, dueMonths = [9]) => ({ id, name: id, amount, currency, cadence: "annual", dueDay, dueMonths });
+const salary = {
+  amount: 2000,
+  currency: "USD",
+  payFrequency: "semimonthly",
+  firstPayDate: "2026-11-06",
+};
+const monthly = (id, amount, currency = "USD", dueDay = 18) => ({
+  id,
+  name: id,
+  amount,
+  currency,
+  cadence: "monthly",
+  dueDay,
+  dueMonths: [],
+});
+const annual = (id, amount, currency = "USD", dueDay = 9, dueMonths = [9]) => ({
+  id,
+  name: id,
+  amount,
+  currency,
+  cadence: "annual",
+  dueDay,
+  dueMonths,
+});
 
 test("monthly and pay-period summaries reserve annual bills exactly once", () => {
   const document = {
     salary,
-    bills: [monthly("US bills", 62), monthly("PH bills", 4200, "PHP"), annual("Microsoft", 100), annual("Domain", 20), annual("Car", 500, "USD", 9, [3, 9]), annual("Venture X", 395)],
-    allocations: [{ amount: 500, currency: "USD", kind: "savings" }]
+    bills: [
+      monthly("US bills", 62),
+      monthly("PH bills", 4200, "PHP"),
+      annual("Microsoft", 100),
+      annual("Domain", 20),
+      annual("Car", 500, "USD", 9, [3, 9]),
+      annual("Venture X", 395),
+    ],
+    allocations: [{ amount: 500, currency: "USD", kind: "savings" }],
   };
   const summary = getSummary(document, 63);
   assert.equal(summary.monthlyUsd, 2000);
@@ -29,7 +66,11 @@ test("monthly and pay-period summaries reserve annual bills exactly once", () =>
 });
 
 test("true biweekly pay annualizes income and expenses over 26 periods", () => {
-  const document = { salary: { ...salary, payFrequency: "biweekly" }, bills: [monthly("Bills", 260), annual("Annual", 260)], allocations: [] };
+  const document = {
+    salary: { ...salary, payFrequency: "biweekly" },
+    bills: [monthly("Bills", 260), annual("Annual", 260)],
+    allocations: [],
+  };
   const summary = getSummary(document, 63);
   assert.equal(summary.payPeriods, 26);
   assert.equal(summary.incomePerPeriodUsd, 923.08);
@@ -39,7 +80,14 @@ test("true biweekly pay annualizes income and expenses over 26 periods", () => {
 });
 
 test("PHP salary and allocations keep native currency and convert once", () => {
-  const summary = getSummary({ salary: { ...salary, amount: 126000, currency: "PHP" }, bills: [annual("PHP annual", 6300, "PHP")], allocations: [{ amount: 6300, currency: "PHP" }] }, 63);
+  const summary = getSummary(
+    {
+      salary: { ...salary, amount: 126000, currency: "PHP" },
+      bills: [annual("PHP annual", 6300, "PHP")],
+      allocations: [{ amount: 6300, currency: "PHP" }],
+    },
+    63,
+  );
   assert.equal(summary.monthlyUsd, 2000);
   assert.equal(summary.monthlyPhp, 126000);
   assert.equal(summary.annualUsd, 100);
@@ -47,62 +95,171 @@ test("PHP salary and allocations keep native currency and convert once", () => {
 });
 
 test("PHP summary totals preserve native cents instead of round-tripping rounded USD", () => {
-  const summary = getSummary({
-    salary: { ...salary, amount: 1000.01, currency: "PHP" },
-    bills: [monthly("PHP monthly", 169.01, "PHP"), monthly("USD monthly", 2), annual("PHP annual", 1015.01, "PHP"), annual("USD annual", 20)],
-    allocations: []
-  }, 63);
+  const summary = getSummary(
+    {
+      salary: { ...salary, amount: 1000.01, currency: "PHP" },
+      bills: [
+        monthly("PHP monthly", 169.01, "PHP"),
+        monthly("USD monthly", 2),
+        annual("PHP annual", 1015.01, "PHP"),
+        annual("USD annual", 20),
+      ],
+      allocations: [],
+    },
+    63,
+  );
   assert.equal(summary.annualPhp, 2275.01);
   assert.equal(summary.annualMonthlyPhp, 189.58);
   assert.equal(summary.monthlyCommitmentsPhp, 484.59);
   assert.equal(summary.monthlyRemainingPhp, 515.42);
-  assert.notEqual(summary.annualPhp, convert(summary.annualUsd, "USD", "PHP", 63));
+  assert.notEqual(
+    summary.annualPhp,
+    convert(summary.annualUsd, "USD", "PHP", 63),
+  );
 });
 
 test("monthly dates clamp to month end across leap years and year boundaries", () => {
   const bill = monthly("Month end", 10, "USD", 31);
-  assert.deepEqual(billOccurrences(bill, "2024-01-31", "2024-03-31").map((row) => row.date), ["2024-01-31", "2024-02-29", "2024-03-31"]);
-  assert.deepEqual(billOccurrences(bill, "2026-12-01", "2027-02-28").map((row) => row.date), ["2026-12-31", "2027-01-31", "2027-02-28"]);
-  assert.deepEqual(billOccurrences({ ...bill, dueDay: null }, "2026-11-01", "2026-11-30"), []);
+  assert.deepEqual(
+    billOccurrences(bill, "2024-01-31", "2024-03-31").map((row) => row.date),
+    ["2024-01-31", "2024-02-29", "2024-03-31"],
+  );
+  assert.deepEqual(
+    billOccurrences(bill, "2026-12-01", "2027-02-28").map((row) => row.date),
+    ["2026-12-31", "2027-01-31", "2027-02-28"],
+  );
+  assert.deepEqual(
+    billOccurrences({ ...bill, dueDay: null }, "2026-11-01", "2026-11-30"),
+    [],
+  );
 });
 
 test("annual installment rounding preserves total and deduplicates months", () => {
   const bill = annual("Installments", 100, "USD", 31, [9, 3, 6, 3]);
   const rows = billOccurrences(bill, "2026-01-01", "2026-12-31");
-  assert.deepEqual(rows.map(({ date, amount }) => ({ date, amount })), [
-    { date: "2026-03-31", amount: 33.33 }, { date: "2026-06-30", amount: 33.33 }, { date: "2026-09-30", amount: 33.34 }
-  ]);
-  assert.equal(rows.reduce((sum, row) => sum + Math.round(row.amount * 100), 0), 10000);
+  assert.deepEqual(
+    rows.map(({ date, amount }) => ({ date, amount })),
+    [
+      { date: "2026-03-31", amount: 33.33 },
+      { date: "2026-06-30", amount: 33.33 },
+      { date: "2026-09-30", amount: 33.34 },
+    ],
+  );
+  assert.equal(
+    rows.reduce((sum, row) => sum + Math.round(row.amount * 100), 0),
+    10000,
+  );
 });
 
 test("salary schedules respect first payday, range edges and leap dates", () => {
-  assert.deepEqual(salaryOccurrences(salary, "2026-11-01", "2026-12-21").map((row) => row.date), ["2026-11-06", "2026-11-21", "2026-12-06", "2026-12-21"]);
-  assert.deepEqual(salaryOccurrences({ ...salary, firstPayDate: "2026-11-20" }, "2026-11-01", "2026-12-31").map((row) => row.date), ["2026-11-20", "2026-12-05", "2026-12-20"]);
-  assert.deepEqual(salaryOccurrences({ ...salary, firstPayDate: "2024-01-31" }, "2024-02-01", "2024-02-29").map((row) => row.date), ["2024-02-16", "2024-02-29"]);
-  const fortnightly = salaryOccurrences({ ...salary, payFrequency: "biweekly" }, "2026-11-07", "2026-12-18");
-  assert.deepEqual(fortnightly.map((row) => row.date), ["2026-11-20", "2026-12-04", "2026-12-18"]);
+  assert.deepEqual(
+    salaryOccurrences(salary, "2026-11-01", "2026-12-21").map(
+      (row) => row.date,
+    ),
+    ["2026-11-06", "2026-11-21", "2026-12-06", "2026-12-21"],
+  );
+  assert.deepEqual(
+    salaryOccurrences(
+      { ...salary, firstPayDate: "2026-11-20" },
+      "2026-11-01",
+      "2026-12-31",
+    ).map((row) => row.date),
+    ["2026-11-20", "2026-12-05", "2026-12-20"],
+  );
+  assert.deepEqual(
+    salaryOccurrences(
+      { ...salary, firstPayDate: "2024-01-31" },
+      "2024-02-01",
+      "2024-02-29",
+    ).map((row) => row.date),
+    ["2024-02-16", "2024-02-29"],
+  );
+  const fortnightly = salaryOccurrences(
+    { ...salary, payFrequency: "biweekly" },
+    "2026-11-07",
+    "2026-12-18",
+  );
+  assert.deepEqual(
+    fortnightly.map((row) => row.date),
+    ["2026-11-20", "2026-12-04", "2026-12-18"],
+  );
   assert.equal(fortnightly[0].amount, 923.08);
 });
 
 test("budget ledger generates native bills and income with independent running balances", () => {
-  const document = { salary, bills: [monthly("USD bill", 100, "USD", 6), monthly("PHP bill", 6300, "PHP", 6), annual("Annual", 200, "USD", 6, [3, 11])], allocations: [] };
-  const plan = { startDate: "2026-11-01", endDate: "2026-11-06", openingUsd: 750, openingPhp: 0, includeIncome: true, entries: [{ id: "fx", date: "2026-11-06", description: "Convert", kind: "conversion", amount: 100, currency: "USD" }] };
+  const document = {
+    salary,
+    bills: [
+      monthly("USD bill", 100, "USD", 6),
+      monthly("PHP bill", 6300, "PHP", 6),
+      annual("Annual", 200, "USD", 6, [3, 11]),
+    ],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-06",
+    openingUsd: 750,
+    openingPhp: 0,
+    includeIncome: true,
+    entries: [
+      {
+        id: "fx",
+        date: "2026-11-06",
+        description: "Convert",
+        kind: "conversion",
+        amount: 100,
+        currency: "USD",
+      },
+    ],
+  };
   const rows = buildPlanRows(plan, document, 63);
-  assert.equal(rows.length, 5);
+  assert.equal(rows.length, 7);
   assert.equal(rows[0].source, "salary");
   assert.equal(rows[1].kind, "conversion");
   assert.equal(rows.at(-1).balanceUsd, 1450);
   assert.equal(rows.at(-1).balancePhp, 0);
   assert.equal(rows.filter((row) => row.source === "bill").length, 3);
+  assert.equal(rows.filter((row) => row.source === "reserve").length, 1);
+  assert.equal(rows.filter((row) => row.source === "reserveRelease").length, 1);
+  assert.equal(rows.at(-1).reserveUsd, 0);
   assert.deepEqual(buildPlanRows(plan, document, 63), rows);
 });
 
 test("manual PHP conversions conserve value and negative balances stay visible", () => {
-  const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0, includeIncome: false, entries: [
-    { id: "convert", date: "2026-11-06", description: "Convert PHP to USD", kind: "conversion", amount: 630, currency: "PHP" },
-    { id: "expense", date: "2026-11-06", description: "Expense", kind: "expense", amount: 20, currency: "USD" },
-    { id: "outside", date: "2026-12-01", description: "Outside range", kind: "income", amount: 1000, currency: "USD" }
-  ] };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    openingUsd: 0,
+    openingPhp: 0,
+    includeIncome: false,
+    entries: [
+      {
+        id: "convert",
+        date: "2026-11-06",
+        description: "Convert PHP to USD",
+        kind: "conversion",
+        amount: 630,
+        currency: "PHP",
+      },
+      {
+        id: "expense",
+        date: "2026-11-06",
+        description: "Expense",
+        kind: "expense",
+        amount: 20,
+        currency: "USD",
+      },
+      {
+        id: "outside",
+        date: "2026-12-01",
+        description: "Outside range",
+        kind: "income",
+        amount: 1000,
+        currency: "USD",
+      },
+    ],
+  };
   const rows = buildPlanRows(plan, { salary, bills: [] }, 63);
   assert.equal(rows.length, 2);
   assert.equal(rows[0].usd + rows[0].php / 63, 0);
@@ -118,4 +275,569 @@ test("date helpers use New York calendar dates without DST drift", () => {
   assert.equal(formatDate("2026-11-06"), "Nov 6");
   assert.equal(convert(100, "USD", "PHP", 63), 6300);
   assert.equal(convert(6300, "PHP", "USD", 63), 100);
+});
+
+test("monthly bills split the total across two dates and retain legacy single due dates", () => {
+  const bill = { ...monthly("Rent", 100.01), dueDays: [20, 5, 20] };
+  assert.deepEqual(billDueDays(bill), [5, 20]);
+  assert.deepEqual(
+    billOccurrences(bill, "2026-11-01", "2026-12-31").map(
+      ({ date, amount }) => ({ date, amount }),
+    ),
+    [
+      { date: "2026-11-05", amount: 50 },
+      { date: "2026-11-20", amount: 50.01 },
+      { date: "2026-12-05", amount: 50 },
+      { date: "2026-12-20", amount: 50.01 },
+    ],
+  );
+  assert.equal(
+    billOccurrences(bill, "2026-11-10", "2026-11-25")[0].amount,
+    50.01,
+  );
+  assert.deepEqual(billDueDays(monthly("Legacy", 10, "USD", 18)), [18]);
+  assert.deepEqual(
+    billOccurrences({ ...bill, dueDays: [] }, "2026-11-01", "2026-11-30"),
+    [],
+  );
+  assert.equal(
+    getSummary({ salary, bills: [bill], allocations: [] }, 63).billsUsd,
+    100.01,
+  );
+});
+
+test("two monthly dates clamped to the same short-month day preserve the monthly total", () => {
+  const bill = { ...monthly("Month end split", 101.01), dueDays: [30, 31] };
+  assert.deepEqual(billOccurrences(bill, "2028-02-01", "2028-02-29"), [
+    { date: "2028-02-29", amount: 101.01, currency: "USD", billId: bill.id },
+  ]);
+  assert.equal(
+    billOccurrences(bill, "2026-04-01", "2026-04-30")[0].amount,
+    101.01,
+  );
+});
+
+test("annual savings targets progress between renewal dates and are fully funded on the due date", () => {
+  const bill = annual("Renewal", 120, "USD", 1, [1]);
+  assert.deepEqual(annualSavingsTarget(bill, "2026-01-01"), {
+    target: 120,
+    currency: "USD",
+    cycleStart: "2025-01-01",
+    nextDueDate: "2026-01-01",
+    installmentAmount: 120,
+    progress: 1,
+    needsDate: false,
+  });
+  assert.equal(annualSavingsTarget(bill, "2026-01-02").target, 0.33);
+  const afterSeptember = annualSavingsTarget(
+    annual("Microsoft", 100),
+    "2026-11-02",
+  );
+  assert.equal(afterSeptember.target, 14.79);
+  assert.equal(afterSeptember.cycleStart, "2026-09-09");
+  assert.equal(afterSeptember.nextDueDate, "2027-09-09");
+});
+
+test("annual target cycles handle leap dates, installment pennies and missing due dates", () => {
+  const leap = annual("Leap renewal", 366, "PHP", 29, [2]);
+  assert.equal(annualSavingsTarget(leap, "2024-02-28").target, 365);
+  assert.equal(annualSavingsTarget(leap, "2024-02-29").target, 366);
+  assert.equal(annualSavingsTarget(leap, "2024-03-01").target, 1);
+  const installments = annual("Three installments", 100, "USD", 31, [3, 6, 9]);
+  assert.equal(annualSavingsTarget(installments, "2026-09-30").target, 33.34);
+  assert.equal(annualSavingsTarget(installments, "2026-12-30").target, 16.67);
+  const unknown = annualSavingsTarget({ ...leap, dueDay: null }, "2026-11-02");
+  assert.equal(unknown.needsDate, true);
+  assert.equal(unknown.target, null);
+  assert.equal(unknown.nextDueDate, null);
+});
+
+test("October 23 anchored biweekly pay stays on Fridays across November DST", () => {
+  const anchored = {
+    ...salary,
+    firstPayDate: "2026-10-23",
+    payFrequency: "biweekly",
+  };
+  assert.deepEqual(
+    salaryOccurrences(anchored, "2026-11-01", "2026-12-31").map(
+      (row) => row.date,
+    ),
+    ["2026-11-06", "2026-11-20", "2026-12-04", "2026-12-18"],
+  );
+  assert.deepEqual(
+    salaryOccurrences(
+      { ...anchored, payFrequency: "semimonthly" },
+      "2026-11-01",
+      "2026-11-30",
+    ).map((row) => row.date),
+    ["2026-11-08", "2026-11-23"],
+  );
+});
+
+test("full plan flows include allocations, native reserves, one-time transactions and conversions", () => {
+  const document = {
+    salary: {
+      amount: 2600,
+      currency: "USD",
+      payFrequency: "biweekly",
+      firstPayDate: "2026-10-23",
+    },
+    bills: [
+      monthly("Internet", 100, "USD", 10),
+      annual("USD reserve", 260, "USD", 9, [12]),
+      annual("PHP reserve", 2600, "PHP", 9, [12]),
+    ],
+    allocations: [
+      {
+        id: "save",
+        name: "Savings",
+        amount: 500,
+        currency: "USD",
+        kind: "savings",
+      },
+      {
+        id: "food",
+        name: "Groceries",
+        amount: 630,
+        currency: "PHP",
+        kind: "expense",
+      },
+    ],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    openingUsd: 100,
+    openingPhp: 1000,
+    includeIncome: true,
+    entries: [
+      {
+        id: "convert",
+        date: "2026-11-19",
+        description: "Convert",
+        kind: "conversion",
+        amount: 100,
+        currency: "USD",
+      },
+    ],
+  };
+  const rows = buildPlanRows(plan, document, 63, {
+    transactions: [
+      {
+        id: 1,
+        date: "2026-11-15",
+        merchant: "One-time purchase",
+        kind: "expense",
+        amount: 150,
+        currency: "USD",
+      },
+    ],
+  });
+  assert.equal(rows.length, 13);
+  assert.equal(rows.filter((row) => row.source === "salary").length, 2);
+  assert.equal(rows.filter((row) => row.source === "allocation").length, 4);
+  assert.equal(rows.filter((row) => row.source === "reserve").length, 4);
+  assert.deepEqual(
+    {
+      usd: rows.at(-1).balanceUsd,
+      php: rows.at(-1).balancePhp,
+      reserveUsd: rows.at(-1).reserveUsd,
+      reservePhp: rows.at(-1).reservePhp,
+    },
+    { usd: 1130, php: 5840, reserveUsd: 20, reservePhp: 200 },
+  );
+  const reserve = rows.find((row) => row.source === "reserve");
+  assert.equal(
+    reserve.usd +
+      reserve.php / 63 +
+      reserve.reserveDeltaUsd +
+      reserve.reserveDeltaPhp / 63,
+    0,
+  );
+});
+
+test("annual payments consume existing reserves before charging available funds", () => {
+  const document = {
+    salary: { ...salary, firstPayDate: "2026-12-01" },
+    bills: [annual("Insurance", 120, "USD", 9, [11])],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-10",
+    openingUsd: 100,
+    openingPhp: 0,
+    openingReserveUsd: 120,
+    includeIncome: false,
+    includeAnnualReserve: false,
+    entries: [],
+  };
+  const rows = buildPlanRows(plan, document, 63);
+  assert.equal(rows[0].source, "reserveRelease");
+  assert.equal(rows[0].usd, 120);
+  assert.equal(rows[1].usd, -120);
+  assert.equal(rows[1].balanceUsd, 100);
+  assert.equal(rows[1].reserveUsd, 0);
+  assert.equal(rows[1].reserveShortfall, 0);
+  const shortfall = buildPlanRows(
+    { ...plan, openingReserveUsd: 50 },
+    document,
+    63,
+  ).at(-1);
+  assert.equal(shortfall.balanceUsd, 30);
+  assert.equal(shortfall.reserveShortfall, 70);
+});
+
+test("posted records replace matching salary, bills and exact dated manual forecasts once", () => {
+  const document = {
+    salary: {
+      amount: 2600,
+      currency: "USD",
+      payFrequency: "biweekly",
+      firstPayDate: "2026-10-23",
+    },
+    bills: [
+      monthly("Google", 2, "USD", 6),
+      annual("Domain", 260, "USD", 6, [11]),
+    ],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-10",
+    openingUsd: 500,
+    openingPhp: 1000,
+    includeIncome: true,
+    entries: [
+      {
+        id: "groceries",
+        description: "Groceries",
+        date: "2026-11-08",
+        kind: "expense",
+        amount: 630,
+        currency: "PHP",
+      },
+    ],
+  };
+  const transactions = [
+    {
+      id: 1,
+      merchant: "Company payroll",
+      date: "2026-11-05",
+      kind: "income",
+      amount: 1200,
+      currency: "USD",
+    },
+    {
+      id: 2,
+      merchant: "Google Workspace",
+      date: "2026-11-07",
+      kind: "expense",
+      amount: 2,
+      currency: "USD",
+    },
+    {
+      id: 3,
+      merchant: "Domain",
+      date: "2026-11-06",
+      kind: "expense",
+      amount: 260,
+      currency: "USD",
+    },
+    {
+      id: 4,
+      merchant: "Groceries",
+      date: "2026-11-08",
+      kind: "expense",
+      amount: 630,
+      currency: "PHP",
+    },
+  ];
+  const before = JSON.stringify({ plan, document, transactions });
+  const rows = buildPlanRows(plan, document, 63, { transactions });
+  assert.equal(rows.length, 6);
+  assert.equal(rows.filter((row) => row.source === "transaction").length, 4);
+  assert.equal(
+    rows.filter((row) => ["salary", "bill", "manual"].includes(row.source))
+      .length,
+    0,
+  );
+  assert.equal(rows.find((row) => row.source === "reserve").date, "2026-11-05");
+  const domain = rows.find((row) => row.transactionId === 3);
+  assert.equal(domain.billId, "Domain");
+  assert.equal(domain.scheduledSource, "bill");
+  assert.equal(domain.reserveShortfall, 250);
+  assert.equal(rows.at(-1).balanceUsd, 1438);
+  assert.equal(rows.at(-1).balancePhp, 370);
+  assert.equal(before, JSON.stringify({ plan, document, transactions }));
+});
+
+test("matching does not discard unrelated income or nonmatching user forecasts", () => {
+  const document = {
+    salary: {
+      amount: 2600,
+      currency: "USD",
+      payFrequency: "biweekly",
+      firstPayDate: "2026-10-23",
+    },
+    bills: [monthly("Google", 2, "USD", 6)],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-10",
+    openingUsd: 0,
+    includeIncome: true,
+    entries: [
+      {
+        id: "lunch",
+        date: "2026-11-06",
+        description: "Lunch",
+        kind: "expense",
+        amount: 10,
+        currency: "USD",
+      },
+    ],
+  };
+  const transactions = [
+    {
+      id: 1,
+      merchant: "Birthday gift",
+      date: "2026-11-06",
+      kind: "income",
+      amount: 1200,
+      currency: "USD",
+    },
+    {
+      id: 2,
+      merchant: "Coffee",
+      date: "2026-11-06",
+      kind: "expense",
+      amount: 2,
+      currency: "USD",
+    },
+    {
+      id: 3,
+      merchant: "Lunch",
+      date: "2026-11-07",
+      kind: "expense",
+      amount: 10,
+      currency: "USD",
+    },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { transactions });
+  assert.equal(rows.length, 6);
+  assert.equal(rows.filter((row) => row.matchedForecast).length, 0);
+  assert.equal(rows.at(-1).balanceUsd, 2376);
+});
+
+test("plan switches control new funding and records without erasing opening reserve funds", () => {
+  const document = {
+    salary,
+    bills: [annual("Undated", 100, "USD", null, [12])],
+    allocations: [
+      {
+        id: "save",
+        name: "Savings",
+        amount: 10,
+        currency: "USD",
+        kind: "savings",
+      },
+    ],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    openingUsd: 100,
+    openingReserveUsd: 25,
+    includeIncome: false,
+    includeTransactions: false,
+    includeAnnualReserve: false,
+    includeAllocations: false,
+    entries: [],
+  };
+  const transactions = [
+    {
+      id: 1,
+      date: "2026-11-06",
+      kind: "expense",
+      amount: 1,
+      currency: "USD",
+      merchant: "Expense",
+    },
+  ];
+  assert.deepEqual(buildPlanRows(plan, document, 63, { transactions }), []);
+  const funded = buildPlanRows(
+    { ...plan, includeAnnualReserve: true },
+    document,
+    63,
+    { transactions },
+  );
+  assert.equal(funded.length, 2);
+  assert.ok(funded.every((row) => row.source === "reserve"));
+  assert.equal(funded.at(-1).reserveUsd, 33.34);
+  assert.equal(funded.at(-1).balanceUsd, 91.66);
+});
+
+test("reserve funding spreads cents across a complete cycle without rounding drift", () => {
+  const document = {
+    salary: { ...salary, firstPayDate: "2026-01-06" },
+    bills: [annual("Undated", 100, "USD", null, [12])],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-01-01",
+    endDate: "2026-12-31",
+    openingUsd: 100,
+    includeIncome: false,
+    entries: [],
+  };
+  const rows = buildPlanRows(plan, document, 63);
+  assert.equal(rows.length, 24);
+  assert.equal(
+    rows.reduce((sum, row) => sum + Math.round(row.amount * 100), 0),
+    10000,
+  );
+  assert.equal(rows.at(-1).reserveUsd, 100);
+  assert.equal(rows.at(-1).balanceUsd, 0);
+});
+
+test("recorded pending flows stay excluded while dated transfers and future entries stay visible", () => {
+  const document = { salary, bills: [], allocations: [] };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    openingUsd: 100,
+    openingPhp: 0,
+    includeIncome: false,
+    entries: [],
+  };
+  const transactions = [
+    {
+      id: 1,
+      date: "2026-11-02",
+      kind: "expense",
+      amount: 1000,
+      currency: "USD",
+      pending: true,
+      merchant: "Pending",
+    },
+    {
+      id: 2,
+      date: "2026-11-02",
+      kind: "expense",
+      amount: 10,
+      currency: "USD",
+      category: "Transfer Out",
+      merchant: "Transfer",
+    },
+    {
+      id: 3,
+      date: "2026-11-02",
+      kind: "income",
+      amount: 630,
+      currency: "PHP",
+      category: "Transfer In",
+      merchant: "Transfer",
+    },
+    {
+      id: 4,
+      date: "2026-11-20",
+      kind: "expense",
+      amount: 5,
+      currency: "USD",
+      merchant: "Scheduled expense",
+    },
+  ];
+  const rows = buildPlanRows(plan, document, 63, {
+    transactions: [...transactions, transactions[3]],
+    today: "2026-11-02",
+  });
+  assert.equal(rows.length, 3);
+  assert.equal(rows.at(-1).scheduled, true);
+  assert.equal(rows.at(-1).balanceUsd, 85);
+  assert.equal(rows.at(-1).balancePhp, 630);
+});
+
+test("recorded annual payments inside the window can use reserves for a due date just outside it", () => {
+  const document = {
+    salary: { ...salary, firstPayDate: "2026-12-06" },
+    bills: [annual("Insurance", 100, "USD", 1, [11])],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-02",
+    endDate: "2026-11-05",
+    openingUsd: 50,
+    openingReserveUsd: 100,
+    includeIncome: false,
+    entries: [],
+  };
+  const rows = buildPlanRows(plan, document, 63, {
+    transactions: [
+      {
+        id: 1,
+        date: "2026-11-02",
+        merchant: "Insurance",
+        kind: "expense",
+        amount: 100,
+        currency: "USD",
+      },
+    ],
+  });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].source, "reserveRelease");
+  assert.equal(rows[1].scheduledDate, "2026-11-01");
+  assert.equal(rows[1].billId, "Insurance");
+  assert.equal(rows[1].balanceUsd, 50);
+  assert.equal(rows[1].reserveUsd, 0);
+  assert.ok(
+    rows.every((row) => row.date >= plan.startDate && row.date <= plan.endDate),
+  );
+});
+
+test("paychecks shifted across a plan boundary keep their associated set-asides in the window", () => {
+  const document = {
+    salary: {
+      amount: 2600,
+      currency: "USD",
+      payFrequency: "biweekly",
+      firstPayDate: "2026-10-23",
+    },
+    bills: [annual("Annual", 260, "USD", null, [12])],
+    allocations: [
+      {
+        id: "save",
+        name: "Savings",
+        amount: 100,
+        currency: "USD",
+        kind: "savings",
+      },
+    ],
+  };
+  const plan = {
+    startDate: "2026-11-05",
+    endDate: "2026-11-05",
+    openingUsd: 0,
+    includeIncome: false,
+    entries: [],
+  };
+  const rows = buildPlanRows(plan, document, 63, {
+    transactions: [
+      {
+        id: 1,
+        date: "2026-11-05",
+        merchant: "Payroll",
+        kind: "income",
+        amount: 1200,
+        currency: "USD",
+      },
+    ],
+  });
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].source, "transaction");
+  assert.equal(rows[0].scheduledDate, "2026-11-06");
+  assert.equal(rows.at(-1).balanceUsd, 1090);
+  assert.equal(rows.at(-1).reserveUsd, 10);
+  assert.ok(rows.every((row) => row.date === "2026-11-05"));
 });

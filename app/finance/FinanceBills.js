@@ -1,0 +1,766 @@
+"use client";
+
+import { useState } from "react";
+import {
+  annualSavingsTarget,
+  billDueDays,
+  convert,
+  formatDate,
+  localDate,
+  money,
+  roundMoney,
+} from "../lib/financePlanner.mjs";
+import "./finance-bills.css";
+
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+const validDay = (day) =>
+  Number.isInteger(Number(day)) && Number(day) >= 1 && Number(day) <= 31;
+const monthlyDays = (bill) => billDueDays(bill).slice(0, 2);
+
+function Icon({ name, size = 16 }) {
+  const paths = {
+    plus: <path d="M12 5v14M5 12h14" />,
+    check: <path d="m5 12 4 4L19 6" />,
+    edit: <path d="m15 5 4 4M4 20l5-1L20 8a2.8 2.8 0 0 0-4-4L5 15l-1 5Z" />,
+    trash: <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />,
+    receipt: (
+      <>
+        <path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" />
+        <path d="M9 7h6M9 11h6M9 15h3" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
+function Button({
+  children,
+  icon,
+  variant = "secondary",
+  className = "",
+  ...props
+}) {
+  return (
+    <button
+      type="button"
+      className={`fp-button fp-${variant} ${className}`}
+      {...props}
+    >
+      {icon && <Icon name={icon} />}
+      {children}
+    </button>
+  );
+}
+
+function Field({ label, children, hint }) {
+  return (
+    <label className="fp-field">
+      <span>{label}</span>
+      {children}
+      {hint && <small>{hint}</small>}
+    </label>
+  );
+}
+
+function splitLabel(value, currency, count) {
+  const cents = Math.round(Number(value || 0) * 100);
+  const first = Math.floor(cents / count) / 100;
+  const last = (Math.floor(cents / count) + (cents % count)) / 100;
+  return first === last
+    ? `${money(first, currency)} each`
+    : `${money(first, currency)} + ${money(last, currency)}`;
+}
+
+export function DueLabel({ bill }) {
+  if (bill.cadence !== "annual") {
+    const days = monthlyDays(bill);
+    return days.length ? (
+      <>
+        {days.length > 1 ? "Days" : "Day"} {days.join(" & ")}
+      </>
+    ) : (
+      <span className="fp-needs-date">Date not set</span>
+    );
+  }
+  const months = [...new Set((bill.dueMonths || []).map(Number))]
+    .filter((month) => Number.isInteger(month) && month >= 1 && month <= 12)
+    .sort((a, b) => a - b);
+  if (!validDay(bill.dueDay) || !months.length)
+    return (
+      <span className="fp-needs-date">
+        Date not set
+        {months.length
+          ? ` · ${months.map((month) => MONTHS[month - 1]).join(", ")}`
+          : ""}
+      </span>
+    );
+  return (
+    <>
+      {months.map((month) => `${MONTHS[month - 1]} ${bill.dueDay}`).join(" · ")}
+    </>
+  );
+}
+
+export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
+  const [draft, setDraft] = useState(() => {
+    const days = monthlyDays(bill || {});
+    return {
+      name: "",
+      amount: "",
+      currency: "USD",
+      cadence,
+      dueDay: "",
+      paymentMethod: "",
+      isAutopay: false,
+      ...bill,
+      dueMonths: bill?.dueMonths?.length
+        ? [...bill.dueMonths]
+        : [Number(localDate().slice(5, 7))],
+      dueDays: days.length
+        ? days.map(String)
+        : [bill?.dueDay ? String(bill.dueDay) : ""],
+      monthlyPayments: days.length === 2 ? "2" : "1",
+    };
+  });
+  const [error, setError] = useState("");
+  const set = (key, value) => {
+    setError("");
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+  const annual = draft.cadence === "annual";
+  const paymentCount = Number(draft.monthlyPayments);
+  const hasMonthlyDate = draft.dueDays.some((day) => String(day).trim());
+  const submit = (event) => {
+    event.preventDefault();
+    if (busy || disabled) return;
+    const value = Number(draft.amount);
+    const name = draft.name.trim();
+    if (!name || name.length > 120)
+      return setError("Enter a bill name of up to 120 characters.");
+    if (
+      !Number.isFinite(value) ||
+      value < 0.01 ||
+      value > 999999999 ||
+      Math.abs(value * 100 - Math.round(value * 100)) > 0.00001
+    )
+      return setError(
+        "Enter an amount from 0.01 to 999,999,999 with up to two decimal places.",
+      );
+    const months = [...new Set(draft.dueMonths.map(Number))].sort(
+      (a, b) => a - b,
+    );
+    if (
+      annual &&
+      (!months.length ||
+        months.some(
+          (month) => !Number.isInteger(month) || month < 1 || month > 12,
+        ))
+    )
+      return setError("Choose at least one payment month.");
+    let dueDay = null;
+    let dueDays = [];
+    if (annual) {
+      if (
+        draft.dueDay !== "" &&
+        draft.dueDay !== null &&
+        !validDay(draft.dueDay)
+      )
+        return setError("Choose a due day between 1 and 31.");
+      dueDay =
+        draft.dueDay === "" || draft.dueDay === null
+          ? null
+          : Number(draft.dueDay);
+    } else {
+      const rawDays = draft.dueDays
+        .slice(0, paymentCount)
+        .map((day) => String(day ?? "").trim());
+      if (rawDays.some((day) => day && !validDay(day)))
+        return setError("Choose due days between 1 and 31.");
+      if (
+        paymentCount === 2 &&
+        (rawDays.length !== 2 ||
+          rawDays.some((day) => !day) ||
+          rawDays[0] === rawDays[1] ||
+          Number(rawDays[0]) === Number(rawDays[1]))
+      )
+        return setError(
+          "Choose two different due days for two monthly payments.",
+        );
+      dueDays = [...new Set(rawDays.filter(Boolean).map(Number))].sort(
+        (a, b) => a - b,
+      );
+      dueDay = dueDays[0] ?? null;
+    }
+    onSave({
+      id: draft.id || globalThis.crypto.randomUUID(),
+      name,
+      amount: roundMoney(value),
+      currency: draft.currency,
+      cadence: draft.cadence,
+      dueDay,
+      dueDays,
+      dueMonths: annual ? months : [],
+      paymentMethod: draft.paymentMethod.trim(),
+      isAutopay: Boolean(draft.isAutopay),
+    });
+  };
+  return (
+    <form className="fp-form fb-form" onSubmit={submit}>
+      <Field label="Item">
+        <input
+          required
+          autoFocus
+          maxLength={120}
+          placeholder="e.g. Google, rent, car insurance"
+          value={draft.name}
+          onChange={(event) => set("name", event.target.value)}
+        />
+      </Field>
+      <div className="fp-form-grid">
+        <Field
+          label={annual ? "Total annual amount" : "Total monthly amount"}
+          hint={
+            !annual
+              ? "The combined total of all payments in one month."
+              : undefined
+          }
+        >
+          <input
+            required
+            type="number"
+            min="0.01"
+            max="999999999"
+            step="0.01"
+            inputMode="decimal"
+            value={draft.amount}
+            onChange={(event) => set("amount", event.target.value)}
+          />
+        </Field>
+        <Field label="Paid in">
+          <select
+            value={draft.currency}
+            onChange={(event) => set("currency", event.target.value)}
+          >
+            <option value="USD">USD · US dollar</option>
+            <option value="PHP">PHP · Philippine peso</option>
+          </select>
+        </Field>
+      </div>
+      <div
+        className={`fp-conversion-note fp-currency-${draft.currency.toLowerCase()}`}
+      >
+        {money(
+          convert(
+            draft.amount,
+            draft.currency,
+            draft.currency === "USD" ? "PHP" : "USD",
+            rate,
+          ),
+          draft.currency === "USD" ? "PHP" : "USD",
+        )}{" "}
+        equivalent
+        {annual && (
+          <>
+            {" "}
+            · Save {money(Number(draft.amount || 0) / 12, draft.currency)}/month
+          </>
+        )}
+        {!annual && paymentCount === 2 && (
+          <>
+            <br />2 payments per month ·{" "}
+            {splitLabel(draft.amount, draft.currency, 2)}
+          </>
+        )}
+      </div>
+      <div className="fp-form-grid">
+        <Field label="Repeats">
+          <select
+            value={draft.cadence}
+            onChange={(event) => {
+              const next = event.target.value;
+              setDraft((current) => ({
+                ...current,
+                cadence: next,
+                dueDay:
+                  next === "annual"
+                    ? current.dueDays[0] || current.dueDay || ""
+                    : current.dueDay,
+                dueDays:
+                  next === "monthly" && !current.dueDays.some(Boolean)
+                    ? [current.dueDay || ""]
+                    : current.dueDays,
+              }));
+              setError("");
+            }}
+          >
+            <option value="monthly">Monthly</option>
+            <option value="annual">Annually</option>
+          </select>
+        </Field>
+        {annual ? (
+          <Field label="Due day" hint="Shorter months use their last day.">
+            <input
+              type="number"
+              min="1"
+              max="31"
+              step="1"
+              inputMode="numeric"
+              placeholder="1–31 (optional)"
+              value={draft.dueDay ?? ""}
+              onChange={(event) => set("dueDay", event.target.value)}
+            />
+          </Field>
+        ) : (
+          <Field label="Payments per month">
+            <select
+              value={draft.monthlyPayments}
+              onChange={(event) => {
+                const count = event.target.value;
+                setDraft((current) => ({
+                  ...current,
+                  monthlyPayments: count,
+                  dueDays:
+                    count === "2"
+                      ? [current.dueDays[0] || "", current.dueDays[1] || ""]
+                      : [current.dueDays[0] || ""],
+                }));
+                setError("");
+              }}
+            >
+              <option value="1">Once a month</option>
+              <option value="2">Twice a month</option>
+            </select>
+          </Field>
+        )}
+      </div>
+      {!annual && (
+        <div className="fp-form-grid">
+          {Array.from({ length: paymentCount }, (_, index) => (
+            <Field
+              key={index}
+              label={
+                paymentCount === 2
+                  ? `${index === 0 ? "First" : "Second"} due day`
+                  : "Due day"
+              }
+              hint={
+                index === 0
+                  ? "Shorter months use their last day."
+                  : "The monthly total is split across both dates."
+              }
+            >
+              <input
+                required={paymentCount === 2}
+                type="number"
+                min="1"
+                max="31"
+                step="1"
+                inputMode="numeric"
+                placeholder={paymentCount === 2 ? "1–31" : "1–31 (optional)"}
+                value={draft.dueDays[index] ?? ""}
+                onChange={(event) => {
+                  const days = [...draft.dueDays];
+                  days[index] = event.target.value;
+                  set("dueDays", days);
+                }}
+              />
+            </Field>
+          ))}
+        </div>
+      )}
+      {annual && (
+        <fieldset className="fp-month-field">
+          <legend>Payment month{draft.dueMonths.length > 1 ? "s" : ""}</legend>
+          <div>
+            {MONTHS.map((name, index) => (
+              <label key={name}>
+                <input
+                  type="checkbox"
+                  checked={draft.dueMonths.includes(index + 1)}
+                  onChange={(event) =>
+                    set(
+                      "dueMonths",
+                      event.target.checked
+                        ? [...draft.dueMonths, index + 1].sort((a, b) => a - b)
+                        : draft.dueMonths.filter(
+                            (month) => month !== index + 1,
+                          ),
+                    )
+                  }
+                />
+                {name}
+              </label>
+            ))}
+          </div>
+          <small>
+            Select multiple months to split the annual total into equal
+            installments.
+          </small>
+        </fieldset>
+      )}
+      <Field label="Payment method (optional)">
+        <input
+          maxLength={80}
+          placeholder="e.g. US Bank Credit, RCBC, cash"
+          value={draft.paymentMethod}
+          onChange={(event) => set("paymentMethod", event.target.value)}
+        />
+      </Field>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={draft.isAutopay}
+          onChange={(event) => set("isAutopay", event.target.checked)}
+        />
+        Automatic payment is enabled
+      </label>
+      {(annual ? !draft.dueDay : !hasMonthlyDate) && (
+        <p className="fp-inline-note">
+          Add a due day to include this bill automatically in dated budget
+          plans.
+        </p>
+      )}
+      {error && (
+        <p className="fb-error" role="alert">
+          {error}
+        </p>
+      )}
+      <Button
+        type="submit"
+        variant="primary"
+        icon="check"
+        disabled={busy || disabled || (annual && !draft.dueMonths.length)}
+      >
+        {busy ? "Saving…" : bill ? "Save changes" : "Add bill"}
+      </Button>
+    </form>
+  );
+}
+
+export function BillsTable({
+  bills,
+  cadence,
+  summary,
+  rate,
+  onAdd,
+  onEdit,
+  onDelete,
+  asOf = localDate(),
+}) {
+  const annual = cadence === "annual";
+  if (!bills.length && !(cadence === "monthly" && summary.annualUsd > 0))
+    return (
+      <div className="fp-empty">
+        <span className="fp-empty-icon">
+          <Icon name="receipt" size={27} />
+        </span>
+        <h3>Your {cadence} bills go here</h3>
+        <p>
+          Enter the amount in the currency you actually pay. We’ll handle the
+          conversion.
+        </p>
+        <Button icon="plus" variant="primary" onClick={onAdd}>
+          Add your first bill
+        </Button>
+      </div>
+    );
+  const targets = annual
+    ? bills.map((bill) => annualSavingsTarget(bill, asOf))
+    : [];
+  const nativeTargets = targets.reduce(
+    (total, target) => {
+      if (!target.needsDate)
+        total[target.currency === "PHP" ? "PHP" : "USD"] += Number(
+          target.target || 0,
+        );
+      return total;
+    },
+    { USD: 0, PHP: 0 },
+  );
+  const totalTargetUsd = roundMoney(
+    nativeTargets.USD + convert(nativeTargets.PHP, "PHP", "USD", rate),
+  );
+  const totalTargetPhp = roundMoney(
+    nativeTargets.PHP + convert(nativeTargets.USD, "USD", "PHP", rate),
+  );
+  const missingTargets = targets.filter((target) => target.needsDate).length;
+  return (
+    <div className="fb-bills">
+      <div className="fp-table-wrap">
+        <table
+          className={`fp-table fp-bills-table fb-bills-table${annual ? " fb-annual-table" : ""}`}
+        >
+          <caption className="fp-sr-only">
+            {annual
+              ? `Annual bills and suggested savings targets as of ${formatDate(asOf, { year: "numeric" })}`
+              : "Monthly bill totals, payment dates, and annual bills reserve"}
+          </caption>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Amount · USD</th>
+              <th>Amount · PHP</th>
+              {annual && (
+                <>
+                  <th>Save / month</th>
+                  <th>
+                    Target saved by now
+                    <small>As of {formatDate(asOf, { year: "numeric" })}</small>
+                  </th>
+                </>
+              )}
+              <th>Due date</th>
+              <th>Auto payment</th>
+              <th>
+                <span className="fp-sr-only">Actions</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {bills.map((bill, index) => {
+              const days = monthlyDays(bill);
+              const target = targets[index];
+              const targetBasis =
+                target && !target.needsDate
+                  ? `Target from ${formatDate(target.cycleStart, { year: "numeric" })} to ${formatDate(target.nextDueDate, { year: "numeric" })}; next payment ${money(target.installmentAmount, bill.currency)}.`
+                  : undefined;
+              return (
+                <tr key={bill.id}>
+                  <td data-label="Item">
+                    <span className="fp-bill-name">
+                      <span
+                        className={`fp-bill-monogram fp-currency-${bill.currency.toLowerCase()}`}
+                      >
+                        {bill.name.slice(0, 1).toUpperCase()}
+                      </span>
+                      <span>
+                        <strong>{bill.name}</strong>
+                        <small>
+                          Paid in {bill.currency}
+                          {annual && bill.dueMonths.length > 1
+                            ? ` · ${bill.dueMonths.length} installments`
+                            : ""}
+                        </small>
+                        {!annual && days.length === 2 && (
+                          <small className="fb-split-detail">
+                            2 payments / month ·{" "}
+                            {splitLabel(bill.amount, bill.currency, 2)}
+                          </small>
+                        )}
+                      </span>
+                    </span>
+                  </td>
+                  <td data-label="USD">
+                    <span
+                      className={
+                        bill.currency === "USD"
+                          ? "fp-native fp-currency-usd"
+                          : "fp-equivalent"
+                      }
+                    >
+                      {money(convert(bill.amount, bill.currency, "USD", rate))}
+                    </span>
+                  </td>
+                  <td data-label="PHP">
+                    <span
+                      className={
+                        bill.currency === "PHP"
+                          ? "fp-native fp-currency-php"
+                          : "fp-equivalent"
+                      }
+                    >
+                      {money(
+                        convert(bill.amount, bill.currency, "PHP", rate),
+                        "PHP",
+                      )}
+                    </span>
+                  </td>
+                  {annual && (
+                    <>
+                      <td data-label="Save / month">
+                        <strong>
+                          {money(
+                            convert(
+                              bill.amount / 12,
+                              bill.currency,
+                              "USD",
+                              rate,
+                            ),
+                          )}
+                        </strong>
+                        <small>
+                          {money(
+                            convert(
+                              bill.amount / 12,
+                              bill.currency,
+                              "PHP",
+                              rate,
+                            ),
+                            "PHP",
+                          )}
+                        </small>
+                      </td>
+                      <td
+                        data-label="Target saved by now"
+                        className="fb-target"
+                        title={targetBasis}
+                      >
+                        {target.needsDate ? (
+                          <span className="fp-needs-date">Set due date</span>
+                        ) : (
+                          <>
+                            <strong>
+                              {money(
+                                convert(
+                                  target.target,
+                                  bill.currency,
+                                  "USD",
+                                  rate,
+                                ),
+                              )}
+                            </strong>
+                            <small>
+                              {money(
+                                convert(
+                                  target.target,
+                                  bill.currency,
+                                  "PHP",
+                                  rate,
+                                ),
+                                "PHP",
+                              )}
+                            </small>
+                            <small>
+                              Next:{" "}
+                              {formatDate(target.nextDueDate, {
+                                year: "numeric",
+                              })}
+                            </small>
+                            <span className="fp-sr-only">{targetBasis}</span>
+                          </>
+                        )}
+                      </td>
+                    </>
+                  )}
+                  <td data-label="Due date">
+                    <DueLabel bill={bill} />
+                  </td>
+                  <td data-label="Auto payment">
+                    <span>{bill.paymentMethod || "—"}</span>
+                    <small>{bill.isAutopay ? "Automatic" : "Manual"}</small>
+                  </td>
+                  <td data-label="Actions">
+                    <div className="fp-row-actions">
+                      <Button
+                        icon="edit"
+                        className="fp-icon-button"
+                        aria-label={`Edit ${bill.name}`}
+                        onClick={() => onEdit(bill)}
+                      />
+                      <Button
+                        icon="trash"
+                        className="fp-icon-button"
+                        aria-label={`Delete ${bill.name}`}
+                        onClick={() => onDelete(bill)}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {!annual && (
+              <tr className="fp-reserve-row">
+                <td data-label="Item">
+                  <strong>Annual bills reserve</strong>
+                  <small>Set aside each month</small>
+                </td>
+                <td data-label="USD">
+                  <strong>{money(summary.annualMonthlyUsd)}</strong>
+                </td>
+                <td data-label="PHP">
+                  <strong>{money(summary.annualMonthlyPhp, "PHP")}</strong>
+                </td>
+                <td data-label="Due date">Monthly savings</td>
+                <td data-label="Auto payment">For your annual bills</td>
+                <td />
+              </tr>
+            )}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td>{annual ? "Annual total" : "Total monthly bills"}</td>
+              <td>
+                {money(
+                  annual ? summary.annualUsd : summary.monthlyCommitmentsUsd,
+                )}
+              </td>
+              <td>
+                {money(
+                  annual ? summary.annualPhp : summary.monthlyCommitmentsPhp,
+                  "PHP",
+                )}
+              </td>
+              {annual && (
+                <>
+                  <td>
+                    {money(summary.annualMonthlyUsd)}
+                    <small>
+                      {money(summary.annualMonthlyPhp, "PHP")} / month
+                    </small>
+                  </td>
+                  <td className="fb-target">
+                    <strong>{money(totalTargetUsd)}</strong>
+                    <small>{money(totalTargetPhp, "PHP")}</small>
+                    {missingTargets > 0 && (
+                      <small>
+                        {missingTargets} bill{missingTargets > 1 ? "s" : ""}{" "}
+                        need{missingTargets === 1 ? "s" : ""} a due date
+                      </small>
+                    )}
+                  </td>
+                </>
+              )}
+              <td colSpan="3" />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {annual && (
+        <p className="fb-target-note">
+          Target builds up between payment dates; this is a suggested savings
+          amount, not a bank balance. Targets use the next installment due and
+          today’s reference exchange rate.{" "}
+          {missingTargets > 0 &&
+            "Bills without a due date are excluded from the target total."}
+        </p>
+      )}
+    </div>
+  );
+}
