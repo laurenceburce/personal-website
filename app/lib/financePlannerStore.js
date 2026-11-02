@@ -97,8 +97,9 @@ export function validateFinancePlanner(value) {
       firstPayDate: date(salary.firstPayDate, "First payday")
     },
     bills: rows(source.bills, "Bills", 300, (bill) => {
-      const cadence = oneOf(bill.cadence, ["monthly", "annual"], "Bill frequency");
-      const legacyDueDay = bill.dueDay ?? null;
+      const cadence = oneOf(bill.cadence, ["monthly", "annual", "payday"], "Bill frequency");
+      // Payday bills follow the salary schedule; discard any old fixed-date fields.
+      const legacyDueDay = cadence === "payday" ? null : (bill.dueDay ?? null);
       if (legacyDueDay !== null && (!Number.isInteger(legacyDueDay) || legacyDueDay < 1 || legacyDueDay > 31)) throw plannerError("Bill due day must be between 1 and 31, or left open.");
       let dueDays = [];
       if (cadence === "monthly") {
@@ -110,10 +111,10 @@ export function validateFinancePlanner(value) {
         if (dueDays.length > 2) throw plannerError("Choose up to two monthly due days between 1 and 31.");
       }
       const dueDay = cadence === "monthly" ? (dueDays[0] ?? null) : legacyDueDay;
-      if (!Array.isArray(bill.dueMonths) || bill.dueMonths.length > 12 || bill.dueMonths.some((month) => !Number.isInteger(month) || month < 1 || month > 12)) {
+      if (cadence !== "payday" && (!Array.isArray(bill.dueMonths) || bill.dueMonths.length > 12 || bill.dueMonths.some((month) => !Number.isInteger(month) || month < 1 || month > 12))) {
         throw plannerError("Bill due months must be between 1 and 12.");
       }
-      const dueMonths = [...new Set(bill.dueMonths)].sort((a, b) => a - b);
+      const dueMonths = cadence === "payday" ? [] : [...new Set(bill.dueMonths)].sort((a, b) => a - b);
       if (cadence === "annual" && !dueMonths.length) throw plannerError("Choose at least one due month for annual bills.");
       return {
         name: text(bill.name, "Bill item", 120), amount: amount(bill.amount, "Bill amount"),

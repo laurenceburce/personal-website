@@ -117,6 +117,13 @@ The finance workspace separates recorded activity from your plans:
   and recent activity. Select a month and display amounts in USD or PHP.
 - **Bills:** monthly and annual bills, native payment currency, due day,
   optional payment method/autopay, annual installments, and a monthly annual-bill reserve.
+  Choose **Every payday** for a bill paid on your salary schedule. Enter the
+  amount of each payment, such as ₱19,000 per payday, rather than a monthly total.
+  It follows the first payday and frequency under salary settings automatically;
+  biweekly months can have three payments. The monthly view and overview chart
+  show its average monthly cost (per-pay amount × 26 or 24 ÷ 12); spending plans
+  deduct the full per-pay amount, and budget plans use the actual payday dates.
+  Monthly bills retain their combined monthly total and fixed date rules.
   Monthly bills can split their total across two due days. Annual bills show a
   **Target saved by now**, prorated between the previous and next payment dates;
   the target is not a recorded bank or savings balance. Undated annual bills

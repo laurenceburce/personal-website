@@ -503,3 +503,229 @@ test("annual saved balances reject negative, nonfinite, out-of-range and fractio
     ]);
   }
 });
+
+const paydaySalary = {
+  amount: 2600,
+  currency: "USD",
+  payFrequency: "biweekly",
+  firstPayDate: "2026-10-23",
+};
+const paydayBill = {
+  ...baseBill,
+  name: "House",
+  cadence: "payday",
+  amount: 19000,
+  currency: "PHP",
+  dueDay: null,
+  dueDays: [],
+  dueMonths: [],
+};
+
+test("payday forms show one full payment and the next salary date without fixed monthly controls", () => {
+  const html = renderToStaticMarkup(
+    createElement(BillForm, {
+      bill: paydayBill,
+      cadence: "payday",
+      rate: 63,
+      salary: paydaySalary,
+      asOf: "2026-11-02",
+      onSave() {},
+    }),
+  );
+  assert.match(html, /Amount per payday/);
+  assert.match(html, /full amount you pay each payday/);
+  assert.match(html, /option value="payday" selected="">Every payday/);
+  assert.match(html, /₱19,000\.00 each payday · Every 2 weeks/);
+  assert.match(html, /Next payment: Nov 6, 2026/);
+  assert.match(html, /Changing your first payday or pay frequency/);
+  assert.doesNotMatch(
+    html,
+    /Total monthly amount|Payments per month|First due day|Second due day|<span>Due day|Payment month|Saved so far|Add a due day|2 payments per month/,
+  );
+});
+
+test("changing a monthly bill to every payday updates labels and submits only the per-payment amount", () => {
+  const state = [];
+  let cursor = 0;
+  let saved;
+  const components = loadComponents({
+    ...require("react"),
+    useState(initialValue) {
+      const index = cursor++;
+      if (!(index in state))
+        state[index] =
+          typeof initialValue === "function" ? initialValue() : initialValue;
+      return [
+        state[index],
+        (next) => {
+          state[index] = typeof next === "function" ? next(state[index]) : next;
+        },
+      ];
+    },
+  });
+  const findField = (element, label) => {
+    if (!element?.props) return undefined;
+    if (element?.props?.label === label) return element;
+    const children = element?.props?.children;
+    for (const child of Array.isArray(children) ? children : [children]) {
+      const match = findField(child, label);
+      if (match) return match;
+    }
+    return undefined;
+  };
+  const renderForm = () => {
+    cursor = 0;
+    return components.BillForm({
+      bill: {
+        ...paydayBill,
+        cadence: "monthly",
+        amount: 38000,
+        dueDays: [14, 28],
+        dueDay: 14,
+      },
+      cadence: "monthly",
+      rate: 63,
+      salary: paydaySalary,
+      asOf: "2026-11-02",
+      onSave(value) {
+        saved = value;
+      },
+    });
+  };
+  let form = renderForm();
+  findField(form, "Repeats").props.children.props.onChange({
+    target: { value: "payday" },
+  });
+  form = renderForm();
+  assert.equal(
+    findField(form, "Amount per payday").props.children.props.value,
+    38000,
+  );
+  assert.equal(findField(form, "Payments per month"), undefined);
+  assert.equal(findField(form, "First due day"), undefined);
+  assert.doesNotMatch(renderToStaticMarkup(form), /2 payments per month/);
+  findField(form, "Amount per payday").props.children.props.onChange({
+    target: { value: "19000" },
+  });
+  form = renderForm();
+  assert.match(renderToStaticMarkup(form), /₱19,000\.00 each payday/);
+  form.props.onSubmit({ preventDefault() {} });
+  assert.equal(saved.cadence, "payday");
+  assert.equal(saved.amount, 19000);
+  assert.equal(saved.currency, "PHP");
+  assert.equal(saved.dueDay, null);
+  assert.deepEqual(saved.dueDays, []);
+  assert.deepEqual(saved.dueMonths, []);
+  assert.equal(saved.savedAmount, 0);
+});
+
+test("payday saves ignore stale fixed dates and annual balances while validating payment amounts", () => {
+  const result = submitDraft({
+    cadence: "payday",
+    amount: "19000.25",
+    dueDay: "99",
+    dueDays: ["0", "0"],
+    dueMonths: [13],
+    savedAmount: "NaN",
+  });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.saved.amount, 19000.25);
+  assert.equal(result.saved.dueDay, null);
+  assert.deepEqual(result.saved.dueDays, []);
+  assert.deepEqual(result.saved.dueMonths, []);
+  assert.equal(result.saved.savedAmount, 0);
+  for (const amount of ["0", "-1", "19000.001", "Infinity"]) {
+    const invalid = submitDraft({ cadence: "payday", amount });
+    assert.equal(invalid.saved, undefined);
+    assert.equal(invalid.errors.length, 1);
+  }
+});
+
+test("payday due labels follow salary changes instead of showing an undated warning", () => {
+  const renderDue = (salary) =>
+    renderToStaticMarkup(
+      createElement(DueLabel, {
+        bill: paydayBill,
+        salary,
+        asOf: "2026-11-02",
+      }),
+    );
+  assert.match(renderDue(paydaySalary), /Every payday.*Next: Nov 6, 2026/);
+  assert.match(
+    renderDue({ ...paydaySalary, firstPayDate: "2026-10-30" }),
+    /Next: Nov 13, 2026/,
+  );
+  assert.match(
+    renderDue({ ...paydaySalary, payFrequency: "semimonthly" }),
+    /Next: Nov 8, 2026/,
+  );
+  assert.match(
+    renderDue({ ...paydaySalary, firstPayDate: "2028-01-07" }),
+    /Next: Jan 7, 2028/,
+  );
+  assert.match(renderDue(), /Every payday.*Follows your salary schedule/);
+  assert.doesNotMatch(renderDue(), /Date not set|fp-needs-date/);
+});
+
+test("payday bill tables show native per-payment values with converted totals and no monthly reserve row", () => {
+  const bills = [
+    paydayBill,
+    {
+      ...paydayBill,
+      id: "usd-payday",
+      name: "USD payday bill",
+      amount: 50,
+      currency: "USD",
+    },
+  ];
+  const summary = planner.getSummary(
+    { ...document(bills), salary: paydaySalary },
+    100,
+  );
+  const html = renderTable(bills, {
+    cadence: "payday",
+    salary: paydaySalary,
+    asOf: "2026-11-02",
+    summary,
+    rate: 100,
+  });
+  assert.match(html, /Amount · USD<small>Per payday/);
+  assert.match(html, /Paid in PHP · Per payday/);
+  assert.match(
+    html,
+    /data-label="PHP"><span class="fp-native fp-currency-php">₱19,000\.00/,
+  );
+  assert.match(html, /Every payday.*Next: Nov 6, 2026/);
+  const footer = html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
+  assert.match(
+    footer,
+    /Total per payday<\/td><td>\$240\.00<\/td><td>₱24,000\.00/,
+  );
+  assert.doesNotMatch(
+    html,
+    /Annual bills reserve|2 payments \/ month|Date not set/,
+  );
+  assert.match(html, /Each amount is paid in full every payday/);
+});
+
+test("monthly views reconcile payday monthly averages even without any fixed monthly bills", () => {
+  const summary = planner.getSummary(
+    { ...document([paydayBill]), salary: paydaySalary },
+    100,
+  );
+  const html = renderTable([], {
+    cadence: "monthly",
+    salary: paydaySalary,
+    summary,
+    rate: 100,
+  });
+  assert.match(html, /Payday bills · monthly average/);
+  assert.match(html, /Annual cost divided by 12/);
+  assert.match(html, /₱41,166\.67/);
+  const footer = html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
+  assert.match(
+    footer,
+    /Total monthly bills<\/td><td>\$411\.67<\/td><td>₱41,166\.67/,
+  );
+  assert.doesNotMatch(html, /Your monthly bills go here/);
+});

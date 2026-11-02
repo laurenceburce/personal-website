@@ -151,6 +151,53 @@ test("annual month schedules retain their single due day independently of monthl
   assert.deepEqual(annual.dueDays, []);
 });
 
+test("payday bills round trip the full amount per payday with salary-owned dates", () => {
+  const planner = document();
+  Object.assign(planner.bills[0], {
+    name: "House", cadence: "payday", currency: "PHP", amount: 19000.01,
+    dueDay: 14, dueDays: [14, 28], dueMonths: [3, 9], savedAmount: 100,
+  });
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.bills[0].cadence, "payday");
+  assert.equal(clean.bills[0].amount, 19000.01);
+  assert.equal(clean.bills[0].currency, "PHP");
+  assert.equal(clean.bills[0].dueDay, null);
+  assert.deepEqual(clean.bills[0].dueDays, []);
+  assert.deepEqual(clean.bills[0].dueMonths, []);
+  assert.equal(clean.bills[0].savedAmount, 0);
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  assert.deepEqual(planner, before);
+});
+
+test("payday bills do not require fixed dates and discard stale calendar or annual fields", () => {
+  for (const stale of [
+    { dueDay: undefined, dueDays: undefined, dueMonths: undefined },
+    { dueDay: 99, dueDays: "old dates", dueMonths: "old months", savedAmount: "old savings" },
+    { dueDay: "14", dueDays: [0, 32], dueMonths: [0, 13], savedAmount: -100 },
+  ]) {
+    const planner = document();
+    Object.assign(planner.bills[0], { cadence: "payday", ...stale });
+    const clean = validateFinancePlanner(planner).bills[0];
+    assert.equal(clean.dueDay, null);
+    assert.deepEqual(clean.dueDays, []);
+    assert.deepEqual(clean.dueMonths, []);
+    assert.equal(clean.savedAmount, 0);
+  }
+});
+
+test("payday bills still validate the payment amount, currency, name and autopay", () => {
+  for (const [key, value] of [
+    ["amount", -1], ["amount", Infinity], ["amount", "19000"],
+    ["amount", 1_000_000_000], ["currency", "EUR"], ["name", ""],
+    ["isAutopay", "false"], ["cadence", "weekly"],
+  ]) {
+    const planner = document();
+    Object.assign(planner.bills[0], { cadence: "payday", [key]: value });
+    assert.throws(() => validateFinancePlanner(planner), `${key} remains validated`);
+  }
+});
+
 test("legacy plans default to full money flow and distinct zero opening annual reserves", () => {
   const plan = validateFinancePlanner(document()).plans[0];
   assert.equal(plan.includeIncome, true);

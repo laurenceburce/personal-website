@@ -102,6 +102,7 @@ export function convert(value, from, to, rate) {
 }
 
 export function billDueDays(bill) {
+  if (bill.cadence === "payday") return [];
   const source =
     bill.cadence === "monthly" && Array.isArray(bill.dueDays)
       ? bill.dueDays
@@ -123,9 +124,20 @@ function installmentAmount(total, count, index) {
   );
 }
 
-export function billOccurrences(bill, start, end) {
+export function billOccurrences(bill, start, end, salary) {
+  if (!validRange(start, end)) return [];
+  if (bill.cadence === "payday") {
+    if (!salary || !["biweekly", "semimonthly"].includes(salary.payFrequency))
+      return [];
+    return salaryOccurrences(salary, start, end).map(({ date }) => ({
+      date,
+      amount: roundMoney(bill.amount),
+      currency: bill.currency,
+      billId: bill.id,
+    }));
+  }
   const days = billDueDays(bill);
-  if (!days.length || !validRange(start, end)) return [];
+  if (!days.length) return [];
   const months = [
     ...new Set(
       (bill.dueMonths || [])
@@ -265,22 +277,41 @@ export function getSummary(document, rate) {
   const allocations = document.allocations || [];
   const monthlyUsd = convert(salary.amount, salary.currency, "USD", rate);
   const monthlyPhp = convert(salary.amount, salary.currency, "PHP", rate);
-  const monthlyBills = bills.filter((bill) => bill.cadence !== "annual");
+  const payPeriods = salary.payFrequency === "biweekly" ? 26 : 24;
+  const monthlyBills = bills.filter(
+    (bill) => bill.cadence !== "annual" && bill.cadence !== "payday",
+  );
+  const paydayBills = bills.filter((bill) => bill.cadence === "payday");
   const annualBills = bills.filter((bill) => bill.cadence === "annual");
   const annualFunding = annualBills.map((bill) => ({
     currency: bill.currency,
     ...getAnnualBillFunding(bill),
   }));
-  const billsUsd = roundMoney(
+  const monthlyBillsUsd = roundMoney(
     monthlyBills
       .filter((bill) => bill.currency !== "PHP")
       .reduce((total, bill) => total + number(bill.amount), 0),
   );
-  const billsPhp = roundMoney(
+  const monthlyBillsPhp = roundMoney(
     monthlyBills
       .filter((bill) => bill.currency === "PHP")
       .reduce((total, bill) => total + number(bill.amount), 0),
   );
+  const paydayBillsUsd = roundMoney(
+    paydayBills
+      .filter((bill) => bill.currency !== "PHP")
+      .reduce((total, bill) => total + number(bill.amount), 0),
+  );
+  const paydayBillsPhp = roundMoney(
+    paydayBills
+      .filter((bill) => bill.currency === "PHP")
+      .reduce((total, bill) => total + number(bill.amount), 0),
+  );
+  const paydayMonthlyUsd = roundMoney((paydayBillsUsd * payPeriods) / 12);
+  const paydayMonthlyPhp = roundMoney((paydayBillsPhp * payPeriods) / 12);
+  // Recurring bill totals are monthly equivalents for charts and commitments.
+  const billsUsd = roundMoney(monthlyBillsUsd + paydayMonthlyUsd);
+  const billsPhp = roundMoney(monthlyBillsPhp + paydayMonthlyPhp);
   function annualTotal(field, currency) {
     const native = annualFunding.reduce(
       (totals, bill) => {
@@ -308,10 +339,14 @@ export function getSummary(document, rate) {
   const monthlyCommitmentsPhp = roundMoney(
     billsPhp + convert(billsUsd, "USD", "PHP", rate) + annualMonthlyPhp,
   );
-  const payPeriods = salary.payFrequency === "biweekly" ? 26 : 24;
   const incomePerPeriodUsd = roundMoney((monthlyUsd * 12) / payPeriods);
-  const billsUsdPerPeriod = roundMoney((billsUsd * 12) / payPeriods);
-  const billsPhpPerPeriod = roundMoney((billsPhp * 12) / payPeriods);
+  // Add native per-payday amounts directly instead of round-tripping monthly averages.
+  const billsUsdPerPeriod = roundMoney(
+    (monthlyBillsUsd * 12) / payPeriods + paydayBillsUsd,
+  );
+  const billsPhpPerPeriod = roundMoney(
+    (monthlyBillsPhp * 12) / payPeriods + paydayBillsPhp,
+  );
   const billsPhpPerPeriodUsd = convert(billsPhpPerPeriod, "PHP", "USD", rate);
   const annualPerPeriodUsd = roundMoney(annualRemainingUsd / payPeriods);
   const remainingPerPeriodUsd = roundMoney(
@@ -332,6 +367,12 @@ export function getSummary(document, rate) {
     monthlyPhp,
     billsUsd,
     billsPhp,
+    monthlyBillsUsd,
+    monthlyBillsPhp,
+    paydayBillsUsd,
+    paydayBillsPhp,
+    paydayMonthlyUsd,
+    paydayMonthlyPhp,
     annualUsd,
     annualPhp,
     annualSavedUsd,
@@ -495,7 +536,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       ...nativeFlow(occurrence.amount, occurrence.currency, "income"),
     });
   for (const bill of document.bills || []) {
-    for (const occurrence of billOccurrences(bill, matchingStart, matchingEnd))
+    for (const occurrence of billOccurrences(
+      bill,
+      matchingStart,
+      matchingEnd,
+      salary,
+    ))
       forecasts.push({
         id: `bill:${bill.id}:${occurrence.date}`,
         billId: bill.id,
@@ -633,7 +679,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     ...actual,
   ];
   const annualBills = (document.bills || []).filter(
-    (bill) => bill.cadence === "annual" && ["USD", "PHP"].includes(bill.currency),
+    (bill) =>
+      bill.cadence === "annual" && ["USD", "PHP"].includes(bill.currency),
   );
   for (const payday of paydays) {
     const date = actualPayDates.get(payday.date) || payday.date;
@@ -715,9 +762,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     });
     billReserves.set(
       key,
-      roundMoney(
-        (billReserves.get(key) || 0) + funding.savedAmount,
-      ),
+      roundMoney((billReserves.get(key) || 0) + funding.savedAmount),
     );
   }
   const result = [];
@@ -800,10 +845,18 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         grossAmount,
         reserveUsed,
         reserveShortfall,
-        usd: row.currency === "USD" && reserveShortfall > 0 ? -reserveShortfall : 0,
-        php: row.currency === "PHP" && reserveShortfall > 0 ? -reserveShortfall : 0,
-        reserveDeltaUsd: row.currency === "USD" && reserveUsed > 0 ? -reserveUsed : 0,
-        reserveDeltaPhp: row.currency === "PHP" && reserveUsed > 0 ? -reserveUsed : 0,
+        usd:
+          row.currency === "USD" && reserveShortfall > 0
+            ? -reserveShortfall
+            : 0,
+        php:
+          row.currency === "PHP" && reserveShortfall > 0
+            ? -reserveShortfall
+            : 0,
+        reserveDeltaUsd:
+          row.currency === "USD" && reserveUsed > 0 ? -reserveUsed : 0,
+        reserveDeltaPhp:
+          row.currency === "PHP" && reserveUsed > 0 ? -reserveUsed : 0,
       });
       continue;
     }

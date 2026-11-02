@@ -51,7 +51,7 @@ const PAGE_COPY = {
   ],
   bills: [
     "Everything that’s due.",
-    "Monthly essentials and annual commitments, all accounted for.",
+    "Monthly bills, payday payments, and annual commitments, all accounted for.",
   ],
   spending: [
     "Give every payday a plan.",
@@ -303,7 +303,7 @@ function SpendingTable({
     [
       "Bills in USD",
       -summary.billsUsdPerPeriod,
-      "Monthly USD bills, set aside per period",
+      "Monthly bills spread across pay periods, plus every-payday payments",
       "usd",
     ],
     [
@@ -928,7 +928,9 @@ export default function FinanceAppClient({
   );
   const isBiweekly = document.salary.payFrequency === "biweekly";
   const activeNav = NAV.find((item) => item.id === tab);
-  const undated = document.bills.filter((bill) => !bill.dueDay);
+  const undated = document.bills.filter(
+    (bill) => bill.cadence !== "payday" && !bill.dueDay,
+  );
   const saveLock = useRef(false);
   const activityRequest = useRef(0);
   const planActivityRequest = useRef(0);
@@ -1198,11 +1200,15 @@ export default function FinanceAppClient({
     list.some((item) => item.id === row.id)
       ? list.map((item) => (item.id === row.id ? row : item))
       : [...list, row];
-  const saveBill = (row) =>
-    save(
-      { ...document, bills: upsert(document.bills, row) },
-      "Bill saved. Your plans have been updated.",
-    );
+  async function saveBill(row) {
+    if (
+      await save(
+        { ...document, bills: upsert(document.bills, row) },
+        "Bill saved. Your plans have been updated.",
+      )
+    )
+      setCadence(row.cadence);
+  }
   const saveAllocation = (row) =>
     save({ ...document, allocations: upsert(document.allocations, row) });
   async function savePlan(row) {
@@ -1616,14 +1622,18 @@ export default function FinanceAppClient({
               <section className="fp-card">
                 <div className="fp-card-heading fp-bill-heading">
                   <div className="fp-segmented" aria-label="Bill frequency">
-                    {["monthly", "annual"].map((item) => (
+                    {[
+                      ["monthly", "Monthly"],
+                      ["payday", "Every payday"],
+                      ["annual", "Annual"],
+                    ].map(([item, label]) => (
                       <button
                         key={item}
                         className={cadence === item ? "active" : ""}
                         aria-pressed={cadence === item}
                         onClick={() => setCadence(item)}
                       >
-                        {item === "monthly" ? "Monthly bills" : "Annual bills"}
+                        {label}
                         <span>
                           {
                             document.bills.filter(
@@ -1650,12 +1660,21 @@ export default function FinanceAppClient({
                   cadence={cadence}
                   summary={summary}
                   rate={rate}
+                  salary={document.salary}
                   onAdd={() => open({ type: "bill" })}
                   onEdit={(bill) => open({ type: "bill", bill })}
                   onDelete={(row) =>
                     open({ type: "delete", collection: "bills", row })
                   }
                 />
+                {cadence === "monthly" &&
+                  summary.paydayBillsUsd + summary.paydayBillsPhp > 0 && (
+                    <p className="fp-inline-note">
+                      Payday bills appear as a monthly average here. Their full
+                      payment is due on each salary payday, including months
+                      with three paydays on a biweekly schedule.
+                    </p>
+                  )}
               </section>
               <div className="fp-bills-bottom">
                 <div className="fp-info-card">
@@ -1740,7 +1759,9 @@ export default function FinanceAppClient({
                     <p>
                       {isBiweekly
                         ? "Your monthly salary and bills are annualized, then divided across 26 pay periods."
-                        : "Your monthly salary and bills are split across 2 pay periods each month (24 per year)."}
+                        : "Your monthly salary and bills are split across 2 pay periods each month (24 per year)."}{" "}
+                      Every-payday bills use the full amount you enter on each
+                      payday.
                     </p>
                     <Button variant="text" onClick={() => navigate("settings")}>
                       Change pay frequency <Icon name="arrow" size={15} />
@@ -2058,7 +2079,9 @@ export default function FinanceAppClient({
                 : modal.type === "bill"
                   ? modal.bill
                     ? "Edit bill"
-                    : `Add ${cadence} bill`
+                    : cadence === "payday"
+                      ? "Add payday bill"
+                      : `Add ${cadence} bill`
                   : modal.type === "allocation"
                     ? modal.row
                       ? "Edit allocation"
@@ -2129,6 +2152,7 @@ export default function FinanceAppClient({
               bill={modal.bill}
               cadence={cadence}
               rate={rate}
+              salary={document.salary}
               onSave={saveBill}
               busy={busy}
               disabled={!state.configured}

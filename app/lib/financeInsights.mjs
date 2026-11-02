@@ -194,13 +194,15 @@ export function getFinanceInsights({
   );
   const scheduledBills = (document.bills || [])
     .flatMap((bill) =>
-      billOccurrences(bill, monthStart, end).map((occurrence) => ({
-        ...occurrence,
-        name: bill.name,
-        cadence: bill.cadence,
-        paymentMethod: bill.paymentMethod,
-        isAutopay: bill.isAutopay,
-      })),
+      billOccurrences(bill, monthStart, end, document.salary).map(
+        (occurrence) => ({
+          ...occurrence,
+          name: bill.name,
+          cadence: bill.cadence,
+          paymentMethod: bill.paymentMethod,
+          isAutopay: bill.isAutopay,
+        }),
+      ),
     )
     .sort(
       (first, second) =>
@@ -280,8 +282,9 @@ export function getFinanceInsights({
     allocationSegments,
     allocationTotal,
     scheduledBills,
-    undatedBillCount: (document.bills || []).filter((bill) => !bill.dueDay)
-      .length,
+    undatedBillCount: (document.bills || []).filter(
+      (bill) => bill.cadence !== "payday" && !bill.dueDay,
+    ).length,
     recentTransactions,
     partial: Boolean(activity.limitHit),
     excludedUnsupportedCount: (activity.transactions || []).filter(

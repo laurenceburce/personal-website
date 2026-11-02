@@ -1,6 +1,10 @@
 .fb-bills {
   min-width: 0;
 }
+.fp-bill-heading > .fp-segmented {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
 .fb-bills-table th small {
   display: block;
   margin-top: 5px;

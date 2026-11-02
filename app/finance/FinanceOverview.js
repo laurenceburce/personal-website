@@ -411,7 +411,9 @@ export default function FinanceOverview({
                     <span>
                       {bill.cadence === "annual"
                         ? "Annual payment"
-                        : "Monthly bill"}
+                        : bill.cadence === "payday"
+                          ? "Every payday"
+                          : "Monthly bill"}
                       {bill.isAutopay ? " · Auto payment" : ""}
                     </span>
                   </div>

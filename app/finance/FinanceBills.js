@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   annualSavingsTarget,
+  addDays,
   billDueDays,
   convert,
   formatDate,
@@ -10,6 +11,7 @@ import {
   localDate,
   money,
   roundMoney,
+  salaryOccurrences,
 } from "../lib/financePlanner.mjs";
 import "./finance-bills.css";
 
@@ -99,7 +101,26 @@ function splitLabel(value, currency, count) {
     : `${money(first, currency)} + ${money(last, currency)}`;
 }
 
-export function DueLabel({ bill }) {
+function nextPayday(salary, asOf) {
+  if (!salary) return null;
+  const start = salary.firstPayDate > asOf ? salary.firstPayDate : asOf;
+  return salaryOccurrences(salary, start, addDays(start, 370))[0]?.date;
+}
+
+export function DueLabel({ bill, salary, asOf = localDate() }) {
+  if (bill.cadence === "payday") {
+    const next = nextPayday(salary, asOf);
+    return (
+      <>
+        <span>Every payday</span>
+        <small>
+          {next
+            ? `Next: ${formatDate(next, { year: "numeric" })}`
+            : "Follows your salary schedule"}
+        </small>
+      </>
+    );
+  }
   if (bill.cadence !== "annual") {
     const days = monthlyDays(bill);
     return days.length ? (
@@ -129,7 +150,16 @@ export function DueLabel({ bill }) {
   );
 }
 
-export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
+export function BillForm({
+  bill,
+  cadence,
+  rate,
+  salary,
+  asOf = localDate(),
+  onSave,
+  busy,
+  disabled,
+}) {
   const [draft, setDraft] = useState(() => {
     const days = monthlyDays(bill || {});
     return {
@@ -157,6 +187,8 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
     setDraft((current) => ({ ...current, [key]: value }));
   };
   const annual = draft.cadence === "annual";
+  const payday = draft.cadence === "payday";
+  const next = payday ? nextPayday(salary, asOf) : null;
   const funding = getAnnualBillFunding(draft);
   const paymentCount = Number(draft.monthlyPayments);
   const hasMonthlyDate = draft.dueDays.some((day) => String(day).trim());
@@ -211,7 +243,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
         draft.dueDay === "" || draft.dueDay === null
           ? null
           : Number(draft.dueDay);
-    } else {
+    } else if (!payday) {
       const rawDays = draft.dueDays
         .slice(0, paymentCount)
         .map((day) => String(day ?? "").trim());
@@ -260,11 +292,19 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
       </Field>
       <div className="fp-form-grid">
         <Field
-          label={annual ? "Total annual amount" : "Total monthly amount"}
+          label={
+            annual
+              ? "Total annual amount"
+              : payday
+                ? "Amount per payday"
+                : "Total monthly amount"
+          }
           hint={
-            !annual
-              ? "The combined total of all payments in one month."
-              : undefined
+            payday
+              ? "The full amount you pay each payday. Enter one payment, not a monthly total."
+              : !annual
+                ? "The combined total of all payments in one month."
+                : undefined
           }
         >
           <input
@@ -311,7 +351,18 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
                 : ` · ${money(funding.remainingAmount, draft.currency)} still to fund`)}
           </>
         )}
-        {!annual && paymentCount === 2 && (
+        {payday && (
+          <>
+            <br />
+            {money(draft.amount, draft.currency)} each payday
+            {salary?.payFrequency === "biweekly"
+              ? " · Every 2 weeks"
+              : salary?.payFrequency === "semimonthly"
+                ? " · Twice a month"
+                : ""}
+          </>
+        )}
+        {!annual && !payday && paymentCount === 2 && (
           <>
             <br />2 payments per month ·{" "}
             {splitLabel(draft.amount, draft.currency, 2)}
@@ -356,6 +407,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
             }}
           >
             <option value="monthly">Monthly</option>
+            <option value="payday">Every payday</option>
             <option value="annual">Annually</option>
           </select>
         </Field>
@@ -372,7 +424,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
               onChange={(event) => set("dueDay", event.target.value)}
             />
           </Field>
-        ) : (
+        ) : !payday ? (
           <Field label="Payments per month">
             <select
               value={draft.monthlyPayments}
@@ -393,9 +445,18 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
               <option value="2">Twice a month</option>
             </select>
           </Field>
-        )}
+        ) : null}
       </div>
-      {!annual && (
+      {payday && (
+        <p className="fp-inline-note fb-payday-note">
+          Follows your salary schedule. Changing your first payday or pay
+          frequency also updates this bill’s dates.
+          {next
+            ? ` Next payment: ${formatDate(next, { year: "numeric" })}.`
+            : " Set your first payday under Salary & settings to add this bill to dated plans."}
+        </p>
+      )}
+      {!annual && !payday && (
         <div className="fp-form-grid">
           {Array.from({ length: paymentCount }, (_, index) => (
             <Field
@@ -476,7 +537,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
         />
         Automatic payment is enabled
       </label>
-      {(annual ? !draft.dueDay : !hasMonthlyDate) && (
+      {!payday && (annual ? !draft.dueDay : !hasMonthlyDate) && (
         <p className="fp-inline-note">
           Add a due day to include this bill automatically in dated budget
           plans.
@@ -504,13 +565,36 @@ export function BillsTable({
   cadence,
   summary,
   rate,
+  salary,
   onAdd,
   onEdit,
   onDelete,
   asOf = localDate(),
 }) {
   const annual = cadence === "annual";
-  if (!bills.length && !(cadence === "monthly" && summary.annualUsd > 0))
+  const payday = cadence === "payday";
+  const hasPaydayBills =
+    summary.paydayBillsUsd > 0 || summary.paydayBillsPhp > 0;
+  const paydayTotalUsd = roundMoney(
+    (summary.paydayBillsUsd || 0) +
+      convert(summary.paydayBillsPhp || 0, "PHP", "USD", rate),
+  );
+  const paydayTotalPhp = roundMoney(
+    (summary.paydayBillsPhp || 0) +
+      convert(summary.paydayBillsUsd || 0, "USD", "PHP", rate),
+  );
+  const paydayMonthlyUsd = roundMoney(
+    (summary.paydayMonthlyUsd || 0) +
+      convert(summary.paydayMonthlyPhp || 0, "PHP", "USD", rate),
+  );
+  const paydayMonthlyPhp = roundMoney(
+    (summary.paydayMonthlyPhp || 0) +
+      convert(summary.paydayMonthlyUsd || 0, "USD", "PHP", rate),
+  );
+  if (
+    !bills.length &&
+    !(cadence === "monthly" && (summary.annualUsd > 0 || hasPaydayBills))
+  )
     return (
       <div className="fp-empty">
         <span className="fp-empty-icon">
@@ -586,13 +670,21 @@ export function BillsTable({
           <caption className="fp-sr-only">
             {annual
               ? `Annual bills, saved balances, remaining funding, and suggested savings targets as of ${formatDate(asOf, { year: "numeric" })}`
-              : "Monthly bill totals, payment dates, and annual bills reserve"}
+              : payday
+                ? "Bills due every payday, with amounts per payment and dates from your salary schedule"
+                : "Monthly bill totals, payment dates, and annual bills reserve"}
           </caption>
           <thead>
             <tr>
               <th>Item</th>
-              <th>Amount · USD</th>
-              <th>Amount · PHP</th>
+              <th>
+                Amount · USD
+                {payday && <small>Per payday</small>}
+              </th>
+              <th>
+                Amount · PHP
+                {payday && <small>Per payday</small>}
+              </th>
               {annual && (
                 <>
                   <th>
@@ -648,11 +740,12 @@ export function BillsTable({
                         <strong>{bill.name}</strong>
                         <small>
                           Paid in {bill.currency}
+                          {payday ? " · Per payday" : ""}
                           {annual && bill.dueMonths.length > 1
                             ? ` · ${bill.dueMonths.length} installments`
                             : ""}
                         </small>
-                        {!annual && days.length === 2 && (
+                        {!annual && !payday && days.length === 2 && (
                           <small className="fb-split-detail">
                             2 payments / month ·{" "}
                             {splitLabel(bill.amount, bill.currency, 2)}
@@ -805,7 +898,7 @@ export function BillsTable({
                     </>
                   )}
                   <td data-label="Due date">
-                    <DueLabel bill={bill} />
+                    <DueLabel bill={bill} salary={salary} asOf={asOf} />
                   </td>
                   <td data-label="Auto payment">
                     <span>{bill.paymentMethod || "—"}</span>
@@ -830,7 +923,24 @@ export function BillsTable({
                 </tr>
               );
             })}
-            {!annual && (
+            {!annual && !payday && hasPaydayBills && (
+              <tr className="fp-reserve-row fb-payday-average-row">
+                <td data-label="Item">
+                  <strong>Payday bills · monthly average</strong>
+                  <small>Annual cost divided by 12</small>
+                </td>
+                <td data-label="USD">
+                  <strong>{money(paydayMonthlyUsd)}</strong>
+                </td>
+                <td data-label="PHP">
+                  <strong>{money(paydayMonthlyPhp, "PHP")}</strong>
+                </td>
+                <td data-label="Due date">Every payday</td>
+                <td data-label="Auto payment">See payday bills</td>
+                <td />
+              </tr>
+            )}
+            {!annual && !payday && (
               <tr className="fp-reserve-row">
                 <td data-label="Item">
                   <strong>Annual bills reserve</strong>
@@ -850,15 +960,29 @@ export function BillsTable({
           </tbody>
           <tfoot>
             <tr>
-              <td>{annual ? "Annual total" : "Total monthly bills"}</td>
+              <td>
+                {annual
+                  ? "Annual total"
+                  : payday
+                    ? "Total per payday"
+                    : "Total monthly bills"}
+              </td>
               <td>
                 {money(
-                  annual ? summary.annualUsd : summary.monthlyCommitmentsUsd,
+                  annual
+                    ? summary.annualUsd
+                    : payday
+                      ? paydayTotalUsd
+                      : summary.monthlyCommitmentsUsd,
                 )}
               </td>
               <td>
                 {money(
-                  annual ? summary.annualPhp : summary.monthlyCommitmentsPhp,
+                  annual
+                    ? summary.annualPhp
+                    : payday
+                      ? paydayTotalPhp
+                      : summary.monthlyCommitmentsPhp,
                   "PHP",
                 )}
               </td>
@@ -909,6 +1033,15 @@ export function BillsTable({
           </tfoot>
         </table>
       </div>
+      {payday && (
+        <div className="fb-target-note">
+          <p>
+            Each amount is paid in full every payday, using your salary’s first
+            payday and pay frequency. Monthly totals show the yearly cost
+            averaged over 12 months; dated budget plans use the actual paydays.
+          </p>
+        </div>
+      )}
       {annual && (
         <div className="fb-target-note">
           <p>

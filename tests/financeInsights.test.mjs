@@ -27,6 +27,194 @@ const insights = (options = {}) =>
     ...options,
   });
 
+const paydayBill = (id, amount, currency = "PHP") => ({
+  id,
+  name: id,
+  amount,
+  currency,
+  cadence: "payday",
+  dueDay: null,
+  dueDays: [],
+  dueMonths: [],
+  savedAmount: 0,
+});
+
+test("payday bills appear on salary dates with full native payments and no missing-date warning", () => {
+  const planner = {
+    ...document,
+    salary: { ...salary, payFrequency: "biweekly", firstPayDate: "2026-10-23" },
+    bills: [
+      paydayBill("House", 19000),
+      paydayBill("US payment", 25.5, "USD"),
+      {
+        id: "internet",
+        name: "Internet",
+        amount: 2500,
+        currency: "PHP",
+        cadence: "monthly",
+        dueDay: 11,
+        dueMonths: [],
+      },
+    ],
+  };
+  const result = insights({ document: planner });
+  assert.equal(result.undatedBillCount, 0);
+  assert.deepEqual(
+    result.scheduledBills
+      .filter((bill) => bill.name === "House")
+      .map((bill) => [bill.date, bill.amount, bill.currency]),
+    [
+      ["2026-11-06", 19000, "PHP"],
+      ["2026-11-20", 19000, "PHP"],
+    ],
+  );
+  assert.deepEqual(
+    result.scheduledBills
+      .filter((bill) => bill.name === "US payment")
+      .map((bill) => [bill.date, bill.amount, bill.currency]),
+    [
+      ["2026-11-06", 25.5, "USD"],
+      ["2026-11-20", 25.5, "USD"],
+    ],
+  );
+  assert.equal(result.scheduledBills.length, 5);
+  const withUndated = insights({
+    document: {
+      ...planner,
+      bills: [
+        ...planner.bills,
+        {
+          id: "open",
+          cadence: "monthly",
+          amount: 1,
+          currency: "USD",
+          dueDay: null,
+        },
+      ],
+    },
+  });
+  assert.equal(withUndated.undatedBillCount, 1);
+});
+
+test("changing the salary schedule regenerates payday bills including three-payday months", () => {
+  const planner = {
+    ...document,
+    salary: { ...salary, payFrequency: "biweekly", firstPayDate: "2026-10-23" },
+    bills: [paydayBill("House", 19000)],
+  };
+  const dates = (result) => result.scheduledBills.map((bill) => bill.date);
+  assert.deepEqual(dates(insights({ document: planner, month: "2027-01" })), [
+    "2027-01-01",
+    "2027-01-15",
+    "2027-01-29",
+  ]);
+  assert.deepEqual(
+    dates(
+      insights({
+        document: {
+          ...planner,
+          salary: { ...planner.salary, firstPayDate: "2026-10-30" },
+        },
+      }),
+    ),
+    ["2026-11-13", "2026-11-27"],
+  );
+  assert.deepEqual(
+    dates(
+      insights({
+        document: {
+          ...planner,
+          salary: { ...planner.salary, payFrequency: "semimonthly" },
+        },
+      }),
+    ),
+    ["2026-11-08", "2026-11-23"],
+  );
+  assert.deepEqual(
+    dates(
+      insights({
+        document: {
+          ...planner,
+          salary: { ...planner.salary, firstPayDate: "2026-12-04" },
+        },
+      }),
+    ),
+    [],
+  );
+});
+
+test("allocation charts include monthly equivalents of payday bills without adding recorded activity", () => {
+  const planner = {
+    ...document,
+    salary: {
+      ...salary,
+      amount: 2600,
+      payFrequency: "biweekly",
+      firstPayDate: "2026-10-23",
+    },
+    bills: [
+      paydayBill("USD payday", 26, "USD"),
+      paydayBill("PHP payday", 6300),
+      {
+        id: "monthly-usd",
+        name: "US monthly",
+        amount: 62,
+        currency: "USD",
+        cadence: "monthly",
+        dueDay: 11,
+        dueMonths: [],
+      },
+      {
+        id: "monthly-php",
+        name: "PH monthly",
+        amount: 630,
+        currency: "PHP",
+        cadence: "monthly",
+        dueDay: 11,
+        dueMonths: [],
+      },
+      {
+        id: "annual",
+        name: "Annual",
+        amount: 120,
+        currency: "USD",
+        cadence: "annual",
+        dueDay: 9,
+        dueMonths: [11],
+      },
+    ],
+  };
+  const activity = {
+    transactions: [
+      transaction(1, "income", 1000),
+      transaction(2, "expense", 630, "PHP"),
+    ],
+  };
+  const before = structuredClone({ planner, activity });
+  const usd = insights({ document: planner, activity });
+  const php = insights({ document: planner, activity, currency: "PHP" });
+  assert.equal(
+    usd.allocationSegments.find((segment) => segment.id === "usd-bills").value,
+    118.33,
+  );
+  assert.equal(
+    usd.allocationSegments.find((segment) => segment.id === "php-bills").value,
+    226.67,
+  );
+  assert.equal(usd.plannedCommitted, 355);
+  assert.equal(usd.plannedRemaining, 2245);
+  assert.equal(
+    php.allocationSegments.find((segment) => segment.id === "php-bills").value,
+    14280,
+  );
+  assert.equal(php.plannedCommitted, 22364.79);
+  assert.equal(usd.income, 1000);
+  assert.equal(usd.expenses, 10);
+  assert.equal(usd.transactionCount, 2);
+  assert.equal(php.expenses, 630);
+  assert.deepEqual({ planner, activity }, before);
+});
+
 test("actual metrics convert currencies and exclude pending and future transactions", () => {
   const result = insights({
     activity: {

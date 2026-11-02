@@ -40,6 +40,307 @@ const annual = (id, amount, currency = "USD", dueDay = 9, dueMonths = [9]) => ({
   dueMonths,
 });
 
+const payday = (id, amount, currency = "USD") => ({
+  id,
+  name: id,
+  amount,
+  currency,
+  cadence: "payday",
+  dueDay: null,
+  dueDays: [],
+  dueMonths: [],
+});
+
+test("payday bills follow the salary anchor with their full native amount on every paycheck", () => {
+  const anchored = {
+    ...salary,
+    firstPayDate: "2026-10-23",
+    payFrequency: "biweekly",
+  };
+  const house = {
+    ...payday("House", 19000, "PHP"),
+    dueDay: 14,
+    dueDays: [14, 28],
+    dueMonths: [11],
+  };
+  assert.deepEqual(billDueDays(house), []);
+  assert.deepEqual(
+    billOccurrences(house, "2026-11-01", "2026-11-30", anchored),
+    [
+      { date: "2026-11-06", amount: 19000, currency: "PHP", billId: "House" },
+      { date: "2026-11-20", amount: 19000, currency: "PHP", billId: "House" },
+    ],
+  );
+  assert.deepEqual(
+    billOccurrences(house, "2026-10-01", "2026-11-10", anchored).map(
+      (row) => row.date,
+    ),
+    ["2026-10-23", "2026-11-06"],
+  );
+  assert.deepEqual(
+    billOccurrences(house, "2026-10-01", "2026-10-22", anchored),
+    [],
+  );
+});
+
+test("biweekly payday bills include three-paycheck months and keep fourteen-day dates in February", () => {
+  const anchored = {
+    ...salary,
+    firstPayDate: "2026-10-23",
+    payFrequency: "biweekly",
+  };
+  const bill = payday("House", 19000, "PHP");
+  const january = billOccurrences(bill, "2027-01-01", "2027-01-31", anchored);
+  assert.deepEqual(
+    january.map((row) => row.date),
+    ["2027-01-01", "2027-01-15", "2027-01-29"],
+  );
+  assert.equal(
+    january.reduce((total, row) => total + row.amount, 0),
+    57000,
+  );
+  assert.deepEqual(
+    billOccurrences(bill, "2027-02-01", "2027-02-28", anchored).map(
+      (row) => row.date,
+    ),
+    ["2027-02-12", "2027-02-26"],
+  );
+});
+
+test("payday bills regenerate when the salary frequency or first payday changes", () => {
+  const bill = payday("Payday fee", 25.01);
+  const anchored = {
+    ...salary,
+    firstPayDate: "2026-10-23",
+    payFrequency: "biweekly",
+  };
+  const range = ["2026-11-01", "2026-11-30"];
+  assert.deepEqual(
+    billOccurrences(bill, ...range, anchored).map((row) => row.date),
+    ["2026-11-06", "2026-11-20"],
+  );
+  assert.deepEqual(
+    billOccurrences(bill, ...range, {
+      ...anchored,
+      payFrequency: "semimonthly",
+    }).map((row) => row.date),
+    ["2026-11-08", "2026-11-23"],
+  );
+  assert.deepEqual(
+    billOccurrences(bill, ...range, {
+      ...anchored,
+      firstPayDate: "2026-10-30",
+    }).map((row) => row.date),
+    ["2026-11-13", "2026-11-27"],
+  );
+  assert.deepEqual(
+    billOccurrences(bill, "2027-02-01", "2027-02-28", {
+      ...salary,
+      firstPayDate: "2027-01-31",
+    }).map((row) => row.date),
+    ["2027-02-16", "2027-02-28"],
+  );
+});
+
+test("payday bills need a valid salary schedule and date range", () => {
+  const bill = payday("House", 19000, "PHP");
+  for (const schedule of [
+    undefined,
+    null,
+    {},
+    { ...salary, firstPayDate: "2026-02-30" },
+    { ...salary, payFrequency: "weekly" },
+  ]) {
+    assert.deepEqual(
+      billOccurrences(bill, "2026-11-01", "2026-11-30", schedule),
+      [],
+    );
+  }
+  for (const range of [
+    ["bad", "2026-11-30"],
+    ["2026-11-30", "2026-11-01"],
+  ]) {
+    assert.deepEqual(billOccurrences(bill, ...range, salary), []);
+  }
+});
+
+test("payday summaries use native per-pay amounts and monthly averages without double counting", () => {
+  const document = {
+    salary: { ...salary, amount: 2600, payFrequency: "biweekly" },
+    bills: [
+      monthly("Monthly USD", 26),
+      monthly("Monthly PHP", 1300, "PHP"),
+      payday("Payday USD", 125.01),
+      payday("House", 19000.03, "PHP"),
+      annual("Annual", 260),
+    ],
+    allocations: [],
+  };
+  const summary = getSummary(document, 50);
+  assert.equal(summary.monthlyBillsUsd, 26);
+  assert.equal(summary.monthlyBillsPhp, 1300);
+  assert.equal(summary.paydayBillsUsd, 125.01);
+  assert.equal(summary.paydayBillsPhp, 19000.03);
+  assert.equal(summary.paydayMonthlyUsd, 270.86);
+  assert.equal(summary.paydayMonthlyPhp, 41166.73);
+  assert.equal(summary.billsUsd, 296.86);
+  assert.equal(summary.billsPhp, 42466.73);
+  assert.equal(summary.billsUsdPerPeriod, 137.01);
+  assert.equal(summary.billsPhpPerPeriod, 19600.03);
+  assert.equal(summary.annualPerPeriodUsd, 10);
+  assert.equal(summary.remainingPerPeriodUsd, 660.99);
+  assert.equal(summary.monthlyCommitmentsUsd, 1167.86);
+  const twiceMonthly = getSummary(
+    {
+      ...document,
+      salary: { ...document.salary, payFrequency: "semimonthly" },
+    },
+    50,
+  );
+  assert.equal(twiceMonthly.paydayBillsPhp, 19000.03);
+  assert.equal(twiceMonthly.paydayMonthlyPhp, 38000.06);
+  assert.equal(twiceMonthly.billsUsdPerPeriod, 138.01);
+  assert.equal(twiceMonthly.billsPhpPerPeriod, 19650.03);
+});
+
+test("per-pay bill cents are added directly rather than recovered from rounded monthly equivalents", () => {
+  const summary = getSummary(
+    {
+      salary: { ...salary, payFrequency: "biweekly" },
+      bills: [
+        monthly("Monthly USD", 0.01),
+        monthly("Monthly PHP", 0.01, "PHP"),
+        payday("Payday USD", 0.04),
+        payday("Payday PHP", 0.04, "PHP"),
+      ],
+      allocations: [],
+    },
+    63,
+  );
+  assert.equal(summary.billsUsd, 0.1);
+  assert.equal(summary.billsPhp, 0.1);
+  assert.equal(summary.billsUsdPerPeriod, 0.04);
+  assert.equal(summary.billsPhpPerPeriod, 0.04);
+  assert.notEqual(
+    summary.billsUsdPerPeriod,
+    Math.round(((summary.billsUsd * 12) / 26) * 100) / 100,
+  );
+});
+
+test("budget plans include payday bills even when forecast salary is switched off", () => {
+  const document = {
+    salary: {
+      ...salary,
+      amount: 2600,
+      firstPayDate: "2026-10-23",
+      payFrequency: "biweekly",
+    },
+    bills: [
+      monthly("Internet", 100, "USD", 10),
+      payday("House", 19000, "PHP"),
+      payday("Payday fee", 5.25),
+    ],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    openingUsd: 1000,
+    openingPhp: 50000,
+    includeIncome: false,
+    includeAnnualReserve: false,
+    includeAllocations: false,
+    entries: [],
+  };
+  const before = JSON.stringify({ document, plan });
+  const rows = buildPlanRows(plan, document, 63);
+  assert.equal(rows.length, 5);
+  assert.equal(rows.filter((row) => row.source === "salary").length, 0);
+  assert.deepEqual(
+    rows
+      .filter((row) => row.billId === "House")
+      .map((row) => [row.date, row.php]),
+    [
+      ["2026-11-06", -19000],
+      ["2026-11-20", -19000],
+    ],
+  );
+  assert.deepEqual(
+    rows.filter((row) => row.billId === "Payday fee").map((row) => row.usd),
+    [-5.25, -5.25],
+  );
+  assert.equal(rows.at(-1).balanceUsd, 889.5);
+  assert.equal(rows.at(-1).balancePhp, 12000);
+  assert.equal(JSON.stringify({ document, plan }), before);
+  const withIncome = buildPlanRows(
+    { ...plan, includeIncome: true },
+    document,
+    63,
+  );
+  assert.equal(withIncome.filter((row) => row.source === "salary").length, 2);
+  assert.equal(withIncome.filter((row) => row.source === "bill").length, 5);
+  assert.equal(withIncome[0].source, "salary");
+});
+
+test("posted payday bill payments replace one forecast without moving other bills to a bank posting date", () => {
+  const document = {
+    salary: {
+      ...salary,
+      amount: 2600,
+      firstPayDate: "2026-10-23",
+      payFrequency: "biweekly",
+    },
+    bills: [payday("House", 19000, "PHP"), payday("Payday fee", 5.25)],
+    allocations: [],
+  };
+  const plan = {
+    startDate: "2026-11-01",
+    endDate: "2026-11-30",
+    openingUsd: 0,
+    openingPhp: 50000,
+    includeIncome: true,
+    includeAnnualReserve: false,
+    includeAllocations: false,
+    entries: [],
+  };
+  const transactions = [
+    {
+      id: 1,
+      date: "2026-11-05",
+      kind: "income",
+      merchant: "Salary payroll",
+      amount: 1200,
+      currency: "USD",
+    },
+    {
+      id: 2,
+      date: "2026-11-07",
+      kind: "expense",
+      merchant: "House",
+      amount: 19000,
+      currency: "PHP",
+    },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { transactions });
+  const house = rows.filter((row) => row.billId === "House");
+  assert.equal(house.length, 2);
+  assert.equal(house[0].source, "transaction");
+  assert.equal(house[0].date, "2026-11-07");
+  assert.equal(house[0].scheduledDate, "2026-11-06");
+  assert.equal(house[0].php, -19000);
+  assert.equal(house[1].date, "2026-11-20");
+  assert.deepEqual(
+    rows.filter((row) => row.billId === "Payday fee").map((row) => row.date),
+    ["2026-11-06", "2026-11-20"],
+  );
+  assert.equal(
+    rows.filter((row) => row.source === "transaction" && row.kind === "income")
+      .length,
+    1,
+  );
+  assert.equal(rows.filter((row) => row.source === "salary").length, 1);
+});
+
 test("monthly and pay-period summaries reserve annual bills exactly once", () => {
   const document = {
     salary,
