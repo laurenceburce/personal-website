@@ -92,6 +92,8 @@ const uid = () => globalThis.crypto.randomUUID();
 const amount = (value) => Number(value || 0);
 const signed = (value, currency) =>
   `${value > 0 ? "+" : ""}${money(value, currency)}`;
+const fundingMoney = (usd, php) =>
+  usd > 0 || !(php > 0) ? money(usd) : money(php, "PHP");
 const rateMoney = (value) =>
   new Intl.NumberFormat("en-PH", {
     style: "currency",
@@ -315,7 +317,7 @@ function SpendingTable({
     [
       "Annual bills",
       -summary.annualPerPeriodUsd,
-      "Based on the amount still to fund after saved balances",
+      "Next payments, funded across the paydays left before each due date",
       "annual",
     ],
   ];
@@ -333,6 +335,47 @@ function SpendingTable({
           </b>
         </div>
       ))}
+      {!compact && summary.annualFunding?.length > 0 && (
+        <details className="fp-annual-funding-details">
+          <summary>Annual funding breakdown</summary>
+          <ul>
+            {summary.annualFunding.map((funding) => (
+              <li key={funding.billId}>
+                <div>
+                  <strong>{funding.name}</strong>
+                  <small>
+                    {funding.immediateAmount > 0
+                      ? `${money(funding.immediateAmount, funding.currency)} needed before the next payday`
+                      : funding.estimated
+                        ? "Estimate · add a due date and salary schedule"
+                        : `${funding.paydaysRemaining} payday${funding.paydaysRemaining === 1 ? "" : "s"} left · ${money(funding.remainingForNextPayment, funding.currency)} to fund by ${formatDate(funding.nextDueDate, { year: "numeric" })}`}
+                  </small>
+                </div>
+                <b>
+                  {money(funding.perPeriodAmount, funding.currency)} / payday
+                </b>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {(summary.annualImmediateUsd > 0 || summary.annualImmediatePhp > 0) && (
+        <p className="fp-inline-note" role="status">
+          Annual payments need{" "}
+          {fundingMoney(summary.annualImmediateUsd, summary.annualImmediatePhp)}{" "}
+          before the next eligible payday. This amount needs available cash in
+          addition to regular payday contributions; budget plans show it on
+          the payment date.
+        </p>
+      )}
+      {summary.annualEstimatedCount > 0 && (
+        <p className="fp-inline-note" role="status">
+          {summary.annualEstimatedCount} annual bill
+          {summary.annualEstimatedCount === 1 ? " uses" : "s use"} an estimate.
+          Add a due date and a valid salary schedule to calculate contributions
+          by payment date.
+        </p>
+      )}
       <div className="fp-spending-subtotal">
         <span>Remaining after bills</span>
         <b className={summary.remainingPerPeriodUsd < 0 ? "fp-negative" : ""}>
@@ -871,6 +914,7 @@ export default function FinanceAppClient({
   initialTab,
   initialActivity,
   initialPlanActivity = null,
+  today = localDate(),
 }) {
   const [state, setState] = useState(snapshot);
   const [tab, setTab] = useState(normalizeTab(initialTab));
@@ -894,7 +938,10 @@ export default function FinanceAppClient({
   const [notice, setNotice] = useState("");
   const document = state.document;
   const rate = state.exchangeRate.rate;
-  const summary = useMemo(() => getSummary(document, rate), [document, rate]);
+  const summary = useMemo(
+    () => getSummary(document, rate, today),
+    [document, rate, today],
+  );
   const plan =
     document.plans.find((item) => item.id === selectedPlanId) ||
     document.plans[0];
@@ -906,6 +953,7 @@ export default function FinanceAppClient({
     () =>
       plan
         ? buildPlanRows(plan, document, rate, {
+            today,
             transactions:
               planActivity?.from === plan.startDate &&
               planActivity?.to === plan.endDate
@@ -913,7 +961,7 @@ export default function FinanceAppClient({
                 : [],
           })
         : [],
-    [plan, document, rate, planActivity],
+    [plan, document, rate, planActivity, today],
   );
   const planRecordsMatch = Boolean(
     plan &&
@@ -1360,7 +1408,7 @@ export default function FinanceAppClient({
               onClick={() => signOut({ callbackUrl: "/finance/login" })}
             />
             <span className="fp-topbar-date">
-              {formatDate(localDate(), {
+              {formatDate(today, {
                 month: "short",
                 day: "numeric",
                 year: "numeric",
@@ -1514,6 +1562,7 @@ export default function FinanceAppClient({
                   rate={rate}
                   month={selectedMonth}
                   currency={displayCurrency}
+                  today={today}
                   onAddTransaction={() => open({ type: "transaction" })}
                   onNavigate={navigate}
                 />
@@ -1661,6 +1710,7 @@ export default function FinanceAppClient({
                   summary={summary}
                   rate={rate}
                   salary={document.salary}
+                  asOf={today}
                   onAdd={() => open({ type: "bill" })}
                   onEdit={(bill) => open({ type: "bill", bill })}
                   onDelete={(row) =>
@@ -1684,15 +1734,41 @@ export default function FinanceAppClient({
                   <div>
                     <h3>A head start on annual bills</h3>
                     <p>
-                      {summary.annualRemainingUsd > 0 ? (
+                      {summary.annualImmediateUsd > 0 ||
+                      summary.annualImmediatePhp > 0 ? (
+                        <>
+                          Annual payments need{" "}
+                          <strong>
+                            {fundingMoney(
+                              summary.annualImmediateUsd,
+                              summary.annualImmediatePhp,
+                            )}
+                          </strong>{" "}
+                          before the next eligible payday. Review the spending
+                          plan breakdown and dated budget flows.
+                        </>
+                      ) : summary.annualPerPeriodUsd > 0 ||
+                        summary.annualPerPeriodPhp > 0 ? (
                         <>
                           Set aside{" "}
-                          <strong>{money(summary.annualMonthlyUsd)}</strong>{" "}
-                          each month toward the{" "}
-                          <strong>{money(summary.annualRemainingUsd)}</strong>{" "}
-                          still to fund. Saved balances are already counted, and
-                          this contribution is included in your monthly
-                          commitments.
+                          <strong>
+                            {fundingMoney(
+                              summary.annualPerPeriodUsd,
+                              summary.annualPerPeriodPhp,
+                            )}
+                          </strong>{" "}
+                          each payday toward upcoming payments. Its monthly
+                          equivalent is{" "}
+                          <strong>{money(summary.annualMonthlyUsd)}</strong>,
+                          included in monthly commitments. Your full annual
+                          balance still to fund is{" "}
+                          <strong>{money(summary.annualRemainingUsd)}</strong>
+                          after saved balances.
+                        </>
+                      ) : summary.annualRemainingUsd > 0 ? (
+                        <>
+                          Your next annual payments are funded. Contributions
+                          resume after those payments use the reserve.
                         </>
                       ) : summary.annualUsd > 0 ? (
                         <>
@@ -1777,8 +1853,10 @@ export default function FinanceAppClient({
                     <p>
                       PHP bills are converted at {rateMoney(rate)} per dollar.
                       Annual set-asides use only the amount still to fund after
-                      your saved balances. Update “Saved so far” on a bill to
-                      recalculate your plan.
+                      your saved balances for the next payment, divided across
+                      the salary paydays left before it is due. Meeting today’s
+                      savings target keeps you on track; contributions continue
+                      until the next payment is funded.
                     </p>
                   </div>
                 </div>
@@ -2153,6 +2231,7 @@ export default function FinanceAppClient({
               cadence={cadence}
               rate={rate}
               salary={document.salary}
+              asOf={today}
               onSave={saveBill}
               busy={busy}
               disabled={!state.configured}

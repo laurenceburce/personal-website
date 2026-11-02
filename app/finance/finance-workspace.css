@@ -289,3 +289,36 @@
     gap: 18px;
   }
 }
+.fp-annual-funding-details {
+  margin: 8px 0 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e6ece6;
+  font-size: 11px;
+  color: #65766a;
+}
+.fp-annual-funding-details summary {
+  cursor: pointer;
+  color: #296d55;
+}
+.fp-annual-funding-details ul {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.fp-annual-funding-details li {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px 12px;
+  padding: 8px 0;
+}
+.fp-annual-funding-details strong,
+.fp-annual-funding-details small {
+  display: block;
+  line-height: 1.6;
+}
+.fp-annual-funding-details b {
+  color: #296d55;
+  white-space: nowrap;
+}

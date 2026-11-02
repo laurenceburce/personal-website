@@ -201,13 +201,13 @@ test("allocation charts include monthly equivalents of payday bills without addi
     usd.allocationSegments.find((segment) => segment.id === "php-bills").value,
     226.67,
   );
-  assert.equal(usd.plannedCommitted, 355);
-  assert.equal(usd.plannedRemaining, 2245);
+  assert.equal(usd.plannedCommitted, 605);
+  assert.equal(usd.plannedRemaining, 1995);
   assert.equal(
     php.allocationSegments.find((segment) => segment.id === "php-bills").value,
     14280,
   );
-  assert.equal(php.plannedCommitted, 22364.79);
+  assert.equal(php.plannedCommitted, 38114.79);
   assert.equal(usd.income, 1000);
   assert.equal(usd.expenses, 10);
   assert.equal(usd.transactionCount, 2);
@@ -422,7 +422,7 @@ test("true biweekly allocations annualize over 26 periods and annual reserves co
       .value,
     260,
   );
-  assert.equal(result.plannedCommitted, 270);
+  assert.equal(result.plannedCommitted, 520);
   assert.equal(result.scheduledBills[0].amount, 120);
 });
 
@@ -443,10 +443,10 @@ test("changing annual savings recalculates planned commitments and chart allocat
     ],
   };
   const states = [
-    { saved: 0, reserve: 32.92, committed: 742.92, remaining: 1257.08 },
-    { saved: 100, reserve: 24.58, committed: 734.58, remaining: 1265.42 },
+    { saved: 0, reserve: 395, committed: 1105, remaining: 895 },
+    { saved: 100, reserve: 295, committed: 1005, remaining: 995 },
     { saved: 395, reserve: 0, committed: 710, remaining: 1290 },
-    { saved: 100, reserve: 24.58, committed: 734.58, remaining: 1265.42 },
+    { saved: 100, reserve: 295, committed: 1005, remaining: 995 },
   ];
   for (const state of states) {
     const result = insights({
@@ -605,4 +605,223 @@ test("partial and unsupported currency data are explicitly identified", () => {
   assert.equal(result.income, 50);
   assert.equal(result.partial, true);
   assert.equal(result.excludedUnsupportedCount, 1);
+});
+
+const annualDeadlineDocument = {
+  ...document,
+  salary: { ...salary, payFrequency: "biweekly", firstPayDate: "2026-10-23" },
+  bills: [
+    {
+      id: "microsoft",
+      name: "Microsoft",
+      cadence: "annual",
+      amount: 100,
+      savedAmount: 14.79,
+      currency: "USD",
+      dueDay: 9,
+      dueMonths: [9],
+    },
+    {
+      id: "domain",
+      name: "Namecheap",
+      cadence: "annual",
+      amount: 20,
+      savedAmount: 8.27,
+      currency: "USD",
+      dueDay: 4,
+      dueMonths: [6],
+    },
+    {
+      id: "venture",
+      name: "Venture X",
+      cadence: "annual",
+      amount: 395,
+      savedAmount: 395,
+      currency: "USD",
+      dueDay: 28,
+      dueMonths: [11],
+    },
+    {
+      id: "car",
+      name: "Car Maintenance",
+      cadence: "annual",
+      amount: 500,
+      savedAmount: 85.64,
+      currency: "USD",
+      dueDay: 1,
+      dueMonths: [3, 9],
+    },
+  ],
+};
+
+test("annual chart funding uses actual remaining paydays and the next split installment", () => {
+  const result = insights({ document: annualDeadlineDocument });
+  const funding = new Map(
+    result.annualFunding.map((bill) => [bill.billId, bill]),
+  );
+  assert.deepEqual(
+    ["microsoft", "domain", "venture", "car"].map((id) => {
+      const bill = funding.get(id);
+      return [
+        bill.nextDueDate,
+        bill.installmentAmount,
+        bill.paydaysRemaining,
+        bill.perPeriodAmount,
+      ];
+    }),
+    [
+      ["2027-09-09", 100, 22, 3.88],
+      ["2027-06-04", 20, 16, 0.74],
+      ["2026-11-28", 395, 2, 0],
+      ["2027-03-01", 250, 9, 18.27],
+    ],
+  );
+  assert.equal(funding.get("car").remainingForNextPayment, 164.36);
+  assert.equal(result.annualFundingAsOf, "2026-11-02");
+  assert.equal(result.annualImmediate, 0);
+  assert.equal(result.annualEstimatedCount, 0);
+  assert.equal(result.plannedCommitted, 49.6);
+  assert.equal(result.plannedRemaining, 1950.4);
+  assert.equal(
+    result.allocationSegments.find((segment) => segment.id === "annual").value,
+    49.6,
+  );
+  assert.equal(result.income, 0);
+  assert.equal(result.expenses, 0);
+});
+
+test("changing the selected history month does not move the annual funding reference date", () => {
+  const current = insights({ document: annualDeadlineDocument });
+  for (const month of ["2026-08", "2027-03", "2027-11"]) {
+    const changed = insights({ document: annualDeadlineDocument, month });
+    assert.equal(changed.annualFundingAsOf, "2026-11-02");
+    assert.deepEqual(changed.annualFunding, current.annualFunding);
+    assert.equal(changed.plannedCommitted, current.plannedCommitted);
+  }
+});
+
+test("annual funding recalculates from edited due dates, salary dates and saved balances", () => {
+  const car = annualDeadlineDocument.bills.find((bill) => bill.id === "car");
+  const fundingForCar = (options) =>
+    insights(options).annualFunding.find((bill) => bill.billId === "car");
+  const dueLater = fundingForCar({
+    document: { ...annualDeadlineDocument, bills: [{ ...car, dueDay: 15 }] },
+  });
+  assert.equal(dueLater.nextDueDate, "2027-03-15");
+  assert.equal(dueLater.paydaysRemaining, 10);
+  assert.equal(dueLater.perPeriodAmount, 16.44);
+  const differentSalary = fundingForCar({
+    document: {
+      ...annualDeadlineDocument,
+      salary: { ...annualDeadlineDocument.salary, firstPayDate: "2026-10-30" },
+      bills: [car],
+    },
+  });
+  assert.equal(differentSalary.paydaysRemaining, 8);
+  assert.equal(differentSalary.perPeriodAmount, 20.55);
+  for (const [savedAmount, expected] of [
+    [100, 16.67],
+    [250, 0],
+    [500, 0],
+    [85.64, 18.27],
+  ]) {
+    const changed = fundingForCar({
+      document: { ...annualDeadlineDocument, bills: [{ ...car, savedAmount }] },
+    });
+    assert.equal(changed.perPeriodAmount, expected);
+  }
+});
+
+test("annual amounts due before the next payday remain visible in the overview currency", () => {
+  const urgent = {
+    ...annualDeadlineDocument,
+    bills: [
+      {
+        id: "usd",
+        name: "USD due",
+        cadence: "annual",
+        amount: 100,
+        savedAmount: 25,
+        currency: "USD",
+        dueDay: 4,
+        dueMonths: [11],
+      },
+      {
+        id: "php",
+        name: "PHP due",
+        cadence: "annual",
+        amount: 6300,
+        savedAmount: 0,
+        currency: "PHP",
+        dueDay: 5,
+        dueMonths: [11],
+      },
+    ],
+  };
+  const usd = insights({ document: urgent });
+  const php = insights({ document: urgent, currency: "PHP" });
+  assert.equal(usd.annualImmediate, 175);
+  assert.equal(php.annualImmediate, 11025);
+  assert.equal(usd.annualEstimatedCount, 0);
+  assert.equal(
+    usd.allocationSegments.find((segment) => segment.id === "annual").value,
+    0,
+  );
+  assert.ok(
+    usd.annualFunding.every(
+      (bill) => bill.paydaysRemaining === 0 && bill.immediateAmount > 0,
+    ),
+  );
+});
+
+test("undated annual funding remains visibly estimated while dated funding uses payday counts", () => {
+  const result = insights({
+    document: {
+      ...annualDeadlineDocument,
+      bills: [
+        {
+          id: "estimated",
+          cadence: "annual",
+          amount: 260,
+          savedAmount: 0,
+          currency: "USD",
+          dueDay: null,
+          dueMonths: [11],
+        },
+        { ...annualDeadlineDocument.bills[0] },
+      ],
+    },
+  });
+  assert.equal(result.annualEstimatedCount, 1);
+  assert.equal(
+    result.annualFunding.find((bill) => bill.billId === "estimated").estimated,
+    true,
+  );
+  assert.equal(
+    result.annualFunding.find((bill) => bill.billId === "microsoft").estimated,
+    false,
+  );
+});
+
+test("a small native PHP immediate shortfall remains visible even when its USD equivalent rounds to zero", () => {
+  const result = insights({
+    document: {
+      ...annualDeadlineDocument,
+      bills: [
+        {
+          id: "tiny",
+          name: "Tiny native fee",
+          cadence: "annual",
+          amount: 0.01,
+          currency: "PHP",
+          dueDay: 4,
+          dueMonths: [11],
+        },
+      ],
+    },
+  });
+  assert.equal(result.annualImmediate, 0);
+  assert.equal(result.annualImmediateUsd, 0);
+  assert.equal(result.annualImmediatePhp, 0.01);
+  assert.equal(result.annualFunding[0].immediateAmount, 0.01);
 });

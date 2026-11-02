@@ -46,20 +46,29 @@ const baseBill = {
   paymentMethod: "Credit card",
   isAutopay: true,
 };
+const annualSalary = {
+  amount: 2000,
+  currency: "USD",
+  payFrequency: "semimonthly",
+  firstPayDate: "2026-01-01",
+};
 const document = (bills) => ({
-  salary: { amount: 2000, currency: "USD" },
+  salary: annualSalary,
   bills,
   allocations: [],
 });
 function renderTable(bills, overrides = {}) {
   const rate = overrides.rate || 63;
+  const salary = overrides.salary || annualSalary;
+  const asOf = overrides.asOf || "2026-07-02";
   return renderToStaticMarkup(
     createElement(BillsTable, {
       bills,
       cadence: "annual",
-      summary: planner.getSummary(document(bills), rate),
+      summary: planner.getSummary({ ...document(bills), salary }, rate, asOf),
       rate,
-      asOf: "2026-07-02",
+      salary,
+      asOf,
       onAdd() {},
       onEdit() {},
       onDelete() {},
@@ -122,7 +131,8 @@ test("undated annual bills show no invented target and are clearly excluded from
     html,
     /Bills without a due date are excluded from the target total/,
   );
-  assert.doesNotMatch(html, /Next:|next payment/);
+  assert.doesNotMatch(html, /Next:|Next payment funded/);
+  assert.match(html, /Estimate · Set a due date/);
 });
 
 test("a due-today target uses the full upcoming installment for split annual bills", () => {
@@ -161,21 +171,23 @@ test("annual bills distinguish actual saved funds from targets and show remainin
 test("annual funding suggestions and target feedback recalculate when savings increase or decrease", () => {
   const bill = { ...baseBill, name: "Venture X", amount: 395 };
   const target = planner.annualSavingsTarget(bill, "2026-07-02").target;
-  for (const [savedAmount, monthly, remaining, status] of [
+  for (const [savedAmount, contribution, remaining, status] of [
     [0, "$32.92", "$395.00", `${planner.money(target)} behind target`],
-    [100, "$24.58", "$295.00", `${planner.money(target - 100)} behind target`],
-    [200, "$16.25", "$195.00", "Target met"],
+    [100, "$24.59", "$295.00", `${planner.money(target - 100)} behind target`],
+    [200, "$16.25", "$195.00", "On track today"],
     [395, "$0.00", "$0.00", "Fully funded"],
     [500, "$0.00", "$0.00", "Fully funded"],
     // Reducing an existing saved balance must restore the funding requirement.
-    [100, "$24.58", "$295.00", `${planner.money(target - 100)} behind target`],
+    [100, "$24.59", "$295.00", `${planner.money(target - 100)} behind target`],
   ]) {
     const html = renderTable([{ ...bill, savedAmount }]);
     const cell = (label) =>
       html.match(
         new RegExp(`data-label="${label}"[^>]*>([\\s\\S]*?)<\\/td>`),
       )?.[1];
-    assert.ok(cell("Save / month").includes(`<strong>${monthly}</strong>`));
+    assert.ok(
+      cell("Save / payday").includes(`<strong>${contribution}</strong>`),
+    );
     assert.ok(cell("Still to fund").includes(`<strong>${remaining}</strong>`));
     assert.ok(cell("Target saved by now").includes(status));
     assert.ok(
@@ -187,25 +199,27 @@ test("annual funding suggestions and target feedback recalculate when savings in
     assert.doesNotMatch(html, /NaN|undefined|Infinity/);
     if (savedAmount >= 395) {
       const footer = html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
-      assert.match(footer, /<td>\$0\.00<small>₱0\.00 \/ month<\/small><\/td>/);
-      assert.match(footer, /All targets met/);
+      assert.match(footer, /<td>\$0\.00<small>₱0\.00 \/ payday<\/small>/);
+      assert.match(footer, /All on track today/);
     }
   }
 });
 
-test("annual monthly funding converts native remaining balances before rounding", () => {
+test("annual payday funding retains native currency and labels its monthly equivalent", () => {
   const usd = renderTable([{ ...baseBill, amount: 395, savedAmount: 100 }]);
   assert.match(
     usd,
-    /data-label="Save \/ month"><strong>\$24\.58<\/strong><small>₱1,548\.75<\/small>/,
+    /data-label="Save \/ payday"[^>]*><strong>\$24\.59<\/strong><small>₱1,549\.17<\/small>/,
   );
   const php = renderTable([
     { ...baseBill, amount: 1200, savedAmount: 1000, currency: "PHP" },
   ]);
   assert.match(
     php,
-    /data-label="Save \/ month"><strong>\$0\.26<\/strong><small>₱16\.67<\/small>/,
+    /data-label="Save \/ payday"[^>]*><strong>\$0\.26<\/strong><small>₱16\.67<\/small>/,
   );
+  assert.match(usd, /Monthly equivalent: \$49\.18 · ₱3,098\.34/);
+  assert.match(php, /Monthly equivalent: \$0\.53 · ₱33\.34/);
 });
 
 test("saved and remaining totals retain native pesos and overfunding stays with its bill", () => {
@@ -302,13 +316,15 @@ test("editing saved funds updates the annual form preview immediately", () => {
       bill: { ...baseBill, amount: 395, savedAmount: 100 },
       cadence: "annual",
       rate: 63,
+      salary: annualSalary,
+      asOf: "2026-07-02",
       onSave() {},
     });
   };
   let form = renderForm();
   assert.match(
     renderToStaticMarkup(form),
-    /Save \$24\.58\/month · \$295\.00 still to fund/,
+    /Save \$24\.59\/payday<br\/>Monthly equivalent: \$49\.18 · \$295\.00 still to fund/,
   );
   const savedField = form.props.children.find(
     (child) => child?.props?.label === "Saved so far · USD",
@@ -317,7 +333,7 @@ test("editing saved funds updates the annual form preview immediately", () => {
   form = renderForm();
   assert.match(
     renderToStaticMarkup(form),
-    /Save \$0\.00\/month · Fully funded/,
+    /Save \$0\.00\/payday<br\/>Monthly equivalent: \$0\.00.*Fully funded/,
   );
   const updatedField = form.props.children.find(
     (child) => child?.props?.label === "Saved so far · USD",
@@ -325,7 +341,7 @@ test("editing saved funds updates the annual form preview immediately", () => {
   updatedField.props.children.props.onChange({ target: { value: "100" } });
   assert.match(
     renderToStaticMarkup(renderForm()),
-    /Save \$24\.58\/month · \$295\.00 still to fund/,
+    /Save \$24\.59\/payday<br\/>Monthly equivalent: \$49\.18 · \$295\.00 still to fund/,
   );
 });
 
@@ -728,4 +744,152 @@ test("monthly views reconcile payday monthly averages even without any fixed mon
     /Total monthly bills<\/td><td>\$411\.67<\/td><td>₱41,166\.67/,
   );
   assert.doesNotMatch(html, /Your monthly bills go here/);
+});
+
+test("annual funding shows the screenshot bills' actual remaining paydays and next installment", () => {
+  const bills = [
+    {
+      ...baseBill,
+      id: "microsoft",
+      name: "Microsoft",
+      amount: 100,
+      savedAmount: 14.79,
+      dueDay: 9,
+      dueMonths: [9],
+    },
+    {
+      ...baseBill,
+      id: "domain",
+      name: "Namecheap",
+      amount: 20,
+      savedAmount: 8.27,
+      dueDay: 4,
+      dueMonths: [6],
+    },
+    {
+      ...baseBill,
+      id: "venture",
+      name: "Venture X",
+      amount: 395,
+      savedAmount: 395,
+      dueDay: 28,
+      dueMonths: [11],
+    },
+    {
+      ...baseBill,
+      id: "car",
+      name: "Car Maintenance",
+      amount: 500,
+      savedAmount: 85.64,
+      dueDay: 1,
+      dueMonths: [3, 9],
+    },
+  ];
+  const html = renderTable(bills, { salary: paydaySalary, asOf: "2026-11-02" });
+  const rows = [...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(
+    ([, row]) => row,
+  );
+  const find = (name) =>
+    rows.find((row) => row.includes(`<strong>${name}</strong>`));
+  assert.match(
+    find("Microsoft"),
+    /data-label="Save \/ payday"[^>]*><strong>\$3\.88<\/strong>/,
+  );
+  assert.match(find("Microsoft"), /22 paydays through Sep 9, 2027/);
+  assert.match(
+    find("Namecheap"),
+    /data-label="Save \/ payday"[^>]*><strong>\$0\.74<\/strong>/,
+  );
+  assert.match(find("Namecheap"), /16 paydays through Jun 4, 2027/);
+  assert.match(
+    find("Venture X"),
+    /data-label="Save \/ payday"[^>]*><strong>\$0\.00<\/strong>/,
+  );
+  assert.match(find("Venture X"), /Fully funded/);
+  assert.match(
+    find("Car Maintenance"),
+    /data-label="Save \/ payday"[^>]*><strong>\$18\.27<\/strong>/,
+  );
+  assert.match(find("Car Maintenance"), /9 paydays through Mar 1, 2027/);
+  assert.match(find("Car Maintenance"), /\$164\.36 needed for next payment/);
+  assert.match(
+    find("Car Maintenance"),
+    /data-label="Still to fund"[^>]*><strong>\$414\.36<\/strong>/,
+  );
+  const footer = html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
+  assert.match(footer, /<td>\$22\.89<small>₱1,442\.07 \/ payday/);
+  assert.match(footer, /Monthly equivalent: \$49\.60 · ₱3,124\.80/);
+  assert.match(footer, /All on track today/);
+  assert.doesNotMatch(html, /Remaining funding ÷ 12|\$19\.67/);
+});
+
+test("a covered next installment pauses contributions while preserving the remaining annual cost", () => {
+  const bill = {
+    ...baseBill,
+    amount: 500,
+    savedAmount: 250,
+    dueDay: 1,
+    dueMonths: [3, 9],
+  };
+  const html = renderTable([bill], {
+    salary: paydaySalary,
+    asOf: "2026-11-02",
+  });
+  assert.match(
+    html,
+    /data-label="Save \/ payday"[^>]*><strong>\$0\.00<\/strong>/,
+  );
+  assert.match(html, /Next payment funded/);
+  assert.match(
+    html,
+    /data-label="Still to fund"[^>]*><strong>\$250\.00<\/strong>/,
+  );
+  assert.doesNotMatch(html, /Fully funded/);
+});
+
+test("annual bills due before another payday show an explicit immediate cash requirement", () => {
+  const bill = {
+    ...baseBill,
+    amount: 100,
+    savedAmount: 20,
+    dueDay: 5,
+    dueMonths: [11],
+  };
+  const html = renderTable([bill], {
+    salary: paydaySalary,
+    asOf: "2026-11-02",
+  });
+  assert.match(
+    html,
+    /data-label="Save \/ payday"[^>]*><strong>\$0\.00<\/strong>/,
+  );
+  assert.match(html, /Needed before next payday: \$80\.00/);
+  assert.doesNotMatch(html, /Next payment funded|Fully funded/);
+  const php = renderTable(
+    [{ ...bill, currency: "PHP", amount: 0.01, savedAmount: 0 }],
+    {
+      salary: paydaySalary,
+      asOf: "2026-11-02",
+    },
+  );
+  assert.match(php, /Needed before next payday: ₱0\.01/);
+  assert.match(
+    php.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1],
+    /Needed before next payday: \$0\.00 · ₱0\.01/,
+  );
+});
+
+test("an annual editor without a salary schedule labels its fallback as an estimate", () => {
+  const html = renderToStaticMarkup(
+    createElement(BillForm, {
+      bill: { ...baseBill, amount: 100, savedAmount: 20 },
+      cadence: "annual",
+      rate: 63,
+      asOf: "2026-11-02",
+      onSave() {},
+    }),
+  );
+  assert.match(html, /Estimate · Set your salary schedule/);
+  assert.match(html, /Save \$3\.33\/payday/);
+  assert.doesNotMatch(html, /undefined|NaN|Infinity/);
 });

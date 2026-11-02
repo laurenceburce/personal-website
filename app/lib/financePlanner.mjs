@@ -215,21 +215,78 @@ export function annualSavingsTarget(bill, asOf = localDate()) {
   };
 }
 
-/** Funding still needed for this item's current annual reserve. */
-export function getAnnualBillFunding(bill, payPeriods = 26) {
+/** Current reserve and the contribution needed before the next annual payment. */
+export function getAnnualBillFunding(bill, payPeriods = 26, options = {}) {
   const amount =
     bill?.cadence === "annual" ? Math.max(0, roundMoney(bill.amount)) : 0;
   const savedAmount =
     bill?.cadence === "annual" ? Math.max(0, roundMoney(bill.savedAmount)) : 0;
   const remainingAmount = Math.max(0, roundMoney(amount - savedAmount));
   const periods = number(payPeriods) > 0 ? number(payPeriods) : 26;
+  const asOf = Number.isFinite(dateTime(options.asOf))
+    ? options.asOf
+    : localDate();
+  const salary = options.salary;
+  const needsSchedule =
+    !salary ||
+    !["biweekly", "semimonthly"].includes(salary.payFrequency) ||
+    !Number.isFinite(dateTime(salary.firstPayDate));
+  const afterDate = Number.isFinite(dateTime(options.afterDate))
+    ? options.afterDate
+    : "";
+  const payments =
+    bill?.cadence === "annual"
+      ? billOccurrences(bill, asOf, addDays(asOf, 740))
+      : [];
+  const next =
+    Number.isFinite(dateTime(options.nextPayment?.date)) &&
+    options.nextPayment.date >= asOf
+      ? options.nextPayment
+      : payments.find((payment) => payment.date > afterDate);
+  const needsDate = !next;
+  const remainingForNextPayment = next
+    ? Math.max(0, roundMoney(next.amount - savedAmount))
+    : remainingAmount;
+  const estimated = needsDate || needsSchedule;
+  const paydayDates =
+    next && !needsSchedule
+      ? Array.isArray(options.paydayDates)
+        ? options.paydayDates
+        : salaryOccurrences(salary, asOf, next.date).map(
+            (payday) => payday.date,
+          )
+      : [];
+  const paydaysRemaining = new Set(
+    paydayDates.filter(
+      (date) =>
+        Number.isFinite(dateTime(date)) && date >= asOf && date <= next.date,
+    ),
+  ).size;
+  const perPeriodAmount = estimated
+    ? roundMoney(remainingAmount / periods)
+    : paydaysRemaining > 0
+      ? Math.ceil(
+          Math.round(remainingForNextPayment * 100) / paydaysRemaining,
+        ) / 100
+      : 0;
   return {
     amount,
     savedAmount,
     remainingAmount,
-    monthlyAmount: roundMoney(remainingAmount / 12),
-    perPeriodAmount: roundMoney(remainingAmount / periods),
+    monthlyAmount: estimated
+      ? roundMoney(remainingAmount / 12)
+      : roundMoney((perPeriodAmount * periods) / 12),
+    perPeriodAmount,
     fullyFunded: remainingAmount === 0,
+    nextDueDate: next?.date || null,
+    installmentAmount: next ? roundMoney(next.amount) : null,
+    remainingForNextPayment,
+    paydaysRemaining,
+    needsDate,
+    needsSchedule,
+    immediateAmount:
+      !estimated && paydaysRemaining === 0 ? remainingForNextPayment : 0,
+    estimated,
   };
 }
 
@@ -271,7 +328,7 @@ export function salaryOccurrences(salary, start, end) {
   return result;
 }
 
-export function getSummary(document, rate) {
+export function getSummary(document, rate, asOf = localDate()) {
   const salary = document.salary || {};
   const bills = document.bills || [];
   const allocations = document.allocations || [];
@@ -284,8 +341,10 @@ export function getSummary(document, rate) {
   const paydayBills = bills.filter((bill) => bill.cadence === "payday");
   const annualBills = bills.filter((bill) => bill.cadence === "annual");
   const annualFunding = annualBills.map((bill) => ({
+    billId: bill.id,
+    name: bill.name,
     currency: bill.currency,
-    ...getAnnualBillFunding(bill),
+    ...getAnnualBillFunding(bill, payPeriods, { salary, asOf }),
   }));
   const monthlyBillsUsd = roundMoney(
     monthlyBills
@@ -331,8 +390,12 @@ export function getSummary(document, rate) {
   const annualSavedPhp = annualTotal("savedAmount", "PHP");
   const annualRemainingUsd = annualTotal("remainingAmount", "USD");
   const annualRemainingPhp = annualTotal("remainingAmount", "PHP");
-  const annualMonthlyUsd = roundMoney(annualRemainingUsd / 12);
-  const annualMonthlyPhp = roundMoney(annualRemainingPhp / 12);
+  const annualMonthlyUsd = annualTotal("monthlyAmount", "USD");
+  const annualMonthlyPhp = annualTotal("monthlyAmount", "PHP");
+  const annualPerPeriodUsd = annualTotal("perPeriodAmount", "USD");
+  const annualPerPeriodPhp = annualTotal("perPeriodAmount", "PHP");
+  const annualImmediateUsd = annualTotal("immediateAmount", "USD");
+  const annualImmediatePhp = annualTotal("immediateAmount", "PHP");
   const monthlyCommitmentsUsd = roundMoney(
     billsUsd + convert(billsPhp, "PHP", "USD", rate) + annualMonthlyUsd,
   );
@@ -348,7 +411,6 @@ export function getSummary(document, rate) {
     (monthlyBillsPhp * 12) / payPeriods + paydayBillsPhp,
   );
   const billsPhpPerPeriodUsd = convert(billsPhpPerPeriod, "PHP", "USD", rate);
-  const annualPerPeriodUsd = roundMoney(annualRemainingUsd / payPeriods);
   const remainingPerPeriodUsd = roundMoney(
     incomePerPeriodUsd -
       billsUsdPerPeriod -
@@ -379,6 +441,11 @@ export function getSummary(document, rate) {
     annualSavedPhp,
     annualRemainingUsd,
     annualRemainingPhp,
+    annualFunding,
+    annualImmediateUsd,
+    annualImmediatePhp,
+    annualEstimatedCount: annualFunding.filter((funding) => funding.estimated)
+      .length,
     annualMonthlyUsd,
     annualMonthlyPhp,
     monthlyCommitmentsUsd,
@@ -391,6 +458,7 @@ export function getSummary(document, rate) {
     billsPhpPerPeriod,
     billsPhpPerPeriodUsd,
     annualPerPeriodUsd,
+    annualPerPeriodPhp,
     remainingPerPeriodUsd,
     allocationsPerPeriodUsd,
     unallocatedPerPeriodUsd: roundMoney(
@@ -753,12 +821,20 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const billReserves = new Map();
   const billFunding = new Map();
   const reserveKey = (billId, currency) => `${currency}:${billId}`;
+  const annualPayments = new Map();
+  for (const row of rows.filter((row) => row.annualPayment)) {
+    const key = reserveKey(row.billId, row.currency);
+    if (!annualPayments.has(key)) annualPayments.set(key, []);
+    annualPayments.get(key).push(row);
+  }
   for (const bill of annualBills) {
     const key = reserveKey(bill.id, bill.currency);
     const funding = getAnnualBillFunding(bill, payPeriods);
     billFunding.set(key, {
+      bill,
       amount: funding.amount,
       base: funding.remainingAmount,
+      paidThrough: "",
     });
     billReserves.set(
       key,
@@ -786,19 +862,49 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const reserveAllocations = row.reserveAllocations
         .map(({ billId }) => {
           const key = reserveKey(billId, row.currency);
-          const funding = billFunding.get(key);
-          const capacity = Math.max(
-            0,
-            roundMoney(funding.amount - (billReserves.get(key) || 0)),
-          );
-          const amount = Math.min(
-            capacity,
-            reserveContribution(
-              funding.base,
-              payPeriods,
-              paydayIndex(salary, row.paydayDate),
-            ),
-          );
+          const state = billFunding.get(key);
+          const savedAmount = billReserves.get(key) || 0;
+          // Recorded payments can move the actual funding deadline by a few days.
+          // Once consumed, their original scheduled occurrence cannot be funded twice.
+          const nextPayment = annualPayments
+            .get(key)
+            ?.find(
+              (payment) =>
+                payment.date >= row.date &&
+                (payment.scheduledDate || payment.date) > state.paidThrough,
+            );
+          const context = {
+            salary,
+            asOf: row.date,
+            afterDate: state.paidThrough,
+            nextPayment,
+          };
+          const currentBill = { ...state.bill, savedAmount };
+          let funding = getAnnualBillFunding(currentBill, payPeriods, context);
+          if (!funding.estimated) {
+            // A reconciled paycheck may post early or late. Count its actual date
+            // once while keeping the configured future salary dates intact.
+            const paydayDates = salaryOccurrences(
+              salary,
+              addDays(row.date, -3),
+              addDays(funding.nextDueDate, 3),
+            ).map((payday) => actualPayDates.get(payday.date) || payday.date);
+            funding = getAnnualBillFunding(currentBill, payPeriods, {
+              ...context,
+              paydayDates,
+            });
+          }
+          const capacity = funding.estimated
+            ? Math.max(0, roundMoney(state.amount - savedAmount))
+            : funding.remainingForNextPayment;
+          const contribution = funding.estimated
+            ? reserveContribution(
+                state.base,
+                payPeriods,
+                paydayIndex(salary, row.paydayDate),
+              )
+            : funding.perPeriodAmount;
+          const amount = Math.min(capacity, contribution);
           billReserves.set(
             key,
             roundMoney((billReserves.get(key) || 0) + amount),
@@ -835,7 +941,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const reserveShortfall = roundMoney(grossAmount - reserveUsed);
       billReserves.set(key, roundMoney(saved - fromBill));
       const funding = billFunding.get(key);
-      if (funding) funding.base = funding.amount;
+      if (funding) {
+        funding.base = funding.amount;
+        funding.paidThrough = row.scheduledDate || row.date;
+      }
       unassigned[row.currency] = roundMoney(
         (unassigned[row.currency] || 0) - fromUnassigned,
       );

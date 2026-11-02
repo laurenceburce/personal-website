@@ -107,6 +107,45 @@ function nextPayday(salary, asOf) {
   return salaryOccurrences(salary, start, addDays(start, 370))[0]?.date;
 }
 
+function FundingDetails({ funding, currency }) {
+  if (funding.fullyFunded)
+    return (
+      <small className="fb-funding-detail fb-target-met">Fully funded</small>
+    );
+  if (funding.immediateAmount > 0)
+    return (
+      <small className="fb-funding-detail fb-funding-urgent">
+        Needed before next payday: {money(funding.immediateAmount, currency)}
+      </small>
+    );
+  if (funding.estimated)
+    return (
+      <small className="fb-funding-detail">
+        Estimate ·{" "}
+        {funding.needsDate ? "Set a due date" : "Set your salary schedule"}
+      </small>
+    );
+  if (funding.remainingForNextPayment === 0)
+    return (
+      <small className="fb-funding-detail fb-target-met">
+        Next payment funded
+      </small>
+    );
+  return (
+    <>
+      <small className="fb-funding-detail">
+        {funding.paydaysRemaining} payday
+        {funding.paydaysRemaining === 1 ? "" : "s"} through{" "}
+        {formatDate(funding.nextDueDate, { year: "numeric" })}
+      </small>
+      <small className="fb-funding-detail">
+        {money(funding.remainingForNextPayment, currency)} needed for next
+        payment
+      </small>
+    </>
+  );
+}
+
 export function DueLabel({ bill, salary, asOf = localDate() }) {
   if (bill.cadence === "payday") {
     const next = nextPayday(salary, asOf);
@@ -189,7 +228,8 @@ export function BillForm({
   const annual = draft.cadence === "annual";
   const payday = draft.cadence === "payday";
   const next = payday ? nextPayday(salary, asOf) : null;
-  const funding = getAnnualBillFunding(draft);
+  const payPeriods = salary?.payFrequency === "biweekly" ? 26 : 24;
+  const funding = getAnnualBillFunding(draft, payPeriods, { salary, asOf });
   const paymentCount = Number(draft.monthlyPayments);
   const hasMonthlyDate = draft.dueDays.some((day) => String(day).trim());
   const submit = (event) => {
@@ -344,11 +384,13 @@ export function BillForm({
         {annual && (
           <>
             {" "}
-            · Save {money(funding.monthlyAmount, draft.currency)}/month
+            · Save {money(funding.perPeriodAmount, draft.currency)}/payday
+            <br />
+            Monthly equivalent: {money(funding.monthlyAmount, draft.currency)}
             {funding.amount > 0 &&
-              (funding.fullyFunded
-                ? " · Fully funded"
-                : ` · ${money(funding.remainingAmount, draft.currency)} still to fund`)}
+              !funding.fullyFunded &&
+              ` · ${money(funding.remainingAmount, draft.currency)} still to fund`}
+            <FundingDetails funding={funding} currency={draft.currency} />
           </>
         )}
         {payday && (
@@ -613,7 +655,12 @@ export function BillsTable({
   const targets = annual
     ? bills.map((bill) => annualSavingsTarget(bill, asOf))
     : [];
-  const funding = annual ? bills.map((bill) => getAnnualBillFunding(bill)) : [];
+  const payPeriods = salary?.payFrequency === "biweekly" ? 26 : 24;
+  const funding = annual
+    ? bills.map((bill) =>
+        getAnnualBillFunding(bill, payPeriods, { salary, asOf }),
+      )
+    : [];
   const nativeTargets = targets.reduce(
     (total, target) => {
       if (!target.needsDate)
@@ -688,8 +735,8 @@ export function BillsTable({
               {annual && (
                 <>
                   <th>
-                    Save / month
-                    <small>Remaining funding ÷ 12</small>
+                    Save / payday
+                    <small>Until the next payment</small>
                   </th>
                   <th>
                     Saved so far
@@ -781,28 +828,53 @@ export function BillsTable({
                   </td>
                   {annual && (
                     <>
-                      <td data-label="Save / month">
+                      <td data-label="Save / payday" className="fb-funding">
                         <strong>
                           {money(
                             convert(
-                              billFunding.remainingAmount,
+                              billFunding.perPeriodAmount,
                               bill.currency,
                               "USD",
                               rate,
-                            ) / 12,
+                            ),
                           )}
                         </strong>
                         <small>
                           {money(
                             convert(
-                              billFunding.remainingAmount,
+                              billFunding.perPeriodAmount,
                               bill.currency,
                               "PHP",
                               rate,
-                            ) / 12,
+                            ),
                             "PHP",
                           )}
                         </small>
+                        <small>
+                          Monthly equivalent:{" "}
+                          {money(
+                            convert(
+                              billFunding.monthlyAmount,
+                              bill.currency,
+                              "USD",
+                              rate,
+                            ),
+                          )}{" "}
+                          ·{" "}
+                          {money(
+                            convert(
+                              billFunding.monthlyAmount,
+                              bill.currency,
+                              "PHP",
+                              rate,
+                            ),
+                            "PHP",
+                          )}
+                        </small>
+                        <FundingDetails
+                          funding={billFunding}
+                          currency={bill.currency}
+                        />
                       </td>
                       <td
                         data-label="Saved so far"
@@ -883,7 +955,7 @@ export function BillsTable({
                                 ? "Fully funded"
                                 : targetGap > 0
                                   ? `${money(targetGap, bill.currency)} behind target`
-                                  : "Target met"}
+                                  : "On track today"}
                             </small>
                             <small>
                               Next:{" "}
@@ -989,10 +1061,22 @@ export function BillsTable({
               {annual && (
                 <>
                   <td>
-                    {money(summary.annualMonthlyUsd)}
+                    {money(summary.annualPerPeriodUsd)}
                     <small>
-                      {money(summary.annualMonthlyPhp, "PHP")} / month
+                      {money(summary.annualPerPeriodPhp, "PHP")} / payday
                     </small>
+                    <small>
+                      Monthly equivalent: {money(summary.annualMonthlyUsd)} ·{" "}
+                      {money(summary.annualMonthlyPhp, "PHP")}
+                    </small>
+                    {(summary.annualImmediateUsd > 0 ||
+                      summary.annualImmediatePhp > 0) && (
+                      <small className="fb-funding-urgent">
+                        Needed before next payday:{" "}
+                        {money(summary.annualImmediateUsd)} ·{" "}
+                        {money(summary.annualImmediatePhp, "PHP")}
+                      </small>
+                    )}
                   </td>
                   <td className="fb-balance fb-saved">
                     <strong>{money(balanceTotal("saved", "USD"))}</strong>
@@ -1016,7 +1100,7 @@ export function BillsTable({
                       </small>
                     ) : missingTargets === 0 ? (
                       <small className="fb-funding-status fb-target-met">
-                        All targets met
+                        All on track today
                       </small>
                     ) : null}
                     {missingTargets > 0 && (
@@ -1049,14 +1133,19 @@ export function BillsTable({
             earmarked for that bill in budget plans; projections do not change
             your saved balance. Still to fund is the annual cost less that
             bill’s savings, with any extra savings kept for future payments.
-            Save / month divides the remaining funding by 12 and becomes zero
-            when the bill is fully funded.
+            Save / payday divides the next payment’s shortfall across the salary
+            paydays remaining through its due date, including a payday on the
+            due date. Split bills use the next installment. Monthly equivalents
+            use that contribution and your pay frequency. Funding pauses when
+            the next payment is covered and resumes after payment. Estimates
+            need a due date and salary schedule.
           </p>
           <p>
             Target builds up between payment dates; this is a suggested savings
             amount, not a bank balance. Your saved balance determines whether
-            you have met the target. Targets use the next installment due and
-            today’s reference exchange rate.{" "}
+            you are on track today. Future payday contributions still build
+            savings for the upcoming payment. Targets use the next installment
+            due and today’s reference exchange rate.{" "}
             {missingTargets > 0 &&
               "Bills without a due date are excluded from the target total."}
           </p>

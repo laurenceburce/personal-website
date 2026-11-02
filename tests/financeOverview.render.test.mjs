@@ -157,6 +157,7 @@ const render = (overrides = {}) =>
       activity,
       rate: 63,
       month: "2024-01",
+      today: "2024-01-31",
       currency: "USD",
       onNavigate() {},
       onAddTransaction() {},
@@ -192,9 +193,9 @@ test("the real overview renders actual USD metrics separately from planned salar
   assert.deepEqual(allocationDescription.match(/\$[\d,]+\.\d{2}/g), [
     "$40.00",
     "$40.00",
-    "$10.00",
+    "$10.44",
     "$1,000.00",
-    "$910.00",
+    "$909.56",
   ]);
   assert.match(html, /USD bill/);
   assert.match(html, /PHP bill/);
@@ -226,10 +227,10 @@ test("switching to PHP changes every actual metric and chart currency without co
 test("the overview rerenders annual reserve funding and unallocated salary when saved balances change", () => {
   const initialMetrics = metricValues(render());
   for (const [saved, reserve, remaining] of [
-    [0, "$10.00", "$910.00"],
-    [60, "$5.00", "$915.00"],
+    [0, "$10.44", "$909.56"],
+    [60, "$5.22", "$914.78"],
     [120, "$0.00", "$920.00"],
-    [60, "$5.00", "$915.00"],
+    [60, "$5.22", "$914.78"],
   ]) {
     const html = render({
       document: {
@@ -251,7 +252,7 @@ test("the overview rerenders annual reserve funding and unallocated salary when 
     assert.match(html, /Annual payment[\s\S]*?\$120\.00/);
     assert.match(
       html,
-      /Annual reserve funding adjusts to what is still needed after your saved balances/,
+      /Annual reserves show the monthly equivalent of contributions needed across the paydays left before each next payment/,
     );
     assert.doesNotMatch(html, /NaN|Infinity|undefined/);
   }
@@ -334,5 +335,87 @@ test("empty data leaves honest zero values, a missing balance, and no invented c
   assert.match(html, /No transactions recorded this month/);
   assert.match(html, /Connect a bank/);
   assert.match(html, /Add a transaction/);
+  assert.doesNotMatch(html, /NaN|Infinity|undefined/);
+});
+
+test("the overview shows the next-installment contribution using the supplied current date", () => {
+  const datedDocument = {
+    ...document,
+    salary: {
+      ...document.salary,
+      payFrequency: "biweekly",
+      firstPayDate: "2026-10-23",
+    },
+    allocations: [],
+    bills: [
+      {
+        id: "car",
+        name: "Car Maintenance",
+        cadence: "annual",
+        amount: 500,
+        savedAmount: 85.64,
+        currency: "USD",
+        dueDay: 1,
+        dueMonths: [3, 9],
+      },
+    ],
+  };
+  for (const month of ["2026-11", "2026-08", "2027-03"]) {
+    const html = render({
+      document: datedDocument,
+      activity: { accounts: [], transactions: [] },
+      month,
+      today: "2026-11-02",
+    });
+    const reserve = html.match(
+      /Annual reserve<\/span><strong>([^<]*)<\/strong>/,
+    )?.[1];
+    assert.equal(reserve, "$39.59");
+    assert.match(html, /paydays left before each next payment/);
+    assert.doesNotMatch(html, /NaN|Infinity|undefined/);
+  }
+});
+
+test("overview warnings retain urgent native PHP cents and identify undated estimates", () => {
+  const html = render({
+    month: "2026-11",
+    today: "2026-11-02",
+    document: {
+      ...document,
+      salary: {
+        ...document.salary,
+        payFrequency: "biweekly",
+        firstPayDate: "2026-10-23",
+      },
+      allocations: [],
+      bills: [
+        {
+          id: "urgent",
+          name: "Small urgent fee",
+          cadence: "annual",
+          amount: 0.01,
+          savedAmount: 0,
+          currency: "PHP",
+          dueDay: 4,
+          dueMonths: [11],
+        },
+        {
+          id: "estimate",
+          name: "Open annual fee",
+          cadence: "annual",
+          amount: 260,
+          savedAmount: 0,
+          currency: "USD",
+          dueDay: null,
+          dueMonths: [11],
+        },
+      ],
+    },
+  });
+  assert.match(
+    html,
+    /Annual bills need ₱0\.01 before the next eligible payday/,
+  );
+  assert.match(html, /1 annual bill uses an estimate/);
   assert.doesNotMatch(html, /NaN|Infinity|undefined/);
 });

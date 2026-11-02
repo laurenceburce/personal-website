@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useMemo, useState } from "react";
-import { formatDate, money } from "../lib/financePlanner.mjs";
+import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 import { getFinanceInsights } from "../lib/financeInsights.mjs";
 import "./finance-overview.css";
 
@@ -270,9 +270,28 @@ function AllocationChart({ insights, currency, onNavigate }) {
         </ul>
       </div>
       <p className="fpi-small-note">
-        Annual reserve funding adjusts to what is still needed after your saved
-        balances.
+        Annual reserves show the monthly equivalent of contributions needed
+        across the paydays left before each next payment, after saved balances.
       </p>
+      {(insights.annualImmediateUsd > 0 || insights.annualImmediatePhp > 0) && (
+        <p className="fpi-notice" role="status">
+          Annual bills need{" "}
+          {insights.annualImmediate > 0
+            ? money(insights.annualImmediate, currency)
+            : currency === "USD"
+              ? money(insights.annualImmediatePhp, "PHP")
+              : money(insights.annualImmediateUsd)}{" "}
+          before the next eligible payday, in addition to these monthly
+          allocations.
+        </p>
+      )}
+      {insights.annualEstimatedCount > 0 && (
+        <p className="fpi-small-note">
+          {insights.annualEstimatedCount} annual bill
+          {insights.annualEstimatedCount === 1 ? " uses" : "s use"} an estimate.
+          Add due dates and a salary schedule for payment-date calculations.
+        </p>
+      )}
       <div
         className={`fpi-plan-note ${insights.overBudget ? "fpi-plan-over" : ""}`}
       >
@@ -298,12 +317,14 @@ export default function FinanceOverview({
   rate,
   month,
   currency = "USD",
+  today = localDate(),
   onAddTransaction,
   onNavigate,
 }) {
   const insights = useMemo(
-    () => getFinanceInsights({ document, activity, rate, month, currency }),
-    [document, activity, rate, month, currency],
+    () =>
+      getFinanceInsights({ document, activity, rate, month, currency, today }),
+    [document, activity, rate, month, currency, today],
   );
   const dateLabel = monthLabel(insights.month, true);
   return (

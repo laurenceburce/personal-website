@@ -131,7 +131,7 @@ export function getFinanceInsights({
   assets = roundMoney(assets);
   liabilities = roundMoney(liabilities);
 
-  const plan = getSummary(document, rate);
+  const plan = getSummary(document, rate, today);
   const plannedIncome =
     displayCurrency === "PHP" ? plan.monthlyPhp : plan.monthlyUsd;
   const usdBills = convert(plan.billsUsd, "USD", displayCurrency, rate);
@@ -278,6 +278,15 @@ export function getFinanceInsights({
     plannedIncome,
     plannedCommitted,
     plannedRemaining,
+    annualFundingAsOf: today,
+    annualFunding: plan.annualFunding,
+    annualImmediate:
+      displayCurrency === "PHP"
+        ? plan.annualImmediatePhp
+        : plan.annualImmediateUsd,
+    annualImmediateUsd: plan.annualImmediateUsd,
+    annualImmediatePhp: plan.annualImmediatePhp,
+    annualEstimatedCount: plan.annualEstimatedCount,
     overBudget: Math.max(0, -plannedRemaining),
     allocationSegments,
     allocationTotal,

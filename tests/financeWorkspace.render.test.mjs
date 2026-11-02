@@ -90,6 +90,7 @@ function fixture(tab, savedAmount, documentOverrides = {}) {
     ...documentOverrides,
   };
   return {
+    today: "2026-11-02",
     snapshot: {
       configured: true,
       revision: 1,
@@ -114,20 +115,20 @@ const plain = (html) => html.replace(/<[^>]*>/g, "");
 
 test("monthly bill reserves and commitment cards recalculate from saved balances", () => {
   for (const [saved, monthly, remaining] of [
-    [0, "$32.92", "$395.00"],
-    [100, "$24.58", "$295.00"],
+    [0, "$427.92", "$395.00"],
+    [100, "$319.58", "$295.00"],
     [395, "$0.00", "$0.00"],
-    [100, "$24.58", "$295.00"],
+    [100, "$319.58", "$295.00"],
   ]) {
     const html = render("bills", saved);
     assert.ok(html.includes("Annual bills reserve"));
     assert.ok(html.includes(monthly));
     if (saved === 395) {
       assert.ok(plain(html).includes("Your annual bills are fully funded."));
-      assert.ok(!html.includes("$32.92"));
+      assert.ok(!html.includes("$427.92"));
       assert.ok(html.includes("$2,600.00"));
     } else {
-      assert.ok(plain(html).includes(`${remaining} still to fund`));
+      assert.ok(plain(html).includes(`still to fund is ${remaining}`));
       assert.ok(!plain(html).includes("Your annual bills are fully funded."));
     }
   }
@@ -135,10 +136,10 @@ test("monthly bill reserves and commitment cards recalculate from saved balances
 
 test("workspace spending totals recover funds as an annual bill is saved, then adjust when lowered", () => {
   for (const [saved, contribution, available] of [
-    [0, "-$15.19", "$1,184.81"],
-    [100, "-$11.35", "$1,188.65"],
+    [0, "-$197.50", "$1,002.50"],
+    [100, "-$147.50", "$1,052.50"],
     [395, "$0.00", "$1,200.00"],
-    [100, "-$11.35", "$1,188.65"],
+    [100, "-$147.50", "$1,052.50"],
   ]) {
     const html = render("spending", saved);
     const annual = html.match(/fp-spending-annual[^>]*>([\s\S]*?)<\/b>/)?.[1];
@@ -150,9 +151,126 @@ test("workspace spending totals recover funds as an annual bill is saved, then a
       ),
     );
     assert.ok(
-      html.includes("Based on the amount still to fund after saved balances"),
+      html.includes(
+        "Next payments, funded across the paydays left before each due date",
+      ),
     );
   }
+});
+
+const screenshotAnnualBills = [
+  {
+    id: "microsoft",
+    name: "Microsoft",
+    amount: 100,
+    savedAmount: 14.79,
+    dueDay: 9,
+    dueMonths: [9],
+  },
+  {
+    id: "domain",
+    name: "Namecheap",
+    amount: 20,
+    savedAmount: 8.27,
+    dueDay: 4,
+    dueMonths: [6],
+  },
+  {
+    id: "venture",
+    name: "Venture X",
+    amount: 395,
+    savedAmount: 395,
+    dueDay: 28,
+    dueMonths: [11],
+  },
+  {
+    id: "car",
+    name: "Car Maintenance",
+    amount: 500,
+    savedAmount: 85.64,
+    dueDay: 1,
+    dueMonths: [3, 9],
+  },
+].map((bill) => ({ ...bill, cadence: "annual", currency: "USD" }));
+
+test("the spending, chart and dated plan use the same deadline contributions for on-track annual bills", () => {
+  const overrides = { bills: screenshotAnnualBills };
+  const spending = render("spending", 0, overrides);
+  const annual = spending.match(/fp-spending-annual[^>]*>([\s\S]*?)<\/b>/)?.[1];
+  assert.ok(plain(annual).includes("-$22.89"));
+  const breakdown = spending.match(
+    /fp-annual-funding-details[^>]*>([\s\S]*?)<\/details>/,
+  )?.[1];
+  const breakdownText = plain(breakdown);
+  assert.ok(
+    breakdownText.includes("22 paydays left · $85.21 to fund by Sep 9, 2027"),
+  );
+  assert.ok(
+    breakdownText.includes("16 paydays left · $11.73 to fund by Jun 4, 2027"),
+  );
+  assert.ok(
+    breakdownText.includes("9 paydays left · $164.36 to fund by Mar 1, 2027"),
+  );
+  assert.ok(breakdownText.includes("$18.27 / payday"));
+  assert.ok(!spending.includes("$19.67"));
+  const overview = render("home", 0, overrides);
+  assert.ok(plain(overview).includes("Annual reserve$49.60"));
+  const basePlan = fixture("plans", 0).snapshot.document.plans[0];
+  const plans = render("plans", 0, {
+    ...overrides,
+    plans: [{ ...basePlan, includeAnnualReserve: true }],
+  });
+  assert.equal((plans.match(/class="fpl-row /g) || []).length, 3);
+  assert.equal((plain(plans).match(/-\$22\.89/g) || []).length, 2);
+  assert.ok(plain(plans).includes("Available funds · USD$704.22"));
+  assert.ok(plain(plans).includes("Annual reserve · USD$154.48"));
+  assert.ok(
+    plain(plans).includes(
+      "Total bill $395.00 · $395.00 from reserves · $0.00 additional cash",
+    ),
+  );
+});
+
+test("cash needed before the next payday is visible outside regular annual contributions", () => {
+  const overrides = {
+    bills: [
+      {
+        ...screenshotAnnualBills[0],
+        amount: 100,
+        savedAmount: 25,
+        dueDay: 3,
+        dueMonths: [11],
+      },
+    ],
+  };
+  const spending = plain(render("spending", 0, overrides));
+  assert.ok(spending.includes("$75.00 needed before the next payday"));
+  assert.ok(
+    spending.includes(
+      "Annual payments need $75.00 before the next eligible payday",
+    ),
+  );
+  const overview = plain(render("home", 0, overrides));
+  assert.ok(
+    overview.includes(
+      "Annual bills need $75.00 before the next eligible payday",
+    ),
+  );
+  const tinyPhp = {
+    bills: [
+      { ...overrides.bills[0], currency: "PHP", amount: 0.01, savedAmount: 0 },
+    ],
+  };
+  assert.ok(
+    plain(render("spending", 0, tinyPhp)).includes(
+      "Annual payments need ₱0.01 before the next eligible payday",
+    ),
+  );
+  assert.ok(
+    plain(render("home", 0, tinyPhp)).includes(
+      "Annual bills need ₱0.01 before the next eligible payday",
+    ),
+  );
 });
 
 test("workspace budget balances and annual payment details use the edited item savings once", () => {

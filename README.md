@@ -132,9 +132,16 @@ The finance workspace separates recorded activity from your plans:
   payment currency, with **Still to fund** shown separately from the suggested target.
   Changing that balance recalculates the item's monthly contribution, reserve
   totals, overview allocation chart, spending plan, and budget forecasts.
-  Contributions use each bill's remaining balance, clamped to zero independently;
-  extra savings on one bill do not cover another bill. A fully funded bill needs
-  no further contribution. The calendar target and full bill cost stay separate.
+  Contributions use each bill's next payment or installment, less its saved
+  funds, divided across salary paydays from today through its due date. Same-day
+  paydays can fund that day's payment. Contributions round up to cents; the final
+  planned set-aside is capped at the remaining shortfall. The monthly allocation
+  is the equivalent of this per-pay contribution. Extra savings on one bill do
+  not cover another bill. A funded next installment needs no contribution until
+  it is paid. The calendar progress target and full annual cost stay separate;
+  meeting today's target still allows ongoing funding for future payments.
+  Bills without a date or salary schedule show an estimate. A payment with no
+  eligible payday remaining shows its immediate cash shortfall separately.
 - **Spending plan:** automatic per-pay income, USD/PHP bills, annual reserves,
   and custom savings or expense allocations. Twice-monthly pay uses 24 periods;
   every-two-weeks pay uses 26. Select the schedule and first payday under salary;
@@ -151,9 +158,11 @@ The finance workspace separates recorded activity from your plans:
   contributions. An annual payment row shows only the additional cash needed
   after using those funds, with the full payment and reserve used in its detail.
   For example, a $395 bill with $100 saved needs $295 more; later set-asides can
-  reduce that further. Its suggested monthly funding becomes $24.58. Payday
-  set-asides pause at full funding, then resume for renewal after a payment uses
-  the reserve. Saved balances seed each hypothetical plan once and are
+  reduce that further. If two paydays remain before it is due, the contribution
+  is $147.50 per payday. Plans recalculate against the remaining payment dates
+  and earmarked balance on every payday. Set-asides pause when the next payment
+  is funded, then resume after payment for the following installment or renewal.
+  Saved balances seed each hypothetical plan once and are
   not reduced in the bill editor by a forecast. Undated bills are flagged;
   annual reserves still build on paydays.
   Flow sources can be toggled when creating or editing a plan. Opening balances

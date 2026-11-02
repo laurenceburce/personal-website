@@ -10,10 +10,13 @@ import {
   formatDate,
   getAnnualBillFunding,
   getAnnualReserveOpening,
-  getSummary,
+  getSummary as summarize,
   localDate,
   salaryOccurrences,
 } from "../app/lib/financePlanner.mjs";
+
+const getSummary = (document, rate, asOf = "2026-11-02") =>
+  summarize(document, rate, asOf);
 
 const salary = {
   amount: 2000,
@@ -172,7 +175,7 @@ test("payday summaries use native per-pay amounts and monthly averages without d
       monthly("Monthly PHP", 1300, "PHP"),
       payday("Payday USD", 125.01),
       payday("House", 19000.03, "PHP"),
-      annual("Annual", 260),
+      annual("Annual", 260, "USD", null),
     ],
     allocations: [],
   };
@@ -358,20 +361,20 @@ test("monthly and pay-period summaries reserve annual bills exactly once", () =>
   assert.equal(summary.monthlyUsd, 2000);
   assert.equal(summary.monthlyPhp, 126000);
   assert.equal(summary.annualUsd, 1015);
-  assert.equal(summary.annualMonthlyUsd, 84.58);
+  assert.equal(summary.annualMonthlyUsd, 104.64);
   assert.equal(summary.billsUsdPerPeriod, 31);
   assert.equal(summary.billsPhpPerPeriod, 2100);
   assert.equal(summary.billsPhpPerPeriodUsd, 33.33);
-  assert.equal(summary.annualPerPeriodUsd, 42.29);
-  assert.equal(summary.remainingPerPeriodUsd, 893.38);
-  assert.equal(summary.unallocatedPerPeriodUsd, 393.38);
-  assert.equal(summary.monthlyCommitmentsUsd, 213.25);
+  assert.equal(summary.annualPerPeriodUsd, 52.32);
+  assert.equal(summary.remainingPerPeriodUsd, 883.35);
+  assert.equal(summary.unallocatedPerPeriodUsd, 383.35);
+  assert.equal(summary.monthlyCommitmentsUsd, 233.31);
 });
 
 test("true biweekly pay annualizes income and expenses over 26 periods", () => {
   const document = {
     salary: { ...salary, payFrequency: "biweekly" },
-    bills: [monthly("Bills", 260), annual("Annual", 260)],
+    bills: [monthly("Bills", 260), annual("Annual", 260, "USD", null)],
     allocations: [],
   };
   const summary = getSummary(document, 63);
@@ -412,9 +415,9 @@ test("PHP summary totals preserve native cents instead of round-tripping rounded
     63,
   );
   assert.equal(summary.annualPhp, 2275.01);
-  assert.equal(summary.annualMonthlyPhp, 189.58);
-  assert.equal(summary.monthlyCommitmentsPhp, 484.59);
-  assert.equal(summary.monthlyRemainingPhp, 515.42);
+  assert.equal(summary.annualMonthlyPhp, 217.64);
+  assert.equal(summary.monthlyCommitmentsPhp, 512.65);
+  assert.equal(summary.monthlyRemainingPhp, 487.36);
   assert.notEqual(
     summary.annualPhp,
     convert(summary.annualUsd, "USD", "PHP", 63),
@@ -422,16 +425,37 @@ test("PHP summary totals preserve native cents instead of round-tripping rounded
 });
 
 test("annual funding follows saved balances without changing the bill or calendar target", () => {
-  const bill = { ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 100 };
-  const before = JSON.stringify(bill);
-  assert.deepEqual(getAnnualBillFunding(bill), {
-    amount: 395,
+  const bill = {
+    ...annual("Venture X", 395, "USD", 28, [11]),
     savedAmount: 100,
-    remainingAmount: 295,
-    monthlyAmount: 24.58,
-    perPeriodAmount: 11.35,
-    fullyFunded: false,
-  });
+  };
+  const before = JSON.stringify(bill);
+  const {
+    amount,
+    savedAmount,
+    remainingAmount,
+    monthlyAmount,
+    perPeriodAmount,
+    fullyFunded,
+  } = getAnnualBillFunding(bill);
+  assert.deepEqual(
+    {
+      amount,
+      savedAmount,
+      remainingAmount,
+      monthlyAmount,
+      perPeriodAmount,
+      fullyFunded,
+    },
+    {
+      amount: 395,
+      savedAmount: 100,
+      remainingAmount: 295,
+      monthlyAmount: 24.58,
+      perPeriodAmount: 11.35,
+      fullyFunded: false,
+    },
+  );
   assert.equal(getAnnualBillFunding(bill, 24).perPeriodAmount, 12.29);
   for (const savedAmount of [395, 500]) {
     const funded = getAnnualBillFunding({ ...bill, savedAmount });
@@ -449,14 +473,38 @@ test("annual funding follows saved balances without changing the bill or calenda
 });
 
 test("annual funding sanitizes legacy values and excludes monthly savings", () => {
-  for (const savedAmount of [undefined, -10, "invalid", Number.POSITIVE_INFINITY]) {
-    assert.equal(getAnnualBillFunding({ ...annual("Legacy", 395), savedAmount }).remainingAmount, 395);
+  for (const savedAmount of [
+    undefined,
+    -10,
+    "invalid",
+    Number.POSITIVE_INFINITY,
+  ]) {
+    assert.equal(
+      getAnnualBillFunding({ ...annual("Legacy", 395), savedAmount })
+        .remainingAmount,
+      395,
+    );
   }
-  assert.equal(getAnnualBillFunding({ ...annual("PHP", "6300.01", "PHP"), savedAmount: "1260.01" }).remainingAmount, 5040);
-  assert.deepEqual(getAnnualBillFunding({ ...monthly("Monthly", 20), savedAmount: 10 }), getAnnualBillFunding());
+  assert.equal(
+    getAnnualBillFunding({
+      ...annual("PHP", "6300.01", "PHP"),
+      savedAmount: "1260.01",
+    }).remainingAmount,
+    5040,
+  );
+  assert.deepEqual(
+    getAnnualBillFunding({ ...monthly("Monthly", 20), savedAmount: 10 }),
+    getAnnualBillFunding(),
+  );
   assert.equal(getAnnualBillFunding(annual("Invalid", -10)).amount, 0);
-  assert.equal(getAnnualBillFunding(annual("Invalid", "invalid")).remainingAmount, 0);
-  assert.equal(getAnnualBillFunding(annual("Fallback", 260), 0).perPeriodAmount, 10);
+  assert.equal(
+    getAnnualBillFunding(annual("Invalid", "invalid")).remainingAmount,
+    0,
+  );
+  assert.equal(
+    getAnnualBillFunding(annual("Fallback", 260), 0).perPeriodAmount,
+    10,
+  );
 });
 
 test("summary funding clamps each item before aggregating native USD and PHP balances", () => {
@@ -477,13 +525,13 @@ test("summary funding clamps each item before aggregating native USD and PHP bal
   assert.equal(summary.annualSavedPhp, 23310.01);
   assert.equal(summary.annualRemainingUsd, 375);
   assert.equal(summary.annualRemainingPhp, 23625);
-  assert.equal(summary.annualMonthlyUsd, 31.25);
-  assert.equal(summary.annualMonthlyPhp, 1968.75);
-  assert.equal(summary.annualPerPeriodUsd, 14.42);
-  assert.equal(summary.monthlyCommitmentsUsd, 81.25);
-  assert.equal(summary.monthlyRemainingUsd, 1918.75);
-  assert.equal(summary.remainingPerPeriodUsd, 885.58);
-  assert.equal(summary.unallocatedPerPeriodUsd, 785.58);
+  assert.equal(summary.annualMonthlyUsd, 36.94);
+  assert.equal(summary.annualMonthlyPhp, 2327.16);
+  assert.equal(summary.annualPerPeriodUsd, 17.05);
+  assert.equal(summary.monthlyCommitmentsUsd, 86.94);
+  assert.equal(summary.monthlyRemainingUsd, 1913.06);
+  assert.equal(summary.remainingPerPeriodUsd, 882.95);
+  assert.equal(summary.unallocatedPerPeriodUsd, 782.95);
 });
 
 test("changing saved annual money recomputes all funding-based summary metrics", () => {
@@ -504,13 +552,13 @@ test("changing saved annual money recomputes all funding-based summary metrics",
   assert.equal(partial.annualPhp, funded.annualPhp);
   assert.equal(partial.annualRemainingUsd, 295);
   assert.equal(partial.annualRemainingPhp, 18585);
-  assert.equal(partial.annualMonthlyUsd, 24.58);
-  assert.equal(partial.annualMonthlyPhp, 1548.75);
-  assert.equal(partial.annualPerPeriodUsd, 11.35);
-  assert.equal(partial.monthlyCommitmentsUsd, 24.58);
-  assert.equal(partial.monthlyRemainingUsd, 1975.42);
-  assert.equal(partial.remainingPerPeriodUsd, 911.73);
-  assert.equal(partial.unallocatedPerPeriodUsd, 411.73);
+  assert.equal(partial.annualMonthlyUsd, 29.06);
+  assert.equal(partial.annualMonthlyPhp, 1830.78);
+  assert.equal(partial.annualPerPeriodUsd, 13.41);
+  assert.equal(partial.monthlyCommitmentsUsd, 29.06);
+  assert.equal(partial.monthlyRemainingUsd, 1970.94);
+  assert.equal(partial.remainingPerPeriodUsd, 909.67);
+  assert.equal(partial.unallocatedPerPeriodUsd, 409.67);
 });
 
 test("monthly dates clamp to month end across leap years and year boundaries", () => {
@@ -839,7 +887,7 @@ test("full plan flows include allocations, native reserves, one-time transaction
       reserveUsd: rows.at(-1).reserveUsd,
       reservePhp: rows.at(-1).reservePhp,
     },
-    { usd: 1130, php: 5840, reserveUsd: 20, reservePhp: 200 },
+    { usd: 976.66, php: 4306.66, reserveUsd: 173.34, reservePhp: 1733.34 },
   );
   const reserve = rows.find((row) => row.source === "reserve");
   assert.equal(
@@ -965,7 +1013,7 @@ test("posted records replace matching salary, bills and exact dated manual forec
   const domain = rows.find((row) => row.transactionId === 3);
   assert.equal(domain.billId, "Domain");
   assert.equal(domain.scheduledSource, "bill");
-  assert.equal(domain.reserveShortfall, 250);
+  assert.equal(domain.reserveShortfall, 0);
   assert.equal(rows.at(-1).balanceUsd, 1438);
   assert.equal(rows.at(-1).balancePhp, 370);
   assert.equal(before, JSON.stringify({ plan, document, transactions }));
@@ -1255,8 +1303,12 @@ const annualSavingsPlan = {
 
 test("opening reserves include item savings once and retain only the unassigned legacy remainder", () => {
   assert.deepEqual(getAnnualReserveOpening(), {
-    usd: 0, php: 0, billSavingsUsd: 0, billSavingsPhp: 0,
-    unassignedUsd: 0, unassignedPhp: 0,
+    usd: 0,
+    php: 0,
+    billSavingsUsd: 0,
+    billSavingsPhp: 0,
+    unassignedUsd: 0,
+    unassignedPhp: 0,
   });
   const document = {
     bills: [
@@ -1268,16 +1320,25 @@ test("opening reserves include item savings once and retain only the unassigned 
     ],
   };
   for (const openingReserveUsd of [0, 50, 100, 150]) {
-    assert.deepEqual(getAnnualReserveOpening({ openingReserveUsd, openingReservePhp: 200 }, document), {
-      usd: Math.max(100, openingReserveUsd),
-      php: 300,
-      billSavingsUsd: 100,
-      billSavingsPhp: 300,
-      unassignedUsd: Math.max(0, openingReserveUsd - 100),
-      unassignedPhp: 0,
-    });
+    assert.deepEqual(
+      getAnnualReserveOpening(
+        { openingReserveUsd, openingReservePhp: 200 },
+        document,
+      ),
+      {
+        usd: Math.max(100, openingReserveUsd),
+        php: 300,
+        billSavingsUsd: 100,
+        billSavingsPhp: 300,
+        unassignedUsd: Math.max(0, openingReserveUsd - 100),
+        unassignedPhp: 0,
+      },
+    );
   }
-  assert.equal(getAnnualReserveOpening({ openingReservePhp: 500 }, document).unassignedPhp, 200);
+  assert.equal(
+    getAnnualReserveOpening({ openingReservePhp: 500 }, document).unassignedPhp,
+    200,
+  );
 });
 
 test("a $395 annual bill with $100 saved shows one $295 cash outflow", () => {
@@ -1305,14 +1366,20 @@ test("payday contributions add to each item's saved money before its annual paym
     salary,
     bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 100 }],
   };
-  const rows = buildPlanRows({ ...annualSavingsPlan, includeAnnualReserve: true }, document, 63);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, includeAnnualReserve: true },
+    document,
+    63,
+  );
   const funding = rows.filter((row) => row.source === "reserve");
   assert.equal(funding.length, 2);
-  assert.ok(funding.every((row) => row.amount === 12.3));
-  assert.deepEqual(funding[0].reserveAllocations, [{ billId: "Venture X", amount: 12.3 }]);
+  assert.ok(funding.every((row) => row.amount === 147.5));
+  assert.deepEqual(funding[0].reserveAllocations, [
+    { billId: "Venture X", amount: 147.5 },
+  ]);
   const payment = rows.find((row) => row.annualPayment);
-  assert.equal(payment.reserveUsed, 124.6);
-  assert.equal(payment.usd, -270.4);
+  assert.equal(payment.reserveUsed, 395);
+  assert.equal(payment.usd, 0);
   assert.equal(payment.reserveUsd, 0);
   assert.equal(payment.balanceUsd, 205);
 });
@@ -1323,17 +1390,26 @@ test("fully funded annual bills skip set-asides until payment then resume fundin
     bills: [{ ...annual("Venture X", 395, "USD", 6, [11]), savedAmount: 395 }],
   };
   const before = JSON.stringify(document);
-  const rows = buildPlanRows({ ...annualSavingsPlan, includeAnnualReserve: true }, document, 63);
-  assert.deepEqual(rows.map((row) => [row.date, row.source]), [
-    ["2026-11-06", "bill"],
-    ["2026-11-21", "reserve"],
-  ]);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, includeAnnualReserve: true },
+    document,
+    63,
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.date, row.source]),
+    [
+      ["2026-11-06", "bill"],
+      ["2026-11-21", "reserve"],
+    ],
+  );
   assert.equal(rows[0].amount, 395);
   assert.equal(rows[0].reserveUsed, 395);
   assert.equal(rows[0].usd, 0);
   assert.equal(rows[0].reserveUsd, 0);
   assert.equal(rows[1].amount, 16.46);
-  assert.deepEqual(rows[1].reserveAllocations, [{ billId: "Venture X", amount: 16.46 }]);
+  assert.deepEqual(rows[1].reserveAllocations, [
+    { billId: "Venture X", amount: 16.46 },
+  ]);
   assert.equal(rows[1].reserveUsd, 16.46);
   assert.equal(rows[1].balanceUsd, 483.54);
   assert.equal(JSON.stringify(document), before);
@@ -1344,17 +1420,27 @@ test("changing saved money rebuilds existing plan funding without stale or zero 
     salary,
     bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 395 }],
   };
-  const plan = { ...annualSavingsPlan, endDate: "2026-11-27", includeAnnualReserve: true };
+  const plan = {
+    ...annualSavingsPlan,
+    endDate: "2026-11-27",
+    includeAnnualReserve: true,
+  };
   assert.deepEqual(buildPlanRows(plan, document, 63), []);
   document.bills[0].savedAmount = 100;
   const partial = buildPlanRows(plan, document, 63);
-  assert.deepEqual(partial.map((row) => row.amount), [12.3, 12.3]);
-  assert.equal(partial.at(-1).reserveUsd, 124.6);
-  assert.equal(partial.at(-1).balanceUsd, 475.4);
+  assert.deepEqual(
+    partial.map((row) => row.amount),
+    [147.5, 147.5],
+  );
+  assert.equal(partial.at(-1).reserveUsd, 395);
+  assert.equal(partial.at(-1).balanceUsd, 205);
   document.bills[0].savedAmount = 500;
   assert.deepEqual(buildPlanRows(plan, document, 63), []);
   document.bills[0].savedAmount = 0;
-  assert.deepEqual(buildPlanRows(plan, document, 63).map((row) => row.amount), [16.46, 16.46]);
+  assert.deepEqual(
+    buildPlanRows(plan, document, 63).map((row) => row.amount),
+    [197.5, 197.5],
+  );
 });
 
 test("recorded annual payment dates reopen reserve funding after the actual payment", () => {
@@ -1362,15 +1448,32 @@ test("recorded annual payment dates reopen reserve funding after the actual paym
     salary,
     bills: [{ ...annual("Venture X", 395, "USD", 6, [11]), savedAmount: 395 }],
   };
-  const rows = buildPlanRows({ ...annualSavingsPlan, includeAnnualReserve: true }, document, 63, {
-    transactions: [{ id: 1, date: "2026-11-05", merchant: "Venture X", kind: "expense", amount: 395, currency: "USD" }],
-  });
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, includeAnnualReserve: true },
+    document,
+    63,
+    {
+      transactions: [
+        {
+          id: 1,
+          date: "2026-11-05",
+          merchant: "Venture X",
+          kind: "expense",
+          amount: 395,
+          currency: "USD",
+        },
+      ],
+    },
+  );
   assert.equal(rows[0].source, "transaction");
   assert.equal(rows[0].date, "2026-11-05");
   assert.equal(rows[0].grossAmount, 395);
   assert.equal(rows[0].usd, 0);
-  assert.deepEqual(rows.filter((row) => row.source === "reserve").map((row) => row.date), ["2026-11-06", "2026-11-21"]);
-  assert.equal(rows.at(-1).reserveUsd, 32.92);
+  assert.deepEqual(
+    rows.filter((row) => row.source === "reserve").map((row) => row.date),
+    ["2026-11-06", "2026-11-21"],
+  );
+  assert.equal(rows.at(-1).reserveUsd, 31.6);
 });
 
 test("annual bills cannot consume another item's savings, but may use unassigned opening reserves", () => {
@@ -1385,11 +1488,19 @@ test("annual bills cannot consume another item's savings, but may use unassigned
   assert.equal(isolated.reserveUsed, 100);
   assert.equal(isolated.usd, -295);
   assert.equal(isolated.reserveUsd, 200);
-  const withLegacyFunds = buildPlanRows({ ...annualSavingsPlan, openingReserveUsd: 350 }, document, 63).at(-1);
+  const withLegacyFunds = buildPlanRows(
+    { ...annualSavingsPlan, openingReserveUsd: 350 },
+    document,
+    63,
+  ).at(-1);
   assert.equal(withLegacyFunds.reserveUsed, 150);
   assert.equal(withLegacyFunds.usd, -245);
   assert.equal(withLegacyFunds.reserveUsd, 200);
-  const sameOpeningTotal = buildPlanRows({ ...annualSavingsPlan, openingReserveUsd: 300 }, document, 63).at(-1);
+  const sameOpeningTotal = buildPlanRows(
+    { ...annualSavingsPlan, openingReserveUsd: 300 },
+    document,
+    63,
+  ).at(-1);
   assert.equal(sameOpeningTotal.reserveUsed, 100);
   assert.equal(sameOpeningTotal.reserveUsd, 200);
 });
@@ -1402,15 +1513,19 @@ test("payday reserves are earmarked for their bill even when another annual bill
       { ...annual("Microsoft", 240, "USD", 9, [12]), savedAmount: 100 },
     ],
   };
-  const rows = buildPlanRows({ ...annualSavingsPlan, includeAnnualReserve: true }, document, 63);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, includeAnnualReserve: true },
+    document,
+    63,
+  );
   const payment = rows.find((row) => row.annualPayment);
-  assert.equal(payment.reserveUsed, 10);
-  assert.equal(payment.usd, -230);
-  assert.equal(payment.reserveUsd, 105.84);
-  assert.equal(rows.at(-1).reserveUsd, 121.68);
+  assert.equal(payment.reserveUsed, 240);
+  assert.equal(payment.usd, 0);
+  assert.equal(payment.reserveUsd, 146.67);
+  assert.equal(rows.at(-1).reserveUsd, 203.34);
   assert.deepEqual(rows[0].reserveAllocations, [
-    { billId: "Venture X", amount: 10 },
-    { billId: "Microsoft", amount: 5.84 },
+    { billId: "Venture X", amount: 240 },
+    { billId: "Microsoft", amount: 46.67 },
   ]);
 });
 
@@ -1419,19 +1534,35 @@ test("saved annual funds are consumed once across installments and later renewal
     salary,
     bills: [{ ...annual("Car", 400, "USD", 9, [3, 9]), savedAmount: 300 }],
   };
-  const rows = buildPlanRows({
-    ...annualSavingsPlan,
-    startDate: "2026-01-01",
-    endDate: "2027-09-30",
-  }, document, 63);
-  assert.deepEqual(rows.map((row) => row.amount), [200, 200, 200, 200]);
-  assert.deepEqual(rows.map((row) => row.reserveUsed), [200, 100, 0, 0]);
-  assert.deepEqual(rows.map((row) => row.usd), [0, -100, -200, -200]);
-  assert.deepEqual(rows.map((row) => row.reserveUsd), [100, 0, 0, 0]);
+  const rows = buildPlanRows(
+    {
+      ...annualSavingsPlan,
+      startDate: "2026-01-01",
+      endDate: "2027-09-30",
+    },
+    document,
+    63,
+  );
+  assert.deepEqual(
+    rows.map((row) => row.amount),
+    [200, 200, 200, 200],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.reserveUsed),
+    [200, 100, 0, 0],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.usd),
+    [0, -100, -200, -200],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.reserveUsd),
+    [100, 0, 0, 0],
+  );
   assert.equal(rows.at(-1).balanceUsd, 0);
 });
 
-test("funded annual installments retain their own remaining pot and replenish only up to the annual cap", () => {
+test("funded annual installments wait until their saved pot is consumed before funding the next deadline", () => {
   const document = {
     salary: { ...salary, firstPayDate: "2026-01-06" },
     bills: [
@@ -1440,36 +1571,50 @@ test("funded annual installments retain their own remaining pot and replenish on
     ],
   };
   const before = JSON.stringify(document);
-  const rows = buildPlanRows({
-    ...annualSavingsPlan,
-    startDate: "2026-01-01",
-    endDate: "2026-12-31",
-    includeAnnualReserve: true,
-  }, document, 63);
+  const rows = buildPlanRows(
+    {
+      ...annualSavingsPlan,
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+      includeAnnualReserve: true,
+    },
+    document,
+    63,
+  );
   const payments = rows.filter((row) => row.annualPayment);
   const funding = rows.filter((row) => row.source === "reserve");
   assert.equal(rows[0].date, "2026-03-09");
   assert.equal(rows[0].source, "bill");
-  assert.deepEqual(payments.map((row) => [row.date, row.amount, row.reserveUsed, row.usd]), [
-    ["2026-03-09", 240, 240, 0],
-    ["2026-10-09", 240, 240, 0],
-  ]);
+  assert.deepEqual(
+    payments.map((row) => [row.date, row.amount, row.reserveUsed, row.usd]),
+    [
+      ["2026-03-09", 240, 240, 0],
+      ["2026-10-09", 240, 240, 0],
+    ],
+  );
   assert.equal(payments[0].reserveUsd, 290);
   assert.equal(payments[0].balanceUsd, 500);
-  assert.equal(funding[0].date, "2026-03-21");
-  assert.equal(funding[0].reserveUsd, 310);
-  assert.equal(funding.length, 17);
-  assert.ok(funding.every((row) => row.amount === 20));
-  assert.ok(funding.every((row) => row.reserveAllocations.length === 1 && row.reserveAllocations[0].billId === "Car"));
+  assert.equal(funding[0].date, "2026-10-21");
+  assert.equal(funding[0].reserveUsd, 74);
+  assert.equal(funding.length, 5);
+  assert.ok(funding.every((row) => row.amount === 24));
+  assert.ok(
+    funding.every(
+      (row) =>
+        row.reserveAllocations.length === 1 &&
+        row.reserveAllocations[0].billId === "Car",
+    ),
+  );
   assert.ok(rows.every((row) => row.reserveUsd >= 50 && row.reserveUsd <= 530));
-  assert.equal(funding.find((row) => row.date === "2026-09-06").reserveUsd, 530);
-  assert.ok(!funding.some((row) => ["2026-09-21", "2026-10-06"].includes(row.date)));
-  assert.equal(payments[1].reserveUsd, 290);
-  assert.equal(payments[1].balanceUsd, 260);
-  assert.equal(funding.find((row) => row.date === "2026-10-21").reserveUsd, 310);
-  assert.equal(rows.at(-1).reserveUsd, 390);
-  assert.equal(rows.at(-1).balanceUsd, 160);
-  assert.equal(rows.at(-1).balanceUsd + rows.at(-1).reserveUsd, 500 + 530 - 480);
+  assert.ok(!funding.some((row) => row.date <= "2026-10-09"));
+  assert.equal(payments[1].reserveUsd, 50);
+  assert.equal(payments[1].balanceUsd, 500);
+  assert.equal(rows.at(-1).reserveUsd, 170);
+  assert.equal(rows.at(-1).balanceUsd, 380);
+  assert.equal(
+    rows.at(-1).balanceUsd + rows.at(-1).reserveUsd,
+    500 + 530 - 480,
+  );
   assert.equal(JSON.stringify(document), before);
 });
 
@@ -1497,10 +1642,23 @@ test("overfunded annual savings carry forward and never create a positive cash p
     salary,
     bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 500 }],
   };
-  const rows = buildPlanRows({ ...annualSavingsPlan, endDate: "2027-11-30" }, document, 63);
-  assert.deepEqual(rows.map((row) => row.usd), [0, -290]);
-  assert.deepEqual(rows.map((row) => row.reserveUsed), [395, 105]);
-  assert.deepEqual(rows.map((row) => row.reserveUsd), [105, 0]);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, endDate: "2027-11-30" },
+    document,
+    63,
+  );
+  assert.deepEqual(
+    rows.map((row) => row.usd),
+    [0, -290],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.reserveUsed),
+    [395, 105],
+  );
+  assert.deepEqual(
+    rows.map((row) => row.reserveUsd),
+    [105, 0],
+  );
   assert.equal(rows.at(-1).balanceUsd, 210);
 });
 
@@ -1558,16 +1716,24 @@ test("per-item contributions preserve each annual total over a complete pay cycl
       annual("PHP", 633.05, "PHP", null, [12]),
     ],
   };
-  const rows = buildPlanRows({
-    ...annualSavingsPlan,
-    startDate: "2026-01-01",
-    endDate: "2026-12-31",
-    includeAnnualReserve: true,
-  }, document, 63);
+  const rows = buildPlanRows(
+    {
+      ...annualSavingsPlan,
+      startDate: "2026-01-01",
+      endDate: "2026-12-31",
+      includeAnnualReserve: true,
+    },
+    document,
+    63,
+  );
   for (const bill of document.bills) {
-    const totalCents = rows.flatMap((row) => row.reserveAllocations)
+    const totalCents = rows
+      .flatMap((row) => row.reserveAllocations)
       .filter((allocation) => allocation.billId === bill.id)
-      .reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0);
+      .reduce(
+        (sum, allocation) => sum + Math.round(allocation.amount * 100),
+        0,
+      );
     assert.equal(totalCents, Math.round(bill.amount * 100));
   }
   assert.equal(rows.at(-1).reserveUsd, 495.03);
@@ -1578,29 +1744,354 @@ test("26 contributions fund each item's initial remaining cents exactly and stop
   const document = {
     salary: { ...salary, payFrequency: "biweekly", firstPayDate: "2026-01-02" },
     bills: [
-      { ...annual("Partial USD", 395.02, "USD", null, [12]), savedAmount: 80.01 },
-      { ...annual("Partial PHP", 633.05, "PHP", null, [12]), savedAmount: 200.02 },
+      {
+        ...annual("Partial USD", 395.02, "USD", null, [12]),
+        savedAmount: 80.01,
+      },
+      {
+        ...annual("Partial PHP", 633.05, "PHP", null, [12]),
+        savedAmount: 200.02,
+      },
       { ...annual("Full USD", 100, "USD", null, [12]), savedAmount: 100 },
       { ...annual("Excess PHP", 300, "PHP", null, [12]), savedAmount: 500 },
     ],
   };
   const before = JSON.stringify(document);
-  const rows = buildPlanRows({
-    ...annualSavingsPlan,
-    startDate: "2026-01-01",
-    endDate: "2028-12-31",
-    includeAnnualReserve: true,
-  }, document, 63);
+  const rows = buildPlanRows(
+    {
+      ...annualSavingsPlan,
+      startDate: "2026-01-01",
+      endDate: "2028-12-31",
+      includeAnnualReserve: true,
+    },
+    document,
+    63,
+  );
   const allocations = rows.flatMap((row) => row.reserveAllocations);
   assert.equal(rows.length, 52);
   assert.ok(rows.every((row) => row.date <= "2026-12-18" && row.amount > 0));
   assert.ok(allocations.every((allocation) => allocation.amount > 0));
-  assert.deepEqual([...new Set(allocations.map((allocation) => allocation.billId))].sort(), ["Partial PHP", "Partial USD"]);
-  assert.equal(allocations.filter((allocation) => allocation.billId === "Partial USD").reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0), 31501);
-  assert.equal(allocations.filter((allocation) => allocation.billId === "Partial PHP").reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0), 43303);
+  assert.deepEqual(
+    [...new Set(allocations.map((allocation) => allocation.billId))].sort(),
+    ["Partial PHP", "Partial USD"],
+  );
+  assert.equal(
+    allocations
+      .filter((allocation) => allocation.billId === "Partial USD")
+      .reduce(
+        (sum, allocation) => sum + Math.round(allocation.amount * 100),
+        0,
+      ),
+    31501,
+  );
+  assert.equal(
+    allocations
+      .filter((allocation) => allocation.billId === "Partial PHP")
+      .reduce(
+        (sum, allocation) => sum + Math.round(allocation.amount * 100),
+        0,
+      ),
+    43303,
+  );
   assert.equal(rows.at(-1).reserveUsd, 495.02);
   assert.equal(rows.at(-1).reservePhp, 1133.05);
   assert.equal(rows.at(-1).balanceUsd, 184.99);
   assert.equal(rows.at(-1).balancePhp, 566.97);
   assert.equal(JSON.stringify(document), before);
 });
+
+const deadlineSalary = {
+  amount: 2100,
+  currency: "USD",
+  payFrequency: "biweekly",
+  firstPayDate: "2026-10-23",
+};
+const deadlineContext = { salary: deadlineSalary, asOf: "2026-11-02" };
+
+test("the saved-target screenshot funds each next deadline using its actual remaining paydays", () => {
+  const bills = [
+    { ...annual("Microsoft", 100, "USD", 9, [9]), savedAmount: 14.79 },
+    { ...annual("Domain", 20, "USD", 4, [6]), savedAmount: 8.27 },
+    { ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 395 },
+    { ...annual("Car", 500, "USD", 1, [3, 9]), savedAmount: 85.64 },
+  ];
+  const document = { salary: deadlineSalary, bills, allocations: [] };
+  const before = JSON.stringify(document);
+  const summary = getSummary(document, 63, "2026-11-02");
+  assert.deepEqual(
+    summary.annualFunding.map((bill) => [
+      bill.billId,
+      bill.nextDueDate,
+      bill.installmentAmount,
+      bill.remainingForNextPayment,
+      bill.paydaysRemaining,
+      bill.perPeriodAmount,
+    ]),
+    [
+      ["Microsoft", "2027-09-09", 100, 85.21, 22, 3.88],
+      ["Domain", "2027-06-04", 20, 11.73, 16, 0.74],
+      ["Venture X", "2026-11-28", 395, 0, 2, 0],
+      ["Car", "2027-03-01", 250, 164.36, 9, 18.27],
+    ],
+  );
+  assert.equal(summary.annualUsd, 1015);
+  assert.equal(summary.annualSavedUsd, 503.7);
+  assert.equal(summary.annualRemainingUsd, 511.3);
+  assert.equal(summary.annualPerPeriodUsd, 22.89);
+  assert.equal(summary.annualMonthlyUsd, 49.6);
+  assert.equal(summary.annualImmediateUsd, 0);
+  assert.equal(summary.annualEstimatedCount, 0);
+  assert.equal(JSON.stringify(document), before);
+});
+
+test("saved edits and due-date edits recalculate contributions rather than restarting a full savings year", () => {
+  const bill = {
+    ...annual("Venture X", 395, "USD", 28, [11]),
+    savedAmount: 100,
+  };
+  const partial = getAnnualBillFunding(bill, 26, deadlineContext);
+  assert.equal(partial.paydaysRemaining, 2);
+  assert.equal(partial.perPeriodAmount, 147.5);
+  assert.equal(partial.monthlyAmount, 319.58);
+  for (const savedAmount of [395, 500]) {
+    const funded = getAnnualBillFunding(
+      { ...bill, savedAmount },
+      26,
+      deadlineContext,
+    );
+    assert.equal(funded.remainingForNextPayment, 0);
+    assert.equal(funded.perPeriodAmount, 0);
+    assert.equal(funded.monthlyAmount, 0);
+  }
+  assert.equal(
+    getAnnualBillFunding(bill, 26, deadlineContext).perPeriodAmount,
+    147.5,
+  );
+  const later = getAnnualBillFunding(
+    { ...bill, dueMonths: [12] },
+    26,
+    deadlineContext,
+  );
+  assert.equal(later.paydaysRemaining, 4);
+  assert.equal(later.perPeriodAmount, 73.75);
+});
+
+test("the next installment can be funded without funding the whole annual amount", () => {
+  const bill = { ...annual("Car", 500, "USD", 1, [3, 9]), savedAmount: 250 };
+  const funding = getAnnualBillFunding(bill, 26, deadlineContext);
+  assert.equal(funding.fullyFunded, false);
+  assert.equal(funding.remainingAmount, 250);
+  assert.equal(funding.installmentAmount, 250);
+  assert.equal(funding.remainingForNextPayment, 0);
+  assert.equal(funding.perPeriodAmount, 0);
+  const odd = getAnnualBillFunding(
+    { ...bill, amount: 100.01, savedAmount: 25 },
+    26,
+    {
+      salary: deadlineSalary,
+      asOf: "2027-06-01",
+    },
+  );
+  assert.equal(odd.installmentAmount, 50.01);
+  assert.equal(odd.remainingForNextPayment, 25.01);
+});
+
+test("annual funding identifies cash needed before any eligible payday", () => {
+  const bill = {
+    ...annual("Before payday", 395, "USD", 4, [11]),
+    savedAmount: 100,
+  };
+  const funding = getAnnualBillFunding(bill, 26, deadlineContext);
+  assert.equal(funding.paydaysRemaining, 0);
+  assert.equal(funding.immediateAmount, 295);
+  assert.equal(funding.perPeriodAmount, 0);
+  assert.equal(funding.monthlyAmount, 0);
+  assert.equal(funding.estimated, false);
+  assert.equal(funding.fullyFunded, false);
+  const summary = getSummary(
+    { salary: deadlineSalary, bills: [bill] },
+    63,
+    "2026-11-02",
+  );
+  assert.equal(summary.annualImmediateUsd, 295);
+  assert.equal(summary.annualImmediatePhp, 18585);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, includeAnnualReserve: true },
+    { salary: deadlineSalary, bills: [bill] },
+    63,
+  );
+  assert.equal(rows[0].date, "2026-11-04");
+  assert.equal(rows[0].reserveShortfall, 295);
+  assert.equal(rows[0].usd, -295);
+});
+
+test("missing annual dates or salary schedules retain clearly marked estimates", () => {
+  const undated = getAnnualBillFunding(
+    annual("Undated", 260, "USD", null),
+    26,
+    deadlineContext,
+  );
+  assert.equal(undated.needsDate, true);
+  assert.equal(undated.estimated, true);
+  assert.equal(undated.perPeriodAmount, 10);
+  const noSalary = getAnnualBillFunding(annual("No salary", 260), 26, {
+    asOf: "2026-11-02",
+  });
+  assert.equal(noSalary.needsSchedule, true);
+  assert.equal(noSalary.estimated, true);
+  assert.equal(noSalary.perPeriodAmount, 10);
+  const summary = getSummary(
+    { salary: deadlineSalary, bills: [annual("Undated", 260, "USD", null)] },
+    63,
+    "2026-11-02",
+  );
+  assert.equal(summary.annualEstimatedCount, 1);
+});
+
+test("payday on the due date contributes before the bill is paid", () => {
+  const bill = annual("Same day", 12.34, "PHP", 6, [11]);
+  const funding = getAnnualBillFunding(bill, 26, {
+    ...deadlineContext,
+    asOf: "2026-11-06",
+  });
+  assert.equal(funding.paydaysRemaining, 1);
+  assert.equal(funding.perPeriodAmount, 12.34);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, endDate: "2026-11-06", includeAnnualReserve: true },
+    { salary: deadlineSalary, bills: [bill] },
+    63,
+  );
+  assert.deepEqual(
+    rows.map((row) => row.source),
+    ["reserve", "bill"],
+  );
+  assert.equal(rows[0].php, -12.34);
+  assert.equal(rows[1].php, 0);
+  assert.equal(rows[1].reserveUsed, 12.34);
+  assert.equal(rows[1].reservePhp, 0);
+});
+
+test("rolling remaining-payday funding finishes exact cents without overfunding", () => {
+  const salary = { ...deadlineSalary, firstPayDate: "2026-11-01" };
+  const bill = annual("One dollar", 1, "USD", 30, [11]);
+  const rows = buildPlanRows(
+    { ...annualSavingsPlan, includeAnnualReserve: true },
+    { salary, bills: [bill] },
+    63,
+  );
+  assert.deepEqual(
+    rows.filter((row) => row.source === "reserve").map((row) => row.amount),
+    [0.34, 0.33, 0.33],
+  );
+  assert.equal(rows.at(-1).reserveUsed, 1);
+  assert.equal(rows.at(-1).usd, 0);
+  assert.equal(rows.at(-1).reserveUsd, 0);
+  assert.equal(rows.at(-1).balanceUsd, 499);
+});
+
+test("deadline funding follows leap dates and salary changes", () => {
+  const bill = annual("Leap renewal", 10, "USD", 29, [2]);
+  const twiceMonthly = {
+    ...deadlineSalary,
+    payFrequency: "semimonthly",
+    firstPayDate: "2027-01-31",
+  };
+  const february = getAnnualBillFunding(bill, 24, {
+    salary: twiceMonthly,
+    asOf: "2027-02-01",
+  });
+  assert.equal(february.nextDueDate, "2027-02-28");
+  assert.equal(february.paydaysRemaining, 2);
+  assert.equal(february.perPeriodAmount, 5);
+  const leap = getAnnualBillFunding(bill, 24, {
+    salary: twiceMonthly,
+    asOf: "2028-02-01",
+  });
+  assert.equal(leap.nextDueDate, "2028-02-29");
+  const shifted = getAnnualBillFunding(
+    annual("Soon", 100, "USD", 13, [11]),
+    26,
+    {
+      salary: { ...deadlineSalary, firstPayDate: "2026-11-13" },
+      asOf: "2026-11-02",
+    },
+  );
+  assert.equal(shifted.paydaysRemaining, 1);
+  assert.equal(shifted.perPeriodAmount, 100);
+});
+
+test("reconciled early and late annual payments consume the scheduled installment only once", () => {
+  const bill = {
+    ...annual("Matched renewal", 100, "USD", 6, [11]),
+    savedAmount: 100,
+  };
+  for (const date of ["2026-11-03", "2026-11-09"]) {
+    const rows = buildPlanRows(
+      { ...annualSavingsPlan, includeAnnualReserve: true },
+      { salary: deadlineSalary, bills: [bill] },
+      63,
+      {
+        transactions: [
+          {
+            id: 1,
+            date,
+            merchant: bill.name,
+            kind: "expense",
+            amount: 100,
+            currency: "USD",
+          },
+        ],
+      },
+    );
+    const payment = rows.find((row) => row.annualPayment);
+    assert.equal(payment.date, date);
+    assert.equal(payment.scheduledDate, "2026-11-06");
+    assert.equal(payment.reserveUsed, 100);
+    assert.equal(payment.usd, 0);
+    assert.equal(rows.filter((row) => row.annualPayment).length, 1);
+    const contributions = rows.filter((row) => row.source === "reserve");
+    assert.ok(contributions.every((row) => row.date > date));
+    assert.ok(contributions.every((row) => row.amount < 5));
+  }
+});
+
+test("multiple installment cycles are fully funded by each deadline and conserve available plus reserve cash", () => {
+  const document = {
+    salary: { ...deadlineSalary, firstPayDate: "2026-01-02" },
+    bills: [
+      { ...annual("Installments", 101.01, "USD", 1, [3, 9]), savedAmount: 10 },
+    ],
+  };
+  const rows = buildPlanRows(
+    {
+      ...annualSavingsPlan,
+      startDate: "2026-01-01",
+      endDate: "2027-09-02",
+      includeAnnualReserve: true,
+    },
+    document,
+    63,
+  );
+  const payments = rows.filter((row) => row.annualPayment);
+  assert.deepEqual(
+    payments.map((row) => row.amount),
+    [50.5, 50.51, 50.5, 50.51],
+  );
+  assert.ok(
+    payments.every(
+      (row) =>
+        row.reserveShortfall === 0 && row.usd === 0 && row.reserveUsd === 0,
+    ),
+  );
+  assert.ok(
+    rows.every((row) => row.reserveUsd >= 0 && row.reserveUsd <= 50.51),
+  );
+  assert.equal(
+    roundCents(rows.at(-1).balanceUsd + rows.at(-1).reserveUsd),
+    roundCents(500 + 10 - 202.02),
+  );
+});
+
+function roundCents(value) {
+  return Math.round(value * 100) / 100;
+}
