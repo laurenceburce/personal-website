@@ -8,6 +8,24 @@ import {
   confirmedFinanceAccountGroups,
 } from "../app/lib/financeAccountIdentity.mjs";
 
+test("merged bank identities retain one live percentage selection without doubling it", () => {
+  const document = {
+    plans: [
+      {
+        startingAccounts: [
+          { accountId: 29, percentage: 50 },
+          { accountId: 1, percentage: 80 },
+        ],
+      },
+    ],
+  };
+  const remapped = remapFinancePlannerAccountIds(document, new Map([[29, 1]]));
+  assert.deepEqual(remapped.plans[0].startingAccounts, [
+    { accountId: 1, percentage: 80 },
+  ]);
+  assert.equal(document.plans[0].startingAccounts.length, 2);
+});
+
 const account = (id, connection = 1, overrides = {}) => ({
   id,
   connection_id: connection,

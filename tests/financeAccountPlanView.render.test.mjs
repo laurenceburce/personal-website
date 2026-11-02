@@ -310,3 +310,25 @@ test("empty allocations and projections do not invent account cards", () => {
     "",
   );
 });
+
+test("live percentage account forecasts explain their current balance source and separate flat funds", () => {
+  const projection = buildAccountPlan(
+    {
+      ...plan,
+      includeIncome: false,
+      includeAllocations: false,
+      includeAnnualReserve: false,
+      startingAccounts: [{ accountId: 1, percentage: 80 }],
+      accountOpeningBalances: [{ accountId: 1, balance: 9999 }],
+    },
+    { salary: {}, bills: [], allocations: [] },
+    63,
+    { accounts: [accounts[0]], today: "2026-11-02" },
+  );
+  const text = plain(render(AccountPlanView, { projection }));
+  assert.match(text, /Selected account shares use current synced balances/);
+  assert.match(text, /Flat starting amounts are tracked in the overall plan/);
+  assert.match(text, /Starting balance\$80\.00/);
+  assert.match(text, /Projected ending balance\$80\.00/);
+  assert.doesNotMatch(text, /\$9,999\.00/);
+});

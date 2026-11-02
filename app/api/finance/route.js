@@ -18,6 +18,7 @@ import {
   getFinanceDashboard,
   seedFinanceStarter,
   syncFinanceConnection,
+  refreshFinancePlanBankData,
   toggleFinanceBillPaid,
   updateFinanceAccount,
   updateFinanceDisplayCurrency,
@@ -124,6 +125,13 @@ export async function POST(request) {
       }
       case "syncConnection":
         return json({ ok: true, result: await syncFinanceConnection(data.id) });
+      case "refreshPlanBankData":
+        return json({
+          ok: true,
+          result: await refreshFinancePlanBankData({
+            force: data.force === true,
+          }),
+        });
       case "updatePlan":
         return json({ ok: true, result: await updateFinancePlan(data) });
       case "updateDisplayCurrency":

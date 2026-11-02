@@ -104,9 +104,11 @@ export default function FinanceAccountPlanView({ projection }) {
         <div>
           <h3>Projected balances by account</h3>
           <p>
-            {projection.openingSource === "bank"
-              ? "Starting from current synced balances. Set account starting balances when planning a different date."
-              : "Uses the account starting balances set for this plan; other accounts use current synced balances."}{" "}
+            {projection.openingSource === "live"
+              ? "Selected account shares use current synced balances. Flat starting amounts are tracked in the overall plan."
+              : projection.openingSource === "bank"
+                ? "Starting from current synced balances. Set account starting balances when planning a different date."
+                : "Uses the account starting balances set for this plan; other accounts use current synced balances."}{" "}
             These are forecasts.
           </p>
         </div>

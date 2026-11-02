@@ -88,17 +88,36 @@ const findRow = (html, className) =>
   html.match(
     new RegExp(`<tr class="[^"]*${className}[^"]*">([\\s\\S]*?)<\\/tr>`),
   )?.[1] || "";
+const elements = (node) => {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node || typeof node !== "object") return [];
+  if (typeof node.type === "function") return elements(node.type(node.props));
+  return [node, ...elements(node.props?.children)];
+};
+const completionCheckbox = (record, props = {}) =>
+  elements(
+    Ledger({
+      plan,
+      rows: [record],
+      onEdit() {},
+      onDelete() {},
+      ...props,
+    }),
+  ).find(
+    (element) => element.type === "input" && element.props.type === "checkbox",
+  );
 
 test("opening balances keep annual reserve pockets distinct from available USD and PHP", () => {
   const html = render();
   const opening = cells(findRow(html, "fpl-opening-row"));
-  assert.equal(opening.length, 9);
+  assert.equal(opening.length, 10);
   assert.equal(opening[4], "$750.00");
   assert.equal(opening[5], "₱500.00");
   assert.equal(opening[6], "$200.00");
   assert.equal(opening[7], "₱12,600.00");
   assert.ok(html.includes("Available · USD"));
   assert.ok(html.includes("Annual reserve · PHP"));
+  assert.ok(html.includes('<th scope="col">Status</th>'));
   assert.ok(html.includes('role="region"'));
   assert.ok(html.includes('tabindex="0"'));
 });
@@ -350,7 +369,7 @@ test("account transfers show both native account movements while aggregate avail
     }),
   ]);
   const cellsInRow = cells(findRow(html, "fpl-row-manual"));
-  assert.equal(cellsInRow.length, 9);
+  assert.equal(cellsInRow.length, 10);
   assert.equal(cellsInRow[2], "—");
   assert.equal(cellsInRow[4], "$750.00");
   assert.match(html, /Planned account transfer/);
@@ -457,4 +476,430 @@ test("annual account movements keep the gross bill and reserve coverage visible"
   assert.match(plain(html), /Annual savings · •2345: -\$100\.00/);
   assert.match(plain(html), /Checking · •1234: \+\$100\.00/);
   assert.match(plain(html), /Checking · •1234: -\$395\.00/);
+});
+
+test("live account percentages and flat amounts resolve into the displayed starting balances", () => {
+  const livePlan = {
+    ...plan,
+    openingUsd: 25,
+    openingPhp: 50,
+    startingAccounts: [
+      { accountId: 1, percentage: 80 },
+      { accountId: 2, percentage: 25 },
+    ],
+  };
+  const accounts = [
+    {
+      id: 1,
+      name: "Checking",
+      mask: "5483",
+      currency: "USD",
+      type: "checking",
+      nativeCurrentBalance: 100,
+      nativeAvailableBalance: 900,
+    },
+    {
+      id: 2,
+      name: "Peso savings",
+      mask: "7777",
+      currency: "PHP",
+      type: "savings",
+      nativeCurrentBalance: 2000,
+    },
+  ];
+  const display = (bankAccounts) =>
+    render([], {
+      plan: livePlan,
+      openingBalances: planner.getPlanOpening(livePlan, bankAccounts),
+    });
+  const html = display(accounts);
+  const opening = cells(findRow(html, "fpl-opening-row"));
+  assert.equal(opening[4], "$105.00");
+  assert.equal(opening[5], "₱550.00");
+  assert.equal(opening[6], "$200.00");
+  assert.match(plain(html), /Flat starting balance: \$25\.00 · ₱50\.00/);
+  assert.match(
+    plain(html),
+    /80% of Checking · ••5483: \$80\.00Current balance \$100\.00/,
+  );
+  assert.match(
+    plain(html),
+    /25% of Peso savings · ••7777: ₱500\.00Current balance ₱2,000\.00/,
+  );
+  const refreshed = cells(
+    findRow(
+      display([{ ...accounts[0], nativeCurrentBalance: 150 }, accounts[1]]),
+      "fpl-opening-row",
+    ),
+  );
+  assert.equal(refreshed[4], "$145.00");
+  assert.equal(refreshed[5], "₱550.00");
+});
+
+test("unavailable live account balances display the exclusion warning and preserve only usable funds", () => {
+  const livePlan = {
+    ...plan,
+    startingAccounts: [{ accountId: 9, percentage: 80 }],
+  };
+  const openingBalances = planner.getPlanOpening(livePlan, [
+    {
+      id: 9,
+      name: "Disconnected savings",
+      currency: "USD",
+      type: "savings",
+      nativeCurrentBalance: null,
+    },
+  ]);
+  const html = render([], { plan: livePlan, openingBalances });
+  assert.match(html, /role="status"/);
+  assert.match(
+    plain(html),
+    /Disconnected savings: a current bank balance is unavailable/,
+  );
+  assert.equal(cells(findRow(html, "fpl-opening-row"))[4], "$750.00");
+  assert.doesNotMatch(html, /NaN|Infinity|undefined/);
+});
+
+test("a live account contribution explains annual reserves excluded from spendable starting funds", () => {
+  const livePlan = {
+    ...plan,
+    openingUsd: 25,
+    openingReserveUsd: 0,
+    startingAccounts: [{ accountId: 1, percentage: 80 }],
+  };
+  const document = {
+    bills: [
+      {
+        id: "fee",
+        cadence: "annual",
+        currency: "USD",
+        amount: 100,
+        savedAmount: 60,
+        reserveAccountId: 1,
+      },
+    ],
+  };
+  const openingBalances = planner.getPlanOpening(
+    livePlan,
+    [
+      {
+        id: 1,
+        name: "Annual savings",
+        currency: "USD",
+        type: "savings",
+        nativeCurrentBalance: 100,
+      },
+    ],
+    document,
+  );
+  const html = render([], {
+    plan: livePlan,
+    openingBalances,
+    openingReserve: planner.getAnnualReserveOpening(livePlan, document),
+  });
+  const opening = cells(findRow(html, "fpl-opening-row"));
+  assert.equal(opening[4], "$45.00");
+  assert.equal(opening[6], "$60.00");
+  assert.match(plain(html), /\$60\.00 already reserved · \$20\.00 available/);
+});
+
+test("manual completion controls preserve the stable forecast key and allow reopening", () => {
+  let toggled;
+  const pending = row({
+    id: "bill:rent:2026-11-06",
+    completionKey: "bill:rent:2026-11-06",
+    description: "Rent",
+    completed: false,
+    completionSource: null,
+  });
+  const input = completionCheckbox(pending, {
+    onToggleComplete: (value) => {
+      toggled = value;
+    },
+  });
+  assert.equal(input.props.checked, false);
+  assert.equal(input.props.disabled, false);
+  assert.equal(input.props["aria-label"], "Mark done: Rent");
+  input.props.onChange();
+  assert.equal(toggled, pending);
+  assert.equal(toggled.completionKey, "bill:rent:2026-11-06");
+  const done = {
+    ...pending,
+    completed: true,
+    completionSource: "manual",
+    completedAt: "2026-11-06T12:00:00.000Z",
+  };
+  const reopen = completionCheckbox(done, {
+    onToggleComplete: (value) => {
+      toggled = value;
+    },
+  });
+  assert.equal(reopen.props.checked, true);
+  assert.equal(reopen.props.disabled, false);
+  assert.equal(reopen.props["aria-label"], "Reopen Rent");
+  reopen.props.onChange();
+  assert.equal(toggled, done);
+  const html = render([done], { onToggleComplete() {} });
+  assert.match(html, /fpl-row-completed/);
+  assert.match(plain(html), /DoneMarked manually/);
+});
+
+test("completion saves disable manual toggles and readonly renders cannot mutate progress", () => {
+  let toggles = 0;
+  const onToggleComplete = () => {
+    toggles++;
+  };
+  const record = row({ completionKey: "bill:fee:2026-11-06" });
+  const saving = completionCheckbox(record, { busy: true, onToggleComplete });
+  assert.equal(saving.props.disabled, true);
+  saving.props.onChange();
+  const readonly = completionCheckbox(record);
+  assert.equal(readonly.props.disabled, true);
+  readonly.props.onChange();
+  assert.equal(toggles, 0);
+});
+
+test("posted matched transactions show automatic done status without a manual undo", () => {
+  const actual = row({
+    id: "transaction:99",
+    source: "transaction",
+    description: "Rent paid",
+    completed: true,
+    completionKey: "bill:rent:2026-11-06",
+    completionSource: "transaction",
+    matchedTransactionIds: [99],
+    matchedForecast: { id: "bill:rent:2026-11-06", source: "bill" },
+    scheduledSource: "bill",
+  });
+  let toggled = false;
+  const input = completionCheckbox(actual, {
+    onToggleComplete: () => {
+      toggled = true;
+    },
+  });
+  assert.equal(input.props.checked, true);
+  assert.equal(input.props.disabled, true);
+  input.props.onChange();
+  assert.equal(toggled, false);
+  const html = render([actual], { onToggleComplete() {} });
+  assert.match(plain(html), /Done · matched transaction/);
+  assert.match(html, /aria-label="Done · matched transaction: Rent paid"/);
+  assert.doesNotMatch(html, /aria-label="Reopen /);
+  assert.match(
+    plain(
+      render([{ ...actual, matchedForecast: null, scheduledSource: null }]),
+    ),
+    /Done · recorded transaction/,
+  );
+  const matchedAllocation = {
+    ...actual,
+    source: "allocation",
+    matchedForecast: null,
+    scheduledSource: null,
+  };
+  assert.match(
+    plain(render([matchedAllocation])),
+    /Done · matched transaction/,
+  );
+});
+
+test("future or pending transaction rows remain open unless completion metadata says otherwise", () => {
+  for (const metadata of [{ scheduled: true }, { pending: true }]) {
+    const record = row({
+      source: "transaction",
+      ...metadata,
+      completed: false,
+      completionSource: null,
+    });
+    const input = completionCheckbox(record, { onToggleComplete() {} });
+    assert.equal(input.props.checked, false);
+    assert.equal(input.props.disabled, false);
+    assert.match(plain(render([record], { onToggleComplete() {} })), /To do/);
+    assert.doesNotMatch(
+      plain(render([record])),
+      /Done · (matched|recorded) transaction/,
+    );
+  }
+});
+
+test("marking an annual payment done leaves every cash and reserve value unchanged", () => {
+  const payment = row({
+    annualPayment: true,
+    currency: "USD",
+    grossAmount: 395,
+    reserveUsed: 100,
+    reserveShortfall: 295,
+    usd: -295,
+    balanceUsd: 455,
+    reserveUsd: 0,
+    reserveDeltaUsd: -100,
+  });
+  const open = cells(findRow(render([payment]), "fpl-row-bill"));
+  const done = cells(
+    findRow(
+      render([{ ...payment, completed: true, completionSource: "manual" }]),
+      "fpl-row-bill",
+    ),
+  );
+  assert.deepEqual(done.slice(0, 8), open.slice(0, 8));
+  assert.match(done[8], /DoneMarked manually/);
+  assert.match(
+    plain(render([payment])),
+    /it does not create a transaction or change its planned amount/,
+  );
+});
+
+test("a historical conversion keeps both flow amounts visible and identifies only its live-account side", () => {
+  const document = { salary: {}, bills: [], allocations: [] };
+  const accounts = [
+    { id: 1, currency: "USD", type: "checking", nativeCurrentBalance: 90 },
+    { id: 2, currency: "PHP", type: "checking", nativeCurrentBalance: 630 },
+  ];
+  for (const accountId of [1, 2]) {
+    const livePlan = {
+      ...plan,
+      startDate: "2026-11-01",
+      endDate: "2026-11-01",
+      openingUsd: 0,
+      openingPhp: 0,
+      includeIncome: false,
+      startingAccounts: [{ accountId, percentage: 100 }],
+      entries: [
+        {
+          id: "conversion",
+          date: "2026-11-01",
+          kind: "conversion",
+          description: "Convert funds",
+          amount: 10,
+          currency: "USD",
+          fromAccountId: 1,
+          toAccountId: 2,
+        },
+      ],
+    };
+    const records = planner.buildPlanRows(livePlan, document, 63, {
+      accounts,
+      today: "2026-11-02",
+    });
+    const html = render(records, { plan: livePlan, onToggleComplete() {} });
+    const conversion = cells(findRow(html, "fpl-row-manual"));
+    assert.equal(conversion[2], "-$10.00");
+    assert.equal(conversion[3], "+₱630.00");
+    assert.equal(conversion[4], accountId === 1 ? "$90.00" : "-$10.00");
+    assert.equal(conversion[5], "₱630.00");
+    assert.equal(conversion[8], "To do");
+    assert.match(
+      conversion[1],
+      accountId === 1
+        ? /Already included in the live starting balance · USD -\$10\.00/
+        : /Already included in the live starting balance · PHP \+₱630\.00/,
+    );
+    assert.doesNotMatch(
+      conversion[1],
+      accountId === 1
+        ? /live starting balance · PHP/
+        : /live starting balance · USD/,
+    );
+  }
+});
+
+test("matched conversions explain recorded cash movements while preserving task flows and automatic completion", () => {
+  const conversionPlan = {
+    ...plan,
+    startDate: "2026-11-02",
+    endDate: "2026-11-02",
+    openingUsd: 100,
+    openingPhp: 0,
+    includeIncome: false,
+    entries: [
+      {
+        id: "conversion",
+        date: "2026-11-02",
+        kind: "conversion",
+        description: "Convert funds",
+        amount: 10,
+        currency: "USD",
+        fromAccountId: 1,
+        toAccountId: 2,
+      },
+    ],
+  };
+  const records = planner.buildPlanRows(
+    conversionPlan,
+    { salary: {}, bills: [], allocations: [] },
+    63,
+    {
+      today: "2026-11-02",
+      transactions: [
+        {
+          id: 1,
+          date: "2026-11-02",
+          kind: "expense",
+          amount: 10,
+          currency: "USD",
+          category: "Transfer",
+          accountId: 1,
+        },
+        {
+          id: 2,
+          date: "2026-11-02",
+          kind: "income",
+          amount: 630,
+          currency: "PHP",
+          category: "Transfer",
+          accountId: 2,
+        },
+      ],
+    },
+  );
+  const html = render(records, { plan: conversionPlan, onToggleComplete() {} });
+  const conversion = cells(findRow(html, "fpl-row-manual"));
+  const task = records.find((record) => record.source === "manual");
+  assert.equal(conversion[2], "-$10.00");
+  assert.equal(conversion[3], "+₱630.00");
+  assert.equal(conversion[4], planner.money(task.balanceUsd));
+  assert.equal(conversion[5], planner.money(task.balancePhp, "PHP"));
+  assert.match(
+    conversion[1],
+    /Cash movement shown in matched recorded transactions/,
+  );
+  assert.match(conversion[8], /Done · matched transaction/);
+  assert.equal(records.at(-1).balanceUsd, 90);
+  assert.equal(records.at(-1).balancePhp, 630);
+});
+
+test("historical reserve movements retain their planned flow without showing an unapplied set-aside or use", () => {
+  for (const currency of ["USD", "PHP"]) {
+    for (const delta of [40, -40]) {
+      const record = row({
+        source: "reserve",
+        description: "Historical annual reserve",
+        currency,
+        usd: currency === "USD" ? -delta : 0,
+        php: currency === "PHP" ? -delta : 0,
+        balanceAppliedUsd: 0,
+        balanceAppliedPhp: 0,
+        reflectedInStartingBalance: true,
+        reserveDeltaUsd: currency === "USD" ? delta : 0,
+        reserveDeltaPhp: currency === "PHP" ? delta : 0,
+        reserveAppliedUsd: 0,
+        reserveAppliedPhp: 0,
+      });
+      const html = render([record]);
+      const reserve = cells(findRow(html, "fpl-row-reserve"));
+      assert.equal(
+        reserve[currency === "USD" ? 2 : 3],
+        `${delta < 0 ? "+" : ""}${planner.money(-delta, currency)}`,
+      );
+      assert.equal(reserve[4], "$750.00");
+      assert.equal(reserve[5], "₱500.00");
+      assert.equal(reserve[6], "$200.00");
+      assert.equal(reserve[7], "₱12,600.00");
+      assert.match(
+        reserve[1],
+        /Historical reserve movement is already included in current earmarks/,
+      );
+      assert.doesNotMatch(reserve[6] + reserve[7], /set aside|used/);
+    }
+  }
 });

@@ -351,6 +351,257 @@ function findElement(node, predicate) {
   return null;
 }
 
+function workspaceHarness(props) {
+  const slots = [];
+  let cursor = 0;
+  const useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots))
+      slots[index] = typeof initial === "function" ? initial() : initial;
+    return [
+      slots[index],
+      (next) => {
+        slots[index] = typeof next === "function" ? next(slots[index]) : next;
+      },
+    ];
+  };
+  const Component = loadComponent(
+    fileURLToPath(
+      new URL("../app/finance/FinanceAppClient.js", import.meta.url),
+    ),
+    {
+      ...require("react"),
+      useState,
+      useMemo: (calculate) => calculate(),
+      useEffect() {},
+      useRef(initial) {
+        return useState(() => ({ current: initial }))[0];
+      },
+    },
+  ).default;
+  return () => {
+    cursor = 0;
+    return Component(props);
+  };
+}
+
+test("live percentages and flat starting amounts reach the ledger and summary after balances change", () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const overrides = {
+    bills: [],
+    plans: [
+      {
+        ...base,
+        openingUsd: 100,
+        startingAccounts: [{ accountId: 1, percentage: 80 }],
+      },
+    ],
+  };
+  for (const [balance, expected] of [
+    [1000, "$900.00"],
+    [2000, "$1,700.00"],
+  ]) {
+    const html = plain(
+      render("plans", 0, overrides, {
+        accounts: [
+          {
+            id: 1,
+            name: "Checking",
+            mask: "1001",
+            type: "checking",
+            currency: "USD",
+            nativeCurrentBalance: balance,
+          },
+        ],
+      }),
+    );
+    assert.ok(html.includes(`Available funds · USD${expected}`));
+    assert.ok(html.includes("80%"));
+    assert.ok(html.includes("Refresh bank data"));
+  }
+});
+
+test("manual row completion persists its stable key without changing any forecast money", async () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const props = fixture("plans", 0, {
+    bills: [
+      {
+        id: "fee",
+        name: "Fee",
+        amount: 25,
+        currency: "USD",
+        cadence: "monthly",
+        dueDay: 6,
+      },
+    ],
+    plans: [{ ...base, completedRows: [] }],
+  });
+  const renderWorkspace = workspaceHarness(props);
+  const ledger = (tree) =>
+    findElement(tree, (node) => node.type?.name === "Ledger");
+  const initial = ledger(renderWorkspace());
+  const money = (rows) =>
+    rows.map((row) => [
+      row.id,
+      row.amount,
+      row.usd,
+      row.php,
+      row.balanceUsd,
+      row.balancePhp,
+      row.reserveUsd,
+      row.reservePhp,
+    ]);
+  const before = money(initial.props.rows);
+  const originalFetch = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "/api/finance/planner");
+    assert.equal(options.method, "PUT");
+    saved = JSON.parse(options.body).document;
+    return {
+      ok: true,
+      json: async () => ({ ...props.snapshot, document: saved, revision: 2 }),
+    };
+  };
+  try {
+    await initial.props.onToggleComplete(initial.props.rows[0]);
+    const done = ledger(renderWorkspace());
+    assert.equal(done.props.rows[0].completed, true);
+    assert.equal(done.props.rows[0].completionSource, "manual");
+    assert.equal(saved.plans[0].completedRows[0].rowId, "bill:fee:2026-11-06");
+    assert.deepEqual(money(done.props.rows), before);
+    await done.props.onToggleComplete(done.props.rows[0]);
+    const reopened = ledger(renderWorkspace());
+    assert.equal(reopened.props.rows[0].completed, false);
+    assert.deepEqual(saved.plans[0].completedRows, []);
+    assert.deepEqual(money(reopened.props.rows), before);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("posted matches mark forecast rows done even when recorded cashflow rows are hidden", () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const props = fixture("plans", 0, {
+    bills: [
+      {
+        id: "fee",
+        name: "Fee",
+        amount: 25,
+        currency: "USD",
+        cadence: "monthly",
+        dueDay: 1,
+        accountId: 1,
+      },
+    ],
+    plans: [{ ...base, includeTransactions: false }],
+  });
+  props.initialPlanActivity = {
+    configured: true,
+    from: base.startDate,
+    to: base.endDate,
+    transactions: [
+      {
+        id: 123,
+        date: "2026-11-01",
+        merchant: "Fee",
+        amount: 25,
+        currency: "USD",
+        kind: "expense",
+        accountId: 1,
+        pending: false,
+      },
+    ],
+  };
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  assert.ok(plain(html).includes("Done · matched transaction"));
+  assert.ok(plain(html).includes("Available funds · USD$725.00"));
+  assert.ok(!html.includes("fpl-row-transaction"));
+});
+
+test("a balance read failure keeps the plan popup and its last bank data available", async () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const account = {
+    id: 1,
+    name: "Checking",
+    type: "checking",
+    currency: "USD",
+    nativeCurrentBalance: 1000,
+  };
+  const props = fixture(
+    "plans",
+    0,
+    {
+      bills: [],
+      plans: [
+        { ...base, startingAccounts: [{ accountId: 1, percentage: 80 }] },
+      ],
+    },
+    { accounts: [account] },
+  );
+  const renderWorkspace = workspaceHarness(props);
+  let tree = renderWorkspace();
+  findElement(
+    tree,
+    (node) =>
+      node.type?.name === "Button" && node.props.children === "Edit plan",
+  ).props.onClick();
+  tree = renderWorkspace();
+  const form = findElement(
+    tree,
+    (node) => node.type?.name === "FinancePlanForm",
+  );
+  assert.ok(form);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (url === "/api/finance")
+      return {
+        ok: true,
+        json: async () => ({
+          result: {
+            syncedConnections: [3],
+            errors: [],
+            refreshedAt: "2026-11-02T15:00:00.000Z",
+          },
+        }),
+      };
+    if (url.startsWith("/api/finance/activity"))
+      return {
+        ok: false,
+        json: async () => ({ error: "Balance read failed" }),
+      };
+    if (url.startsWith("/api/finance/plan-activity"))
+      return {
+        ok: true,
+        json: async () => ({
+          configured: true,
+          from: base.startDate,
+          to: base.endDate,
+          transactions: [],
+        }),
+      };
+    throw new Error("Unexpected finance request");
+  };
+  try {
+    await form.props.onRefreshAccounts();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  tree = renderWorkspace();
+  const retained = findElement(
+    tree,
+    (node) => node.type?.name === "FinancePlanForm",
+  );
+  assert.ok(retained);
+  assert.equal(retained.props.accounts[0].nativeCurrentBalance, 1000);
+  assert.ok(retained.props.accountRefreshError.includes("could not be loaded"));
+  assert.ok(
+    plain(renderToStaticMarkup(tree)).includes(
+      "Keeping the last available data",
+    ),
+  );
+});
+
 test("saving a monthly bill as payday switches to its new view and recomputes the workspace", async () => {
   const react = require("react");
   const state = [];

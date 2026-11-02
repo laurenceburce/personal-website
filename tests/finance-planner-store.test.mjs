@@ -208,6 +208,62 @@ test("account opening balances reject duplicate IDs and invalid native values", 
   }
 });
 
+test("live starting account selections persist bounded percentages and validate active asset accounts", () => {
+  const planner = document();
+  planner.plans[0].startingAccounts = [
+    { accountId: "1", percentage: 80.126, secret: "discard" },
+    { accountId: 2, percentage: 0 },
+  ];
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].startingAccounts, [
+    { accountId: 1, percentage: 80.13 }, { accountId: 2, percentage: 0 },
+  ]);
+  const accounts = [
+    { id: 1, currency: "USD", account_type: "checking" },
+    { id: 2, currency: "PHP", account_type: "savings" },
+  ];
+  assert.deepEqual(validateFinancePlannerAccounts(clean, accounts), [1, 2]);
+  assert.throws(() => validateFinancePlannerAccounts(clean, [{ ...accounts[0], account_type: "credit" }, accounts[1]]), /must hold funds/);
+  assert.throws(() => validateFinancePlannerAccounts(clean, [{ ...accounts[0], currency: "EUR" }, accounts[1]]), /USD or PHP/);
+  assert.throws(() => validateFinancePlannerAccounts(clean, [{ ...accounts[0], is_archived: 1 }, accounts[1]]), /unavailable/);
+  assert.doesNotThrow(() => validateFinancePlannerAccounts(clean, [{ ...accounts[0], is_archived: 1 }, accounts[1]], clean));
+  for (const starting of [
+    [{ accountId: 1, percentage: -1 }], [{ accountId: 1, percentage: 100.001 }],
+    [{ accountId: 1, percentage: "80" }], [{ accountId: 1, percentage: Infinity }],
+    [{ accountId: null, percentage: 80 }],
+    [{ accountId: 1, percentage: 80 }, { accountId: 1, percentage: 20 }],
+    null,
+  ]) {
+    planner.plans[0].startingAccounts = starting;
+    assert.throws(() => validateFinancePlanner(planner), /Starting balance|Starting balances|starting balance/);
+  }
+});
+
+test("completed plan rows retain orphan history but store only validated identifiers and timestamps", () => {
+  const planner = document();
+  const completedAt = "2026-11-02T15:00:00.000Z";
+  planner.plans[0].completedRows = [
+    { rowId: "bill:removed-bill:2025-01-01", completedAt, arbitrary: "discard" },
+    { rowId: "entry:conversion-1", completedAt },
+  ];
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].completedRows, [
+    { rowId: "bill:removed-bill:2025-01-01", completedAt },
+    { rowId: "entry:conversion-1", completedAt },
+  ]);
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  for (const completed of [
+    [{ rowId: "arbitrary:thing", completedAt }],
+    [{ rowId: "salary:2026-02-30", completedAt }],
+    [{ rowId: "entry:conversion-1", completedAt: "2026-02-30T15:00:00.000Z" }],
+    [{ rowId: "entry:conversion-1", completedAt: "yesterday" }],
+    [{ rowId: "entry:conversion-1", completedAt }, { rowId: "entry:conversion-1", completedAt }],
+  ]) {
+    planner.plans[0].completedRows = completed;
+    assert.throws(() => validateFinancePlanner(planner), /Completed row/);
+  }
+});
+
 test("merged account aliases stay unavailable even if an older sync unarchives them", () => {
   const planner = validateFinancePlanner(document());
   planner.salary.accountId = 7;

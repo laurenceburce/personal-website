@@ -151,6 +151,48 @@ function openingAccounts(value) {
   });
 }
 
+function startingAccounts(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 300)
+    throw plannerError("Choose at most 300 live starting balance accounts.");
+  const seen = new Set();
+  return value.map((row) => {
+    object(row, "Live starting balance account");
+    const id = accountId(row.accountId, "Starting balance account");
+    if (!id || seen.has(id))
+      throw plannerError("Starting balances must use unique accounts.");
+    seen.add(id);
+    if (typeof row.percentage !== "number" || !Number.isFinite(row.percentage) ||
+        row.percentage < 0 || row.percentage > 100)
+      throw plannerError("Starting balance percentage must be between 0 and 100.");
+    return { accountId: id, percentage: Math.round((row.percentage + Number.EPSILON) * 100) / 100 };
+  });
+}
+
+function completedRows(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 10000)
+    throw plannerError("A plan can contain at most 10000 completed rows.");
+  const seen = new Set();
+  return value.map((row) => {
+    object(row, "Completed plan row");
+    const rowId = text(row.rowId, "Completed row ID", 240);
+    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}|transaction:[A-Za-z0-9_-]{1,200})$/.exec(rowId);
+    if (!match || seen.has(rowId))
+      throw plannerError("Completed row IDs must be unique valid plan row identifiers.");
+    for (const day of match.slice(1).filter(Boolean)) date(day, "Completed row date");
+    seen.add(rowId);
+    const timestamp = row.completedAt;
+    if (typeof timestamp !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(timestamp) ||
+        !Number.isFinite(Date.parse(timestamp)) ||
+        new Date(timestamp).toISOString() !== timestamp)
+      throw plannerError("Completed row time must be a valid timestamp.");
+    date(timestamp.slice(0, 10), "Completed row time");
+    return { rowId, completedAt: timestamp };
+  });
+}
+
 /** Normalize only known fields; never persist arbitrary caller properties. */
 export function validateFinancePlanner(value) {
   const source = object(value, "Planner");
@@ -296,6 +338,8 @@ export function validateFinancePlanner(value) {
         openingUsd: amount(plan.openingUsd, "Opening USD balance", true),
         openingPhp: amount(plan.openingPhp, "Opening PHP balance", true),
         accountOpeningBalances: openingAccounts(plan.accountOpeningBalances),
+        startingAccounts: startingAccounts(plan.startingAccounts),
+        completedRows: completedRows(plan.completedRows),
         openingReserveUsd: amount(
           plan.openingReserveUsd === undefined ? 0 : plan.openingReserveUsd,
           "Opening annual reserve USD",
@@ -424,6 +468,14 @@ export function validateFinancePlannerAccounts(
       );
     }
     for (const plan of planner.plans || []) {
+      for (const selected of plan.startingAccounts || [])
+        add(
+          `plan:${plan.id}:starting:${selected.accountId}`,
+          selected.accountId,
+          null,
+          "Live starting balance account",
+          true,
+        );
       for (const opening of plan.accountOpeningBalances || [])
         add(
           `plan:${plan.id}:opening:${opening.accountId}`,
@@ -487,6 +539,8 @@ export function validateFinancePlannerAccounts(
       throw plannerError(
         `${ref.label} currency must match ${ref.currency}. Use a conversion entry to move between currencies.`,
       );
+    if (ref.asset && !["USD", "PHP"].includes(account.currency))
+      throw plannerError(`${ref.label} must use USD or PHP.`);
     if (
       ref.asset &&
       ["credit", "loan"].includes(account.account_type || account.type)

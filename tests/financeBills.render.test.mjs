@@ -10,6 +10,25 @@ import * as planner from "../app/lib/financePlanner.mjs";
 const require = createRequire(import.meta.url);
 const componentUrl = new URL("../app/finance/FinanceBills.js", import.meta.url);
 const { transformSync } = require("next/dist/build/swc");
+const numberUrl = new URL(
+  "../app/finance/FinanceNumberInput.js",
+  import.meta.url,
+);
+const numberCode = transformSync(await readFile(numberUrl, "utf8"), {
+  filename: fileURLToPath(numberUrl),
+  jsc: {
+    parser: { syntax: "ecmascript", jsx: true },
+    transform: { react: { runtime: "automatic" } },
+    target: "es2022",
+  },
+  module: { type: "commonjs" },
+}).code;
+const numberModule = { exports: {} };
+new Function("require", "module", "exports", numberCode)(
+  require,
+  numberModule,
+  numberModule.exports,
+);
 const selectUrl = new URL(
   "../app/finance/FinanceAccountSelect.js",
   import.meta.url,
@@ -44,6 +63,7 @@ function loadComponents(reactOverride) {
     if (specifier === "./finance-bills.css") return {};
     if (specifier === "../lib/financePlanner.mjs") return planner;
     if (specifier === "./FinanceAccountSelect") return selectModule.exports;
+    if (specifier === "./FinanceNumberInput") return numberModule.exports;
     if (specifier === "react" && reactOverride) return reactOverride;
     return require(specifier);
   };
@@ -294,18 +314,15 @@ test("annual forms expose the actual saved balance in the payment currency and l
     );
   const legacy = renderForm(baseBill);
   assert.match(legacy, /Saved so far · USD/);
-  assert.match(
-    legacy,
-    /min="0" max="999999999" step="0\.01" inputMode="decimal" value="0"/,
-  );
+  const legacySaved = legacy.match(/<input[^>]*min="0"[^>]*>/)?.[0];
+  assert.match(legacySaved, /type="text" inputMode="decimal"/);
+  assert.match(legacySaved, /step="0\.01"/);
+  assert.match(legacySaved, /value="0"/);
   assert.match(legacy, /Budget plans start with these earmarked funds/);
   assert.match(legacy, /projected plans do not change this saved balance/);
   const php = renderForm({ ...baseBill, currency: "PHP", savedAmount: 100 });
   assert.match(php, /Saved so far · PHP/);
-  assert.match(
-    php,
-    /min="0" max="999999999" step="0\.01" inputMode="decimal" value="100"/,
-  );
+  assert.match(php.match(/<input[^>]*min="0"[^>]*>/)?.[0], /value="100"/);
   assert.match(
     renderTable([baseBill]),
     /data-label="Saved so far"[^>]*><strong[^>]*>\$0\.00<\/strong>/,
@@ -1126,4 +1143,60 @@ test("changing a bill currency clears all account assignments before saving", ()
     findField(form, "Fund reserve from (optional)").props.children.props.value,
     null,
   );
+});
+
+test("bill drafts keep raw decimal edits through refreshed props and only save explicitly", () => {
+  const slots = [];
+  let cursor = 0;
+  let saved;
+  const components = loadComponents({
+    ...require("react"),
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots))
+        slots[index] = typeof initial === "function" ? initial() : initial;
+      return [
+        slots[index],
+        (next) => {
+          slots[index] = typeof next === "function" ? next(slots[index]) : next;
+        },
+      ];
+    },
+  });
+  const findField = (node, label) => {
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const match = findField(child, label);
+        if (match) return match;
+      }
+    } else if (node?.props) {
+      if (node.props.label === label) return node.props.children;
+      return findField(node.props.children, label);
+    }
+    return null;
+  };
+  const renderForm = () => {
+    cursor = 0;
+    return components.BillForm({
+      bill: { ...baseBill },
+      cadence: "annual",
+      rate: 63,
+      salary: { ...annualSalary },
+      accounts: [],
+      onSave: (value) => {
+        saved = value;
+      },
+    });
+  };
+  let form = renderForm();
+  for (const raw of ["", "0.", "12.30"]) {
+    findField(form, "Total annual amount").props.onChange({
+      target: { value: raw },
+    });
+    form = renderForm();
+    assert.equal(findField(form, "Total annual amount").props.value, raw);
+    assert.equal(saved, undefined);
+  }
+  form.props.onSubmit({ preventDefault() {} });
+  assert.equal(saved.amount, 12.3);
 });

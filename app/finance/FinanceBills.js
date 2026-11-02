@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import FinanceNumberInput from "./FinanceNumberInput";
 import FinanceAccountSelect, {
   financeAccountLabel,
 } from "./FinanceAccountSelect";
@@ -396,9 +397,8 @@ export function BillForm({
                 : undefined
           }
         >
-          <input
+          <FinanceNumberInput
             required
-            type="number"
             min="0.01"
             max="999999999"
             step="0.01"
@@ -474,8 +474,7 @@ export function BillForm({
           label={`Saved so far · ${draft.currency}`}
           hint="Enter the money already set aside for this bill in its payment currency. Funding amounts update automatically. Budget plans start with these earmarked funds; projected plans do not change this saved balance."
         >
-          <input
-            type="number"
+          <FinanceNumberInput
             min="0"
             max="999999999"
             step="0.01"
@@ -513,8 +512,7 @@ export function BillForm({
         </Field>
         {annual ? (
           <Field label="Due day" hint="Shorter months use their last day.">
-            <input
-              type="number"
+            <FinanceNumberInput
               min="1"
               max="31"
               step="1"
@@ -572,9 +570,8 @@ export function BillForm({
                   : "The monthly total is split across both dates."
               }
             >
-              <input
+              <FinanceNumberInput
                 required={paymentCount === 2}
-                type="number"
                 min="1"
                 max="31"
                 step="1"

@@ -339,3 +339,59 @@
   font-weight: 500;
   line-height: 1.5;
 }
+.fp-plan-live-start {
+  padding: 15px;
+  border: 1px solid #dfe9e1;
+  border-radius: 8px;
+  background: #f9fcf9;
+}
+.fp-plan-live-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.fp-plan-live-heading h3 {
+  margin: 0;
+  color: #305c48;
+  font-size: 13px;
+}
+.fp-plan-live-heading p {
+  margin: 7px 0 0;
+  color: #65766a;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.fp-plan-live-account {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px auto;
+  align-items: end;
+  gap: 10px;
+  padding: 14px 0;
+  margin-top: 10px;
+  border-top: 1px solid #e5ece6;
+}
+.fp-plan-live-account .fp-field {
+  min-width: 0;
+}
+.fp-live-account-preview {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.fp-percent-input {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.fp-percent-input input {
+  min-width: 0;
+}
+@media (max-width: 520px) {
+  .fp-plan-live-account {
+    grid-template-columns: minmax(0, 1fr) 80px;
+  }
+  .fp-plan-live-account > button {
+    justify-self: start;
+  }
+}

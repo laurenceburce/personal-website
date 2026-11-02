@@ -1,5 +1,5 @@
 .fp-app .fpl-table {
-  min-width: 1210px;
+  min-width: 1370px;
   table-layout: auto;
 }
 .fp-app .fpl-table th,
@@ -60,6 +60,79 @@
 .fp-app .fpl-table .fpl-annual-payment-detail {
   color: #617568;
 }
+.fp-app .fpl-table .fpl-reconciliation-note {
+  color: #577083;
+}
+.fp-app .fpl-table .fpl-status-cell {
+  min-width: 155px;
+  max-width: 190px;
+  white-space: normal;
+}
+.fp-app .fpl-completion {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #617568;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.fp-app .fpl-completion input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #16755c;
+  cursor: inherit;
+}
+.fp-app .fpl-completion:has(input:disabled) {
+  cursor: default;
+}
+.fp-app .fpl-completion input:focus-visible {
+  outline: 3px solid #7dc7aa;
+  outline-offset: 3px;
+}
+.fp-app .fpl-completion small {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+}
+.fp-app .fpl-completion-done {
+  color: #2d7050;
+}
+.fp-app .fpl-row-completed td:first-child {
+  box-shadow: inset 3px 0 #6ca482;
+}
+.fp-app .fpl-table .fpl-row-completed td:nth-child(2) > strong::after {
+  content: " · done";
+  color: #47765a;
+  font-size: 10px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.fp-app .fpl-opening-details {
+  margin-top: 8px;
+  color: #47765a;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.fp-app .fpl-opening-details summary {
+  cursor: pointer;
+}
+.fp-app .fpl-opening-details ul,
+.fp-app .fpl-opening-warnings {
+  margin: 7px 0 0;
+  padding-left: 17px;
+}
+.fp-app .fpl-opening-details li + li,
+.fp-app .fpl-opening-warnings li + li {
+  margin-top: 6px;
+}
+.fp-app .fpl-opening-warnings {
+  color: #a14e3d;
+  font-size: 11px;
+  line-height: 1.7;
+}
 .fp-app .fpl-row-reserve td:first-child,
 .fp-app .fpl-row-reserveRelease td:first-child {
   border-left: 3px solid #8ab9a2;
@@ -83,7 +156,7 @@
 }
 @media (max-width: 760px) {
   .fp-app .fpl-table {
-    min-width: 1210px;
+    min-width: 1370px;
   }
   .fp-app .fpl-table th,
   .fp-app .fpl-table td {

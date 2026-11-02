@@ -10,6 +10,7 @@ import {
   formatDate,
   getAnnualBillFunding,
   getAnnualReserveOpening,
+  getPlanOpening,
   getSummary as summarize,
   localDate,
   salaryOccurrences,
@@ -17,6 +18,251 @@ import {
 
 const getSummary = (document, rate, asOf = "2026-11-02") =>
   summarize(document, rate, asOf);
+
+test("live plan openings add flat amounts to current native account percentages", () => {
+  const plan = { openingUsd: 25, openingPhp: 10, startingAccounts: [
+    { accountId: 1, percentage: 80 }, { accountId: 2, percentage: 100 },
+    { accountId: 3, percentage: 0 },
+  ] };
+  const accounts = [
+    { id: 1, name: "Checking", currency: "USD", type: "checking", nativeCurrentBalance: 200, availableBalance: 999 },
+    { id: 2, name: "Pesos", currency: "PHP", type: "savings", nativeCurrentBalance: 5000.55 },
+    { id: 3, name: "Excluded", currency: "USD", type: "savings", nativeCurrentBalance: 999 },
+  ];
+  const before = JSON.stringify({ plan, accounts });
+  const opening = getPlanOpening(plan, accounts);
+  assert.equal(opening.usd, 185);
+  assert.equal(opening.php, 5010.55);
+  assert.equal(opening.contributions[0].balance, 200);
+  assert.equal(opening.contributions[0].amount, 160);
+  assert.equal(opening.contributions[2].amount, 0);
+  assert.deepEqual(opening.warnings, []);
+  assert.equal(JSON.stringify({ plan, accounts }), before);
+  accounts[0].nativeCurrentBalance = 300;
+  assert.equal(getPlanOpening(plan, accounts).usd, 265);
+});
+
+test("unavailable native starting balances are excluded with a reason, never NaN or an available-balance fallback", () => {
+  const accounts = [
+    { id: 1, currency: "USD", nativeCurrentBalance: null, currentBalance: 50, availableBalance: 60 },
+    { id: 2, currency: "USD", nativeCurrentBalance: 50, isArchived: true },
+    { id: 3, currency: "USD", nativeCurrentBalance: 50, mergedIntoAccountId: 4 },
+    { id: 4, currency: "USD", nativeCurrentBalance: 50, type: "credit" },
+    { id: 5, currency: "EUR", nativeCurrentBalance: 50 },
+  ];
+  const plan = { openingUsd: 17, startingAccounts: [1, 2, 3, 4, 5, 6].map((accountId) => ({ accountId, percentage: 100 })) };
+  const opening = getPlanOpening(plan, accounts);
+  assert.equal(opening.usd, 17);
+  assert.equal(opening.php, 0);
+  assert.equal(opening.contributions.length, 0);
+  assert.equal(opening.warnings.length, 6);
+});
+
+test("a refreshed bank balance immediately changes plan running totals without recounting posted selected-account activity", () => {
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-03", openingUsd: 10, openingPhp: 0, includeIncome: false,
+    startingAccounts: [{ accountId: 1, percentage: 80 }], entries: [] };
+  const doc = { salary: {}, bills: [], allocations: [] };
+  const accounts = [{ id: 1, currency: "USD", type: "checking", nativeCurrentBalance: 100 }];
+  const transactions = [
+    { id: 1, date: "2026-11-01", accountId: 1, amount: 20, currency: "USD", kind: "expense", merchant: "Already posted" },
+    { id: 2, date: "2026-11-03", accountId: 1, amount: 5, currency: "USD", kind: "expense", merchant: "Future expense" },
+    { id: 3, date: "2026-11-01", accountId: 2, amount: 3, currency: "USD", kind: "expense", merchant: "Flat balance expense" },
+  ];
+  const options = { accounts, transactions, today: "2026-11-02" };
+  let rows = buildPlanRows(plan, doc, 63, options);
+  assert.equal(rows.at(-1).balanceUsd, 82);
+  assert.equal(rows.find((row) => row.transactionId === 1).reflectedInStartingBalance, true);
+  accounts[0].nativeCurrentBalance = 200;
+  rows = buildPlanRows(plan, doc, 63, options);
+  assert.equal(rows.at(-1).balanceUsd, 162);
+});
+
+test("selected annual reserve balances are counted once and disappear when their funded bill is paid", () => {
+  const bill = { id: "venture", name: "Venture X", amount: 395, currency: "USD", cadence: "annual", dueDay: 28, dueMonths: [11], savedAmount: 395, reserveAccountId: 2 };
+  const doc = { salary: {}, bills: [bill], allocations: [] };
+  const plan = { startDate: "2026-11-28", endDate: "2026-11-28", openingUsd: 0, openingPhp: 0,
+    includeIncome: false, startingAccounts: [{ accountId: 2, percentage: 100 }], entries: [] };
+  const accounts = [{ id: 2, currency: "USD", type: "savings", nativeCurrentBalance: 395 }];
+  const opening = getPlanOpening(plan, accounts, doc);
+  assert.equal(opening.totalUsd, 395);
+  assert.equal(opening.reserveExcludedUsd, 395);
+  assert.equal(opening.usd, 0);
+  assert.equal(opening.contributions[0].availableAmount, 0);
+  const rows = buildPlanRows(plan, doc, 63, { accounts, today: "2026-11-02" });
+  assert.equal(rows.at(-1).balanceUsd, 0);
+  assert.equal(rows.at(-1).reserveUsd, 0);
+  assert.equal(rows.at(-1).grossAmount, 395);
+});
+
+test("manual row completion is stable metadata and does not change a single cash flow", () => {
+  const plan = { startDate: "2026-11-02", endDate: "2026-11-02", openingUsd: 100, openingPhp: 0,
+    includeIncome: false, entries: [{ id: "rent", date: "2026-11-02", description: "Rent", amount: 25, currency: "USD", kind: "expense" }] };
+  const doc = { salary: {}, bills: [], allocations: [] };
+  const before = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  plan.completedRows = [{ rowId: "entry:rent", completedAt: "2026-11-02T12:34:56.000Z" }];
+  const after = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  assert.equal(after[0].completed, true);
+  assert.equal(after[0].completionSource, "manual");
+  assert.equal(after[0].completionKey, "entry:rent");
+  for (const key of ["usd", "php", "balanceUsd", "balancePhp", "reserveUsd", "reservePhp"]) assert.equal(after[0][key], before[0][key]);
+  assert.deepEqual(after[0].matchedTransactionIds, []);
+});
+
+test("a posted reconciliation retains the forecast completion key and supersedes manual status", () => {
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 100, openingPhp: 0, includeIncome: false,
+    completedRows: [{ rowId: "bill:google:2026-11-02", completedAt: "2026-11-01T12:00:00.000Z" }], entries: [] };
+  const doc = { salary: {}, bills: [{ id: "google", name: "Google", amount: 2, currency: "USD", cadence: "monthly", dueDay: 2, accountId: 1 }], allocations: [] };
+  const transactions = [{ id: 8, date: "2026-11-02", kind: "expense", currency: "USD", amount: 2, merchant: "Google", accountId: 1 }];
+  const row = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions })[0];
+  assert.equal(row.id, "transaction:8");
+  assert.equal(row.completionKey, "bill:google:2026-11-02");
+  assert.equal(row.completionSource, "transaction");
+  assert.deepEqual(row.matchedTransactionIds, [8]);
+});
+
+test("pending and future transactions cannot automatically complete a plan row", () => {
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0, includeIncome: false, entries: [] };
+  const doc = { salary: {}, bills: [], allocations: [] };
+  const transactions = [
+    { id: 1, date: "2026-11-01", amount: 5, currency: "USD", kind: "expense", pending: true },
+    { id: 2, date: "2026-11-03", amount: 5, currency: "USD", kind: "expense" },
+    { id: 3, date: "2026-11-02", amount: 5, currency: "USD", kind: "expense" },
+  ];
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions });
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((row) => row.transactionId === 2).completed, false);
+  assert.equal(rows.find((row) => row.transactionId === 3).completed, true);
+});
+
+test("savings completion requires both assigned posted transfer legs once, rather than an equal amount", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-02", accountId: 1 }, bills: [],
+    allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 500, currency: "USD", sourceAccountId: 1, accountId: 2 }] };
+  const plan = { startDate: "2026-11-02", endDate: "2026-11-02", openingUsd: 1000, openingPhp: 0, includeIncome: false, entries: [] };
+  const debit = { id: 10, date: "2026-11-02", amount: 500, currency: "USD", kind: "expense", accountId: 1, category: "Transfer" };
+  const credit = { id: 11, date: "2026-11-02", amount: 500, currency: "USD", kind: "income", accountId: 2, category: "Transfer" };
+  const allocation = (transactions) => buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions }).find((row) => row.source === "allocation");
+  assert.equal(allocation([debit]).completed, false);
+  assert.equal(allocation([debit, { ...credit, accountId: 3 }]).completed, false);
+  assert.equal(allocation([debit, { ...credit, pending: true }]).completed, false);
+  assert.equal(allocation([debit, { ...credit, category: "Salary" }]).completed, false);
+  assert.equal(allocation([debit, credit]).completed, true);
+  assert.deepEqual(allocation([debit, credit]).matchedTransactionIds, [10, 11]);
+  doc.allocations.push({ ...doc.allocations[0], id: "second" });
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions: [debit, credit] }).filter((row) => row.source === "allocation");
+  assert.equal(rows.filter((row) => row.completed).length, 1);
+});
+
+test("historical conversion balances suppress each selected live account independently", () => {
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-01", openingUsd: 0, openingPhp: 0, includeIncome: false,
+    startingAccounts: [{ accountId: 1, percentage: 100 }], entries: [
+      { id: "convert", date: "2026-11-01", kind: "conversion", description: "Convert", amount: 10, currency: "USD", fromAccountId: 1, toAccountId: 2 },
+    ] };
+  const doc = { salary: {}, bills: [], allocations: [] };
+  const accounts = [{ id: 1, currency: "USD", nativeCurrentBalance: 90 }, { id: 2, currency: "PHP", nativeCurrentBalance: 630 }];
+  let row = buildPlanRows(plan, doc, 63, { accounts, today: "2026-11-02" })[0];
+  assert.equal(row.balanceUsd, 90);
+  assert.equal(row.balancePhp, 630);
+  assert.equal(row.usd, -10);
+  plan.startingAccounts = [{ accountId: 2, percentage: 100 }];
+  row = buildPlanRows(plan, doc, 63, { accounts, today: "2026-11-02" })[0];
+  assert.equal(row.balanceUsd, -10);
+  assert.equal(row.balancePhp, 630);
+});
+
+test("historical live-account reserve tasks do not increase the current earmark a second time", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-01", accountId: 1 },
+    bills: [{ id: "annual", name: "Annual", amount: 100, savedAmount: 20, cadence: "annual", dueDay: 28, dueMonths: [11], currency: "USD", reserveAccountId: 2, sourceAccountId: 1 }], allocations: [] };
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-01", openingUsd: 0, openingPhp: 0, includeIncome: false,
+    startingAccounts: [{ accountId: 1, percentage: 100 }], entries: [] };
+  const accounts = [{ id: 1, currency: "USD", nativeCurrentBalance: 100 }];
+  const row = buildPlanRows(plan, doc, 63, { accounts, today: "2026-11-02" })[0];
+  assert.equal(row.source, "reserve");
+  assert.equal(row.reflectedInStartingBalance, true);
+  assert.equal(row.balanceUsd, 100);
+  assert.equal(row.reserveUsd, 20);
+  assert.equal(row.reserveAppliedUsd, 0);
+});
+
+test("a same-account savings earmark requires manual completion without a bank transfer", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-02", accountId: 1 }, bills: [],
+    allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 500, currency: "USD", sourceAccountId: 1, accountId: 1 }] };
+  const plan = { startDate: "2026-11-02", endDate: "2026-11-02", openingUsd: 1000, openingPhp: 0, includeIncome: false, entries: [] };
+  const transactions = [{ id: 1, date: "2026-11-02", amount: 500, kind: "income", currency: "USD", accountId: 1, category: "Transfer" }];
+  const row = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions }).find((row) => row.source === "allocation");
+  assert.equal(row.completed, false);
+});
+
+test("posted conversion legs complete the task and change native running totals only once", () => {
+  const doc = { salary: {}, bills: [], allocations: [] };
+  const plan = { startDate: "2026-11-02", endDate: "2026-11-02", openingUsd: 100, openingPhp: 0, includeIncome: false, entries: [
+    { id: "convert", date: "2026-11-02", description: "Convert", kind: "conversion", amount: 10, currency: "USD", fromAccountId: 1, toAccountId: 2 },
+  ] };
+  const transactions = [
+    { id: 1, date: "2026-11-02", kind: "expense", amount: 10, currency: "USD", category: "Transfer", accountId: 1 },
+    { id: 2, date: "2026-11-02", kind: "income", amount: 630, currency: "PHP", category: "Transfer", accountId: 2 },
+  ];
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions });
+  const task = rows.find((row) => row.source === "manual");
+  assert.equal(task.completed, true);
+  assert.equal(task.reflectedInRecordedTransactions, true);
+  assert.equal(rows.at(-1).balanceUsd, 90);
+  assert.equal(rows.at(-1).balancePhp, 630);
+  assert.deepEqual(task.matchedTransactionIds, [1, 2]);
+});
+
+test("posted named expense allocation completion uses the real expense once", () => {
+  const doc = { salary: { amount: 0, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-02" }, bills: [],
+    allocations: [{ id: "groceries", name: "Groceries", kind: "expense", amount: 50, currency: "USD", accountId: 1 }] };
+  const plan = { startDate: "2026-11-02", endDate: "2026-11-02", openingUsd: 100, openingPhp: 0, includeIncome: false, entries: [] };
+  const transactions = [{ id: 1, date: "2026-11-02", kind: "expense", amount: 50, currency: "USD", merchant: "Groceries", accountId: 1 }];
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions });
+  const allocation = rows.find((row) => row.source === "allocation");
+  assert.equal(allocation.completed, true);
+  assert.equal(allocation.reflectedInRecordedTransactions, true);
+  assert.equal(rows.at(-1).balanceUsd, 50);
+  const unrelated = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions: [{ ...transactions[0], merchant: "Other purchase" }] });
+  assert.equal(unrelated.find((row) => row.source === "allocation").completed, false);
+});
+
+test("excluding recorded cash flows still checks posted bill completion without changing the forecast ledger", () => {
+  const doc = { salary: {}, bills: [
+    { id: "google", name: "Google", amount: 20, currency: "USD", cadence: "monthly", dueDay: 2, accountId: 1 },
+  ], allocations: [] };
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-03", openingUsd: 100, openingPhp: 0,
+    includeIncome: false, includeTransactions: false, entries: [] };
+  const actual = { id: 8, date: "2026-11-02", amount: 20, currency: "USD", kind: "expense", merchant: "Google", accountId: 1 };
+  const before = buildPlanRows(plan, doc, 63, { today: "2026-11-02" });
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions: [actual] });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "bill:google:2026-11-02");
+  assert.equal(rows[0].completed, true);
+  assert.equal(rows[0].completionSource, "transaction");
+  assert.deepEqual(rows[0].matchedTransactionIds, [8]);
+  assert.equal(rows[0].balanceUsd, before[0].balanceUsd);
+  assert.equal(rows[0].usd, -20);
+  for (const changed of [{ ...actual, pending: true }, { ...actual, accountId: 2 }, { ...actual, date: "2026-11-03" }]) {
+    const changedRows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions: [changed] });
+    assert.equal(changedRows[0].completed, false);
+    assert.equal(changedRows[0].balanceUsd, 80);
+  }
+});
+
+test("completion-only conversion matches keep all hypothetical forecast amounts", () => {
+  const doc = { salary: {}, bills: [], allocations: [] };
+  const plan = { startDate: "2026-11-02", endDate: "2026-11-02", openingUsd: 100, openingPhp: 0, includeIncome: false, includeTransactions: false, entries: [
+    { id: "convert", date: "2026-11-02", description: "Convert", kind: "conversion", amount: 10, currency: "USD", fromAccountId: 1, toAccountId: 2 },
+  ] };
+  const transactions = [
+    { id: 1, date: "2026-11-02", kind: "expense", amount: 10, currency: "USD", category: "Transfer", accountId: 1 },
+    { id: 2, date: "2026-11-02", kind: "income", amount: 630, currency: "PHP", category: "Transfer", accountId: 2 },
+  ];
+  const rows = buildPlanRows(plan, doc, 63, { today: "2026-11-02", transactions });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].completed, true);
+  assert.equal(rows[0].balanceUsd, 90);
+  assert.equal(rows[0].balancePhp, 630);
+  assert.equal(rows[0].reflectedInRecordedTransactions, undefined);
+});
 
 const salary = {
   amount: 2000,

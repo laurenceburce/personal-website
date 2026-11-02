@@ -180,9 +180,13 @@ const CURRENCY_SET = new Set(["USD", "PHP"]);
 const DEFAULT_COLOR = "#34d399";
 const EXCHANGE_RATE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const TOKEN_ALGORITHM = "aes-256-gcm";
+const PLAN_BANK_REFRESH_COOLDOWN_MS = 60_000;
 
 let poolPromise = null;
 let schemaReadyPromise = null;
+let planBankRefreshPromise = null;
+let planBankRefreshResult = null;
+let planBankRefreshCompletedAt = 0;
 
 const getDatabaseUrl = () => process.env.FINANCE_DATABASE_URL
   || process.env.DATABASE_URL
@@ -2439,6 +2443,69 @@ export async function syncFinanceConnection(id) {
   }
 
   throw appError("This connection provider cannot be synced yet.", 503);
+}
+
+/** Refresh bank sources used by plans without moving funds or changing plan settings. */
+export function refreshFinancePlanBankData({ force = false } = {}) {
+  if (planBankRefreshPromise) return planBankRefreshPromise;
+  if (
+    !force &&
+    planBankRefreshResult &&
+    Date.now() - planBankRefreshCompletedAt < PLAN_BANK_REFRESH_COOLDOWN_MS
+  )
+    return Promise.resolve({ ...planBankRefreshResult, cached: true });
+
+  const refresh = (async () => {
+    const pool = requirePool(await ensureFinanceSchema());
+    const [connections] = await pool.query(
+      `SELECT id, provider, status FROM personal_finance_connections
+       WHERE provider IN ('plaid', 'brankas')
+         AND status NOT IN ('disconnected', 'superseded')
+         AND encrypted_access_token IS NOT NULL AND encrypted_access_token <> ''
+       ORDER BY id`,
+    );
+    const eligible = connections.filter(
+      (connection) =>
+        Number.isSafeInteger(Number(connection.id)) &&
+        Number(connection.id) > 0 &&
+        !["disconnected", "superseded"].includes(connection.status),
+    );
+    const outcomes = await Promise.allSettled(
+      eligible.map((connection) => {
+        if (connection.provider !== "plaid")
+          return Promise.reject(new Error("Unsupported plan bank refresh"));
+        return syncFinanceConnection(Number(connection.id));
+      }),
+    );
+    const syncedConnections = [];
+    const errors = [];
+    outcomes.forEach((outcome, index) => {
+      const connection = eligible[index];
+      const connectionId = Number(connection.id);
+      if (outcome.status === "fulfilled") syncedConnections.push(connectionId);
+      else
+        errors.push({
+          connectionId,
+          message:
+            connection.provider === "brankas"
+              ? "Brankas balance and transaction syncing is not available yet. Its last known data is unchanged."
+              : "Bank sync failed. The last known balances and transactions are still shown. Try refreshing again.",
+        });
+    });
+    const result = {
+      refreshedAt: syncedConnections.length ? new Date().toISOString() : null,
+      syncedConnections,
+      errors,
+      cached: false,
+    };
+    planBankRefreshResult = result;
+    planBankRefreshCompletedAt = Date.now();
+    return result;
+  })();
+  planBankRefreshPromise = refresh.finally(() => {
+    planBankRefreshPromise = null;
+  });
+  return planBankRefreshPromise;
 }
 
 export async function createBrankasLink(email) {

@@ -116,6 +116,52 @@ const project = (planner = plan, doc = document, extra = {}) =>
 const byId = (result, accountId) =>
   result.accounts.find((account) => account.accountId === accountId);
 
+test("live selected percentages override old account snapshots and follow refreshed balances", () => {
+  const current = { ...plan, startingAccounts: [{ accountId: 1, percentage: 80 }], includeIncome: false, includeAnnualReserve: false, includeAllocations: false };
+  const doc = { salary, bills: [], allocations: [] };
+  const refreshed = structuredClone(accounts);
+  let result = project(current, doc, { accounts: refreshed });
+  assert.equal(result.openingSource, "live");
+  assert.equal(byId(result, 1).openingBalance, 600);
+  assert.equal(byId(result, 1).endingBalance, 600);
+  refreshed[0].nativeCurrentBalance = 1000;
+  result = project(current, doc, { accounts: refreshed });
+  assert.equal(byId(result, 1).openingBalance, 800);
+  assert.equal(byId(result, 1).endingBalance, 800);
+  assert.equal(current.accountOpeningBalances[0].balance, 750);
+});
+
+test("one grouped annual bank transfer completes several bill earmarks and moves each account only once", () => {
+  const doc = { salary: { ...salary, amount: 0 }, allocations: [], bills: [
+    { ...document.bills[0], id: "one", name: "One", amount: 10, dueDay: 6, savedAmount: 0 },
+    { ...document.bills[0], id: "two", name: "Two", amount: 20, dueDay: 6, savedAmount: 0 },
+  ] };
+  const current = { ...plan, startDate: "2026-11-06", endDate: "2026-11-06", includeIncome: false };
+  const transactions = [
+    { id: 101, accountId: 1, date: "2026-11-06", amount: 30, currency: "USD", kind: "expense", category: "Transfer", merchant: "Annual savings transfer" },
+    { id: 102, accountId: 2, date: "2026-11-06", amount: 30, currency: "USD", kind: "income", category: "Transfer", merchant: "Annual savings transfer" },
+  ];
+  const result = project(current, doc, { transactions, today: "2026-11-06" });
+  const reserve = result.rows.find((row) => row.source === "reserve");
+  assert.equal(reserve.amount, 30);
+  assert.equal(reserve.completed, true);
+  assert.deepEqual(reserve.matchedTransactionIds, [101, 102]);
+  assert.equal(reserve.accountMovements.length, 0);
+  assert.equal(result.rows.find((row) => row.transactionId === 101).accountMovements.length, 1);
+  assert.equal(result.rows.find((row) => row.transactionId === 102).accountMovements.length, 1);
+});
+
+test("an automatically completed expense allocation debits the account through its posted expense only", () => {
+  const doc = { salary: { ...salary, amount: 0 }, bills: [], allocations: [
+    { id: "food", name: "Groceries", kind: "expense", amount: 50, currency: "USD", accountId: 1 },
+  ] };
+  const current = { ...plan, startDate: "2026-11-06", endDate: "2026-11-06", includeIncome: false };
+  const transactions = [{ id: 101, accountId: 1, date: "2026-11-06", amount: 50, currency: "USD", kind: "expense", merchant: "Groceries" }];
+  const result = project(current, doc, { transactions, today: "2026-11-06" });
+  assert.equal(byId(result, 1).endingBalance, 700);
+  assert.equal(result.rows.find((row) => row.source === "allocation").accountMovements.length, 0);
+});
+
 test("salary, annual reserves and payday savings project into separate accounts without moving bank balances", () => {
   const before = JSON.stringify({ plan, document, accounts });
   const result = project();

@@ -220,7 +220,10 @@ export function remapFinancePlannerAccountIds(document, replacements) {
     if (!value || typeof value !== "object") return value;
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => {
-        if (key === "accountOpeningBalances" && Array.isArray(item)) {
+        if (
+          ["accountOpeningBalances", "startingAccounts"].includes(key) &&
+          Array.isArray(item)
+        ) {
           const selected = new Map();
           for (const row of [...item].sort(
             (a, b) =>

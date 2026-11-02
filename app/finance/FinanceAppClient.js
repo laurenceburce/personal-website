@@ -8,6 +8,7 @@ import {
   formatDate,
   getSummary,
   getAnnualReserveOpening,
+  getPlanOpening,
   localDate,
   addDays,
   money,
@@ -24,6 +25,9 @@ import FinanceAccountPlanView, {
   AccountAllocationSummary,
 } from "./FinanceAccountPlanView";
 import FinanceInstall from "./FinanceInstall";
+import Modal from "./FinanceModal";
+import FinanceNumberInput from "./FinanceNumberInput";
+import PlanForm from "./FinancePlanForm";
 import FinanceOverview from "./FinanceOverview";
 import Ledger from "./FinancePlanLedger";
 import { BillForm, BillsTable } from "./FinanceBills";
@@ -243,47 +247,6 @@ function CurrencySelect({ value, onChange }) {
     </select>
   );
 }
-function Modal({ title, children, onClose, busy }) {
-  const dialog = useRef(null);
-  useEffect(() => {
-    const previous = window.document.activeElement;
-    const element = dialog.current;
-    element.showModal();
-    return () => {
-      element.close();
-      previous?.focus();
-    };
-  }, []);
-  return (
-    <dialog
-      aria-labelledby="fp-dialog-title"
-      className="fp-modal"
-      ref={dialog}
-      onCancel={(e) => {
-        e.preventDefault();
-        if (!busy) onClose();
-      }}
-      onClick={(e) => {
-        if (e.target === dialog.current && !busy) onClose();
-      }}
-    >
-      <header>
-        <div>
-          <p className="fp-eyebrow">PERSONAL FINANCE</p>
-          <h2 id="fp-dialog-title">{title}</h2>
-        </div>
-        <Button
-          icon="close"
-          className="fp-icon-button"
-          aria-label="Close dialog"
-          onClick={onClose}
-          disabled={busy}
-        />
-      </header>
-      {children}
-    </dialog>
-  );
-}
 function Empty({ icon = "receipt", title, children, action }) {
   return (
     <div className="fp-empty">
@@ -498,10 +461,9 @@ function SalaryEditor({
         <Field label="Monthly salary">
           <div className="fp-money-input">
             <span>{draft.currency === "PHP" ? "₱" : "$"}</span>
-            <input
+            <FinanceNumberInput
               aria-label="Monthly salary"
               inputMode="decimal"
-              type="number"
               min="0"
               max="999999999"
               step="0.01"
@@ -647,9 +609,8 @@ function AllocationForm({
       </Field>
       <div className="fp-form-grid">
         <Field label="Amount per pay period">
-          <input
+          <FinanceNumberInput
             required
-            type="number"
             min="0.01"
             step="0.01"
             max="999999999"
@@ -726,271 +687,6 @@ function AllocationForm({
   );
 }
 
-function PlanForm({ plan, document, accounts = [], onSave, busy, disabled }) {
-  const today = localDate();
-  const [draft, setDraft] = useState({
-    name: "",
-    startDate: today,
-    endDate: addDays(today, 30),
-    openingUsd: 0,
-    openingPhp: 0,
-    includeIncome: true,
-    includeTransactions: true,
-    includeAllocations: true,
-    includeAnnualReserve: true,
-    openingReserveUsd: 0,
-    openingReservePhp: 0,
-    entries: [],
-    accountOpeningBalances: [],
-    ...plan,
-  });
-  const set = (key, value) =>
-    setDraft((current) => ({ ...current, [key]: value }));
-  const reserveOpening = getAnnualReserveOpening(draft, document);
-  return (
-    <form
-      className="fp-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSave({
-          ...draft,
-          id: draft.id || uid(),
-          openingUsd: amount(draft.openingUsd),
-          openingPhp: amount(draft.openingPhp),
-          openingReserveUsd: amount(draft.openingReserveUsd),
-          openingReservePhp: amount(draft.openingReservePhp),
-          accountOpeningBalances: (draft.accountOpeningBalances || []).map(
-            (row) => ({
-              accountId: row.accountId,
-              balance: amount(row.balance),
-            }),
-          ),
-        });
-      }}
-    >
-      <Field label="Plan name">
-        <input
-          autoFocus
-          required
-          maxLength={120}
-          placeholder="e.g. November essentials"
-          value={draft.name}
-          onChange={(e) => set("name", e.target.value)}
-        />
-      </Field>
-      <div className="fp-form-grid">
-        <Field label="From">
-          <input
-            required
-            type="date"
-            value={draft.startDate}
-            onChange={(e) => set("startDate", e.target.value)}
-          />
-        </Field>
-        <Field label="Through">
-          <input
-            required
-            type="date"
-            min={draft.startDate}
-            max={addDays(draft.startDate, 730)}
-            value={draft.endDate}
-            onChange={(e) => set("endDate", e.target.value)}
-          />
-        </Field>
-      </div>
-      {accounts.length > 0 && (
-        <details className="fp-account-openings">
-          <summary>Starting balances by account</summary>
-          <p className="fp-inline-note">
-            Account forecasts use current synced balances unless you set
-            starting balances here. For a historical or future plan, enter the
-            balance before the first day’s flows. Credit balances are money
-            owed.
-          </p>
-          <Button
-            type="button"
-            variant="text"
-            onClick={() =>
-              set(
-                "accountOpeningBalances",
-                accounts
-                  .filter(
-                    (account) =>
-                      account.nativeCurrentBalance != null &&
-                      Number.isFinite(Number(account.nativeCurrentBalance)),
-                  )
-                  .map((account) => ({
-                    accountId: Number(account.id),
-                    balance: account.nativeCurrentBalance,
-                  })),
-              )
-            }
-          >
-            Use current account balances
-          </Button>
-          {(draft.accountOpeningBalances || []).map((row) => {
-            const account = accounts.find(
-              (item) => Number(item.id) === Number(row.accountId),
-            );
-            return (
-              <Field
-                key={row.accountId}
-                label={`${account?.institutionName || "Account"} · ${account?.name || row.accountId}${account?.mask ? ` · ••${account.mask}` : ""} · ${account?.currency || ""}`}
-              >
-                <input
-                  type="number"
-                  step="0.01"
-                  min="-999999999"
-                  max="999999999"
-                  required
-                  value={row.balance}
-                  onChange={(event) =>
-                    set(
-                      "accountOpeningBalances",
-                      draft.accountOpeningBalances.map((item) =>
-                        item.accountId === row.accountId
-                          ? { ...item, balance: event.target.value }
-                          : item,
-                      ),
-                    )
-                  }
-                />
-              </Field>
-            );
-          })}
-          {draft.accountOpeningBalances?.length > 0 && (
-            <Button
-              type="button"
-              variant="text"
-              onClick={() => set("accountOpeningBalances", [])}
-            >
-              Use live balances instead
-            </Button>
-          )}
-        </details>
-      )}
-      <div className="fp-form-grid">
-        <Field label="Starting available balance · USD">
-          <input
-            required
-            type="number"
-            step="0.01"
-            min="-999999999"
-            max="999999999"
-            value={draft.openingUsd}
-            onChange={(e) => set("openingUsd", e.target.value)}
-          />
-        </Field>
-        <Field label="Starting available balance · PHP">
-          <input
-            required
-            type="number"
-            step="0.01"
-            min="-999999999"
-            max="999999999"
-            value={draft.openingPhp}
-            onChange={(e) => set("openingPhp", e.target.value)}
-          />
-        </Field>
-      </div>
-      <div className="fp-form-grid">
-        <Field label="Total starting annual reserve · USD (optional)">
-          <input
-            required
-            type="number"
-            min="0"
-            max="999999999"
-            step="0.01"
-            value={draft.openingReserveUsd}
-            onChange={(event) => set("openingReserveUsd", event.target.value)}
-          />
-        </Field>
-        <Field label="Total starting annual reserve · PHP (optional)">
-          <input
-            required
-            type="number"
-            min="0"
-            max="999999999"
-            step="0.01"
-            value={draft.openingReservePhp}
-            onChange={(event) => set("openingReservePhp", event.target.value)}
-          />
-        </Field>
-      </div>
-      <div className="fp-bill-savings-summary">
-        <strong>Saved on your annual bills</strong>
-        <span>
-          {money(reserveOpening.billSavingsUsd)} ·{" "}
-          {money(reserveOpening.billSavingsPhp, "PHP")}
-        </span>
-        <small>
-          These item balances are included automatically. Enter a total above
-          them only if you also have unassigned annual reserves.
-        </small>
-        <span>
-          Starting reserve used in this plan:{" "}
-          <b>
-            {money(reserveOpening.usd)} · {money(reserveOpening.php, "PHP")}
-          </b>
-        </span>
-      </div>
-      <p className="fp-inline-note">
-        Enter balances at the start of the first date, before that day’s flows.
-        Available balances exclude money already reserved for annual bills.
-        Amounts entered as “Saved so far” on annual bills are included once and
-        stay earmarked for those bills. Suggested savings targets are not
-        treated as actual funds.
-      </p>
-      <label className="fp-checkbox">
-        <input
-          type="checkbox"
-          checked={draft.includeIncome}
-          onChange={(e) => set("includeIncome", e.target.checked)}
-        />
-        Include scheduled salary payments
-      </label>
-      <label className="fp-checkbox">
-        <input
-          type="checkbox"
-          checked={draft.includeTransactions}
-          onChange={(event) => set("includeTransactions", event.target.checked)}
-        />
-        Include recorded and scheduled one-time transactions
-      </label>
-      <label className="fp-checkbox">
-        <input
-          type="checkbox"
-          checked={draft.includeAllocations}
-          onChange={(event) => set("includeAllocations", event.target.checked)}
-        />
-        Include savings and expense allocations each payday
-      </label>
-      <label className="fp-checkbox">
-        <input
-          type="checkbox"
-          checked={draft.includeAnnualReserve}
-          onChange={(event) =>
-            set("includeAnnualReserve", event.target.checked)
-          }
-        />
-        Set aside money for annual bills each payday
-      </label>
-      <p className="fp-inline-note">
-        Bills with due dates appear automatically. Annual set-asides reduce
-        available funds and increase your reserve. When an annual bill is paid,
-        the bill row shows only the additional available money needed after
-        using its savings. Set-asides adjust to saved balances, pause when a
-        bill is fully funded, and resume after payment. Matched recorded
-        payments replace scheduled flows. Plans do not move money or record bank
-        payments.
-      </p>
-      <Button type="submit" variant="primary" disabled={busy || disabled}>
-        {busy ? "Saving…" : plan ? "Save plan" : "Create plan"}
-      </Button>
-    </form>
-  );
-}
-
 function EntryForm({
   entry,
   plan,
@@ -1060,9 +756,8 @@ function EntryForm({
         <Field
           label={draft.kind === "conversion" ? "Amount to convert" : "Amount"}
         >
-          <input
+          <FinanceNumberInput
             required
-            type="number"
             min="0.01"
             max="999999999"
             step="0.01"
@@ -1187,6 +882,9 @@ export default function FinanceAppClient({
   );
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [bankRefreshing, setBankRefreshing] = useState(false);
+  const [bankRefreshError, setBankRefreshError] = useState("");
+  const [bankRefreshedAt, setBankRefreshedAt] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const document = state.document;
@@ -1207,11 +905,16 @@ export default function FinanceAppClient({
     () => getAnnualReserveOpening(plan, document),
     [plan, document],
   );
+  const planOpening = useMemo(
+    () => getPlanOpening(plan, accounts, document),
+    [plan, accounts, document],
+  );
   const planRows = useMemo(
     () =>
       plan
         ? buildPlanRows(plan, document, rate, {
             today,
+            accounts,
             transactions:
               planActivity?.from === plan.startDate &&
               planActivity?.to === plan.endDate
@@ -1219,7 +922,7 @@ export default function FinanceAppClient({
                 : [],
           })
         : [],
-    [plan, document, rate, planActivity, today],
+    [plan, document, rate, planActivity, accounts, today],
   );
   const accountPlan = useMemo(
     () =>
@@ -1251,10 +954,13 @@ export default function FinanceAppClient({
   const saveLock = useRef(false);
   const activityRequest = useRef(0);
   const planActivityRequest = useRef(0);
+  const bankRefreshRequest = useRef(null);
+  const activePlanRef = useRef(plan);
+  activePlanRef.current = plan;
   const selectedMonthRef = useRef(selectedMonth);
   const pageCopy = PAGE_COPY[tab];
   useEffect(() => {
-    if (tab !== "plans" || !plan || plan.includeTransactions === false) return;
+    if (tab !== "plans" || !plan) return;
     if (
       recordRefreshVersion === 0 &&
       planActivity?.configured &&
@@ -1271,6 +977,23 @@ export default function FinanceAppClient({
     plan?.includeTransactions,
     recordRefreshVersion,
   ]);
+
+  useEffect(() => {
+    if (tab !== "plans" || !activity.configured) return;
+    const refreshVisible = () => {
+      if (window.document.visibilityState === "visible")
+        refreshPlanBanks(false);
+    };
+    refreshVisible();
+    window.addEventListener("focus", refreshVisible);
+    window.document.addEventListener("visibilitychange", refreshVisible);
+    const timer = setInterval(refreshVisible, 5 * 60 * 1000);
+    return () => {
+      window.removeEventListener("focus", refreshVisible);
+      window.document.removeEventListener("visibilitychange", refreshVisible);
+      clearInterval(timer);
+    };
+  }, [tab, plan?.id, activity.configured]);
 
   useEffect(() => {
     const onPop = () => {
@@ -1338,6 +1061,11 @@ export default function FinanceAppClient({
         throw new Error(
           result.error || "Could not refresh your transactions and accounts.",
         );
+      if (!result.configured)
+        throw new Error(
+          result.warning ||
+            "Account balances are temporarily unavailable. Keeping the last loaded data.",
+        );
       if (requestId === activityRequest.current) {
         setActivity(result);
         setRecordRefreshVersion((version) => version + 1);
@@ -1351,7 +1079,7 @@ export default function FinanceAppClient({
     }
   }
   async function loadPlanActivity(targetPlan = plan) {
-    if (!targetPlan || targetPlan.includeTransactions === false) return true;
+    if (!targetPlan) return true;
     const requestId = ++planActivityRequest.current;
     setPlanActivityLoading(true);
     setPlanActivityError("");
@@ -1385,6 +1113,49 @@ export default function FinanceAppClient({
     } finally {
       if (requestId === planActivityRequest.current)
         setPlanActivityLoading(false);
+    }
+  }
+  async function refreshPlanBanks(force = false) {
+    if (bankRefreshRequest.current) return bankRefreshRequest.current;
+    const request = (async () => {
+      setBankRefreshing(true);
+      setBankRefreshError("");
+      try {
+        const result = await performAction("refreshPlanBankData", { force });
+        if (result?.refreshedAt) setBankRefreshedAt(result.refreshedAt);
+        if (result?.errors?.length)
+          setBankRefreshError(
+            result.errors.map((error) => error.message).join(" "),
+          );
+      } catch (error) {
+        setBankRefreshError(
+          error.message ||
+            "Bank data could not be refreshed. Showing the last known balances.",
+        );
+      }
+      try {
+        const [accountsLoaded, recordsLoaded] = await Promise.all([
+          loadActivity(),
+          loadPlanActivity(activePlanRef.current),
+        ]);
+        if (!accountsLoaded || !recordsLoaded)
+          setBankRefreshError((current) =>
+            [
+              current,
+              "The latest account balances or transaction matches could not be loaded. Keeping the last available data.",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          );
+      } finally {
+        setBankRefreshing(false);
+      }
+    })();
+    bankRefreshRequest.current = request;
+    try {
+      await request;
+    } finally {
+      bankRefreshRequest.current = null;
     }
   }
   function changeMonth(month) {
@@ -1536,6 +1307,16 @@ export default function FinanceAppClient({
       )
     )
       setSelectedPlanId(row.id);
+  }
+  async function togglePlanCompletion(row) {
+    if (!plan || busy || row.completionSource === "transaction") return;
+    const rowId = row.completionKey || row.id;
+    const completedRows = (plan.completedRows || []).filter(
+      (item) => item.rowId !== rowId,
+    );
+    if (!row.completed)
+      completedRows.push({ rowId, completedAt: new Date().toISOString() });
+    await savePlan({ ...plan, completedRows });
   }
   const saveEntry = (row) =>
     savePlan({ ...plan, entries: upsert(plan.entries, row) });
@@ -2223,6 +2004,15 @@ export default function FinanceAppClient({
                         <span className="fp-label-pill">Money flow</span>
                       </div>
                       <div className="fp-button-row">
+                        <Button
+                          icon="refresh"
+                          disabled={bankRefreshing || !activity.configured}
+                          onClick={() => refreshPlanBanks(true)}
+                        >
+                          {bankRefreshing
+                            ? "Refreshing bank data…"
+                            : "Refresh bank data"}
+                        </Button>
                         {plan.includeTransactions !== false && (
                           <Button
                             icon="refresh"
@@ -2263,15 +2053,43 @@ export default function FinanceAppClient({
                     </div>
                     <p className="fp-plan-date-range">
                       {formatDate(plan.startDate, { year: "numeric" })} –{" "}
-                      {formatDate(plan.endDate, { year: "numeric" })} · Balances
-                      begin before the first day’s flows.
+                      {formatDate(plan.endDate, { year: "numeric" })} · Balances{" "}
+                      {plan.startingAccounts?.length
+                        ? "use current live account contributions. Already-posted flows reflected in those balances are not counted again."
+                        : "begin before the first day’s flows."}
                     </p>
+                    {bankRefreshedAt && (
+                      <p className="fp-inline-note">
+                        Bank data checked{" "}
+                        {new Intl.DateTimeFormat("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                          timeZone: "America/New_York",
+                        }).format(new Date(bankRefreshedAt))}
+                        . Refreshes when this view opens, returns to focus, and
+                        every five minutes while visible.
+                      </p>
+                    )}
+                    {bankRefreshError && (
+                      <p className="fp-alert fp-alert-warning" role="status">
+                        {bankRefreshError} Showing the last available balances;
+                        refresh again or review Bank accounts.
+                      </p>
+                    )}
+                    {plan.includeTransactions === false &&
+                      planActivityLoading && (
+                        <p className="fp-inline-note" role="status">
+                          Checking posted transactions for completed rows…
+                        </p>
+                      )}
                     <div className="fp-plan-summary fp-plan-flow-summary">
                       <div>
                         <span>Available funds · USD</span>
                         <strong
                           className={
-                            (planRows.at(-1)?.balanceUsd ?? plan.openingUsd) < 0
+                            (planRows.at(-1)?.balanceUsd ?? planOpening.usd) < 0
                               ? "fp-negative"
                               : "fp-positive"
                           }
@@ -2279,7 +2097,7 @@ export default function FinanceAppClient({
                           {planWaitingForRecords
                             ? "—"
                             : money(
-                                planRows.at(-1)?.balanceUsd ?? plan.openingUsd,
+                                planRows.at(-1)?.balanceUsd ?? planOpening.usd,
                               )}
                         </strong>
                       </div>
@@ -2287,7 +2105,7 @@ export default function FinanceAppClient({
                         <span>Available funds · PHP</span>
                         <strong
                           className={
-                            (planRows.at(-1)?.balancePhp ?? plan.openingPhp) < 0
+                            (planRows.at(-1)?.balancePhp ?? planOpening.php) < 0
                               ? "fp-negative"
                               : ""
                           }
@@ -2295,7 +2113,7 @@ export default function FinanceAppClient({
                           {planWaitingForRecords
                             ? "—"
                             : money(
-                                planRows.at(-1)?.balancePhp ?? plan.openingPhp,
+                                planRows.at(-1)?.balancePhp ?? planOpening.php,
                                 "PHP",
                               )}
                         </strong>
@@ -2385,6 +2203,9 @@ export default function FinanceAppClient({
                         plan={plan}
                         rows={accountPlan?.rows || planRows}
                         openingReserve={planOpeningReserve}
+                        openingBalances={planOpening}
+                        onToggleComplete={togglePlanCompletion}
+                        busy={busy}
                         onEdit={(entry) => open({ type: "entry", entry })}
                         onDelete={(row) => open({ type: "deleteEntry", row })}
                       />
@@ -2544,6 +2365,9 @@ export default function FinanceAppClient({
               document={document}
               accounts={accounts}
               onSave={savePlan}
+              refreshingAccounts={bankRefreshing}
+              accountRefreshError={bankRefreshError}
+              onRefreshAccounts={() => refreshPlanBanks(true)}
               busy={busy}
               disabled={!state.configured}
             />

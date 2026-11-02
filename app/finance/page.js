@@ -81,9 +81,7 @@ export default async function FinancePage({ searchParams }) {
   ]);
   const firstPlan = snapshot.document.plans[0];
   const planActivity =
-    ["plans", "budget"].includes(tab) &&
-    firstPlan?.includeTransactions !== false &&
-    firstPlan
+    ["plans", "budget"].includes(tab) && firstPlan
       ? await getFinancePlanActivity({
           startDate: firstPlan.startDate,
           endDate: firstPlan.endDate,

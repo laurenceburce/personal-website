@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import FinanceNumberInput from "./FinanceNumberInput";
 import {
   convert,
   formatDate,
@@ -209,9 +210,12 @@ export function QuickTransactionForm({
     if (
       !Number.isFinite(parsedAmount) ||
       parsedAmount <= 0 ||
-      parsedAmount > 999999999
+      parsedAmount > 999999999 ||
+      Math.abs(parsedAmount * 100 - Math.round(parsedAmount * 100)) > 0.00001
     ) {
-      setFormError("Enter an amount greater than zero and below one billion.");
+      setFormError(
+        "Enter an amount greater than zero and below one billion, with up to two decimal places.",
+      );
       return;
     }
     if (!draft.merchant.trim()) {
@@ -280,10 +284,9 @@ export function QuickTransactionForm({
               <span aria-hidden="true">
                 {draft.currency === "PHP" ? "₱" : "$"}
               </span>
-              <input
+              <FinanceNumberInput
                 autoFocus
                 aria-label="Transaction amount"
-                type="number"
                 inputMode="decimal"
                 required
                 min="0.01"
@@ -1412,9 +1415,8 @@ export function BankAccountsPanel({
               </label>
               <label className="fa-field fa-wide">
                 <span>Opening balance · {manualAccount.currency}</span>
-                <input
+                <FinanceNumberInput
                   required
-                  type="number"
                   step="0.01"
                   min="-999999999"
                   max="999999999"

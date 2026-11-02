@@ -706,3 +706,279 @@ test("failed final-page deduplication rolls back and keeps the original paginati
     0,
   );
 });
+
+function planRefreshBackend(connections) {
+  return syncBackend({
+    onQuery(sql, params) {
+      if (
+        sql.startsWith(
+          "SELECT id, provider, status FROM personal_finance_connections",
+        )
+      )
+        return connections;
+      if (
+        sql.startsWith("SELECT id, provider, status, encrypted_access_token") ||
+        sql.startsWith("SELECT id, institution_name, status")
+      ) {
+        const connection = connections.find(
+          (item) => Number(item.id) === Number(params[0]),
+        );
+        return connection
+          ? [
+              {
+                ...connection,
+                institution_name: "Example Bank",
+                encrypted_access_token: encryptedToken(
+                  `refresh-token-${connection.id}`,
+                ),
+                sync_cursor: `cursor-${connection.id}`,
+              },
+            ]
+          : [];
+      }
+    },
+  });
+}
+
+test("plan bank refresh updates all active links with balances and incremental transactions and caches attempts for 60 seconds", async (t) => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const requests = [];
+  bankEnvironment(t, async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    return bankSyncResponse(url);
+  });
+  const { api, queries } = planRefreshBackend([
+    { id: 2, provider: "plaid", status: "active" },
+    { id: 3, provider: "plaid", status: "needs_sync" },
+    { id: 4, provider: "plaid", status: "disconnected" },
+    { id: 5, provider: "plaid", status: "superseded" },
+  ]);
+  const result = await api.refreshFinancePlanBankData();
+  assert.deepEqual(result.syncedConnections, [2, 3]);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.cached, false);
+  assert.match(result.refreshedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(requests.length, 4);
+  assert.equal(
+    requests.filter(({ url }) => url.endsWith("/accounts/balance/get")).length,
+    2,
+  );
+  assert.deepEqual(
+    requests
+      .filter(({ url }) => url.endsWith("/transactions/sync"))
+      .map(({ body }) => body.cursor),
+    ["cursor-2", "cursor-3"],
+  );
+  const selection = queries.find(({ sql }) =>
+    sql.startsWith(
+      "SELECT id, provider, status FROM personal_finance_connections",
+    ),
+  );
+  assert.match(selection.sql, /status NOT IN \('disconnected', 'superseded'\)/);
+  assert.match(
+    selection.sql,
+    /encrypted_access_token IS NOT NULL AND encrypted_access_token <> ''/,
+  );
+  assert.doesNotMatch(selection.sql.split("FROM")[0], /encrypted_access_token/);
+  now += 59_999;
+  assert.deepEqual(await api.refreshFinancePlanBankData(), {
+    ...result,
+    cached: true,
+  });
+  assert.equal(requests.length, 4);
+  now += 1;
+  assert.equal((await api.refreshFinancePlanBankData()).cached, false);
+  assert.equal(requests.length, 8);
+  assert.ok(
+    !queries.some(
+      ({ sql }) => /^DELETE/.test(sql) || /personal_finance_planner/.test(sql),
+    ),
+  );
+});
+
+test("simultaneous plan refreshes share one in-flight request even when forced and manual refresh bypasses the cooldown", async (t) => {
+  let release;
+  let started;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise((resolve) => {
+    started = resolve;
+  });
+  let requests = 0;
+  bankEnvironment(t, async (url) => {
+    requests++;
+    if (url.endsWith("/accounts/balance/get")) {
+      started();
+      await gate;
+    }
+    return bankSyncResponse(url);
+  });
+  const { api } = planRefreshBackend([
+    { id: 3, provider: "plaid", status: "active" },
+  ]);
+  const first = api.refreshFinancePlanBankData();
+  const second = api.refreshFinancePlanBankData({ force: true });
+  assert.equal(second, first);
+  await entered;
+  assert.equal(requests, 1);
+  release();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult, secondResult);
+  assert.equal(requests, 2);
+  assert.equal((await api.refreshFinancePlanBankData()).cached, true);
+  assert.equal(requests, 2);
+  assert.equal(
+    (await api.refreshFinancePlanBankData({ force: true })).cached,
+    false,
+  );
+  assert.equal(requests, 4);
+});
+
+test("one failed bank link does not prevent another refresh and safe errors retain no provider secrets", async (t) => {
+  bankEnvironment(t, async (url, options) => {
+    const body = JSON.parse(options.body);
+    if (body.access_token === "refresh-token-2")
+      return response(
+        {
+          error_code: "INTERNAL_ERROR",
+          error_message:
+            "refresh-token-2 mock-secret encrypted_access_token provider details",
+        },
+        503,
+      );
+    return bankSyncResponse(url);
+  });
+  const { api, queries } = planRefreshBackend([
+    { id: 2, provider: "plaid", status: "active" },
+    { id: 3, provider: "plaid", status: "active" },
+  ]);
+  const result = await api.refreshFinancePlanBankData();
+  assert.deepEqual(result.syncedConnections, [3]);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0].connectionId, 2);
+  assert.match(
+    result.errors[0].message,
+    /last known balances and transactions are still shown/,
+  );
+  assert.match(result.refreshedAt, /^\d{4}-/);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /refresh-token|mock-secret|encrypted_access_token|provider details/,
+  );
+  assert.ok(
+    queries.some(
+      ({ sql, params }) =>
+        sql.includes("status = 'needs_sync'") && params.at(-1) === 2,
+    ),
+  );
+  const cached = await api.refreshFinancePlanBankData();
+  assert.equal(cached.cached, true);
+  assert.deepEqual(cached.errors, result.errors);
+});
+
+test("Brankas and failed plan refreshes explicitly retain last known data and never claim refreshed balances", async (t) => {
+  let requests = 0;
+  bankEnvironment(t, async () => {
+    requests++;
+    throw new Error("Network request with refresh-token-3 failed");
+  });
+  const { api } = planRefreshBackend([
+    { id: 3, provider: "plaid", status: "needs_sync" },
+    { id: 6, provider: "brankas", status: "linked" },
+  ]);
+  const result = await api.refreshFinancePlanBankData();
+  assert.equal(requests, 1);
+  assert.equal(result.refreshedAt, null);
+  assert.deepEqual(result.syncedConnections, []);
+  assert.deepEqual(
+    result.errors.map(({ connectionId }) => connectionId),
+    [3, 6],
+  );
+  assert.match(
+    result.errors[1].message,
+    /Brankas balance and transaction syncing is not available yet/,
+  );
+  assert.doesNotMatch(JSON.stringify(result), /refresh-token|Network request/);
+});
+
+test("plans with no connected bank accounts skip providers and return a cacheable empty refresh", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = planRefreshBackend([]);
+  assert.deepEqual(await api.refreshFinancePlanBankData(), {
+    refreshedAt: null,
+    syncedConnections: [],
+    errors: [],
+    cached: false,
+  });
+  const count = queries.length;
+  assert.equal((await api.refreshFinancePlanBankData()).cached, true);
+  assert.equal(queries.length, count);
+});
+
+test("the private finance API exposes plan bank refresh and accepts only a boolean force flag", async () => {
+  const { code: routeCode } = transformSync(
+    await readFile(
+      new URL("../app/api/finance/route.js", import.meta.url),
+      "utf8",
+    ),
+    {
+      jsc: { parser: { syntax: "ecmascript" }, target: "es2022" },
+      module: { type: "commonjs" },
+    },
+  );
+  const calls = [];
+  let authorized = true;
+  let allowedOrigin = true;
+  const module = { exports: {} };
+  new Function("require", "module", "exports", routeCode)(
+    (specifier) => {
+      if (specifier === "next/server")
+        return {
+          NextResponse: { json: (value, options) => ({ value, options }) },
+        };
+      if (specifier === "../../lib/financeAuth")
+        return {
+          requireFinanceAccess: async () =>
+            authorized ? { email: "owner@example.com" } : null,
+        };
+      if (specifier === "../utils/origin")
+        return { isAllowedOrigin: () => allowedOrigin };
+      if (specifier === "../../lib/financeStore")
+        return {
+          refreshFinancePlanBankData: async (options) => {
+            calls.push(options);
+            return {
+              refreshedAt: null,
+              syncedConnections: [],
+              errors: [],
+              cached: false,
+            };
+          },
+        };
+      return require(specifier);
+    },
+    module,
+    module.exports,
+  );
+  const request = (force) => ({
+    headers: new Headers(),
+    text: async () =>
+      JSON.stringify({ action: "refreshPlanBankData", data: { force } }),
+  });
+  const result = await module.exports.POST(request(true));
+  assert.equal(result.value.ok, true);
+  assert.equal(
+    result.options.headers["Cache-Control"],
+    "private, no-store, max-age=0",
+  );
+  await module.exports.POST(request("true"));
+  assert.deepEqual(calls, [{ force: true }, { force: false }]);
+  authorized = false;
+  assert.equal((await module.exports.POST(request(true))).options.status, 401);
+  authorized = true;
+  allowedOrigin = false;
+  assert.equal((await module.exports.POST(request(true))).options.status, 403);
+  assert.equal(calls.length, 2);
+});

@@ -13,6 +13,27 @@ import * as insights from "../app/lib/financeInsights.mjs";
 const require = createRequire(import.meta.url);
 const swc = require("next/dist/build/swc");
 await swc.loadBindings();
+const numberUrl = new URL(
+  "../app/finance/FinanceNumberInput.js",
+  import.meta.url,
+);
+const numberCode = (
+  await swc.transform(await readFile(numberUrl, "utf8"), {
+    filename: fileURLToPath(numberUrl),
+    jsc: {
+      parser: { syntax: "ecmascript", jsx: true },
+      transform: { react: { runtime: "automatic" } },
+      target: "es2022",
+    },
+    module: { type: "commonjs" },
+  })
+).code;
+const numberModule = { exports: {} };
+new Function("require", "module", "exports", numberCode)(
+  require,
+  numberModule,
+  numberModule.exports,
+);
 const selectUrl = new URL(
   "../app/finance/FinanceAccountSelect.js",
   import.meta.url,
@@ -53,6 +74,7 @@ function loadComponents(reactOverride) {
       if (specifier === "../lib/financePlanner.mjs") return planner;
       if (specifier === "../lib/financeInsights.mjs") return insights;
       if (specifier === "./FinanceAccountSelect") return selectModule.exports;
+      if (specifier === "./FinanceNumberInput") return numberModule.exports;
       return require(specifier);
     },
     componentModule,
@@ -698,8 +720,7 @@ test("manual PHP accounts preserve their native opening balance and refresh avai
   findElement(
     tree,
     (node) =>
-      node.type === "input" &&
-      node.props.type === "number" &&
+      node.type === numberModule.exports.default &&
       node.props.min === "-999999999",
   ).props.onChange({ target: { value: "1234.56" } });
   tree = harness.render();
@@ -743,8 +764,7 @@ test("manual account validation prevents invalid balances without sending an act
   findElement(
     tree,
     (node) =>
-      node.type === "input" &&
-      node.props.type === "number" &&
+      node.type === numberModule.exports.default &&
       node.props.min === "-999999999",
   ).props.onChange({ target: { value: "0.001" } });
   tree = harness.render();
@@ -761,4 +781,65 @@ test("manual account validation prevents invalid balances without sending an act
   );
   actionButton(harness.render(), "Cancel").props.onClick();
   assert.equal(harness.actions.length, 0);
+});
+
+test("one-time transaction edits retain decimal text across refreshes and save once explicitly", () => {
+  const slots = [];
+  let cursor = 0;
+  const saved = [];
+  const components = loadComponents({
+    ...require("react"),
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots))
+        slots[index] = typeof initial === "function" ? initial() : initial;
+      return [
+        slots[index],
+        (next) => {
+          slots[index] = typeof next === "function" ? next(slots[index]) : next;
+        },
+      ];
+    },
+  });
+  const renderForm = () => {
+    cursor = 0;
+    return components.QuickTransactionForm({
+      transaction: {
+        id: 100,
+        date: "2026-11-02",
+        amount: 50,
+        merchant: "Groceries",
+        currency: "USD",
+        kind: "expense",
+      },
+      accounts: [],
+      categories: [...activity.categories],
+      rate: 63,
+      onSave: (value) => saved.push(value),
+    });
+  };
+  const amountField = (tree) =>
+    findElement(
+      tree,
+      (node) =>
+        node.type === numberModule.exports.default &&
+        node.props["aria-label"] === "Transaction amount",
+    );
+  let form = renderForm();
+  for (const raw of ["", "0.", "12.30"]) {
+    amountField(form).props.onChange({ target: { value: raw } });
+    form = renderForm();
+    assert.equal(amountField(form).props.value, raw);
+    assert.equal(saved.length, 0);
+  }
+  const saveButton = findElement(form, (node) => node.props.type === "submit");
+  assert.equal(saveButton.props.children, "Save transaction");
+  form.props.onSubmit({ preventDefault() {} });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].amount, 12.3);
+  amountField(form).props.onChange({ target: { value: "12.345" } });
+  form = renderForm();
+  form.props.onSubmit({ preventDefault() {} });
+  assert.equal(saved.length, 1);
+  assert.match(renderToStaticMarkup(renderForm()), /up to two decimal places/);
 });

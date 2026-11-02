@@ -81,6 +81,22 @@ function SourceLabel({ row }) {
   const shortfallCurrency = row.currency || (row.php ? "PHP" : "USD");
   const grossAmount = row.grossAmount ?? row.amount;
   const annualPayment = row.annualPayment && Number.isFinite(grossAmount);
+  const reflectedNativeFlows = row.reflectedInRecordedTransactions
+    ? []
+    : [
+        ["USD", row.usd, row.balanceAppliedUsd],
+        ["PHP", row.php, row.balanceAppliedPhp],
+      ].filter(
+        ([, amount, applied]) =>
+          Number.isFinite(amount) &&
+          Number.isFinite(applied) &&
+          amount !== applied,
+      );
+  const reserveAlreadyIncluded =
+    (row.reserveAppliedUsd ?? row.reserveDeltaUsd ?? 0) !==
+      (row.reserveDeltaUsd ?? 0) ||
+    (row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0) !==
+      (row.reserveDeltaPhp ?? 0);
   const sameAccountReserve =
     row.source === "reserve" &&
     row.reserveAllocations?.length > 0 &&
@@ -115,6 +131,27 @@ function SourceLabel({ row }) {
       {!annualPayment && row.reserveShortfall > 0 && (
         <small className="fpl-shortfall">
           Reserve shortfall: {money(row.reserveShortfall, shortfallCurrency)}
+        </small>
+      )}
+      {row.reflectedInStartingBalance && (
+        <small className="fpl-reconciliation-note">
+          Already included in the live starting balance
+          {reflectedNativeFlows
+            .map(
+              ([currency, amount, applied]) =>
+                ` · ${currency} ${signed(amount - applied, currency)}`,
+            )
+            .join("")}
+        </small>
+      )}
+      {row.reflectedInRecordedTransactions && (
+        <small className="fpl-reconciliation-note">
+          Cash movement shown in matched recorded transactions
+        </small>
+      )}
+      {reserveAlreadyIncluded && (
+        <small className="fpl-reconciliation-note">
+          Historical reserve movement is already included in current earmarks.
         </small>
       )}
       {row.accountNames?.length > 0 && (
@@ -155,13 +192,103 @@ function SourceLabel({ row }) {
   );
 }
 
+function CompletionStatus({ row, onToggleComplete, busy }) {
+  const completed = Boolean(row.completed);
+  const automatic = completed && row.completionSource === "transaction";
+  const matched =
+    row.source !== "transaction" ||
+    Boolean(row.matchedForecast || row.scheduledSource);
+  const label = automatic
+    ? matched
+      ? "Done · matched transaction"
+      : "Done · recorded transaction"
+    : completed
+      ? "Done"
+      : "To do";
+  const disabled = Boolean(busy || automatic || !onToggleComplete);
+  return (
+    <label
+      className={`fpl-completion${completed ? " fpl-completion-done" : ""}`}
+    >
+      <input
+        type="checkbox"
+        checked={completed}
+        disabled={disabled}
+        aria-label={
+          automatic
+            ? `${label}: ${row.description}`
+            : `${completed ? "Reopen" : "Mark done:"} ${row.description}`
+        }
+        onChange={() => {
+          if (!disabled) onToggleComplete(row);
+        }}
+      />
+      <span>
+        {label}
+        {completed && !automatic && <small>Marked manually</small>}
+      </span>
+    </label>
+  );
+}
+
+function OpeningDetails({ openingBalances }) {
+  if (!openingBalances) return null;
+  const contributions = openingBalances.contributions || [];
+  const warnings = openingBalances.warnings || [];
+  if (!contributions.length && !warnings.length) return null;
+  return (
+    <>
+      <details className="fpl-opening-details">
+        <summary>Live starting balance breakdown</summary>
+        <ul>
+          <li>
+            Flat starting balance: {money(openingBalances.flatUsd ?? 0)} ·{" "}
+            {money(openingBalances.flatPhp ?? 0, "PHP")}
+          </li>
+          {contributions.map((account) => (
+            <li key={account.accountId}>
+              {account.percentage}% of {account.name || "Account"}
+              {account.mask ? ` · ••${account.mask}` : ""}:{" "}
+              {money(account.amount, account.currency)}
+              <small>
+                Current balance {money(account.balance, account.currency)}
+              </small>
+              {account.reserveExcluded > 0 && (
+                <small>
+                  {money(account.reserveExcluded, account.currency)} already
+                  reserved · {money(account.availableAmount, account.currency)}{" "}
+                  available
+                </small>
+              )}
+            </li>
+          ))}
+        </ul>
+      </details>
+      {warnings.length > 0 && (
+        <ul className="fpl-opening-warnings" role="status">
+          {warnings.map((warning, index) => (
+            <li key={index}>
+              {typeof warning === "string" ? warning : warning.message}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 export default function Ledger({
   plan,
   rows,
   openingReserve,
+  openingBalances,
   onEdit,
   onDelete,
+  onToggleComplete,
+  busy = false,
 }) {
+  const openingUsd = openingBalances?.usd ?? plan.openingUsd ?? 0;
+  const openingPhp = openingBalances?.php ?? plan.openingPhp ?? 0;
   return (
     <>
       <div
@@ -175,7 +302,8 @@ export default function Ledger({
             Money flows between{" "}
             {formatDate(plan.startDate, { year: "numeric" })} and{" "}
             {formatDate(plan.endDate, { year: "numeric" })}. Available funds and
-            annual reserves are separate balances.
+            annual reserves are separate balances. Completion tracks progress
+            without changing money flows.
           </caption>
           <thead>
             <tr>
@@ -195,6 +323,7 @@ export default function Ledger({
               <th scope="col" className="fpl-reserve-balance">
                 Annual reserve · PHP
               </th>
+              <th scope="col">Status</th>
               <th scope="col">
                 <span className="fp-sr-only">Actions</span>
               </th>
@@ -206,14 +335,15 @@ export default function Ledger({
               <td>
                 <strong>Starting balances</strong>
                 <small>Available funds + money already reserved</small>
+                <OpeningDetails openingBalances={openingBalances} />
               </td>
               <td className="fp-zero">—</td>
               <td className="fp-zero">—</td>
-              <td className={`fp-running ${balanceClass(plan.openingUsd)}`}>
-                {money(plan.openingUsd)}
+              <td className={`fp-running ${balanceClass(openingUsd)}`}>
+                {money(openingUsd)}
               </td>
-              <td className={`fp-running ${balanceClass(plan.openingPhp)}`}>
-                {money(plan.openingPhp, "PHP")}
+              <td className={`fp-running ${balanceClass(openingPhp)}`}>
+                {money(openingPhp, "PHP")}
               </td>
               <ReserveBalance
                 value={openingReserve?.usd ?? plan.openingReserveUsd ?? 0}
@@ -223,6 +353,7 @@ export default function Ledger({
                 value={openingReserve?.php ?? plan.openingReservePhp ?? 0}
                 currency="PHP"
               />
+              <td className="fp-zero">—</td>
               <td />
             </tr>
             {rows.map((row) => {
@@ -231,7 +362,10 @@ export default function Ledger({
                   ? plan.entries.find((entry) => entry.id === row.entryId)
                   : null;
               return (
-                <tr key={row.id} className={`fpl-row fpl-row-${row.source}`}>
+                <tr
+                  key={row.id}
+                  className={`fpl-row fpl-row-${row.source}${row.completed ? " fpl-row-completed" : ""}`}
+                >
                   <td>{formatDate(row.date, { year: "numeric" })}</td>
                   <td>
                     <strong>{row.description}</strong>
@@ -255,14 +389,21 @@ export default function Ledger({
                   </td>
                   <ReserveBalance
                     value={row.reserveUsd ?? 0}
-                    delta={row.reserveDeltaUsd ?? 0}
+                    delta={row.reserveAppliedUsd ?? row.reserveDeltaUsd ?? 0}
                     currency="USD"
                   />
                   <ReserveBalance
                     value={row.reservePhp ?? 0}
-                    delta={row.reserveDeltaPhp ?? 0}
+                    delta={row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0}
                     currency="PHP"
                   />
+                  <td className="fpl-status-cell">
+                    <CompletionStatus
+                      row={row}
+                      onToggleComplete={onToggleComplete}
+                      busy={busy}
+                    />
+                  </td>
                   <td>
                     {manualEntry && (
                       <div className="fp-row-actions">
@@ -294,7 +435,9 @@ export default function Ledger({
       <p className="fpl-legend">
         Annual payments show only additional available funds needed; remaining
         payment is covered by reserves. Saved amounts are earmarked for each
-        annual bill.
+        annual bill. Marking a row done tracks progress; it does not create a
+        transaction or change its planned amount. Posted transaction matches are
+        marked done automatically.
       </p>
     </>
   );

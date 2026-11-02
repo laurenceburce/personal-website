@@ -588,6 +588,182 @@ export function getAnnualReserveOpening(plan, document) {
   };
 }
 
+/** Resolve the selected share of current native balances each time a plan is read. */
+export function getPlanOpening(plan, accounts = [], document = {}) {
+  const flatUsd = roundMoney(plan?.openingUsd);
+  const flatPhp = roundMoney(plan?.openingPhp);
+  const contributions = [];
+  const warnings = [];
+  const byId = new Map(accounts.map((account) => [Number(account.id), account]));
+  const seen = new Set();
+  let accountUsd = 0;
+  let accountPhp = 0;
+  let reserveExcludedUsd = 0;
+  let reserveExcludedPhp = 0;
+  const earmarks = new Map();
+  for (const bill of document.bills || []) {
+    if (bill.cadence !== "annual" || bill.reserveAccountId == null) continue;
+    const key = `${Number(bill.reserveAccountId)}:${bill.currency}`;
+    earmarks.set(key, roundMoney((earmarks.get(key) || 0) + getAnnualBillFunding(bill).savedAmount));
+  }
+  for (const selected of plan?.startingAccounts || []) {
+    const accountId = Number(selected.accountId);
+    const percentage = Number(selected.percentage);
+    if (!Number.isSafeInteger(accountId) || accountId < 1 || seen.has(accountId)) {
+      warnings.push("A starting balance account is invalid or selected more than once.");
+      continue;
+    }
+    seen.add(accountId);
+    const account = byId.get(accountId);
+    const name = account?.name || `Account ${accountId}`;
+    if (
+      !account || account.isArchived || account.is_archived ||
+      account.mergedIntoAccountId || account.merged_into_account_id
+    ) {
+      warnings.push(`${name}: its live starting balance account is unavailable or removed.`);
+      continue;
+    }
+    if (
+      !["USD", "PHP"].includes(account.currency) ||
+      ["credit", "loan"].includes(account.type || account.account_type)
+    ) {
+      warnings.push(`${name}: choose a USD or PHP account that holds funds for the starting balance.`);
+      continue;
+    }
+    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+      warnings.push(`${name}: its starting balance percentage must be between 0 and 100.`);
+      continue;
+    }
+    const value = Object.hasOwn(account, "nativeCurrentBalance")
+      ? account.nativeCurrentBalance : account.currentBalance;
+    if (!["number", "string"].includes(typeof value) ||
+        (typeof value === "string" && !value.trim()) || !Number.isFinite(Number(value))) {
+      warnings.push(`${name}: a current bank balance is unavailable; it is excluded from the starting balance.`);
+      continue;
+    }
+    const balance = roundMoney(value);
+    const normalizedPercentage = roundMoney(percentage);
+    const amount = roundMoney(balance * normalizedPercentage / 100);
+    const reserveExcluded = Math.min(Math.max(0, amount), earmarks.get(`${accountId}:${account.currency}`) || 0);
+    const availableAmount = roundMoney(amount - reserveExcluded);
+    contributions.push({
+      accountId, currency: account.currency, percentage: normalizedPercentage,
+      balance, amount, availableAmount, reserveExcluded, name, mask: account.mask || "",
+    });
+    if (account.currency === "USD") {
+      accountUsd = roundMoney(accountUsd + amount);
+      reserveExcludedUsd = roundMoney(reserveExcludedUsd + reserveExcluded);
+    } else {
+      accountPhp = roundMoney(accountPhp + amount);
+      reserveExcludedPhp = roundMoney(reserveExcludedPhp + reserveExcluded);
+    }
+  }
+  const totalUsd = roundMoney(flatUsd + accountUsd);
+  const totalPhp = roundMoney(flatPhp + accountPhp);
+  return {
+    usd: roundMoney(totalUsd - reserveExcludedUsd), php: roundMoney(totalPhp - reserveExcludedPhp),
+    totalUsd, totalPhp, reserveExcludedUsd, reserveExcludedPhp,
+    flatUsd, flatPhp, accountUsd, accountPhp, contributions, warnings,
+  };
+}
+
+const transferTransaction = (row) =>
+  /^(?:transfer(?: in| out)?|internal transfer|account transfer|loan payments?)$/i.test(
+    String(row.category || "").trim(),
+  );
+
+function planCompletion(rows, plan, actual, document, rate, today) {
+  const manual = new Map((plan.completedRows || []).map((row) => [row.rowId, row.completedAt]));
+  const posted = actual.filter((row) => !row.scheduled && row.date <= today);
+  const consumed = new Set(posted.filter((row) => row.matchedForecast).map((row) => row.id));
+  const transferLegs = (row) => {
+    const legs = [];
+    const add = (accountId, amount, currency) => {
+      if (accountId == null || !amount) return false;
+      legs.push({ accountId: Number(accountId), amount: roundMoney(amount), currency });
+      return true;
+    };
+    const pair = (from, to, amount, currency, toAmount = amount, toCurrency = currency) => {
+      if (from == null || to == null || Number(from) === Number(to)) return false;
+      add(from, -amount, currency);
+      add(to, toAmount, toCurrency);
+      return true;
+    };
+    if (row.source === "reserve") {
+      if (!(row.reserveAllocations || []).every((allocation) => pair(
+        allocation.sourceAccountId, allocation.reserveAccountId, allocation.amount, row.currency,
+      ))) return [];
+    } else if (row.source === "allocation" && row.allocationKind === "savings") {
+      if (!pair(row.sourceAccountId, row.accountId, row.amount, row.currency)) return [];
+    } else if (row.kind === "transfer" || row.kind === "conversion") {
+      const opposite = row.currency === "USD" ? "PHP" : "USD";
+      if (!pair(row.fromAccountId, row.toAccountId, row.amount, row.currency,
+        row.kind === "conversion" ? convert(row.amount, row.currency, opposite, rate) : row.amount,
+        row.kind === "conversion" ? opposite : row.currency)) return [];
+    }
+    const grouped = new Map();
+    for (const leg of legs) {
+      const key = `${leg.accountId}:${leg.currency}:${Math.sign(leg.amount)}`;
+      const previous = grouped.get(key);
+      grouped.set(key, { ...leg, amount: roundMoney(leg.amount + (previous?.amount || 0)) });
+    }
+    return [...grouped.values()];
+  };
+  return rows.map((row) => {
+    const completionKey = row.matchedForecast?.id || row.id;
+    let matches = row.source === "transaction" && !row.scheduled && row.date <= today ? [row] : [];
+    if (!matches.length && row.source !== "transaction") {
+      if (["salary", "bill", "manual"].includes(row.source)) {
+        const match = posted.find((transaction) =>
+          !consumed.has(transaction.id) && forecastMatchesTransaction(row, transaction),
+        );
+        if (match) matches = [match];
+      }
+      const legs = transferLegs(row);
+      if (!matches.length && legs.length) {
+        const selected = new Set();
+        const candidates = legs.map((leg) => {
+          const match = posted.find((transaction) =>
+            !consumed.has(transaction.id) && !selected.has(transaction.id) &&
+            transferTransaction(transaction) &&
+            Number(transaction.accountId) === leg.accountId &&
+            transaction.currency === leg.currency &&
+            (transaction.kind === "income" ? 1 : -1) === Math.sign(leg.amount) &&
+            Math.abs(transaction.amount - Math.abs(leg.amount)) < 0.005 &&
+            Math.abs(dateTime(transaction.date) - dateTime(row.date)) <= 3 * DAY_MS,
+          );
+          if (match) selected.add(match.id);
+          return match;
+        });
+        if (candidates.every(Boolean)) matches = candidates;
+      } else if (!matches.length && row.source === "allocation" && row.allocationKind === "expense" && row.accountId != null) {
+        const allocation = document.allocations?.find((allocation) => allocation.id === row.allocationId);
+        const match = posted.find((transaction) =>
+          !consumed.has(transaction.id) && forecastMatchesTransaction(
+            { ...row, source: "bill", description: allocation?.name || row.description }, transaction,
+          ),
+        );
+        if (match) matches = [match];
+      }
+    }
+    // A recorded row can be shown as posted and also explain one forecast task.
+    // Only forecast matches consume its eligibility for another forecast task.
+    if (row.source !== "transaction")
+      for (const match of matches) consumed.add(match.id);
+    const automatic = matches.length > 0;
+    const completedAt = automatic
+      ? `${matches.map((match) => match.date).sort().at(-1)}T00:00:00.000Z`
+      : manual.get(completionKey);
+    return {
+      ...row, completionKey,
+      completed: automatic || Boolean(completedAt),
+      completionSource: automatic ? "transaction" : completedAt ? "manual" : null,
+      ...(completedAt ? { completedAt } : {}),
+      matchedTransactionIds: matches.map((match) => match.transactionId).filter((id) => id != null),
+    };
+  });
+}
+
 /** Available money and the annual-bill reserve are tracked as separate pockets. */
 export function buildPlanRows(plan, document, rate, options = {}) {
   if (!validRange(plan.startDate, plan.endDate)) return [];
@@ -666,7 +842,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const today = Number.isFinite(dateTime(options.today))
     ? options.today
     : localDate();
-  if (plan.includeTransactions !== false) {
+  {
     for (const transaction of options.transactions || []) {
       if (
         !Number.isFinite(dateTime(transaction.date)) ||
@@ -714,6 +890,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       });
     }
   }
+  // Completion checks always see posted records, even when their cash flows are
+  // excluded from this hypothetical ledger by the plan's display setting.
+  const completionActual = actual;
+  const visibleActual = plan.includeTransactions === false ? [] : actual;
   const usedForecasts = new Set();
   const actualPayDates = new Map();
   const forecastPriority = (row) =>
@@ -723,7 +903,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       first.date.localeCompare(second.date) ||
       first.id.localeCompare(second.id),
   );
-  for (const transaction of actual) {
+  for (const transaction of visibleActual) {
     const candidates = forecasts.filter(
       (forecast) =>
         !usedForecasts.has(forecast.id) &&
@@ -765,7 +945,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         row.date <= plan.endDate &&
         (row.source !== "salary" || plan.includeIncome),
     ),
-    ...actual,
+    ...visibleActual,
   ];
   const annualBills = (document.bills || []).filter(
     (bill) =>
@@ -835,8 +1015,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       String(first.currency).localeCompare(String(second.currency)) ||
       first.id.localeCompare(second.id),
   );
-  let balanceUsd = roundMoney(plan.openingUsd);
-  let balancePhp = roundMoney(plan.openingPhp);
+  const opening = getPlanOpening(plan, options.accounts || [], document);
+  const liveAccounts = new Set(opening.contributions.filter((contribution) => contribution.percentage > 0).map((contribution) => contribution.accountId));
+  let balanceUsd = opening.usd;
+  let balancePhp = opening.php;
   const openingReserve = getAnnualReserveOpening(plan, document);
   let reserveUsd = openingReserve.usd;
   let reservePhp = openingReserve.php;
@@ -868,13 +1050,37 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     );
   }
   const result = [];
+  const isBankReflected = (row, accountId) => liveAccounts.has(Number(accountId)) &&
+    (row.date < today || (row.source === "transaction" && row.date <= today && !row.scheduled));
   function append(row) {
-    balanceUsd = roundMoney(balanceUsd + row.usd);
-    balancePhp = roundMoney(balancePhp + row.php);
-    reserveUsd = roundMoney(reserveUsd + number(row.reserveDeltaUsd));
-    reservePhp = roundMoney(reservePhp + number(row.reserveDeltaPhp));
+    const flowAccount = row.source === "allocation"
+      ? row.allocationKind === "savings" ? row.sourceAccountId : row.accountId
+      : row.fromAccountId ?? row.accountId;
+    let balanceAppliedUsd = isBankReflected(row, flowAccount) ? 0 : row.usd;
+    let balanceAppliedPhp = isBankReflected(row, flowAccount) ? 0 : row.php;
+    if (row.kind === "conversion") {
+      const sourceReflected = isBankReflected(row, row.fromAccountId);
+      const destinationReflected = isBankReflected(row, row.toAccountId);
+      balanceAppliedUsd = (row.currency === "USD" ? sourceReflected : destinationReflected) ? 0 : row.usd;
+      balanceAppliedPhp = (row.currency === "PHP" ? sourceReflected : destinationReflected) ? 0 : row.php;
+    }
+    if (row.source === "reserve") {
+      const reflectedAmount = roundMoney((row.reserveAllocations || []).filter((allocation) =>
+        isBankReflected(row, allocation.sourceAccountId) || isBankReflected(row, allocation.reserveAccountId),
+      ).reduce((total, allocation) => total + allocation.amount, 0));
+      if (row.currency === "USD") balanceAppliedUsd = roundMoney(row.usd + reflectedAmount);
+      else balanceAppliedPhp = roundMoney(row.php + reflectedAmount);
+    }
+    const reflected = balanceAppliedUsd !== row.usd || balanceAppliedPhp !== row.php;
+    balanceUsd = roundMoney(balanceUsd + balanceAppliedUsd);
+    balancePhp = roundMoney(balancePhp + balanceAppliedPhp);
+    reserveUsd = roundMoney(reserveUsd + number(row.reserveAppliedUsd ?? row.reserveDeltaUsd));
+    reservePhp = roundMoney(reservePhp + number(row.reserveAppliedPhp ?? row.reserveDeltaPhp));
     result.push({
       ...row,
+      balanceAppliedUsd,
+      balanceAppliedPhp,
+      reflectedInStartingBalance: reflected,
       reserveDeltaUsd: number(row.reserveDeltaUsd),
       reserveDeltaPhp: number(row.reserveDeltaPhp),
       balanceUsd,
@@ -931,11 +1137,11 @@ export function buildPlanRows(plan, document, rate, options = {}) {
               )
             : funding.perPeriodAmount;
           const amount = Math.min(capacity, contribution);
-          billReserves.set(
-            key,
-            roundMoney((billReserves.get(key) || 0) + amount),
-          );
-          return { billId, amount, reserveAccountId, sourceAccountId };
+          const reflected = isBankReflected(row, sourceAccountId) || isBankReflected(row, reserveAccountId);
+          if (!reflected) billReserves.set(key, roundMoney((billReserves.get(key) || 0) + amount));
+          return { billId, amount, reserveAccountId, sourceAccountId,
+            ...(reflected ? { reflectedInStartingBalance: true } : {}),
+          };
         })
         .filter((allocation) => allocation.amount > 0);
       const amount = roundMoney(
@@ -945,12 +1151,16 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         ),
       );
       if (amount <= 0) continue;
+      const appliedAmount = roundMoney(reserveAllocations.filter((allocation) => !allocation.reflectedInStartingBalance)
+        .reduce((total, allocation) => total + allocation.amount, 0));
       append({
         ...row,
         reserveAllocations,
         ...nativeFlow(amount, row.currency, "expense"),
         reserveDeltaUsd: row.currency === "USD" ? amount : 0,
         reserveDeltaPhp: row.currency === "PHP" ? amount : 0,
+        reserveAppliedUsd: row.currency === "USD" ? appliedAmount : 0,
+        reserveAppliedPhp: row.currency === "PHP" ? appliedAmount : 0,
       });
       continue;
     }
@@ -965,15 +1175,14 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       );
       const reserveUsed = roundMoney(fromBill + fromUnassigned);
       const reserveShortfall = roundMoney(grossAmount - reserveUsed);
-      billReserves.set(key, roundMoney(saved - fromBill));
+      const reserveReflected = isBankReflected(row, row.accountId) || isBankReflected(row, row.reserveAccountId);
+      if (!reserveReflected) billReserves.set(key, roundMoney(saved - fromBill));
       const funding = billFunding.get(key);
-      if (funding) {
+      if (funding && !reserveReflected) {
         funding.base = funding.amount;
         funding.paidThrough = row.scheduledDate || row.date;
       }
-      unassigned[row.currency] = roundMoney(
-        (unassigned[row.currency] || 0) - fromUnassigned,
-      );
+      if (!reserveReflected) unassigned[row.currency] = roundMoney((unassigned[row.currency] || 0) - fromUnassigned);
       // Reconciliation keeps the full payment; only its unfunded portion uses available cash.
       append({
         ...row,
@@ -992,10 +1201,28 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           row.currency === "USD" && reserveUsed > 0 ? -reserveUsed : 0,
         reserveDeltaPhp:
           row.currency === "PHP" && reserveUsed > 0 ? -reserveUsed : 0,
+        ...(reserveReflected ? { reserveAppliedUsd: 0, reserveAppliedPhp: 0 } : {}),
       });
       continue;
     }
     append(row);
   }
-  return result;
+  const completed = planCompletion(result, plan, completionActual, document, rate, today);
+  // A matched conversion or expense allocation is represented by its posted
+  // transactions. Keep the task visible without counting the same cash twice.
+  let reconciledUsd = opening.usd;
+  let reconciledPhp = opening.php;
+  return completed.map((row) => {
+    const recordedFlow = plan.includeTransactions !== false && row.completionSource === "transaction" && row.source !== "transaction" &&
+      (row.kind === "conversion" || (row.source === "allocation" && row.allocationKind === "expense"));
+    const balanceAppliedUsd = recordedFlow ? 0 : row.balanceAppliedUsd;
+    const balanceAppliedPhp = recordedFlow ? 0 : row.balanceAppliedPhp;
+    reconciledUsd = roundMoney(reconciledUsd + balanceAppliedUsd);
+    reconciledPhp = roundMoney(reconciledPhp + balanceAppliedPhp);
+    return {
+      ...row, balanceAppliedUsd, balanceAppliedPhp,
+      ...(recordedFlow ? { reflectedInRecordedTransactions: true } : {}),
+      balanceUsd: reconciledUsd, balancePhp: reconciledPhp,
+    };
+  });
 }

@@ -1,6 +1,7 @@
 import {
   buildPlanRows,
   convert,
+  getPlanOpening,
   getSummary,
   localDate,
   roundMoney,
@@ -13,13 +14,14 @@ const id = (value) =>
 const liability = (account) =>
   ["credit", "loan"].includes(account?.type || account?.account_type);
 const archived = (account) =>
-  Boolean(account?.isArchived || account?.is_archived);
+  Boolean(account?.isArchived || account?.is_archived || account?.mergedIntoAccountId || account?.merged_into_account_id);
 const finiteBalance = (value) =>
-  value !== null && value !== undefined && Number.isFinite(Number(value))
+  ["number", "string"].includes(typeof value) &&
+    !(typeof value === "string" && !value.trim()) && Number.isFinite(Number(value))
     ? roundMoney(value)
     : null;
 const accountBalance = (account) =>
-  finiteBalance(account.nativeCurrentBalance ?? account.currentBalance);
+  finiteBalance(Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance);
 const distance = (first, second) =>
   Math.abs(
     Date.parse(`${first}T00:00:00Z`) - Date.parse(`${second}T00:00:00Z`),
@@ -193,7 +195,11 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       roundMoney(balance.balance),
     ]),
   );
-  const warnings = new Set();
+  const liveOpening = getPlanOpening(plan, accounts, document);
+  const live = new Map(liveOpening.contributions.map((contribution) => [contribution.accountId, contribution.amount]));
+  // A selected percentage is always live, even when an older plan has a snapshot.
+  for (const accountId of live.keys()) opening.delete(accountId);
+  const warnings = new Set(liveOpening.warnings);
   const balances = new Map();
   const annualReserved = new Map();
   const savingsAllocated = new Map();
@@ -202,7 +208,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     const current = accountBalance(account);
     balances.set(
       accountId,
-      opening.has(accountId) ? opening.get(accountId) : current,
+      live.has(accountId) ? live.get(accountId) : opening.has(accountId) ? opening.get(accountId) : current,
     );
     annualReserved.set(
       accountId,
@@ -211,10 +217,12 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     savingsAllocated.set(accountId, 0);
   }
   const salary = document.salary || {};
-  const openingSource = opening.size ? "plan" : "bank";
+  const openingSource = live.size ? "live" : opening.size ? "plan" : "bank";
   if (!opening.size && plan.startDate < today)
     warnings.add(
-      "Account projections start with current bank balances. Set dated account opening balances to review a historical plan.",
+      live.size
+        ? "Selected account shares start with current bank balances. Earlier account movements are already reflected and are not replayed."
+        : "Account projections start with current bank balances. Set dated account opening balances to review a historical plan.",
     );
   const accountName = (accountId) => {
     const account = accountById.get(id(accountId));
@@ -396,7 +404,24 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       if (!row.accountId && row.amount > 0)
         warnings.add(`${row.description}: no account assigned.`);
     }
-    return { ...row, accountMovements: movements.filter(Boolean) };
+    const grouped = new Map();
+    const direct = [];
+    for (const move of movements.filter(Boolean)) {
+      if (!["transfer", "conversion"].includes(move.kind)) {
+        direct.push(move);
+        continue;
+      }
+      const key = `${move.kind}:${move.accountId}:${move.currency}:${Math.sign(move.amount)}`;
+      const previous = grouped.get(key);
+      if (previous) {
+        previous.label = row.description;
+        previous.amount = roundMoney(previous.amount + move.amount);
+      } else {
+        grouped.set(key, move);
+        direct.push(move);
+      }
+    }
+    return { ...row, accountMovements: direct };
   });
   // Imported bank-transfer legs already move their native accounts. Suppress only
   // corresponding forecast legs, once each, leaving the reserve/allocation earmark.
@@ -412,6 +437,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     const currentReserveReceipts = new Set();
     const projected = row.accountMovements
       .filter((move) => {
+        if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense")
+          return false;
         if (
           !["transfer", "conversion"].includes(move.kind) ||
           (row.source === "transaction" && !row.annualPayment)
@@ -524,9 +551,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     rows,
     accounts: associations.map((account) => {
       const source = accountById.get(account.accountId);
-      const openingBalance = opening.has(account.accountId)
-        ? opening.get(account.accountId)
-        : accountBalance(source);
+      const openingBalance = live.has(account.accountId) ? live.get(account.accountId)
+        : opening.has(account.accountId) ? opening.get(account.accountId) : accountBalance(source);
       const endingBalance = balances.get(account.accountId);
       const endingAnnualReserved = annualReserved.get(account.accountId) || 0;
       return {
@@ -535,7 +561,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         endingBalance,
         endingAnnualReserved,
         savingsAllocated: savingsAllocated.get(account.accountId) || 0,
-        openingSource: opening.has(account.accountId) ? "plan" : "bank",
+        openingSource: live.has(account.accountId) ? "live" : opening.has(account.accountId) ? "plan" : "bank",
         availableAfterAnnualReserve:
           endingBalance === null || liability(source)
             ? null

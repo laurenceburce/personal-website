@@ -174,6 +174,22 @@ The finance workspace separates recorded activity from your plans:
   Saved amounts entered on annual bills are included automatically in the
   starting reserve. The plan's total starting reserve can increase that amount
   with unassigned funds; it does not add the same item savings a second time.
+  Select starting bank accounts and a percentage of each current actual balance,
+  then add flat USD/PHP amounts. These links stay live rather than saving bank
+  balance snapshots. Already-earmarked annual savings are excluded from available
+  starting cash once and remain in the reserve pocket. Posted and historical
+  flows already reflected in selected live balances stay visible without being
+  applied to those balances again.
+  Rows can be marked done or reopened manually. Posted transactions automatically
+  complete conservative account/currency/amount/date/name matches; pending and
+  future entries do not. Automatic completion remains available when recorded
+  cash-flow rows are hidden. Transfers need both assigned native legs, including
+  grouped annual-reserve contributions. Checkmarks record progress and do not
+  create bank payments or change forecast amounts.
+  Bank balances and transaction matches refresh when Budget plans opens, regains
+  focus, and every five minutes while visible. Automatic provider refresh attempts
+  share a 60-second cooldown; **Refresh bank data** forces a fresh request. Failures
+  keep the last known data with an explicit notice.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.
@@ -197,11 +213,16 @@ The finance workspace separates recorded activity from your plans:
   to the salary account in the same currency). Account cards show annual funds
   reserved, planned payday savings, and any reserve balance exceeding bank funds.
   Budget plans project native account balances and transfers alongside available
-  funds. Account starting balances can be set for the plan's first date; otherwise
-  current bank balances are used and already-posted history is excluded from
-  that account forecast. Manual transfers preserve total funds; cross-currency
+  funds. Selected live starting accounts use their latest percentage allocation;
+  already-posted history is excluded from that account forecast. Manual transfers
+  preserve total funds; cross-currency
   moves require an explicit conversion. Assignments and projections never move
   bank funds or change synced balances.
+
+Finance number fields preserve partial editing text, validate values on save,
+and accept unambiguous pasted USD/PHP amounts. Backdrop gestures do not dismiss
+edit dialogs; explicit close/Escape remain available, and Enter in text fields
+does not accidentally submit the form.
 
 Overview income/spending totals exclude pending and future-dated transactions,
 bank transfers, and loan-payment categories. Planned salary, recurring bills,
