@@ -143,8 +143,14 @@ test("annual bills distinguish actual saved funds from targets and show remainin
   ]);
   assert.match(html, /Saved so far/);
   assert.match(html, /Still to fund/);
-  assert.match(html, /data-label="Saved so far"[^>]*><strong[^>]*>\$100\.00<\/strong>/);
-  assert.match(html, /data-label="Still to fund"[^>]*><strong>\$295\.00<\/strong><small>₱18,585\.00<\/small>/);
+  assert.match(
+    html,
+    /data-label="Saved so far"[^>]*><strong[^>]*>\$100\.00<\/strong>/,
+  );
+  assert.match(
+    html,
+    /data-label="Still to fund"[^>]*><strong>\$295\.00<\/strong><small>₱18,585\.00<\/small>/,
+  );
   assert.match(html, /data-label="Target saved by now"/);
   assert.match(html, /earmarked for that bill in budget plans/);
   assert.match(html, /projections do not change your saved balance/);
@@ -152,37 +158,175 @@ test("annual bills distinguish actual saved funds from targets and show remainin
   assert.match(html, /data-label="USD"><span[^>]*>\$395\.00<\/span>/);
 });
 
+test("annual funding suggestions and target feedback recalculate when savings increase or decrease", () => {
+  const bill = { ...baseBill, name: "Venture X", amount: 395 };
+  const target = planner.annualSavingsTarget(bill, "2026-07-02").target;
+  for (const [savedAmount, monthly, remaining, status] of [
+    [0, "$32.92", "$395.00", `${planner.money(target)} behind target`],
+    [100, "$24.58", "$295.00", `${planner.money(target - 100)} behind target`],
+    [200, "$16.25", "$195.00", "Target met"],
+    [395, "$0.00", "$0.00", "Fully funded"],
+    [500, "$0.00", "$0.00", "Fully funded"],
+    // Reducing an existing saved balance must restore the funding requirement.
+    [100, "$24.58", "$295.00", `${planner.money(target - 100)} behind target`],
+  ]) {
+    const html = renderTable([{ ...bill, savedAmount }]);
+    const cell = (label) =>
+      html.match(
+        new RegExp(`data-label="${label}"[^>]*>([\\s\\S]*?)<\\/td>`),
+      )?.[1];
+    assert.ok(cell("Save / month").includes(`<strong>${monthly}</strong>`));
+    assert.ok(cell("Still to fund").includes(`<strong>${remaining}</strong>`));
+    assert.ok(cell("Target saved by now").includes(status));
+    assert.ok(
+      cell("Target saved by now").includes(
+        `<strong>${planner.money(target)}</strong>`,
+      ),
+    );
+    assert.match(html, /data-label="USD"><span[^>]*>\$395\.00<\/span>/);
+    assert.doesNotMatch(html, /NaN|undefined|Infinity/);
+    if (savedAmount >= 395) {
+      const footer = html.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
+      assert.match(footer, /<td>\$0\.00<small>₱0\.00 \/ month<\/small><\/td>/);
+      assert.match(footer, /All targets met/);
+    }
+  }
+});
+
+test("annual monthly funding converts native remaining balances before rounding", () => {
+  const usd = renderTable([{ ...baseBill, amount: 395, savedAmount: 100 }]);
+  assert.match(
+    usd,
+    /data-label="Save \/ month"><strong>\$24\.58<\/strong><small>₱1,548\.75<\/small>/,
+  );
+  const php = renderTable([
+    { ...baseBill, amount: 1200, savedAmount: 1000, currency: "PHP" },
+  ]);
+  assert.match(
+    php,
+    /data-label="Save \/ month"><strong>\$0\.26<\/strong><small>₱16\.67<\/small>/,
+  );
+});
+
 test("saved and remaining totals retain native pesos and overfunding stays with its bill", () => {
   const bills = [
     { ...baseBill, amount: 2, savedAmount: 1 },
-    { ...baseBill, id: "php", name: "PHP renewal", currency: "PHP", amount: 2, savedAmount: 1 },
+    {
+      ...baseBill,
+      id: "php",
+      name: "PHP renewal",
+      currency: "PHP",
+      amount: 2,
+      savedAmount: 1,
+    },
   ];
   const footer = renderTable(bills).match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
-  assert.match(footer, /class="fb-balance fb-saved"><strong>\$1\.02<\/strong><small>₱64\.00<\/small>/);
-  assert.match(footer, /class="fb-balance fb-remaining"><strong>\$1\.02<\/strong><small>₱64\.00<\/small>/);
+  assert.match(
+    footer,
+    /class="fb-balance fb-saved"><strong>\$1\.02<\/strong><small>₱64\.00<\/small>/,
+  );
+  assert.match(
+    footer,
+    /class="fb-balance fb-remaining"><strong>\$1\.02<\/strong><small>₱64\.00<\/small>/,
+  );
   const overfunded = renderTable([
     { ...baseBill, amount: 395, savedAmount: 500 },
     { ...baseBill, id: "other", name: "Other renewal", amount: 395 },
   ]);
-  assert.match(overfunded, /data-label="Saved so far"[^>]*><strong[^>]*>\$500\.00<\/strong>/);
-  assert.match(overfunded, /data-label="Still to fund"[^>]*><strong>\$0\.00<\/strong>/);
+  assert.match(
+    overfunded,
+    /data-label="Saved so far"[^>]*><strong[^>]*>\$500\.00<\/strong>/,
+  );
+  assert.match(
+    overfunded,
+    /data-label="Still to fund"[^>]*><strong>\$0\.00<\/strong>/,
+  );
   const remainingTotal = overfunded.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
-  assert.match(remainingTotal, /class="fb-balance fb-remaining"><strong>\$395\.00<\/strong>/);
+  assert.match(
+    remainingTotal,
+    /class="fb-balance fb-remaining"><strong>\$395\.00<\/strong>/,
+  );
 });
 
 test("annual forms expose the actual saved balance in the payment currency and legacy bills default to zero", () => {
-  const renderForm = (bill) => renderToStaticMarkup(
-    createElement(BillForm, { bill, cadence: "annual", rate: 63, onSave() {} }),
-  );
+  const renderForm = (bill) =>
+    renderToStaticMarkup(
+      createElement(BillForm, {
+        bill,
+        cadence: "annual",
+        rate: 63,
+        onSave() {},
+      }),
+    );
   const legacy = renderForm(baseBill);
   assert.match(legacy, /Saved so far · USD/);
-  assert.match(legacy, /min="0" max="999999999" step="0\.01" inputMode="decimal" value="0"/);
+  assert.match(
+    legacy,
+    /min="0" max="999999999" step="0\.01" inputMode="decimal" value="0"/,
+  );
   assert.match(legacy, /Budget plans start with these earmarked funds/);
   assert.match(legacy, /projected plans do not change this saved balance/);
   const php = renderForm({ ...baseBill, currency: "PHP", savedAmount: 100 });
   assert.match(php, /Saved so far · PHP/);
-  assert.match(php, /min="0" max="999999999" step="0\.01" inputMode="decimal" value="100"/);
-  assert.match(renderTable([baseBill]), /data-label="Saved so far"[^>]*><strong[^>]*>\$0\.00<\/strong>/);
+  assert.match(
+    php,
+    /min="0" max="999999999" step="0\.01" inputMode="decimal" value="100"/,
+  );
+  assert.match(
+    renderTable([baseBill]),
+    /data-label="Saved so far"[^>]*><strong[^>]*>\$0\.00<\/strong>/,
+  );
+});
+
+test("editing saved funds updates the annual form preview immediately", () => {
+  const state = [];
+  let cursor = 0;
+  const components = loadComponents({
+    ...require("react"),
+    useState(initialValue) {
+      const index = cursor++;
+      if (!(index in state))
+        state[index] =
+          typeof initialValue === "function" ? initialValue() : initialValue;
+      return [
+        state[index],
+        (next) => {
+          state[index] = typeof next === "function" ? next(state[index]) : next;
+        },
+      ];
+    },
+  });
+  const renderForm = () => {
+    cursor = 0;
+    return components.BillForm({
+      bill: { ...baseBill, amount: 395, savedAmount: 100 },
+      cadence: "annual",
+      rate: 63,
+      onSave() {},
+    });
+  };
+  let form = renderForm();
+  assert.match(
+    renderToStaticMarkup(form),
+    /Save \$24\.58\/month · \$295\.00 still to fund/,
+  );
+  const savedField = form.props.children.find(
+    (child) => child?.props?.label === "Saved so far · USD",
+  );
+  savedField.props.children.props.onChange({ target: { value: "395" } });
+  form = renderForm();
+  assert.match(
+    renderToStaticMarkup(form),
+    /Save \$0\.00\/month · Fully funded/,
+  );
+  const updatedField = form.props.children.find(
+    (child) => child?.props?.label === "Saved so far · USD",
+  );
+  updatedField.props.children.props.onChange({ target: { value: "100" } });
+  assert.match(
+    renderToStaticMarkup(renderForm()),
+    /Save \$24\.58\/month · \$295\.00 still to fund/,
+  );
 });
 
 test("monthly two-payment bills show their monthly total, native split amounts, and both days", () => {
@@ -340,7 +484,13 @@ test("annual saved balances serialize numerically, allow carryover, and default 
 });
 
 test("annual saved balances reject negative, nonfinite, out-of-range and fractional-cent values", () => {
-  for (const savedAmount of [-0.01, "NaN", "Infinity", "1000000000", "100.001"]) {
+  for (const savedAmount of [
+    -0.01,
+    "NaN",
+    "Infinity",
+    "1000000000",
+    "100.001",
+  ]) {
     const result = submitDraft({
       cadence: "annual",
       dueDay: "28",

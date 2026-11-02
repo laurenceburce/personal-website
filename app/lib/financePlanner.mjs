@@ -203,6 +203,24 @@ export function annualSavingsTarget(bill, asOf = localDate()) {
   };
 }
 
+/** Funding still needed for this item's current annual reserve. */
+export function getAnnualBillFunding(bill, payPeriods = 26) {
+  const amount =
+    bill?.cadence === "annual" ? Math.max(0, roundMoney(bill.amount)) : 0;
+  const savedAmount =
+    bill?.cadence === "annual" ? Math.max(0, roundMoney(bill.savedAmount)) : 0;
+  const remainingAmount = Math.max(0, roundMoney(amount - savedAmount));
+  const periods = number(payPeriods) > 0 ? number(payPeriods) : 26;
+  return {
+    amount,
+    savedAmount,
+    remainingAmount,
+    monthlyAmount: roundMoney(remainingAmount / 12),
+    perPeriodAmount: roundMoney(remainingAmount / periods),
+    fullyFunded: remainingAmount === 0,
+  };
+}
+
 export function salaryOccurrences(salary, start, end) {
   if (
     !validRange(start, end) ||
@@ -249,6 +267,10 @@ export function getSummary(document, rate) {
   const monthlyPhp = convert(salary.amount, salary.currency, "PHP", rate);
   const monthlyBills = bills.filter((bill) => bill.cadence !== "annual");
   const annualBills = bills.filter((bill) => bill.cadence === "annual");
+  const annualFunding = annualBills.map((bill) => ({
+    currency: bill.currency,
+    ...getAnnualBillFunding(bill),
+  }));
   const billsUsd = roundMoney(
     monthlyBills
       .filter((bill) => bill.currency !== "PHP")
@@ -259,21 +281,27 @@ export function getSummary(document, rate) {
       .filter((bill) => bill.currency === "PHP")
       .reduce((total, bill) => total + number(bill.amount), 0),
   );
-  const annualNativeUsd = annualBills
-    .filter((bill) => bill.currency !== "PHP")
-    .reduce((total, bill) => total + number(bill.amount), 0);
-  const annualNativePhp = annualBills
-    .filter((bill) => bill.currency === "PHP")
-    .reduce((total, bill) => total + number(bill.amount), 0);
-  const annualUsd = roundMoney(
-    annualNativeUsd + convert(annualNativePhp, "PHP", "USD", rate),
-  );
-  // Calculate each currency from its native amounts rather than converting a rounded USD total back to PHP.
-  const annualPhp = roundMoney(
-    annualNativePhp + convert(annualNativeUsd, "USD", "PHP", rate),
-  );
-  const annualMonthlyUsd = roundMoney(annualUsd / 12);
-  const annualMonthlyPhp = roundMoney(annualPhp / 12);
+  function annualTotal(field, currency) {
+    const native = annualFunding.reduce(
+      (totals, bill) => {
+        totals[bill.currency === "PHP" ? "PHP" : "USD"] += bill[field];
+        return totals;
+      },
+      { USD: 0, PHP: 0 },
+    );
+    // Convert the opposite native total once to retain cents in each currency.
+    return currency === "PHP"
+      ? roundMoney(native.PHP + convert(native.USD, "USD", "PHP", rate))
+      : roundMoney(native.USD + convert(native.PHP, "PHP", "USD", rate));
+  }
+  const annualUsd = annualTotal("amount", "USD");
+  const annualPhp = annualTotal("amount", "PHP");
+  const annualSavedUsd = annualTotal("savedAmount", "USD");
+  const annualSavedPhp = annualTotal("savedAmount", "PHP");
+  const annualRemainingUsd = annualTotal("remainingAmount", "USD");
+  const annualRemainingPhp = annualTotal("remainingAmount", "PHP");
+  const annualMonthlyUsd = roundMoney(annualRemainingUsd / 12);
+  const annualMonthlyPhp = roundMoney(annualRemainingPhp / 12);
   const monthlyCommitmentsUsd = roundMoney(
     billsUsd + convert(billsPhp, "PHP", "USD", rate) + annualMonthlyUsd,
   );
@@ -285,7 +313,7 @@ export function getSummary(document, rate) {
   const billsUsdPerPeriod = roundMoney((billsUsd * 12) / payPeriods);
   const billsPhpPerPeriod = roundMoney((billsPhp * 12) / payPeriods);
   const billsPhpPerPeriodUsd = convert(billsPhpPerPeriod, "PHP", "USD", rate);
-  const annualPerPeriodUsd = roundMoney(annualUsd / payPeriods);
+  const annualPerPeriodUsd = roundMoney(annualRemainingUsd / payPeriods);
   const remainingPerPeriodUsd = roundMoney(
     incomePerPeriodUsd -
       billsUsdPerPeriod -
@@ -306,6 +334,10 @@ export function getSummary(document, rate) {
     billsPhp,
     annualUsd,
     annualPhp,
+    annualSavedUsd,
+    annualSavedPhp,
+    annualRemainingUsd,
+    annualRemainingPhp,
     annualMonthlyUsd,
     annualMonthlyPhp,
     monthlyCommitmentsUsd,
@@ -427,7 +459,7 @@ export function getAnnualReserveOpening(plan, document) {
     if (bill.cadence !== "annual" || !["USD", "PHP"].includes(bill.currency))
       continue;
     savings[bill.currency] = roundMoney(
-      savings[bill.currency] + Math.max(0, roundMoney(bill.savedAmount)),
+      savings[bill.currency] + getAnnualBillFunding(bill).savedAmount,
     );
   }
   const openingUsd = Math.max(0, roundMoney(plan?.openingReserveUsd));
@@ -612,20 +644,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           .filter((bill) => bill.currency === currency)
           .map((bill) => ({
             billId: bill.id,
-            amount: reserveContribution(
-              Math.max(0, number(bill.amount)),
-              payPeriods,
-              paydayIndex(salary, payday.date),
-            ),
-          }))
-          .filter((allocation) => allocation.amount > 0);
-        const amount = roundMoney(
-          reserveAllocations.reduce(
-            (total, allocation) => total + allocation.amount,
-            0,
-          ),
-        );
-        if (amount <= 0) continue;
+            amount: 0,
+          }));
+        if (!reserveAllocations.length) continue;
+        // Keep candidates for funded items: a payment can reopen funding later in the plan.
         rows.push({
           id: `reserve:${currency}:${payday.date}`,
           date,
@@ -634,9 +656,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           kind: "reserve",
           source: "reserve",
           reserveAllocations,
-          ...nativeFlow(amount, currency, "expense"),
-          reserveDeltaUsd: currency === "USD" ? amount : 0,
-          reserveDeltaPhp: currency === "PHP" ? amount : 0,
+          ...nativeFlow(0, currency, "expense"),
         });
       }
     }
@@ -684,13 +704,19 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     PHP: openingReserve.unassignedPhp,
   };
   const billReserves = new Map();
+  const billFunding = new Map();
   const reserveKey = (billId, currency) => `${currency}:${billId}`;
   for (const bill of annualBills) {
     const key = reserveKey(bill.id, bill.currency);
+    const funding = getAnnualBillFunding(bill, payPeriods);
+    billFunding.set(key, {
+      amount: funding.amount,
+      base: funding.remainingAmount,
+    });
     billReserves.set(
       key,
       roundMoney(
-        (billReserves.get(key) || 0) + Math.max(0, roundMoney(bill.savedAmount)),
+        (billReserves.get(key) || 0) + funding.savedAmount,
       ),
     );
   }
@@ -712,13 +738,44 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   }
   for (const row of rows) {
     if (row.source === "reserve") {
-      for (const allocation of row.reserveAllocations) {
-        const key = reserveKey(allocation.billId, row.currency);
-        billReserves.set(
-          key,
-          roundMoney((billReserves.get(key) || 0) + allocation.amount),
-        );
-      }
+      const reserveAllocations = row.reserveAllocations
+        .map(({ billId }) => {
+          const key = reserveKey(billId, row.currency);
+          const funding = billFunding.get(key);
+          const capacity = Math.max(
+            0,
+            roundMoney(funding.amount - (billReserves.get(key) || 0)),
+          );
+          const amount = Math.min(
+            capacity,
+            reserveContribution(
+              funding.base,
+              payPeriods,
+              paydayIndex(salary, row.paydayDate),
+            ),
+          );
+          billReserves.set(
+            key,
+            roundMoney((billReserves.get(key) || 0) + amount),
+          );
+          return { billId, amount };
+        })
+        .filter((allocation) => allocation.amount > 0);
+      const amount = roundMoney(
+        reserveAllocations.reduce(
+          (total, allocation) => total + allocation.amount,
+          0,
+        ),
+      );
+      if (amount <= 0) continue;
+      append({
+        ...row,
+        reserveAllocations,
+        ...nativeFlow(amount, row.currency, "expense"),
+        reserveDeltaUsd: row.currency === "USD" ? amount : 0,
+        reserveDeltaPhp: row.currency === "PHP" ? amount : 0,
+      });
+      continue;
     }
     if (row.annualPayment) {
       const key = reserveKey(row.billId, row.currency);
@@ -732,6 +789,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const reserveUsed = roundMoney(fromBill + fromUnassigned);
       const reserveShortfall = roundMoney(grossAmount - reserveUsed);
       billReserves.set(key, roundMoney(saved - fromBill));
+      const funding = billFunding.get(key);
+      if (funding) funding.base = funding.amount;
       unassigned[row.currency] = roundMoney(
         (unassigned[row.currency] || 0) - fromUnassigned,
       );

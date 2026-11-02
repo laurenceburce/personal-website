@@ -238,6 +238,111 @@ test("true biweekly allocations annualize over 26 periods and annual reserves co
   assert.equal(result.scheduledBills[0].amount, 120);
 });
 
+test("changing annual savings recalculates planned commitments and chart allocations in either direction", () => {
+  const annual = {
+    id: "venture",
+    name: "Venture X",
+    amount: 395,
+    currency: "USD",
+    cadence: "annual",
+    dueDay: 28,
+    dueMonths: [11],
+  };
+  const activity = {
+    transactions: [
+      transaction(1, "income", 1000),
+      transaction(2, "expense", 395),
+    ],
+  };
+  const states = [
+    { saved: 0, reserve: 32.92, committed: 742.92, remaining: 1257.08 },
+    { saved: 100, reserve: 24.58, committed: 734.58, remaining: 1265.42 },
+    { saved: 395, reserve: 0, committed: 710, remaining: 1290 },
+    { saved: 100, reserve: 24.58, committed: 734.58, remaining: 1265.42 },
+  ];
+  for (const state of states) {
+    const result = insights({
+      document: {
+        ...document,
+        bills: [
+          { ...annual, savedAmount: state.saved },
+          { id: "rent", amount: 600, currency: "USD", cadence: "monthly" },
+          { id: "internet", amount: 630, currency: "PHP", cadence: "monthly" },
+        ],
+        allocations: [{ amount: 50, currency: "USD", kind: "savings" }],
+      },
+      activity,
+    });
+    assert.equal(
+      result.allocationSegments.find((segment) => segment.id === "annual")
+        .value,
+      state.reserve,
+    );
+    assert.equal(result.plannedCommitted, state.committed);
+    assert.equal(result.plannedRemaining, state.remaining);
+    assert.equal(
+      result.allocationSegments.find((segment) => segment.id === "remaining")
+        .value,
+      state.remaining,
+    );
+    assert.equal(result.allocationTotal, 2000);
+    assert.deepEqual(
+      [result.income, result.expenses, result.net],
+      [1000, 395, 605],
+      "saved balances do not rewrite posted activity",
+    );
+    assert.equal(
+      result.scheduledBills.find((bill) => bill.billId === "venture").amount,
+      395,
+    );
+  }
+});
+
+test("an overfunded USD bill does not offset another annual bill's native PHP funding", () => {
+  const mixedDocument = {
+    ...document,
+    bills: [
+      {
+        id: "usd",
+        amount: 395,
+        savedAmount: 500,
+        currency: "USD",
+        cadence: "annual",
+      },
+      {
+        id: "php",
+        amount: 12600,
+        savedAmount: 6300,
+        currency: "PHP",
+        cadence: "annual",
+      },
+    ],
+  };
+  const usd = insights({ document: mixedDocument });
+  const php = insights({ document: mixedDocument, currency: "PHP" });
+  assert.equal(
+    usd.allocationSegments.find((segment) => segment.id === "annual").value,
+    8.33,
+  );
+  assert.equal(usd.plannedRemaining, 1991.67);
+  assert.equal(
+    php.allocationSegments.find((segment) => segment.id === "annual").value,
+    525,
+  );
+  assert.equal(php.plannedRemaining, 125475);
+  const fullyFunded = insights({
+    document: {
+      ...mixedDocument,
+      bills: mixedDocument.bills.map((bill) => ({
+        ...bill,
+        savedAmount: bill.amount + 10,
+      })),
+    },
+  });
+  assert.equal(fullyFunded.plannedCommitted, 0);
+  assert.equal(fullyFunded.plannedRemaining, 2000);
+});
+
 test("zero salary and empty activity produce an empty chart without invalid numbers", () => {
   const result = insights({
     document: { ...document, salary: { ...salary, amount: 0 } },

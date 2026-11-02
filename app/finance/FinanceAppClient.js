@@ -315,7 +315,7 @@ function SpendingTable({
     [
       "Annual bills",
       -summary.annualPerPeriodUsd,
-      "A little now, ready when it’s due",
+      "Based on the amount still to fund after saved balances",
       "annual",
     ],
   ];
@@ -753,8 +753,10 @@ function PlanForm({ plan, document, onSave, busy, disabled }) {
         Bills with due dates appear automatically. Annual set-asides reduce
         available funds and increase your reserve. When an annual bill is paid,
         the bill row shows only the additional available money needed after
-        using its savings. Matched recorded payments replace scheduled flows.
-        Plans do not move money or record bank payments.
+        using its savings. Set-asides adjust to saved balances, pause when a
+        bill is fully funded, and resume after payment. Matched recorded
+        payments replace scheduled flows. Plans do not move money or record bank
+        payments.
       </p>
       <Button type="submit" variant="primary" disabled={busy || disabled}>
         {busy ? "Saving…" : plan ? "Save plan" : "Create plan"}
@@ -1663,10 +1665,28 @@ export default function FinanceAppClient({
                   <div>
                     <h3>A head start on annual bills</h3>
                     <p>
-                      Save <strong>{money(summary.annualMonthlyUsd)}</strong>{" "}
-                      each month toward your{" "}
-                      <strong>{money(summary.annualUsd)}</strong> annual total.
-                      This reserve is already included in your monthly bills.
+                      {summary.annualRemainingUsd > 0 ? (
+                        <>
+                          Set aside{" "}
+                          <strong>{money(summary.annualMonthlyUsd)}</strong>{" "}
+                          each month toward the{" "}
+                          <strong>{money(summary.annualRemainingUsd)}</strong>{" "}
+                          still to fund. Saved balances are already counted, and
+                          this contribution is included in your monthly
+                          commitments.
+                        </>
+                      ) : summary.annualUsd > 0 ? (
+                        <>
+                          Your annual bills are fully funded. No additional
+                          monthly set-aside is needed until a payment uses those
+                          savings.
+                        </>
+                      ) : (
+                        <>
+                          Add annual bills and any amount already saved to
+                          calculate your monthly set-aside.
+                        </>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1735,8 +1755,9 @@ export default function FinanceAppClient({
                     <h3>Two currencies, one clear total</h3>
                     <p>
                       PHP bills are converted at {rateMoney(rate)} per dollar.
-                      Annual bills are set aside gradually, so they’re ready
-                      when due.
+                      Annual set-asides use only the amount still to fund after
+                      your saved balances. Update “Saved so far” on a bill to
+                      recalculate your plan.
                     </p>
                   </div>
                 </div>

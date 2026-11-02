@@ -223,6 +223,40 @@ test("switching to PHP changes every actual metric and chart currency without co
   assert.doesNotMatch(html, /NaN|Infinity|undefined/);
 });
 
+test("the overview rerenders annual reserve funding and unallocated salary when saved balances change", () => {
+  const initialMetrics = metricValues(render());
+  for (const [saved, reserve, remaining] of [
+    [0, "$10.00", "$910.00"],
+    [60, "$5.00", "$915.00"],
+    [120, "$0.00", "$920.00"],
+    [60, "$5.00", "$915.00"],
+  ]) {
+    const html = render({
+      document: {
+        ...document,
+        bills: document.bills.map((bill) =>
+          bill.cadence === "annual" ? { ...bill, savedAmount: saved } : bill,
+        ),
+      },
+    });
+    const annualLegend = html.match(
+      /Annual reserve<\/span><strong>([^<]*)<\/strong>/,
+    )?.[1];
+    const remainingLegend = html.match(
+      /Unallocated<\/span><strong>([^<]*)<\/strong>/,
+    )?.[1];
+    assert.equal(annualLegend, reserve);
+    assert.equal(remainingLegend, remaining);
+    assert.deepEqual(metricValues(html), initialMetrics);
+    assert.match(html, /Annual payment[\s\S]*?\$120\.00/);
+    assert.match(
+      html,
+      /Annual reserve funding adjusts to what is still needed after your saved balances/,
+    );
+    assert.doesNotMatch(html, /NaN|Infinity|undefined/);
+  }
+});
+
 test("the negative case renders debt, negative cash flow, and an over-budget forecast", () => {
   const html = render({
     document: {

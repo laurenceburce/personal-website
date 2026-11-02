@@ -6,6 +6,7 @@ import {
   billDueDays,
   convert,
   formatDate,
+  getAnnualBillFunding,
   localDate,
   money,
   roundMoney,
@@ -29,10 +30,6 @@ const MONTHS = [
 const validDay = (day) =>
   Number.isInteger(Number(day)) && Number(day) >= 1 && Number(day) <= 31;
 const monthlyDays = (bill) => billDueDays(bill).slice(0, 2);
-const savedBalance = (bill) => {
-  const value = Number(bill.savedAmount ?? 0);
-  return Number.isFinite(value) && value >= 0 ? roundMoney(value) : 0;
-};
 
 function Icon({ name, size = 16 }) {
   const paths = {
@@ -160,6 +157,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
     setDraft((current) => ({ ...current, [key]: value }));
   };
   const annual = draft.cadence === "annual";
+  const funding = getAnnualBillFunding(draft);
   const paymentCount = Number(draft.monthlyPayments);
   const hasMonthlyDate = draft.dueDays.some((day) => String(day).trim());
   const submit = (event) => {
@@ -306,7 +304,11 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
         {annual && (
           <>
             {" "}
-            · Save {money(Number(draft.amount || 0) / 12, draft.currency)}/month
+            · Save {money(funding.monthlyAmount, draft.currency)}/month
+            {funding.amount > 0 &&
+              (funding.fullyFunded
+                ? " · Fully funded"
+                : ` · ${money(funding.remainingAmount, draft.currency)} still to fund`)}
           </>
         )}
         {!annual && paymentCount === 2 && (
@@ -319,7 +321,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
       {annual && (
         <Field
           label={`Saved so far · ${draft.currency}`}
-          hint="Enter the money already set aside for this bill in its payment currency. Budget plans start with these earmarked funds; projected plans do not change this saved balance."
+          hint="Enter the money already set aside for this bill in its payment currency. Funding amounts update automatically. Budget plans start with these earmarked funds; projected plans do not change this saved balance."
         >
           <input
             type="number"
@@ -527,6 +529,7 @@ export function BillsTable({
   const targets = annual
     ? bills.map((bill) => annualSavingsTarget(bill, asOf))
     : [];
+  const funding = annual ? bills.map((bill) => getAnnualBillFunding(bill)) : [];
   const nativeTargets = targets.reduce(
     (total, target) => {
       if (!target.needsDate)
@@ -546,14 +549,22 @@ export function BillsTable({
   const missingTargets = targets.filter((target) => target.needsDate).length;
   const nativeBalances = annual
     ? bills.reduce(
-        (total, bill) => {
+        (total, bill, index) => {
           const currency = bill.currency === "PHP" ? "PHP" : "USD";
-          const saved = savedBalance(bill);
-          total.saved[currency] += saved;
-          total.remaining[currency] += Math.max(0, Number(bill.amount) - saved);
+          total.saved[currency] += funding[index].savedAmount;
+          total.remaining[currency] += funding[index].remainingAmount;
+          if (!targets[index].needsDate)
+            total.targetGap[currency] += Math.max(
+              0,
+              targets[index].target - funding[index].savedAmount,
+            );
           return total;
         },
-        { saved: { USD: 0, PHP: 0 }, remaining: { USD: 0, PHP: 0 } },
+        {
+          saved: { USD: 0, PHP: 0 },
+          remaining: { USD: 0, PHP: 0 },
+          targetGap: { USD: 0, PHP: 0 },
+        },
       )
     : null;
   const balanceTotal = (kind, currency) =>
@@ -584,7 +595,10 @@ export function BillsTable({
               <th>Amount · PHP</th>
               {annual && (
                 <>
-                  <th>Save / month</th>
+                  <th>
+                    Save / month
+                    <small>Remaining funding ÷ 12</small>
+                  </th>
                   <th>
                     Saved so far
                     <small>Currently earmarked</small>
@@ -610,8 +624,13 @@ export function BillsTable({
             {bills.map((bill, index) => {
               const days = monthlyDays(bill);
               const target = targets[index];
-              const saved = annual ? savedBalance(bill) : 0;
-              const remaining = Math.max(0, Number(bill.amount) - saved);
+              const billFunding = funding[index];
+              const saved = annual ? billFunding.savedAmount : 0;
+              const remaining = annual ? billFunding.remainingAmount : 0;
+              const targetGap =
+                target && !target.needsDate
+                  ? roundMoney(Math.max(0, target.target - saved))
+                  : null;
               const targetBasis =
                 target && !target.needsDate
                   ? `Target from ${formatDate(target.cycleStart, { year: "numeric" })} to ${formatDate(target.nextDueDate, { year: "numeric" })}; next payment ${money(target.installmentAmount, bill.currency)}.`
@@ -673,21 +692,21 @@ export function BillsTable({
                         <strong>
                           {money(
                             convert(
-                              bill.amount / 12,
+                              billFunding.remainingAmount,
                               bill.currency,
                               "USD",
                               rate,
-                            ),
+                            ) / 12,
                           )}
                         </strong>
                         <small>
                           {money(
                             convert(
-                              bill.amount / 12,
+                              billFunding.remainingAmount,
                               bill.currency,
                               "PHP",
                               rate,
-                            ),
+                            ) / 12,
                             "PHP",
                           )}
                         </small>
@@ -723,7 +742,9 @@ export function BillsTable({
                         className="fb-balance fb-remaining"
                       >
                         <strong>
-                          {money(convert(remaining, bill.currency, "USD", rate))}
+                          {money(
+                            convert(remaining, bill.currency, "USD", rate),
+                          )}
                         </strong>
                         <small>
                           {money(
@@ -761,6 +782,15 @@ export function BillsTable({
                                 ),
                                 "PHP",
                               )}
+                            </small>
+                            <small
+                              className={`fb-funding-status ${targetGap > 0 ? "fb-behind-target" : "fb-target-met"}`}
+                            >
+                              {billFunding.fullyFunded
+                                ? "Fully funded"
+                                : targetGap > 0
+                                  ? `${money(targetGap, bill.currency)} behind target`
+                                  : "Target met"}
                             </small>
                             <small>
                               Next:{" "}
@@ -846,11 +876,25 @@ export function BillsTable({
                   </td>
                   <td className="fb-balance fb-remaining">
                     <strong>{money(balanceTotal("remaining", "USD"))}</strong>
-                    <small>{money(balanceTotal("remaining", "PHP"), "PHP")}</small>
+                    <small>
+                      {money(balanceTotal("remaining", "PHP"), "PHP")}
+                    </small>
                   </td>
                   <td className="fb-target">
                     <strong>{money(totalTargetUsd)}</strong>
                     <small>{money(totalTargetPhp, "PHP")}</small>
+                    {nativeBalances.targetGap.USD > 0 ||
+                    nativeBalances.targetGap.PHP > 0 ? (
+                      <small className="fb-funding-status fb-behind-target">
+                        {money(balanceTotal("targetGap", "USD"))} ·{" "}
+                        {money(balanceTotal("targetGap", "PHP"), "PHP")} behind
+                        target
+                      </small>
+                    ) : missingTargets === 0 ? (
+                      <small className="fb-funding-status fb-target-met">
+                        All targets met
+                      </small>
+                    ) : null}
                     {missingTargets > 0 && (
                       <small>
                         {missingTargets} bill{missingTargets > 1 ? "s" : ""}{" "}
@@ -868,14 +912,17 @@ export function BillsTable({
       {annual && (
         <div className="fb-target-note">
           <p>
-            Saved so far is the balance you enter for each bill. These funds
-            are earmarked for that bill in budget plans; projections do not
-            change your saved balance. Still to fund is the annual cost less
-            that bill’s savings, with any extra savings kept for future payments.
+            Saved so far is the balance you enter for each bill. These funds are
+            earmarked for that bill in budget plans; projections do not change
+            your saved balance. Still to fund is the annual cost less that
+            bill’s savings, with any extra savings kept for future payments.
+            Save / month divides the remaining funding by 12 and becomes zero
+            when the bill is fully funded.
           </p>
           <p>
             Target builds up between payment dates; this is a suggested savings
-            amount, not a bank balance. Targets use the next installment due and
+            amount, not a bank balance. Your saved balance determines whether
+            you have met the target. Targets use the next installment due and
             today’s reference exchange rate.{" "}
             {missingTargets > 0 &&
               "Bills without a due date are excluded from the target total."}

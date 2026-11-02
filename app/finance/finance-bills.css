@@ -28,6 +28,15 @@
   margin-top: 3px;
   line-height: 1.5;
 }
+.fb-target .fb-funding-status {
+  font-weight: 600;
+}
+.fb-target .fb-target-met {
+  color: #357258;
+}
+.fb-target .fb-behind-target {
+  color: #a45b3e;
+}
 .fb-target-note p {
   margin: 0;
 }

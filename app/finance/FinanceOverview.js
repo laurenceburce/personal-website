@@ -269,6 +269,10 @@ function AllocationChart({ insights, currency, onNavigate }) {
           ))}
         </ul>
       </div>
+      <p className="fpi-small-note">
+        Annual reserve funding adjusts to what is still needed after your saved
+        balances.
+      </p>
       <div
         className={`fpi-plan-note ${insights.overBudget ? "fpi-plan-over" : ""}`}
       >
