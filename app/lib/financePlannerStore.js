@@ -118,6 +118,7 @@ export function validateFinancePlanner(value) {
       return {
         name: text(bill.name, "Bill item", 120), amount: amount(bill.amount, "Bill amount"),
         currency: oneOf(bill.currency, ["USD", "PHP"], "Bill currency"), cadence, dueDay, dueDays,
+        savedAmount: cadence === "annual" ? amount(bill.savedAmount === undefined ? 0 : bill.savedAmount, "Saved amount") : 0,
         dueMonths: cadence === "annual" ? dueMonths : [],
         paymentMethod: text(bill.paymentMethod, "Payment method", 80, true),
         isAutopay: boolean(bill.isAutopay, "Automatic payment")

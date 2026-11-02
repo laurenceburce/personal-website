@@ -29,14 +29,14 @@ function ActionIcon({ kind }) {
   );
 }
 
-function FlowAmount({ value, currency }) {
+function FlowAmount({ value, currency, showZero = false }) {
   return (
     <td
       className={
         value < 0 ? "fp-negative" : value > 0 ? "fp-positive" : "fp-zero"
       }
     >
-      {value ? signed(value, currency) : "—"}
+      {value || showZero ? signed(value, currency) : "—"}
     </td>
   );
 }
@@ -77,6 +77,8 @@ function SourceLabel({ row }) {
         ? "scheduled bill"
         : "plan entry";
   const shortfallCurrency = row.currency || (row.php ? "PHP" : "USD");
+  const grossAmount = row.grossAmount ?? row.amount;
+  const annualPayment = row.annualPayment && Number.isFinite(grossAmount);
   return (
     <>
       <small className="fpl-source-label">
@@ -90,7 +92,15 @@ function SourceLabel({ row }) {
             {row.scheduledDate ? ` · ${formatDate(row.scheduledDate)}` : ""}
           </small>
         )}
-      {row.reserveShortfall > 0 && (
+      {annualPayment && (
+        <small className="fpl-annual-payment-detail">
+          Total bill {money(grossAmount, shortfallCurrency)} ·{" "}
+          {money(row.reserveUsed ?? 0, shortfallCurrency)} from reserves ·{" "}
+          {money(row.reserveShortfall ?? grossAmount, shortfallCurrency)}{" "}
+          additional cash
+        </small>
+      )}
+      {!annualPayment && row.reserveShortfall > 0 && (
         <small className="fpl-shortfall">
           Reserve shortfall: {money(row.reserveShortfall, shortfallCurrency)}
         </small>
@@ -99,7 +109,13 @@ function SourceLabel({ row }) {
   );
 }
 
-export default function Ledger({ plan, rows, onEdit, onDelete }) {
+export default function Ledger({
+  plan,
+  rows,
+  openingReserve,
+  onEdit,
+  onDelete,
+}) {
   return (
     <>
       <div
@@ -154,11 +170,11 @@ export default function Ledger({ plan, rows, onEdit, onDelete }) {
                 {money(plan.openingPhp, "PHP")}
               </td>
               <ReserveBalance
-                value={plan.openingReserveUsd ?? 0}
+                value={openingReserve?.usd ?? plan.openingReserveUsd ?? 0}
                 currency="USD"
               />
               <ReserveBalance
-                value={plan.openingReservePhp ?? 0}
+                value={openingReserve?.php ?? plan.openingReservePhp ?? 0}
                 currency="PHP"
               />
               <td />
@@ -175,8 +191,16 @@ export default function Ledger({ plan, rows, onEdit, onDelete }) {
                     <strong>{row.description}</strong>
                     <SourceLabel row={row} />
                   </td>
-                  <FlowAmount value={row.usd} currency="USD" />
-                  <FlowAmount value={row.php} currency="PHP" />
+                  <FlowAmount
+                    value={row.usd}
+                    currency="USD"
+                    showZero={row.annualPayment && row.currency === "USD"}
+                  />
+                  <FlowAmount
+                    value={row.php}
+                    currency="PHP"
+                    showZero={row.annualPayment && row.currency === "PHP"}
+                  />
                   <td className={`fp-running ${balanceClass(row.balanceUsd)}`}>
                     {money(row.balanceUsd)}
                   </td>
@@ -222,9 +246,9 @@ export default function Ledger({ plan, rows, onEdit, onDelete }) {
         </table>
       </div>
       <p className="fpl-legend">
-        Set-asides move money from available funds into annual reserves. Reserve
-        use appears before an annual payment, so the saved money is not deducted
-        twice.
+        Annual payments show only additional available funds needed; remaining
+        payment is covered by reserves. Saved amounts are earmarked for each
+        annual bill.
       </p>
     </>
   );

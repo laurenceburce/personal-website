@@ -420,6 +420,28 @@ function reserveContribution(annualAmount, periods, index) {
   return (base + (position < remainder ? 1 : 0)) / 100;
 }
 
+/** Item savings are part of, rather than additional to, an existing opening reserve. */
+export function getAnnualReserveOpening(plan, document) {
+  const savings = { USD: 0, PHP: 0 };
+  for (const bill of document?.bills || []) {
+    if (bill.cadence !== "annual" || !["USD", "PHP"].includes(bill.currency))
+      continue;
+    savings[bill.currency] = roundMoney(
+      savings[bill.currency] + Math.max(0, roundMoney(bill.savedAmount)),
+    );
+  }
+  const openingUsd = Math.max(0, roundMoney(plan?.openingReserveUsd));
+  const openingPhp = Math.max(0, roundMoney(plan?.openingReservePhp));
+  return {
+    usd: Math.max(openingUsd, savings.USD),
+    php: Math.max(openingPhp, savings.PHP),
+    billSavingsUsd: savings.USD,
+    billSavingsPhp: savings.PHP,
+    unassignedUsd: Math.max(0, roundMoney(openingUsd - savings.USD)),
+    unassignedPhp: Math.max(0, roundMoney(openingPhp - savings.PHP)),
+  };
+}
+
 /** Available money and the annual-bill reserve are tracked as separate pockets. */
 export function buildPlanRows(plan, document, rate, options = {}) {
   if (!validRange(plan.startDate, plan.endDate)) return [];
@@ -578,21 +600,30 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     ),
     ...actual,
   ];
-  const annualNative = { USD: 0, PHP: 0 };
-  for (const bill of document.bills || [])
-    if (bill.cadence === "annual" && ["USD", "PHP"].includes(bill.currency))
-      annualNative[bill.currency] = roundMoney(
-        annualNative[bill.currency] + number(bill.amount),
-      );
+  const annualBills = (document.bills || []).filter(
+    (bill) => bill.cadence === "annual" && ["USD", "PHP"].includes(bill.currency),
+  );
   for (const payday of paydays) {
     const date = actualPayDates.get(payday.date) || payday.date;
     if (date < plan.startDate || date > plan.endDate) continue;
     if (plan.includeAnnualReserve !== false) {
       for (const currency of ["USD", "PHP"]) {
-        const amount = reserveContribution(
-          annualNative[currency],
-          payPeriods,
-          paydayIndex(salary, payday.date),
+        const reserveAllocations = annualBills
+          .filter((bill) => bill.currency === currency)
+          .map((bill) => ({
+            billId: bill.id,
+            amount: reserveContribution(
+              Math.max(0, number(bill.amount)),
+              payPeriods,
+              paydayIndex(salary, payday.date),
+            ),
+          }))
+          .filter((allocation) => allocation.amount > 0);
+        const amount = roundMoney(
+          reserveAllocations.reduce(
+            (total, allocation) => total + allocation.amount,
+            0,
+          ),
         );
         if (amount <= 0) continue;
         rows.push({
@@ -602,6 +633,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           description: "Set aside for annual bills",
           kind: "reserve",
           source: "reserve",
+          reserveAllocations,
           ...nativeFlow(amount, currency, "expense"),
           reserveDeltaUsd: currency === "USD" ? amount : 0,
           reserveDeltaPhp: currency === "PHP" ? amount : 0,
@@ -644,8 +676,24 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   );
   let balanceUsd = roundMoney(plan.openingUsd);
   let balancePhp = roundMoney(plan.openingPhp);
-  let reserveUsd = Math.max(0, roundMoney(plan.openingReserveUsd));
-  let reservePhp = Math.max(0, roundMoney(plan.openingReservePhp));
+  const openingReserve = getAnnualReserveOpening(plan, document);
+  let reserveUsd = openingReserve.usd;
+  let reservePhp = openingReserve.php;
+  const unassigned = {
+    USD: openingReserve.unassignedUsd,
+    PHP: openingReserve.unassignedPhp,
+  };
+  const billReserves = new Map();
+  const reserveKey = (billId, currency) => `${currency}:${billId}`;
+  for (const bill of annualBills) {
+    const key = reserveKey(bill.id, bill.currency);
+    billReserves.set(
+      key,
+      roundMoney(
+        (billReserves.get(key) || 0) + Math.max(0, roundMoney(bill.savedAmount)),
+      ),
+    );
+  }
   const result = [];
   function append(row) {
     balanceUsd = roundMoney(balanceUsd + row.usd);
@@ -663,27 +711,42 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     });
   }
   for (const row of rows) {
+    if (row.source === "reserve") {
+      for (const allocation of row.reserveAllocations) {
+        const key = reserveKey(allocation.billId, row.currency);
+        billReserves.set(
+          key,
+          roundMoney((billReserves.get(key) || 0) + allocation.amount),
+        );
+      }
+    }
     if (row.annualPayment) {
-      const released = Math.min(
-        row.amount,
-        row.currency === "PHP" ? reservePhp : reserveUsd,
+      const key = reserveKey(row.billId, row.currency);
+      const saved = billReserves.get(key) || 0;
+      const grossAmount = roundMoney(row.amount);
+      const fromBill = Math.min(grossAmount, saved);
+      const fromUnassigned = Math.min(
+        roundMoney(grossAmount - fromBill),
+        unassigned[row.currency] || 0,
       );
-      if (released > 0)
-        append({
-          id: `reserve-release:${row.id}`,
-          billId: row.billId,
-          date: row.date,
-          description: `Use annual reserve · ${row.description}`,
-          kind: "release",
-          source: "reserveRelease",
-          currency: row.currency,
-          amount: released,
-          usd: row.currency === "USD" ? released : 0,
-          php: row.currency === "PHP" ? released : 0,
-          reserveDeltaUsd: row.currency === "USD" ? -released : 0,
-          reserveDeltaPhp: row.currency === "PHP" ? -released : 0,
-        });
-      row.reserveShortfall = roundMoney(row.amount - released);
+      const reserveUsed = roundMoney(fromBill + fromUnassigned);
+      const reserveShortfall = roundMoney(grossAmount - reserveUsed);
+      billReserves.set(key, roundMoney(saved - fromBill));
+      unassigned[row.currency] = roundMoney(
+        (unassigned[row.currency] || 0) - fromUnassigned,
+      );
+      // Reconciliation keeps the full payment; only its unfunded portion uses available cash.
+      append({
+        ...row,
+        grossAmount,
+        reserveUsed,
+        reserveShortfall,
+        usd: row.currency === "USD" && reserveShortfall > 0 ? -reserveShortfall : 0,
+        php: row.currency === "PHP" && reserveShortfall > 0 ? -reserveShortfall : 0,
+        reserveDeltaUsd: row.currency === "USD" && reserveUsed > 0 ? -reserveUsed : 0,
+        reserveDeltaPhp: row.currency === "PHP" && reserveUsed > 0 ? -reserveUsed : 0,
+      });
+      continue;
     }
     append(row);
   }

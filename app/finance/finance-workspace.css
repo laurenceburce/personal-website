@@ -1,4 +1,22 @@
 /* Navigation and controls shared by the planning and recorded-activity views. */
+.fp-bill-savings-summary {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #dce8df;
+  border-radius: 8px;
+  background: #f0f6f2;
+  color: #3b6650;
+  font-size: 12px;
+}
+.fp-bill-savings-summary > strong {
+  font-size: 12px;
+}
+.fp-bill-savings-summary small {
+  color: #65766a;
+  font-size: 11px;
+  line-height: 1.8;
+}
 .fp-payday-preview {
   margin-top: 18px;
   padding: 14px;

@@ -29,6 +29,10 @@ const MONTHS = [
 const validDay = (day) =>
   Number.isInteger(Number(day)) && Number(day) >= 1 && Number(day) <= 31;
 const monthlyDays = (bill) => billDueDays(bill).slice(0, 2);
+const savedBalance = (bill) => {
+  const value = Number(bill.savedAmount ?? 0);
+  return Number.isFinite(value) && value >= 0 ? roundMoney(value) : 0;
+};
 
 function Icon({ name, size = 16 }) {
   const paths = {
@@ -140,6 +144,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
       paymentMethod: "",
       isAutopay: false,
       ...bill,
+      savedAmount: bill?.savedAmount ?? 0,
       dueMonths: bill?.dueMonths?.length
         ? [...bill.dueMonths]
         : [Number(localDate().slice(5, 7))],
@@ -172,6 +177,17 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
     )
       return setError(
         "Enter an amount from 0.01 to 999,999,999 with up to two decimal places.",
+      );
+    const savedAmount = annual ? Number(draft.savedAmount ?? 0) : 0;
+    if (
+      annual &&
+      (!Number.isFinite(savedAmount) ||
+        savedAmount < 0 ||
+        savedAmount > 999999999 ||
+        Math.abs(savedAmount * 100 - Math.round(savedAmount * 100)) > 0.00001)
+    )
+      return setError(
+        "Enter saved funds from 0 to 999,999,999 with up to two decimal places.",
       );
     const months = [...new Set(draft.dueMonths.map(Number))].sort(
       (a, b) => a - b,
@@ -222,6 +238,7 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
       id: draft.id || globalThis.crypto.randomUUID(),
       name,
       amount: roundMoney(value),
+      savedAmount: roundMoney(savedAmount),
       currency: draft.currency,
       cadence: draft.cadence,
       dueDay,
@@ -299,6 +316,22 @@ export function BillForm({ bill, cadence, rate, onSave, busy, disabled }) {
           </>
         )}
       </div>
+      {annual && (
+        <Field
+          label={`Saved so far · ${draft.currency}`}
+          hint="Enter the money already set aside for this bill in its payment currency. Budget plans start with these earmarked funds; projected plans do not change this saved balance."
+        >
+          <input
+            type="number"
+            min="0"
+            max="999999999"
+            step="0.01"
+            inputMode="decimal"
+            value={draft.savedAmount}
+            onChange={(event) => set("savedAmount", event.target.value)}
+          />
+        </Field>
+      )}
       <div className="fp-form-grid">
         <Field label="Repeats">
           <select
@@ -511,6 +544,28 @@ export function BillsTable({
     nativeTargets.PHP + convert(nativeTargets.USD, "USD", "PHP", rate),
   );
   const missingTargets = targets.filter((target) => target.needsDate).length;
+  const nativeBalances = annual
+    ? bills.reduce(
+        (total, bill) => {
+          const currency = bill.currency === "PHP" ? "PHP" : "USD";
+          const saved = savedBalance(bill);
+          total.saved[currency] += saved;
+          total.remaining[currency] += Math.max(0, Number(bill.amount) - saved);
+          return total;
+        },
+        { saved: { USD: 0, PHP: 0 }, remaining: { USD: 0, PHP: 0 } },
+      )
+    : null;
+  const balanceTotal = (kind, currency) =>
+    roundMoney(
+      nativeBalances[kind][currency] +
+        convert(
+          nativeBalances[kind][currency === "USD" ? "PHP" : "USD"],
+          currency === "USD" ? "PHP" : "USD",
+          currency,
+          rate,
+        ),
+    );
   return (
     <div className="fb-bills">
       <div className="fp-table-wrap">
@@ -519,7 +574,7 @@ export function BillsTable({
         >
           <caption className="fp-sr-only">
             {annual
-              ? `Annual bills and suggested savings targets as of ${formatDate(asOf, { year: "numeric" })}`
+              ? `Annual bills, saved balances, remaining funding, and suggested savings targets as of ${formatDate(asOf, { year: "numeric" })}`
               : "Monthly bill totals, payment dates, and annual bills reserve"}
           </caption>
           <thead>
@@ -530,6 +585,14 @@ export function BillsTable({
               {annual && (
                 <>
                   <th>Save / month</th>
+                  <th>
+                    Saved so far
+                    <small>Currently earmarked</small>
+                  </th>
+                  <th>
+                    Still to fund
+                    <small>Annual cost less savings</small>
+                  </th>
                   <th>
                     Target saved by now
                     <small>As of {formatDate(asOf, { year: "numeric" })}</small>
@@ -547,6 +610,8 @@ export function BillsTable({
             {bills.map((bill, index) => {
               const days = monthlyDays(bill);
               const target = targets[index];
+              const saved = annual ? savedBalance(bill) : 0;
+              const remaining = Math.max(0, Number(bill.amount) - saved);
               const targetBasis =
                 target && !target.needsDate
                   ? `Target from ${formatDate(target.cycleStart, { year: "numeric" })} to ${formatDate(target.nextDueDate, { year: "numeric" })}; next payment ${money(target.installmentAmount, bill.currency)}.`
@@ -623,6 +688,46 @@ export function BillsTable({
                               "PHP",
                               rate,
                             ),
+                            "PHP",
+                          )}
+                        </small>
+                      </td>
+                      <td
+                        data-label="Saved so far"
+                        className="fb-balance fb-saved"
+                      >
+                        <strong
+                          className={
+                            bill.currency === "USD"
+                              ? "fp-native fp-currency-usd"
+                              : "fp-equivalent"
+                          }
+                        >
+                          {money(convert(saved, bill.currency, "USD", rate))}
+                        </strong>
+                        <small
+                          className={
+                            bill.currency === "PHP"
+                              ? "fp-native fp-currency-php"
+                              : "fp-equivalent"
+                          }
+                        >
+                          {money(
+                            convert(saved, bill.currency, "PHP", rate),
+                            "PHP",
+                          )}
+                        </small>
+                      </td>
+                      <td
+                        data-label="Still to fund"
+                        className="fb-balance fb-remaining"
+                      >
+                        <strong>
+                          {money(convert(remaining, bill.currency, "USD", rate))}
+                        </strong>
+                        <small>
+                          {money(
+                            convert(remaining, bill.currency, "PHP", rate),
                             "PHP",
                           )}
                         </small>
@@ -735,6 +840,14 @@ export function BillsTable({
                       {money(summary.annualMonthlyPhp, "PHP")} / month
                     </small>
                   </td>
+                  <td className="fb-balance fb-saved">
+                    <strong>{money(balanceTotal("saved", "USD"))}</strong>
+                    <small>{money(balanceTotal("saved", "PHP"), "PHP")}</small>
+                  </td>
+                  <td className="fb-balance fb-remaining">
+                    <strong>{money(balanceTotal("remaining", "USD"))}</strong>
+                    <small>{money(balanceTotal("remaining", "PHP"), "PHP")}</small>
+                  </td>
                   <td className="fb-target">
                     <strong>{money(totalTargetUsd)}</strong>
                     <small>{money(totalTargetPhp, "PHP")}</small>
@@ -753,13 +866,21 @@ export function BillsTable({
         </table>
       </div>
       {annual && (
-        <p className="fb-target-note">
-          Target builds up between payment dates; this is a suggested savings
-          amount, not a bank balance. Targets use the next installment due and
-          today’s reference exchange rate.{" "}
-          {missingTargets > 0 &&
-            "Bills without a due date are excluded from the target total."}
-        </p>
+        <div className="fb-target-note">
+          <p>
+            Saved so far is the balance you enter for each bill. These funds
+            are earmarked for that bill in budget plans; projections do not
+            change your saved balance. Still to fund is the annual cost less
+            that bill’s savings, with any extra savings kept for future payments.
+          </p>
+          <p>
+            Target builds up between payment dates; this is a suggested savings
+            amount, not a bank balance. Targets use the next installment due and
+            today’s reference exchange rate.{" "}
+            {missingTargets > 0 &&
+              "Bills without a due date are excluded from the target total."}
+          </p>
+        </div>
       )}
     </div>
   );

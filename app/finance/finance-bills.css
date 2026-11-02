@@ -13,16 +13,26 @@
 .fp-app .fb-bills-table th small {
   font-size: 11px;
 }
-.fb-bills-table .fb-target {
+.fb-bills-table .fb-target,
+.fb-bills-table .fb-balance {
   min-width: 132px;
 }
 .fb-bills-table .fb-target strong,
-.fb-bills-table .fb-target small {
+.fb-bills-table .fb-target small,
+.fb-bills-table .fb-balance strong,
+.fb-bills-table .fb-balance small {
   display: block;
 }
-.fb-bills-table .fb-target small {
+.fb-bills-table .fb-target small,
+.fb-bills-table .fb-balance small {
   margin-top: 3px;
   line-height: 1.5;
+}
+.fb-target-note p {
+  margin: 0;
+}
+.fb-target-note p + p {
+  margin-top: 6px;
 }
 .fb-target-note {
   margin: 15px 0 0;
@@ -54,7 +64,7 @@
 }
 @media (min-width: 761px) {
   .fb-annual-table {
-    min-width: 930px;
+    min-width: 1190px;
   }
   .fb-annual-table th,
   .fb-annual-table td {
@@ -71,7 +81,8 @@
   .fp-app .fb-bills-table tbody .fp-equivalent {
     font-size: 11px;
   }
-  .fb-bills-table .fb-target {
+  .fb-bills-table .fb-target,
+  .fb-bills-table .fb-balance {
     min-width: 0;
   }
   .fb-target-note {

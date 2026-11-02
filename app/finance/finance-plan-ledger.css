@@ -57,6 +57,9 @@
 .fp-app .fpl-table .fpl-shortfall {
   color: #a14e3d;
 }
+.fp-app .fpl-table .fpl-annual-payment-detail {
+  color: #617568;
+}
 .fp-app .fpl-row-reserve td:first-child,
 .fp-app .fpl-row-reserveRelease td:first-child {
   border-left: 3px solid #8ab9a2;

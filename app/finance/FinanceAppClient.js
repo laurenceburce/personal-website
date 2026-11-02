@@ -7,6 +7,7 @@ import {
   convert,
   formatDate,
   getSummary,
+  getAnnualReserveOpening,
   localDate,
   addDays,
   money,
@@ -577,7 +578,7 @@ function AllocationForm({ row, onSave, busy, disabled }) {
   );
 }
 
-function PlanForm({ plan, onSave, busy, disabled }) {
+function PlanForm({ plan, document, onSave, busy, disabled }) {
   const today = localDate();
   const [draft, setDraft] = useState({
     name: "",
@@ -596,6 +597,7 @@ function PlanForm({ plan, onSave, busy, disabled }) {
   });
   const set = (key, value) =>
     setDraft((current) => ({ ...current, [key]: value }));
+  const reserveOpening = getAnnualReserveOpening(draft, document);
   return (
     <form
       className="fp-form"
@@ -666,7 +668,7 @@ function PlanForm({ plan, onSave, busy, disabled }) {
         </Field>
       </div>
       <div className="fp-form-grid">
-        <Field label="Already reserved for annual bills · USD">
+        <Field label="Total starting annual reserve · USD (optional)">
           <input
             required
             type="number"
@@ -677,7 +679,7 @@ function PlanForm({ plan, onSave, busy, disabled }) {
             onChange={(event) => set("openingReserveUsd", event.target.value)}
           />
         </Field>
-        <Field label="Already reserved for annual bills · PHP">
+        <Field label="Total starting annual reserve · PHP (optional)">
           <input
             required
             type="number"
@@ -689,11 +691,29 @@ function PlanForm({ plan, onSave, busy, disabled }) {
           />
         </Field>
       </div>
+      <div className="fp-bill-savings-summary">
+        <strong>Saved on your annual bills</strong>
+        <span>
+          {money(reserveOpening.billSavingsUsd)} ·{" "}
+          {money(reserveOpening.billSavingsPhp, "PHP")}
+        </span>
+        <small>
+          These item balances are included automatically. Enter a total above
+          them only if you also have unassigned annual reserves.
+        </small>
+        <span>
+          Starting reserve used in this plan:{" "}
+          <b>
+            {money(reserveOpening.usd)} · {money(reserveOpening.php, "PHP")}
+          </b>
+        </span>
+      </div>
       <p className="fp-inline-note">
         Enter balances at the start of the first date, before that day’s flows.
         Available balances exclude money already reserved for annual bills.
-        Enter actual reserved funds; savings targets are not assumed to be money
-        you have saved.
+        Amounts entered as “Saved so far” on annual bills are included once and
+        stay earmarked for those bills. Suggested savings targets are not
+        treated as actual funds.
       </p>
       <label className="fp-checkbox">
         <input
@@ -732,8 +752,9 @@ function PlanForm({ plan, onSave, busy, disabled }) {
       <p className="fp-inline-note">
         Bills with due dates appear automatically. Annual set-asides reduce
         available funds and increase your reserve. When an annual bill is paid,
-        the plan uses that reserve first. Matched recorded payments replace
-        scheduled flows. Plans do not move money or record bank payments.
+        the bill row shows only the additional available money needed after
+        using its savings. Matched recorded payments replace scheduled flows.
+        Plans do not move money or record bank payments.
       </p>
       <Button type="submit" variant="primary" disabled={busy || disabled}>
         {busy ? "Saving…" : plan ? "Save plan" : "Create plan"}
@@ -875,6 +896,10 @@ export default function FinanceAppClient({
   const plan =
     document.plans.find((item) => item.id === selectedPlanId) ||
     document.plans[0];
+  const planOpeningReserve = useMemo(
+    () => getAnnualReserveOpening(plan, document),
+    [plan, document],
+  );
   const planRows = useMemo(
     () =>
       plan
@@ -1875,8 +1900,7 @@ export default function FinanceAppClient({
                             ? "—"
                             : money(
                                 planRows.at(-1)?.reserveUsd ??
-                                  plan.openingReserveUsd ??
-                                  0,
+                                  planOpeningReserve.usd,
                               )}
                         </strong>
                       </div>
@@ -1887,8 +1911,7 @@ export default function FinanceAppClient({
                             ? "—"
                             : money(
                                 planRows.at(-1)?.reservePhp ??
-                                  plan.openingReservePhp ??
-                                  0,
+                                  planOpeningReserve.php,
                                 "PHP",
                               )}
                         </strong>
@@ -1954,6 +1977,7 @@ export default function FinanceAppClient({
                       <Ledger
                         plan={plan}
                         rows={planRows}
+                        openingReserve={planOpeningReserve}
                         onEdit={(entry) => open({ type: "entry", entry })}
                         onDelete={(row) => open({ type: "deleteEntry", row })}
                       />
@@ -2100,6 +2124,7 @@ export default function FinanceAppClient({
           {modal.type === "plan" && (
             <PlanForm
               plan={modal.plan}
+              document={document}
               onSave={savePlan}
               busy={busy}
               disabled={!state.configured}

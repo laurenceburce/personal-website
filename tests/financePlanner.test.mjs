@@ -8,6 +8,7 @@ import {
   buildPlanRows,
   convert,
   formatDate,
+  getAnnualReserveOpening,
   getSummary,
   localDate,
   salaryOccurrences,
@@ -214,14 +215,14 @@ test("budget ledger generates native bills and income with independent running b
     ],
   };
   const rows = buildPlanRows(plan, document, 63);
-  assert.equal(rows.length, 7);
+  assert.equal(rows.length, 6);
   assert.equal(rows[0].source, "salary");
   assert.equal(rows[1].kind, "conversion");
   assert.equal(rows.at(-1).balanceUsd, 1450);
   assert.equal(rows.at(-1).balancePhp, 0);
   assert.equal(rows.filter((row) => row.source === "bill").length, 3);
   assert.equal(rows.filter((row) => row.source === "reserve").length, 1);
-  assert.equal(rows.filter((row) => row.source === "reserveRelease").length, 1);
+  assert.equal(rows.filter((row) => row.source === "reserveRelease").length, 0);
   assert.equal(rows.at(-1).reserveUsd, 0);
   assert.deepEqual(buildPlanRows(plan, document, 63), rows);
 });
@@ -473,12 +474,16 @@ test("annual payments consume existing reserves before charging available funds"
     entries: [],
   };
   const rows = buildPlanRows(plan, document, 63);
-  assert.equal(rows[0].source, "reserveRelease");
-  assert.equal(rows[0].usd, 120);
-  assert.equal(rows[1].usd, -120);
-  assert.equal(rows[1].balanceUsd, 100);
-  assert.equal(rows[1].reserveUsd, 0);
-  assert.equal(rows[1].reserveShortfall, 0);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, "bill");
+  assert.equal(rows[0].usd, 0);
+  assert.equal(rows[0].amount, 120);
+  assert.equal(rows[0].grossAmount, 120);
+  assert.equal(rows[0].reserveUsed, 120);
+  assert.equal(rows[0].reserveDeltaUsd, -120);
+  assert.equal(rows[0].balanceUsd, 100);
+  assert.equal(rows[0].reserveUsd, 0);
+  assert.equal(rows[0].reserveShortfall, 0);
   const shortfall = buildPlanRows(
     { ...plan, openingReserveUsd: 50 },
     document,
@@ -555,7 +560,7 @@ test("posted records replace matching salary, bills and exact dated manual forec
   ];
   const before = JSON.stringify({ plan, document, transactions });
   const rows = buildPlanRows(plan, document, 63, { transactions });
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 5);
   assert.equal(rows.filter((row) => row.source === "transaction").length, 4);
   assert.equal(
     rows.filter((row) => ["salary", "bill", "manual"].includes(row.source))
@@ -785,12 +790,14 @@ test("recorded annual payments inside the window can use reserves for a due date
       },
     ],
   });
-  assert.equal(rows.length, 2);
-  assert.equal(rows[0].source, "reserveRelease");
-  assert.equal(rows[1].scheduledDate, "2026-11-01");
-  assert.equal(rows[1].billId, "Insurance");
-  assert.equal(rows[1].balanceUsd, 50);
-  assert.equal(rows[1].reserveUsd, 0);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, "transaction");
+  assert.equal(rows[0].scheduledDate, "2026-11-01");
+  assert.equal(rows[0].billId, "Insurance");
+  assert.equal(rows[0].usd, 0);
+  assert.equal(rows[0].reserveUsed, 100);
+  assert.equal(rows[0].balanceUsd, 50);
+  assert.equal(rows[0].reserveUsd, 0);
   assert.ok(
     rows.every((row) => row.date >= plan.startDate && row.date <= plan.endDate),
   );
@@ -840,4 +847,237 @@ test("paychecks shifted across a plan boundary keep their associated set-asides 
   assert.equal(rows.at(-1).balanceUsd, 1090);
   assert.equal(rows.at(-1).reserveUsd, 10);
   assert.ok(rows.every((row) => row.date === "2026-11-05"));
+});
+
+const annualSavingsPlan = {
+  startDate: "2026-11-01",
+  endDate: "2026-11-30",
+  openingUsd: 500,
+  openingPhp: 1000,
+  includeIncome: false,
+  includeAnnualReserve: false,
+  entries: [],
+};
+
+test("opening reserves include item savings once and retain only the unassigned legacy remainder", () => {
+  assert.deepEqual(getAnnualReserveOpening(), {
+    usd: 0, php: 0, billSavingsUsd: 0, billSavingsPhp: 0,
+    unassignedUsd: 0, unassignedPhp: 0,
+  });
+  const document = {
+    bills: [
+      { ...annual("Venture X", 395), savedAmount: 100 },
+      { ...annual("Car", 6300, "PHP"), savedAmount: 300 },
+      { ...annual("Missing", 100), savedAmount: undefined },
+      { ...annual("Invalid", 100), savedAmount: -50 },
+      { ...monthly("Monthly", 50), savedAmount: 999 },
+    ],
+  };
+  for (const openingReserveUsd of [0, 50, 100, 150]) {
+    assert.deepEqual(getAnnualReserveOpening({ openingReserveUsd, openingReservePhp: 200 }, document), {
+      usd: Math.max(100, openingReserveUsd),
+      php: 300,
+      billSavingsUsd: 100,
+      billSavingsPhp: 300,
+      unassignedUsd: Math.max(0, openingReserveUsd - 100),
+      unassignedPhp: 0,
+    });
+  }
+  assert.equal(getAnnualReserveOpening({ openingReservePhp: 500 }, document).unassignedPhp, 200);
+});
+
+test("a $395 annual bill with $100 saved shows one $295 cash outflow", () => {
+  const document = {
+    salary,
+    bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 100 }],
+  };
+  const before = JSON.stringify({ plan: annualSavingsPlan, document });
+  const rows = buildPlanRows(annualSavingsPlan, document, 63);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].amount, 395);
+  assert.equal(rows[0].grossAmount, 395);
+  assert.equal(rows[0].usd, -295);
+  assert.equal(rows[0].php, 0);
+  assert.equal(rows[0].reserveUsed, 100);
+  assert.equal(rows[0].reserveShortfall, 295);
+  assert.equal(rows[0].reserveDeltaUsd, -100);
+  assert.equal(rows[0].reserveUsd, 0);
+  assert.equal(rows[0].balanceUsd, 205);
+  assert.equal(before, JSON.stringify({ plan: annualSavingsPlan, document }));
+});
+
+test("payday contributions add to each item's saved money before its annual payment", () => {
+  const document = {
+    salary,
+    bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 100 }],
+  };
+  const rows = buildPlanRows({ ...annualSavingsPlan, includeAnnualReserve: true }, document, 63);
+  const funding = rows.filter((row) => row.source === "reserve");
+  assert.equal(funding.length, 2);
+  assert.ok(funding.every((row) => row.amount === 16.46));
+  assert.deepEqual(funding[0].reserveAllocations, [{ billId: "Venture X", amount: 16.46 }]);
+  const payment = rows.find((row) => row.annualPayment);
+  assert.equal(payment.reserveUsed, 132.92);
+  assert.equal(payment.usd, -262.08);
+  assert.equal(payment.reserveUsd, 0);
+  assert.equal(payment.balanceUsd, 205);
+});
+
+test("annual bills cannot consume another item's savings, but may use unassigned opening reserves", () => {
+  const document = {
+    salary,
+    bills: [
+      { ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 100 },
+      { ...annual("Microsoft", 200, "USD", 9, [12]), savedAmount: 200 },
+    ],
+  };
+  const isolated = buildPlanRows(annualSavingsPlan, document, 63).at(-1);
+  assert.equal(isolated.reserveUsed, 100);
+  assert.equal(isolated.usd, -295);
+  assert.equal(isolated.reserveUsd, 200);
+  const withLegacyFunds = buildPlanRows({ ...annualSavingsPlan, openingReserveUsd: 350 }, document, 63).at(-1);
+  assert.equal(withLegacyFunds.reserveUsed, 150);
+  assert.equal(withLegacyFunds.usd, -245);
+  assert.equal(withLegacyFunds.reserveUsd, 200);
+  const sameOpeningTotal = buildPlanRows({ ...annualSavingsPlan, openingReserveUsd: 300 }, document, 63).at(-1);
+  assert.equal(sameOpeningTotal.reserveUsed, 100);
+  assert.equal(sameOpeningTotal.reserveUsd, 200);
+});
+
+test("payday reserves are earmarked for their bill even when another annual bill is due first", () => {
+  const document = {
+    salary,
+    bills: [
+      annual("Venture X", 240, "USD", 9, [11]),
+      { ...annual("Microsoft", 240, "USD", 9, [12]), savedAmount: 100 },
+    ],
+  };
+  const rows = buildPlanRows({ ...annualSavingsPlan, includeAnnualReserve: true }, document, 63);
+  const payment = rows.find((row) => row.annualPayment);
+  assert.equal(payment.reserveUsed, 10);
+  assert.equal(payment.usd, -230);
+  assert.equal(payment.reserveUsd, 110);
+  assert.equal(rows.at(-1).reserveUsd, 130);
+  assert.deepEqual(rows[0].reserveAllocations, [
+    { billId: "Venture X", amount: 10 },
+    { billId: "Microsoft", amount: 10 },
+  ]);
+});
+
+test("saved annual funds are consumed once across installments and later renewal cycles", () => {
+  const document = {
+    salary,
+    bills: [{ ...annual("Car", 400, "USD", 9, [3, 9]), savedAmount: 300 }],
+  };
+  const rows = buildPlanRows({
+    ...annualSavingsPlan,
+    startDate: "2026-01-01",
+    endDate: "2027-09-30",
+  }, document, 63);
+  assert.deepEqual(rows.map((row) => row.amount), [200, 200, 200, 200]);
+  assert.deepEqual(rows.map((row) => row.reserveUsed), [200, 100, 0, 0]);
+  assert.deepEqual(rows.map((row) => row.usd), [0, -100, -200, -200]);
+  assert.deepEqual(rows.map((row) => row.reserveUsd), [100, 0, 0, 0]);
+  assert.equal(rows.at(-1).balanceUsd, 0);
+});
+
+test("PHP annual savings offset PHP payments without converting or spending USD reserves", () => {
+  const document = {
+    salary,
+    bills: [
+      { ...annual("Insurance", 395, "PHP", 28, [11]), savedAmount: 100 },
+      { ...annual("USD reserve", 100, "USD", 9, [12]), savedAmount: 100 },
+    ],
+  };
+  const rows = buildPlanRows(annualSavingsPlan, document, 123);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].usd, 0);
+  assert.equal(rows[0].php, -295);
+  assert.equal(rows[0].reserveDeltaPhp, -100);
+  assert.equal(rows[0].reserveUsd, 100);
+  assert.equal(rows[0].reservePhp, 0);
+  assert.equal(rows[0].balanceUsd, 500);
+  assert.equal(rows[0].balancePhp, 705);
+});
+
+test("overfunded annual savings carry forward and never create a positive cash payment", () => {
+  const document = {
+    salary,
+    bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 500 }],
+  };
+  const rows = buildPlanRows({ ...annualSavingsPlan, endDate: "2027-11-30" }, document, 63);
+  assert.deepEqual(rows.map((row) => row.usd), [0, -290]);
+  assert.deepEqual(rows.map((row) => row.reserveUsed), [395, 105]);
+  assert.deepEqual(rows.map((row) => row.reserveUsd), [105, 0]);
+  assert.equal(rows.at(-1).balanceUsd, 210);
+});
+
+test("legacy annual bills with no actual savings retain their full native cash outflow", () => {
+  for (const savedAmount of [undefined, 0, -10, "invalid"]) {
+    const document = {
+      salary,
+      bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount }],
+    };
+    const payment = buildPlanRows(annualSavingsPlan, document, 63)[0];
+    assert.equal(payment.usd, -395);
+    assert.equal(payment.reserveUsed, 0);
+    assert.equal(payment.reserveShortfall, 395);
+    assert.equal(payment.reserveUsd, 0);
+    assert.equal(payment.balanceUsd, 105);
+  }
+});
+
+test("recorded annual payments match their gross amount then show only unfunded cash without mutating activity", () => {
+  const document = {
+    salary,
+    bills: [{ ...annual("Venture X", 395, "USD", 28, [11]), savedAmount: 100 }],
+  };
+  const transaction = {
+    id: 1,
+    date: "2026-11-29",
+    merchant: "Venture X",
+    kind: "expense",
+    amount: 395,
+    currency: "USD",
+  };
+  const before = JSON.stringify({ document, transaction });
+  const rows = buildPlanRows(annualSavingsPlan, document, 63, {
+    transactions: [transaction, transaction],
+    today: "2026-11-30",
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, "transaction");
+  assert.equal(rows[0].billId, "Venture X");
+  assert.equal(rows[0].scheduledDate, "2026-11-28");
+  assert.equal(rows[0].amount, 395);
+  assert.equal(rows[0].grossAmount, 395);
+  assert.equal(rows[0].usd, -295);
+  assert.equal(rows[0].reserveUsed, 100);
+  assert.equal(rows[0].balanceUsd, 205);
+  assert.equal(before, JSON.stringify({ document, transaction }));
+});
+
+test("per-item contributions preserve each annual total over a complete pay cycle", () => {
+  const document = {
+    salary: { ...salary, firstPayDate: "2026-01-06" },
+    bills: [
+      annual("First", 100.01, "USD", null, [12]),
+      annual("Second", 395.02, "USD", null, [12]),
+      annual("PHP", 633.05, "PHP", null, [12]),
+    ],
+  };
+  const rows = buildPlanRows({
+    ...annualSavingsPlan,
+    startDate: "2026-01-01",
+    endDate: "2026-12-31",
+    includeAnnualReserve: true,
+  }, document, 63);
+  for (const bill of document.bills) {
+    const totalCents = rows.flatMap((row) => row.reserveAllocations)
+      .filter((allocation) => allocation.billId === bill.id)
+      .reduce((sum, allocation) => sum + Math.round(allocation.amount * 100), 0);
+    assert.equal(totalCents, Math.round(bill.amount * 100));
+  }
+  assert.equal(rows.at(-1).reserveUsd, 495.03);
+  assert.equal(rows.at(-1).reservePhp, 633.05);
 });

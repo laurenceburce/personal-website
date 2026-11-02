@@ -121,6 +121,8 @@ The finance workspace separates recorded activity from your plans:
   **Target saved by now**, prorated between the previous and next payment dates;
   the target is not a recorded bank or savings balance. Undated annual bills
   need a due date before a savings target can be calculated.
+  Each annual bill also has a manually entered **Saved so far** balance in its
+  payment currency, with **Still to fund** shown separately from the suggested target.
 - **Spending plan:** automatic per-pay income, USD/PHP bills, annual reserves,
   and custom savings or expense allocations. Twice-monthly pay uses 24 periods;
   every-two-weeks pay uses 26. Select the schedule and first payday under salary;
@@ -133,11 +135,19 @@ The finance workspace separates recorded activity from your plans:
   and recorded transactions across the entire date range (including transfers).
   Pending bank entries are excluded until posted. A matching posted salary or
   bill replaces its scheduled row; conservative matching uses amount, currency,
-  date and description. Annual payments use reserved funds first, so money is not
-  deducted twice. Undated bills are flagged; annual reserves still build on paydays.
+  date and description. Each annual bill keeps its own saved balance and payday
+  contributions. An annual payment row shows only the additional cash needed
+  after using those funds, with the full payment and reserve used in its detail.
+  For example, a $395 bill with $100 saved needs $295 more; later set-asides can
+  reduce that further. Saved balances seed each hypothetical plan once and are
+  not reduced in the bill editor by a forecast. Undated bills are flagged;
+  annual reserves still build on paydays.
   Flow sources can be toggled when creating or editing a plan. Opening balances
   are measured before the first day's flows; opening reserves must be actual
   funds you have set aside, not the suggested savings target.
+  Saved amounts entered on annual bills are included automatically in the
+  starting reserve. The plan's total starting reserve can increase that amount
+  with unassigned funds; it does not add the same item savings a second time.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.

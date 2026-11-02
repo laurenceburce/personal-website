@@ -27,6 +27,49 @@ test("round trips annual installments, savings and two-currency conversion entri
   assert.deepEqual(clean.plans[0].entries, planner.plans[0].entries);
 });
 
+test("legacy annual bills receive zero saved funds without changing their source document", () => {
+  const planner = document();
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.bills[0].savedAmount, 0);
+  assert.deepEqual(planner, before);
+  assert.equal(Object.hasOwn(planner.bills[0], "savedAmount"), false);
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+});
+
+test("annual saved funds round trip in the bill currency and can exceed the yearly cost", () => {
+  const planner = document();
+  planner.bills[0].savedAmount = 150.126;
+  planner.bills.push({ ...planner.bills[0], id: "php-bill", currency: "PHP", savedAmount: 12600.5 });
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.bills[0].amount, 100);
+  assert.equal(clean.bills[0].savedAmount, 150.13);
+  assert.equal(clean.bills[0].currency, "USD");
+  assert.equal(clean.bills[1].savedAmount, 12600.5);
+  assert.equal(clean.bills[1].currency, "PHP");
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  planner.bills[0].savedAmount = 999_999_999;
+  assert.equal(validateFinancePlanner(planner).bills[0].savedAmount, 999_999_999);
+});
+
+test("annual saved funds reject negative, nonfinite, nonnumeric and excessive values", () => {
+  for (const savedAmount of [-0.01, NaN, Infinity, -Infinity, 1_000_000_000, "100", null, true, {}, []]) {
+    const planner = document();
+    planner.bills[0].savedAmount = savedAmount;
+    assert.throws(() => validateFinancePlanner(planner), /Saved amount/, `saved amount ${String(savedAmount)}`);
+  }
+});
+
+test("monthly bills normalize stale annual saved funds to zero", () => {
+  for (const savedAmount of [undefined, 100, 999_999_999, null, "stale"]) {
+    const planner = document();
+    Object.assign(planner.bills[0], { cadence: "monthly", dueMonths: [], savedAmount });
+    const clean = validateFinancePlanner(planner);
+    assert.equal(clean.bills[0].savedAmount, 0);
+    assert.deepEqual(validateFinancePlanner(clean), clean);
+  }
+});
+
 test("retains a signed opening balance and allows a zero salary", () => {
   const planner = document();
   planner.salary.amount = 0;

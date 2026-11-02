@@ -137,6 +137,54 @@ test("a due-today target uses the full upcoming installment for split annual bil
   assert.match(html, /Next: Jul 2, 2026/);
 });
 
+test("annual bills distinguish actual saved funds from targets and show remaining annual funding", () => {
+  const html = renderTable([
+    { ...baseBill, name: "Venture X", amount: 395, savedAmount: 100 },
+  ]);
+  assert.match(html, /Saved so far/);
+  assert.match(html, /Still to fund/);
+  assert.match(html, /data-label="Saved so far"[^>]*><strong[^>]*>\$100\.00<\/strong>/);
+  assert.match(html, /data-label="Still to fund"[^>]*><strong>\$295\.00<\/strong><small>₱18,585\.00<\/small>/);
+  assert.match(html, /data-label="Target saved by now"/);
+  assert.match(html, /earmarked for that bill in budget plans/);
+  assert.match(html, /projections do not change your saved balance/);
+  // Saving for a bill does not change its total annual cost.
+  assert.match(html, /data-label="USD"><span[^>]*>\$395\.00<\/span>/);
+});
+
+test("saved and remaining totals retain native pesos and overfunding stays with its bill", () => {
+  const bills = [
+    { ...baseBill, amount: 2, savedAmount: 1 },
+    { ...baseBill, id: "php", name: "PHP renewal", currency: "PHP", amount: 2, savedAmount: 1 },
+  ];
+  const footer = renderTable(bills).match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
+  assert.match(footer, /class="fb-balance fb-saved"><strong>\$1\.02<\/strong><small>₱64\.00<\/small>/);
+  assert.match(footer, /class="fb-balance fb-remaining"><strong>\$1\.02<\/strong><small>₱64\.00<\/small>/);
+  const overfunded = renderTable([
+    { ...baseBill, amount: 395, savedAmount: 500 },
+    { ...baseBill, id: "other", name: "Other renewal", amount: 395 },
+  ]);
+  assert.match(overfunded, /data-label="Saved so far"[^>]*><strong[^>]*>\$500\.00<\/strong>/);
+  assert.match(overfunded, /data-label="Still to fund"[^>]*><strong>\$0\.00<\/strong>/);
+  const remainingTotal = overfunded.match(/<tfoot>([\s\S]*?)<\/tfoot>/)?.[1];
+  assert.match(remainingTotal, /class="fb-balance fb-remaining"><strong>\$395\.00<\/strong>/);
+});
+
+test("annual forms expose the actual saved balance in the payment currency and legacy bills default to zero", () => {
+  const renderForm = (bill) => renderToStaticMarkup(
+    createElement(BillForm, { bill, cadence: "annual", rate: 63, onSave() {} }),
+  );
+  const legacy = renderForm(baseBill);
+  assert.match(legacy, /Saved so far · USD/);
+  assert.match(legacy, /min="0" max="999999999" step="0\.01" inputMode="decimal" value="0"/);
+  assert.match(legacy, /Budget plans start with these earmarked funds/);
+  assert.match(legacy, /projected plans do not change this saved balance/);
+  const php = renderForm({ ...baseBill, currency: "PHP", savedAmount: 100 });
+  assert.match(php, /Saved so far · PHP/);
+  assert.match(php, /min="0" max="999999999" step="0\.01" inputMode="decimal" value="100"/);
+  assert.match(renderTable([baseBill]), /data-label="Saved so far"[^>]*><strong[^>]*>\$0\.00<\/strong>/);
+});
+
 test("monthly two-payment bills show their monthly total, native split amounts, and both days", () => {
   const bill = {
     ...baseBill,
@@ -185,6 +233,7 @@ test("bill forms explain the total monthly amount and restore both dates when ed
   assert.match(html, /value="20"/);
   assert.match(html, /2 payments per month · \$300\.00 each/);
   assert.match(html, /Save changes/);
+  assert.doesNotMatch(html, /Saved so far/);
 });
 
 // Exercise the real submit handler directly with fixed hook state, avoiding a
@@ -269,4 +318,38 @@ test("undated monthly bills remain supported and annual editing preserves instal
   assert.equal(annual.saved.dueDay, 9);
   assert.deepEqual(annual.saved.dueDays, []);
   assert.deepEqual(annual.saved.dueMonths, [3, 11]);
+});
+
+test("annual saved balances serialize numerically, allow carryover, and default omitted balances to zero", () => {
+  const annual = { cadence: "annual", dueDay: "28", dueMonths: [11] };
+  for (const [input, expected] of [
+    ["100.25", 100.25],
+    ["800", 800],
+    [999999999, 999999999],
+    [undefined, 0],
+    [null, 0],
+    ["", 0],
+  ]) {
+    const result = submitDraft({ ...annual, savedAmount: input });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.saved.savedAmount, expected);
+  }
+  // A monthly bill cannot retain an annual reserve, even after cadence changes.
+  assert.equal(submitDraft({ savedAmount: "100" }).saved.savedAmount, 0);
+  assert.equal(submitDraft({ savedAmount: "NaN" }).saved.savedAmount, 0);
+});
+
+test("annual saved balances reject negative, nonfinite, out-of-range and fractional-cent values", () => {
+  for (const savedAmount of [-0.01, "NaN", "Infinity", "1000000000", "100.001"]) {
+    const result = submitDraft({
+      cadence: "annual",
+      dueDay: "28",
+      dueMonths: [11],
+      savedAmount,
+    });
+    assert.equal(result.saved, undefined);
+    assert.deepEqual(result.errors, [
+      "Enter saved funds from 0 to 999,999,999 with up to two decimal places.",
+    ]);
+  }
 });

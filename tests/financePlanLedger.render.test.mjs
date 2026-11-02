@@ -103,7 +103,89 @@ test("opening balances keep annual reserve pockets distinct from available USD a
   assert.ok(html.includes('tabindex="0"'));
 });
 
-test("reserve transfers display signed available flows and reserve movement without deducting a payment twice", () => {
+test("the starting annual reserve includes item savings supplied by the opening helper", () => {
+  const savedPlan = { ...plan, openingReserveUsd: 0, openingReservePhp: 0 };
+  const openingReserve = planner.getAnnualReserveOpening(savedPlan, {
+    bills: [
+      { id: "venture", cadence: "annual", currency: "USD", savedAmount: 100 },
+    ],
+  });
+  const opening = cells(
+    findRow(render([], { plan: savedPlan, openingReserve }), "fpl-opening-row"),
+  );
+  assert.equal(opening[4], "$750.00");
+  assert.equal(opening[6], "$100.00");
+  assert.equal(opening[7], "₱0.00");
+});
+
+test("an annual payment displays one net cash row with its full fee and reserve use", () => {
+  const html = render([
+    row({
+      id: "venture",
+      description: "Venture X",
+      annualPayment: true,
+      currency: "USD",
+      amount: 395,
+      grossAmount: 395,
+      reserveUsed: 100,
+      reserveShortfall: 295,
+      usd: -295,
+      balanceUsd: 455,
+      reserveUsd: 0,
+      reserveDeltaUsd: -100,
+    }),
+  ]);
+  assert.equal((html.match(/class="fpl-row /g) || []).length, 1);
+  const bill = cells(findRow(html, "fpl-row-bill"));
+  assert.equal(bill[2], "-$295.00");
+  assert.equal(bill[3], "—");
+  assert.equal(bill[4], "$455.00");
+  assert.equal(bill[6], "$0.00-$100.00 used");
+  assert.ok(
+    html.includes(
+      "Total bill $395.00 · $100.00 from reserves · $295.00 additional cash",
+    ),
+  );
+  assert.ok(!html.includes("Use annual reserve"));
+  assert.ok(!html.includes("Reserve shortfall:"));
+  assert.ok(
+    html.includes(
+      "Annual payments show only additional available funds needed",
+    ),
+  );
+  assert.ok(html.includes("Saved amounts are earmarked for each annual bill"));
+});
+
+test("fully funded annual bills show a zero native cash flow and leave the other currency blank", () => {
+  for (const currency of ["USD", "PHP"]) {
+    const html = render([
+      row({
+        annualPayment: true,
+        currency,
+        amount: 395,
+        grossAmount: 395,
+        reserveUsed: 395,
+        reserveShortfall: 0,
+        reserveUsd: currency === "USD" ? 0 : 200,
+        reservePhp: currency === "PHP" ? 12205 : 12600,
+        reserveDeltaUsd: currency === "USD" ? -395 : 0,
+        reserveDeltaPhp: currency === "PHP" ? -395 : 0,
+      }),
+    ]);
+    const bill = cells(findRow(html, "fpl-row-bill"));
+    assert.equal(bill[2], currency === "USD" ? "$0.00" : "—");
+    assert.equal(bill[3], currency === "PHP" ? "₱0.00" : "—");
+    assert.equal(bill[4], "$750.00");
+    assert.equal(bill[5], "₱500.00");
+    assert.ok(
+      plain(html).includes(
+        `${planner.money(395, currency)} from reserves · ${planner.money(0, currency)} additional cash`,
+      ),
+    );
+  }
+});
+
+test("reserve set-asides display signed available flows and their reserve movement", () => {
   const html = render([
     row({
       id: "save",
@@ -115,38 +197,44 @@ test("reserve transfers display signed available flows and reserve movement with
       reserveUsd: 250,
       reserveDeltaUsd: 50,
     }),
-    row({
-      id: "release",
-      source: "reserveRelease",
-      kind: "release",
-      description: "Use Microsoft reserve",
-      usd: 100,
-      balanceUsd: 800,
-      reserveUsd: 150,
-      reserveDeltaUsd: -100,
-    }),
-    row({
-      id: "bill",
-      description: "Microsoft",
-      usd: -100,
-      balanceUsd: 700,
-      reserveUsd: 150,
-    }),
   ]);
   const save = cells(findRow(html, "fpl-row-reserve"));
   assert.equal(save[2], "-$50.00");
   assert.equal(save[4], "$700.00");
   assert.equal(save[6], "$250.00+$50.00 set aside");
-  const release = cells(findRow(html, "fpl-row-reserveRelease"));
-  assert.equal(release[2], "+$100.00");
-  assert.equal(release[4], "$800.00");
-  assert.equal(release[6], "$150.00-$100.00 used");
-  const bill = cells(findRow(html, "fpl-row-bill"));
-  assert.equal(bill[2], "-$100.00");
-  assert.equal(bill[4], "$700.00");
-  assert.equal(bill[6], "$150.00");
   assert.ok(html.includes("Annual bills set-aside"));
-  assert.ok(html.includes("Use annual reserve"));
+});
+
+test("recorded annual payments retain the full payment detail while showing only additional cash", () => {
+  const html = render([
+    row({
+      source: "transaction",
+      description: "Venture X card payment",
+      annualPayment: true,
+      currency: "USD",
+      amount: 395,
+      grossAmount: 395,
+      reserveUsed: 100,
+      reserveShortfall: 295,
+      usd: -295,
+      balanceUsd: 455,
+      reserveUsd: 0,
+      reserveDeltaUsd: -100,
+      scheduledSource: "bill",
+      scheduledDate: "2026-11-28",
+    }),
+  ]);
+  const actual = cells(findRow(html, "fpl-row-transaction"));
+  assert.equal(actual[2], "-$295.00");
+  assert.ok(html.includes("Recorded transaction"));
+  assert.ok(html.includes("Replaces scheduled bill"));
+  assert.ok(
+    html.includes(
+      "Total bill $395.00 · $100.00 from reserves · $295.00 additional cash",
+    ),
+  );
+  assert.ok(!html.includes('aria-label="Edit '));
+  assert.ok(!html.includes('aria-label="Delete '));
 });
 
 test("only original manual plan entries have edit and delete controls", () => {
