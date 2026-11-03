@@ -234,6 +234,12 @@ Finance number fields preserve partial editing text, validate values on save,
 and accept unambiguous pasted USD/PHP amounts. Backdrop gestures do not dismiss
 edit dialogs; explicit close/Escape remain available, and Enter in text fields
 does not accidentally submit the form.
+Phone layouts use compact navigation, two-column plan summaries, and ledger
+cards that fit the screen with completion and edit actions on each card. Unused
+reserve/savings currencies collapse on phones; desktop keeps every column.
+Plan refresh/delete controls live under **More options**, with account forecasts
+and supporting details expandable. Edit dialogs follow the keyboard viewport and
+restore the page's scroll position when closed.
 
 Overview income/spending totals exclude pending and future-dated transactions,
 bank transfers, and loan-payment categories. Planned salary, recurring bills,

@@ -32,6 +32,7 @@ function ActionIcon({ kind }) {
 function FlowAmount({ value, currency, showZero = false }) {
   return (
     <td
+      data-label={`Flow · ${currency}`}
       className={
         value < 0 ? "fp-negative" : value > 0 ? "fp-positive" : "fp-zero"
       }
@@ -41,9 +42,9 @@ function FlowAmount({ value, currency, showZero = false }) {
   );
 }
 
-function ReserveBalance({ value = 0, delta = 0, currency }) {
+function ReserveBalance({ value = 0, delta = 0, currency, unusedOnPhone = false }) {
   return (
-    <td className={`fpl-reserve-balance ${balanceClass(value)}`}>
+    <td data-label={`Annual reserve · ${currency}`} className={`fpl-reserve-balance ${balanceClass(value)}${unusedOnPhone ? " fpl-unused-on-phone" : ""}`}>
       <span>{money(value, currency)}</span>
       {delta !== 0 && (
         <small className="fpl-reserve-change">
@@ -54,11 +55,12 @@ function ReserveBalance({ value = 0, delta = 0, currency }) {
   );
 }
 
-function SavingsBalance({ value = 0, currency }) {
+function SavingsBalance({ value = 0, currency, unusedOnPhone = false }) {
   const available = Number.isFinite(value);
   return (
     <td
-      className={`fpl-savings-balance ${available ? balanceClass(value) : "fp-zero"}`}
+      data-label={`Savings · ${currency}`}
+      className={`fpl-savings-balance ${available ? balanceClass(value) : "fp-zero"}${unusedOnPhone ? " fpl-unused-on-phone" : ""}`}
     >
       {available ? (
         money(value, currency)
@@ -180,20 +182,20 @@ function SourceLabel({ row }) {
           Historical reserve movement is already included in current earmarks.
         </small>
       )}
-      {row.accountNames?.length > 0 && (
-        <small className="fpl-account-label">
-          Accounts: {row.accountNames.join(" · ")}
-        </small>
-      )}
       {sameAccountReserve && (
         <small className="fpl-account-label">
           Earmarked within the same account; bank balance stays unchanged.
         </small>
       )}
-      {row.accountMovements?.length > 0 && (
+      {(row.accountMovements?.length > 0 || row.accountNames?.length > 0) && (
         <details className="fpl-account-movements">
-          <summary>Account movements</summary>
-          <ul>
+          <summary>{row.accountMovements?.length > 0 ? "Account movements" : "Linked accounts"}</summary>
+          {row.accountNames?.length > 0 && (
+            <small className="fpl-account-label">
+              Accounts: {row.accountNames.join(" · ")}
+            </small>
+          )}
+          {row.accountMovements?.length > 0 && <ul>
             {row.accountMovements.map((movement, index) => (
               <li key={`${movement.accountId}-${index}`}>
                 {movement.accountName || "Assigned account"}:{" "}
@@ -211,7 +213,7 @@ function SourceLabel({ row }) {
                 )}
               </li>
             ))}
-          </ul>
+          </ul>}
         </details>
       )}
     </>
@@ -318,15 +320,31 @@ export default function Ledger({
 }) {
   const openingUsd = openingBalances?.usd ?? plan.openingUsd ?? 0;
   const openingPhp = openingBalances?.php ?? plan.openingPhp ?? 0;
+  // Only omit a reserve/savings currency when its complete plan is known zero.
+  // Missing old-document values default to zero; explicit null stays visible.
+  const unusedCurrency = (opening, key) =>
+    [opening, ...rows.map((row) => row[key])].every(
+      (value) => value === 0 || value === undefined,
+    );
+  const unusedReserveUsd = unusedCurrency(
+    openingReserve?.usd !== undefined ? openingReserve.usd : plan.openingReserveUsd ?? 0,
+    "reserveUsd",
+  );
+  const unusedReservePhp = unusedCurrency(
+    openingReserve?.php !== undefined ? openingReserve.php : plan.openingReservePhp ?? 0,
+    "reservePhp",
+  );
+  const unusedSavingsUsd = unusedCurrency(openingSavings?.usd, "savingsUsd");
+  const unusedSavingsPhp = unusedCurrency(openingSavings?.php, "savingsPhp");
   return (
     <>
       <div
         className="fp-table-wrap fp-ledger-wrap fpl-scroll"
         role="region"
-        aria-label="Budget money flows, available balances, annual reserves, and savings; scroll horizontally for all columns"
+        aria-label="Budget money flows, available balances, annual reserves, and savings"
         tabIndex={0}
       >
-        <table className="fp-table fp-ledger fpl-table">
+        <table className="fp-table fp-ledger fpl-table" role="table">
           <caption className="fp-sr-only">
             Money flows between{" "}
             {formatDate(plan.startDate, { year: "numeric" })} and{" "}
@@ -366,32 +384,34 @@ export default function Ledger({
           </thead>
           <tbody>
             <tr className="fp-opening-row fpl-opening-row">
-              <td>{formatDate(plan.startDate, { year: "numeric" })}</td>
-              <td>
+              <td className="fpl-date-cell">{formatDate(plan.startDate, { year: "numeric" })}</td>
+              <td className="fpl-description-cell">
                 <strong>Starting balances</strong>
                 <small>Available funds, annual reserves, and savings</small>
                 <OpeningDetails openingBalances={openingBalances} />
               </td>
-              <td className="fp-zero">—</td>
-              <td className="fp-zero">—</td>
-              <td className={`fp-running ${balanceClass(openingUsd)}`}>
+              <td data-label="Flow · USD" className="fp-zero fpl-opening-flow">—</td>
+              <td data-label="Flow · PHP" className="fp-zero fpl-opening-flow">—</td>
+              <td data-label="Available · USD" className={`fp-running ${balanceClass(openingUsd)}`}>
                 {money(openingUsd)}
               </td>
-              <td className={`fp-running ${balanceClass(openingPhp)}`}>
+              <td data-label="Available · PHP" className={`fp-running ${balanceClass(openingPhp)}`}>
                 {money(openingPhp, "PHP")}
               </td>
               <ReserveBalance
                 value={openingReserve?.usd ?? plan.openingReserveUsd ?? 0}
                 currency="USD"
+                unusedOnPhone={unusedReserveUsd}
               />
               <ReserveBalance
                 value={openingReserve?.php ?? plan.openingReservePhp ?? 0}
                 currency="PHP"
+                unusedOnPhone={unusedReservePhp}
               />
-              <SavingsBalance value={openingSavings?.usd} currency="USD" />
-              <SavingsBalance value={openingSavings?.php} currency="PHP" />
-              <td className="fp-zero">—</td>
-              <td />
+              <SavingsBalance value={openingSavings?.usd} currency="USD" unusedOnPhone={unusedSavingsUsd} />
+              <SavingsBalance value={openingSavings?.php} currency="PHP" unusedOnPhone={unusedSavingsPhp} />
+              <td className="fp-zero fpl-opening-status">—</td>
+              <td className="fpl-actions-cell" />
             </tr>
             {rows.map((row) => {
               const manualEntry =
@@ -406,8 +426,8 @@ export default function Ledger({
                   key={row.id}
                   className={`fpl-row fpl-row-${row.source}${row.completed ? " fpl-row-completed" : ""}`}
                 >
-                  <td>{formatDate(row.date, { year: "numeric" })}</td>
-                  <td>
+                  <td className="fpl-date-cell">{formatDate(row.date, { year: "numeric" })}</td>
+                  <td className="fpl-description-cell">
                     <strong>{row.description}</strong>
                     <SourceLabel row={row} />
                   </td>
@@ -421,24 +441,26 @@ export default function Ledger({
                     currency="PHP"
                     showZero={row.annualPayment && row.currency === "PHP"}
                   />
-                  <td className={`fp-running ${balanceClass(row.balanceUsd)}`}>
+                  <td data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
                     {money(row.balanceUsd)}
                   </td>
-                  <td className={`fp-running ${balanceClass(row.balancePhp)}`}>
+                  <td data-label="Available · PHP" className={`fp-running ${balanceClass(row.balancePhp)}`}>
                     {money(row.balancePhp, "PHP")}
                   </td>
                   <ReserveBalance
                     value={row.reserveUsd ?? 0}
                     delta={row.reserveAppliedUsd ?? row.reserveDeltaUsd ?? 0}
                     currency="USD"
+                    unusedOnPhone={unusedReserveUsd}
                   />
                   <ReserveBalance
                     value={row.reservePhp ?? 0}
                     delta={row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0}
                     currency="PHP"
+                    unusedOnPhone={unusedReservePhp}
                   />
-                  <SavingsBalance value={row.savingsUsd} currency="USD" />
-                  <SavingsBalance value={row.savingsPhp} currency="PHP" />
+                  <SavingsBalance value={row.savingsUsd} currency="USD" unusedOnPhone={unusedSavingsUsd} />
+                  <SavingsBalance value={row.savingsPhp} currency="PHP" unusedOnPhone={unusedSavingsPhp} />
                   <td className="fpl-status-cell">
                     <CompletionStatus
                       row={row}
@@ -446,7 +468,7 @@ export default function Ledger({
                       busy={busy}
                     />
                   </td>
-                  <td>
+                  <td className="fpl-actions-cell">
                     {(manualEntry || editableOccurrence) && (
                       <div className="fp-row-actions">
                         <button
@@ -503,7 +525,9 @@ export default function Ledger({
           </tbody>
         </table>
       </div>
-      <p className="fpl-legend">
+      <details className="fpl-legend">
+        <summary>How balances work</summary>
+        <p>
         Annual payments show only additional available funds needed; remaining
         payment is covered by reserves. Saved amounts are earmarked for each
         annual bill. Marking a row done tracks progress; it does not create a
@@ -512,7 +536,8 @@ export default function Ledger({
         accounts and planned movements, excluding annual reserves. Unassigned
         savings accumulate separately. Editing a scheduled row changes only that
         date in this plan; Reset restores the recurring value.
-      </p>
+        </p>
+      </details>
     </>
   );
 }

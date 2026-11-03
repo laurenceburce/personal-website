@@ -122,6 +122,87 @@ test("opening balances keep annual reserve pockets distinct from available USD a
   assert.ok(html.includes('tabindex="0"'));
 });
 
+test("phone cards label every money value without duplicating the table or row controls", () => {
+  const record = row({
+    id: "allocation:saving:2026-11-06",
+    description: "Savings · A long account purpose that can wrap on a phone",
+    source: "allocation",
+    editable: true,
+    usd: -500,
+    balanceUsd: 250,
+    savingsUsd: 746.73,
+    savingsPhp: 0,
+  });
+  let edited, completed;
+  const tree = Ledger({
+    plan,
+    rows: [record],
+    onEditOccurrence(value) { edited = value; },
+    onToggleComplete(value) { completed = value; },
+  });
+  const nodes = elements(tree);
+  assert.equal(nodes.filter((node) => node.type === "table").length, 1);
+  assert.equal(nodes.filter((node) => node.type === "input" && node.props.type === "checkbox").length, 1);
+  const edit = nodes.filter((node) => node.type === "button" && node.props["aria-label"]?.startsWith("Edit this occurrence:"));
+  assert.equal(edit.length, 1);
+  edit[0].props.onClick();
+  assert.equal(edited, record);
+  nodes.find((node) => node.type === "input" && node.props.type === "checkbox").props.onChange();
+  assert.equal(completed, record);
+  for (const label of ["Flow · USD", "Flow · PHP", "Available · USD", "Available · PHP", "Annual reserve · USD", "Annual reserve · PHP", "Savings · USD", "Savings · PHP"])
+    assert.equal(nodes.filter((node) => node.type === "td" && node.props["data-label"] === label).length, 2, label);
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /<thead>/);
+  assert.match(html, /<th scope="col">Flow · USD<\/th>/);
+  assert.equal(cells(findRow(html, "fpl-row-allocation"))[8], "$746.73");
+});
+
+test("phone account disclosures keep essential annual payment information outside the closed details", () => {
+  const html = render([row({
+    annualPayment: true,
+    currency: "USD",
+    amount: 395,
+    grossAmount: 395,
+    reserveUsed: 100,
+    reserveShortfall: 295,
+    usd: -295,
+    accountNames: ["Checking · •5483", "Annual savings · •5742"],
+    accountMovements: [{ accountId: 1, accountName: "Checking · •5483", amount: -395, currency: "USD" }],
+  })]);
+  const card = findRow(html, "fpl-row-bill");
+  assert.ok(card.indexOf('class="fpl-annual-payment-detail"') < card.indexOf('<details class="fpl-account-movements">'));
+  assert.match(card, /<details class="fpl-account-movements"><summary>Account movements<\/summary>/);
+  assert.match(card, /Accounts: Checking/);
+  assert.doesNotMatch(card, /<details[^>]*open/);
+  assert.match(html, /<details class="fpl-legend"><summary>How balances work<\/summary>/);
+});
+
+test("phone cards omit only reserve and savings currencies known zero for the complete plan", () => {
+  const initial = { openingReserve: { usd: 0, php: 0 }, openingSavings: { usd: 0, php: 0 } };
+  const base = row({ reserveUsd: 100, reservePhp: 0, savingsUsd: 250, savingsPhp: 0 });
+  const cases = [
+    { rows: [base], omitted: true },
+    { rows: [base, row({ id: "later", date: "2026-11-20", reserveUsd: 100, reservePhp: 25, savingsUsd: 250, savingsPhp: 50 })], omitted: false },
+    { rows: [{ ...base, reservePhp: null, savingsPhp: null }], omitted: false },
+  ];
+  for (const fixture of cases) {
+    const nodes = elements(Ledger({ plan, rows: fixture.rows, ...initial }));
+    for (const label of ["Annual reserve · PHP", "Savings · PHP"]) {
+      const moneyCells = nodes.filter((node) => node.type === "td" && node.props["data-label"] === label);
+      assert.equal(moneyCells.length, fixture.rows.length + 1);
+      assert.equal(moneyCells.every((node) => node.props.className.includes("fpl-unused-on-phone")), fixture.omitted, label);
+    }
+    for (const label of ["Flow · USD", "Flow · PHP", "Available · USD", "Available · PHP", "Annual reserve · USD", "Savings · USD"])
+      assert.ok(nodes.filter((node) => node.type === "td" && node.props["data-label"] === label).every((node) => !node.props.className.includes("fpl-unused-on-phone")), label);
+    // Cells remain in the single desktop table; only the phone stylesheet omits them.
+    const html = render(fixture.rows, initial);
+    assert.equal(cells(findRow(html, "fpl-opening-row")).length, 12);
+    assert.equal((html.match(/type="checkbox"/g) || []).length, fixture.rows.length);
+  }
+  const unknownOpening = elements(Ledger({ plan, rows: [base], ...initial, openingSavings: { usd: 0, php: null } }));
+  assert.ok(unknownOpening.filter((node) => node.type === "td" && node.props["data-label"] === "Savings · PHP").every((node) => !node.props.className.includes("fpl-unused-on-phone")));
+});
+
 test("running savings show both native currencies separately from available funds and annual reserves", () => {
   const html = render(
     [

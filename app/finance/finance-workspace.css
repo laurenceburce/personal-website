@@ -395,3 +395,557 @@
     justify-self: start;
   }
 }
+
+/* Keep every workspace panel inside its containing column. Wide data tables
+   manage their own scrolling; the document itself never needs a wider canvas. */
+.fp-app,
+.fp-app .fp-main,
+.fp-app .fp-content,
+.fp-app .fp-content > *,
+.fp-app .fp-card-heading,
+.fp-app .fp-button-row,
+.fp-app .fp-plan-actions,
+.fp-app .fp-plan-summary > div,
+.fp-app .fp-workspace-toolbar,
+.fp-app .fp-data-controls,
+.fp-app .fpi-overview,
+.fp-app .fpi-card-heading,
+.fp-app .fa-section-header {
+  min-width: 0;
+}
+.fp-app .fp-content > *,
+.fp-app .fp-table-wrap,
+.fp-app .fp-plan-summary,
+.fp-app .fp-plan-selector,
+.fp-app .fpi-overview,
+.fp-app .fa-card,
+.fp-app .fap-section {
+  max-width: 100%;
+}
+.fp-app .fp-page-heading h1,
+.fp-app .fp-card-heading h2,
+.fp-app .fp-plan-summary strong,
+.fp-app .fp-plan-date-range,
+.fp-app .fp-plan-flow-note,
+.fp-app .fp-inline-note,
+.fp-app .fp-alert-warning,
+.fp-app .fp-alert-error {
+  overflow-wrap: anywhere;
+}
+.fp-app .fp-plan-heading {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.fp-app .fp-plan-heading > div:first-child {
+  flex: 1 1 160px;
+}
+.fp-app .fp-plan-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 100%;
+}
+.fp-app .fp-plan-secondary-actions {
+  min-width: 0;
+  max-width: 100%;
+}
+.fp-app .fp-plan-secondary-actions > summary {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid #dde6df;
+  border-radius: 7px;
+  background: #fff;
+  color: #4f6456;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+.fp-app .fp-plan-secondary-actions > summary::-webkit-details-marker {
+  display: none;
+}
+.fp-app .fp-plan-secondary-actions[open] > summary {
+  border-color: #a5c5b2;
+  background: #f0f6f2;
+}
+.fp-app .fp-plan-secondary-actions > .fp-button-row {
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 8px;
+  max-width: 100%;
+}
+.fp-app .fp-plan-secondary-actions .fp-button {
+  white-space: normal;
+  text-align: center;
+}
+.fp-app .fp-plan-info {
+  margin: 0 0 13px;
+  min-width: 0;
+  max-width: 100%;
+}
+.fp-app .fp-plan-info > summary,
+.fp-app .fp-plan-account-details > summary {
+  min-height: 36px;
+  padding: 7px 0;
+  color: #37694f;
+  font-size: 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.fp-app .fp-plan-info > .fp-plan-date-range {
+  margin-bottom: 0;
+}
+.fp-app .fp-plan-info > p {
+  margin-bottom: 8px;
+}
+.fp-app .fp-plan-account-details {
+  max-width: 100%;
+  min-width: 0;
+  margin: 13px 0;
+  border-top: 1px solid #e3ebe5;
+  border-bottom: 1px solid #e3ebe5;
+}
+.fp-app .fp-plan-account-details > summary {
+  font-weight: 700;
+}
+
+@media (min-width: 761px) {
+  .fp-app .fp-content {
+    padding-top: 28px;
+    padding-bottom: 22px;
+  }
+  .fp-app .fp-card,
+  .fp-app .fpi-card {
+    padding: 19px;
+  }
+  .fp-app .fp-card-heading,
+  .fp-app .fpi-card-heading {
+    margin-bottom: 16px;
+  }
+  .fp-app .fp-page-heading {
+    margin-bottom: 20px;
+  }
+  .fp-app .fp-plan-summary {
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .fp-app .fp-plan-summary > div {
+    padding: 12px 15px;
+  }
+}
+
+@media (max-width: 760px) {
+  .fp-app {
+    min-height: 100dvh;
+    font-size: 13px;
+  }
+  .fp-app .fp-sidebar {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: max(8px, env(safe-area-inset-top)) 12px 0;
+    position: relative;
+  }
+  .fp-app .fp-brand {
+    gap: 8px;
+    margin-bottom: 6px;
+    min-height: 32px;
+    padding-right: 124px;
+  }
+  .fp-app .fp-brand > span {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+  }
+  .fp-app .fp-brand > span > svg {
+    width: 18px;
+    height: 18px;
+  }
+  .fp-app .fp-brand > div {
+    font-size: 16px;
+    letter-spacing: -.5px;
+  }
+  .fp-app .fp-brand > div > span {
+    margin-top: 1px;
+    font-size: 8px;
+    letter-spacing: 1.7px;
+  }
+  .fp-app .fp-sidebar nav {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0;
+    gap: 4px;
+    padding-bottom: 4px;
+    scroll-padding-inline: 2px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .fp-app .fp-sidebar nav button {
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 6px;
+    min-width: 0;
+    min-height: 42px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .fp-app .fp-sidebar nav button svg {
+    width: 16px;
+    height: 16px;
+  }
+  .fp-app .fp-sidebar-bottom {
+    top: max(6px, env(safe-area-inset-top));
+    right: 12px;
+  }
+  .fp-app .fp-phone-card > summary {
+    min-height: 36px;
+    padding: 7px 9px;
+    font-size: 10px;
+  }
+  .fp-app .fp-phone-card[open] {
+    width: min(290px, calc(100vw - 24px));
+  }
+  .fp-app .fp-main {
+    width: 100%;
+    max-width: 100%;
+    min-height: 0;
+  }
+  .fp-app .fp-topbar {
+    min-height: 48px;
+    padding: 4px 12px;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .fp-app .fp-topbar > span {
+    min-width: 0;
+  }
+  .fp-app .fp-topbar > span strong {
+    overflow-wrap: anywhere;
+  }
+  .fp-app .fp-topbar > div {
+    flex-shrink: 0;
+    gap: 4px;
+  }
+  .fp-app .fp-quick-add {
+    min-height: 40px;
+    padding: 8px 10px;
+  }
+  .fp-app .fp-content {
+    padding: 14px max(12px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+  .fp-app .fp-page-heading {
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .fp-app .fp-page-heading .fp-eyebrow {
+    display: none;
+  }
+  .fp-app .fp-page-heading h1 {
+    font-size: 23px;
+    line-height: 1.25;
+    letter-spacing: -.65px;
+    margin: 0 0 5px;
+  }
+  .fp-app .fp-page-heading p {
+    max-width: none;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .fp-app[data-view="plans"] .fp-page-heading p {
+    display: none;
+  }
+  .fp-app .fp-page-heading > .fp-button {
+    flex-shrink: 0;
+    min-height: 42px;
+    padding: 8px 10px;
+  }
+  .fp-app .fp-card,
+  .fp-app .fpi-card,
+  .fp-app .fa-card {
+    padding: 13px 12px;
+    border-radius: 9px;
+  }
+  .fp-app .fp-card-heading,
+  .fp-app .fpi-card-heading,
+  .fp-app .fa-section-header {
+    gap: 8px;
+    margin-bottom: 13px;
+    flex-wrap: wrap;
+  }
+  .fp-app .fp-card-heading > div {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .fp-app .fp-button {
+    min-height: 42px;
+    padding: 8px 11px;
+  }
+  .fp-app .fp-icon-button {
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+    padding: 9px;
+  }
+  .fp-app .fp-button.fp-mobile-signout {
+    width: 40px;
+    min-height: 40px;
+  }
+  .fp-app .fp-button-row {
+    max-width: 100%;
+    gap: 6px;
+  }
+  .fp-app .fp-rate-bar {
+    padding: 6px 9px;
+    gap: 4px 8px;
+    margin-bottom: 13px;
+  }
+  .fp-app .fp-rate-bar > div {
+    min-width: 0;
+    flex: 1 1 180px;
+    gap: 5px;
+  }
+  .fp-app .fp-rate-bar > .fp-button {
+    min-height: 40px;
+    padding: 6px 8px;
+    flex-shrink: 0;
+  }
+  .fp-app .fp-workspace-toolbar {
+    gap: 8px;
+    margin-bottom: 13px;
+  }
+  .fp-app .fp-data-controls {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .fp-app .fp-data-controls .fp-field {
+    flex: 1 1 145px;
+  }
+  .fp-app .fp-data-controls input[type="month"] {
+    width: 100%;
+    min-width: 0;
+  }
+  .fp-app .fp-display-currency button {
+    min-height: 40px;
+  }
+  .fp-app .fp-plan-selector {
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .fp-app .fp-plan-selector button {
+    max-width: 100%;
+    padding: 7px 10px;
+    min-height: 42px;
+  }
+  .fp-app .fp-plan-selector button > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    gap: 1px;
+  }
+  .fp-app .fp-plan-actions {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 7px;
+  }
+  .fp-app .fp-plan-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+  .fp-app .fp-plan-heading > div:first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .fp-app .fp-plan-heading > .fp-plan-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .fp-app .fp-plan-heading > .fp-plan-secondary-actions {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .fp-app .fp-plan-heading > .fp-plan-secondary-actions[open] {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .fp-app .fp-plan-actions > .fp-button {
+    flex: 1 1 125px;
+  }
+  .fp-app .fp-plan-secondary-actions {
+    flex: 0 1 auto;
+  }
+  .fp-app .fp-plan-secondary-actions > summary {
+    min-height: 42px;
+    padding: 8px 11px;
+  }
+  .fp-app .fp-plan-secondary-actions[open] {
+    flex: 1 1 100%;
+  }
+  .fp-app .fp-plan-secondary-actions > .fp-button-row {
+    justify-content: flex-start;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .fp-app .fp-plan-secondary-actions .fp-button {
+    min-width: 0;
+    width: 100%;
+  }
+  .fp-app .fp-plan-summary,
+  .fp-app .fp-plan-flow-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin-bottom: 13px;
+  }
+  .fp-app .fp-plan-flow-summary > div {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px;
+    gap: 4px;
+  }
+  .fp-app .fp-plan-flow-summary strong,
+  .fp-app .fp-plan-flow-summary > div:first-child strong {
+    font-size: clamp(16px, 4.6vw, 20px);
+    line-height: 1.3;
+    letter-spacing: -.3px;
+    max-width: 100%;
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .fp-app .fp-plan-summary span {
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  .fp-app .fp-plan-date-range,
+  .fp-app .fp-plan-flow-note {
+    font-size: 11px;
+    line-height: 1.6;
+    margin-bottom: 12px;
+  }
+  .fp-app .fp-plan-flow-note {
+    margin-top: 10px;
+  }
+  .fp-app .fp-plan-info {
+    margin-bottom: 10px;
+  }
+  .fp-app .fp-plan-info > summary,
+  .fp-app .fp-plan-account-details > summary {
+    min-height: 42px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    font-size: 11px;
+  }
+  .fp-app .fp-metrics,
+  .fp-app .fpi-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 0;
+  }
+  .fp-app .fp-metrics {
+    margin-bottom: 13px;
+  }
+  .fp-app .fp-metric,
+  .fp-app .fpi-metric {
+    padding: 12px 10px;
+    min-height: 112px;
+    border-radius: 9px;
+  }
+  .fp-app .fp-metric > strong,
+  .fp-app .fpi-metric > strong {
+    font-size: clamp(19px, 5.6vw, 25px);
+    margin: 7px 0 6px;
+    overflow-wrap: anywhere;
+    letter-spacing: -.55px;
+  }
+  .fp-app .fpi-metric .fpi-action {
+    margin-top: 5px;
+    min-height: 40px;
+  }
+  .fp-app .fpi-overview,
+  .fp-app .fp-overview-grid,
+  .fp-app .fpi-lower-grid,
+  .fp-app .fa-activity-section,
+  .fp-app .fa-bank-section,
+  .fp-app .fp-settings-grid {
+    gap: 13px;
+  }
+  .fp-app .fpi-bill-list li,
+  .fp-app .fpi-recent-list li {
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+  .fp-app .fp-spending-card .fp-spending-row {
+    min-height: 54px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .fp-app .fp-spending-layout,
+  .fp-app .fp-spending-notes {
+    gap: 12px;
+  }
+  .fp-app .fp-info-card,
+  .fp-app .fp-bill-remaining {
+    padding: 13px;
+  }
+  .fp-app .fp-bills-table tbody td:first-child {
+    padding-right: 88px;
+  }
+  .fp-app .fp-bills-table .fp-reserve-row td:first-child {
+    padding-right: 0;
+  }
+  .fp-app .fa-account-card,
+  .fp-app .fap-card {
+    padding: 13px;
+  }
+  .fp-app .fa-account-balance {
+    margin: 13px 0 12px;
+  }
+  .fp-app .fa-account-balance > strong {
+    font-size: 25px;
+  }
+  .fp-app .fa-accounts-grid,
+  .fp-app .fap-cards {
+    gap: 9px;
+  }
+  .fp-app .fap-section {
+    margin: 15px 0;
+  }
+  .fp-app .fap-card dl > div {
+    flex-wrap: wrap;
+    gap: 3px 8px;
+  }
+  .fp-app .fap-card dd {
+    margin-left: auto;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .fp-app .fp-alert-warning,
+  .fp-app .fp-alert-error {
+    flex-wrap: wrap;
+    padding: 10px;
+    margin-bottom: 12px;
+  }
+  .fp-app .fp-footer {
+    margin-top: 18px;
+    padding-top: 13px;
+  }
+  .fp-app .fp-toast {
+    max-width: calc(100% - 24px);
+    width: max-content;
+    padding: 10px 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+  }
+}

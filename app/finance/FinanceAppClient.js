@@ -73,8 +73,8 @@ const PAGE_COPY = {
     "Know what to set aside and what’s yours to spend.",
   ],
   plans: [
-    "A plan for what’s ahead.",
-    "Try out dates, expenses, and currency moves before they happen.",
+    "Budget plans",
+    "Plan upcoming bills, savings, and transfers.",
   ],
   transactions: [
     "Your money in motion",
@@ -1414,7 +1414,7 @@ export default function FinanceAppClient({
   }
 
   return (
-    <div className="fp-app">
+    <div className="fp-app" data-view={tab}>
       <aside className="fp-sidebar">
         <a
           className="fp-brand"
@@ -2034,50 +2034,14 @@ export default function FinanceAppClient({
                     ))}
                   </div>
                   <section className="fp-card">
-                    <div className="fp-card-heading">
+                    <div className="fp-card-heading fp-plan-heading">
                       <div>
                         <h2>{plan.name}</h2>
-                        <span className="fp-label-pill">Money flow</span>
+                        <span className="fp-label-pill" role={bankRefreshing ? "status" : undefined}>
+                          {bankRefreshing ? "Syncing bank data…" : "Money flow"}
+                        </span>
                       </div>
-                      <div className="fp-button-row">
-                        <Button
-                          icon="refresh"
-                          disabled={bankRefreshing || !activity.configured}
-                          onClick={() => refreshPlanBanks(true)}
-                        >
-                          {bankRefreshing
-                            ? "Refreshing bank data…"
-                            : "Refresh bank data"}
-                        </Button>
-                        {plan.includeTransactions !== false && (
-                          <Button
-                            icon="refresh"
-                            disabled={planActivityLoading}
-                            onClick={() => loadPlanActivity(plan)}
-                          >
-                            {planActivityLoading
-                              ? "Refreshing flows…"
-                              : "Refresh flows"}
-                          </Button>
-                        )}
-                        <Button
-                          icon="edit"
-                          onClick={() => open({ type: "plan", plan })}
-                        >
-                          Edit plan
-                        </Button>
-                        <Button
-                          icon="trash"
-                          className="fp-icon-button"
-                          aria-label={`Delete ${plan.name}`}
-                          onClick={() =>
-                            open({
-                              type: "delete",
-                              collection: "plans",
-                              row: plan,
-                            })
-                          }
-                        />
+                      <div className="fp-button-row fp-plan-actions">
                         <Button
                           icon="plus"
                           variant="primary"
@@ -2085,29 +2049,78 @@ export default function FinanceAppClient({
                         >
                           Add entry
                         </Button>
+                        <Button
+                          icon="edit"
+                          onClick={() => open({ type: "plan", plan })}
+                        >
+                          Edit plan
+                        </Button>
                       </div>
+                      <details className="fp-plan-secondary-actions">
+                        <summary>More options</summary>
+                        <div className="fp-button-row">
+                          <Button
+                            icon="refresh"
+                            disabled={bankRefreshing || !activity.configured}
+                            onClick={() => refreshPlanBanks(true)}
+                          >
+                            {bankRefreshing
+                              ? "Refreshing bank data…"
+                              : "Refresh bank data"}
+                          </Button>
+                          {plan.includeTransactions !== false && (
+                            <Button
+                              icon="refresh"
+                              disabled={planActivityLoading}
+                              onClick={() => loadPlanActivity(plan)}
+                            >
+                              {planActivityLoading
+                                ? "Refreshing flows…"
+                                : "Refresh flows"}
+                            </Button>
+                          )}
+                          <Button
+                            icon="trash"
+                            aria-label={`Delete ${plan.name}`}
+                            onClick={() =>
+                              open({
+                                type: "delete",
+                                collection: "plans",
+                                row: plan,
+                              })
+                            }
+                          >
+                            Delete plan
+                          </Button>
+                        </div>
+                      </details>
                     </div>
-                    <p className="fp-plan-date-range">
-                      {formatDate(plan.startDate, { year: "numeric" })} –{" "}
-                      {formatDate(plan.endDate, { year: "numeric" })} · Balances{" "}
-                      {plan.startingAccounts?.length
-                        ? "use current live account contributions. Already-posted flows reflected in those balances are not counted again."
-                        : "begin before the first day’s flows."}
-                    </p>
-                    {bankRefreshedAt && (
+                    <details className="fp-plan-info">
+                      <summary className="fp-plan-date-range">
+                        {formatDate(plan.startDate, { year: "numeric" })} –{" "}
+                        {formatDate(plan.endDate, { year: "numeric" })}
+                      </summary>
                       <p className="fp-inline-note">
-                        Bank data checked{" "}
-                        {new Intl.DateTimeFormat("en-US", {
-                          month: "short",
-                          day: "numeric",
-                          hour: "numeric",
-                          minute: "2-digit",
-                          timeZone: "America/New_York",
-                        }).format(new Date(bankRefreshedAt))}
-                        . Refreshes when this view opens, returns to focus, and
-                        every five minutes while visible.
+                        Balances{" "}
+                        {plan.startingAccounts?.length
+                          ? "use current live account contributions. Already-posted flows reflected in those balances are not counted again."
+                          : "begin before the first day’s flows."}
                       </p>
-                    )}
+                      {bankRefreshedAt && (
+                        <p className="fp-inline-note">
+                          Bank data checked{" "}
+                          {new Intl.DateTimeFormat("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                            timeZone: "America/New_York",
+                          }).format(new Date(bankRefreshedAt))}
+                          . Refreshes when this view opens, returns to focus,
+                          and every five minutes while visible.
+                        </p>
+                      )}
+                    </details>
                     {bankRefreshError && (
                       <p className="fp-alert fp-alert-warning" role="status">
                         {bankRefreshError} Showing the last available balances;
@@ -2252,7 +2265,15 @@ export default function FinanceAppClient({
                       />
                     )}
                     {!planWaitingForRecords && (
-                      <FinanceAccountPlanView projection={accountPlan} />
+                      <details className="fp-plan-account-details">
+                        <summary>
+                          Projected balances by account
+                          {accountPlan?.warnings.length > 0 && (
+                            <> · {accountPlan.warnings.length} notices</>
+                          )}
+                        </summary>
+                        <FinanceAccountPlanView projection={accountPlan} />
+                      </details>
                     )}
                     <p className="fp-plan-flow-note">
                       This plan includes dated bills and your plan entries

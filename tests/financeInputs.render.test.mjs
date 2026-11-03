@@ -57,6 +57,7 @@ function harness() {
     new Function("require", "module", "exports", codes.get(file))(
       (specifier) => {
         if (specifier === "react") return react;
+        if (specifier.endsWith(".css")) return {};
         if (specifier === "./FinanceNumberInput")
           return load("FinanceNumberInput");
         return require(specifier);
@@ -329,6 +330,113 @@ test("busy dialog refuses dismissals and mounts once without resetting focus on 
     hooks.unmount();
     assert.equal(nativeCloses, 1);
     assert.equal(restores, 1);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("phone dialog locks the background, follows the keyboard viewport, and restores its place", () => {
+  const previousWindow = globalThis.window;
+  const hooks = harness();
+  const originalStyle = {
+    position: "relative",
+    top: "3px",
+    left: "0px",
+    right: "auto",
+    width: "90%",
+    overflow: "auto",
+  };
+  const body = { style: { ...originalStyle } };
+  const page = { style: { scrollBehavior: "smooth" } };
+  const viewportListeners = new Map();
+  const windowListeners = new Map();
+  const viewport = {
+    height: 740,
+    offsetTop: 0,
+    addEventListener(type, callback) {
+      viewportListeners.set(type, callback);
+    },
+    removeEventListener(type, callback) {
+      assert.equal(viewportListeners.get(type), callback);
+      viewportListeners.delete(type);
+    },
+  };
+  const variables = new Map();
+  const element = {
+    open: false,
+    style: { setProperty: (name, value) => variables.set(name, value) },
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+  };
+  let restoredFocus, restoredScroll;
+  globalThis.window = {
+    scrollX: 12,
+    scrollY: 640,
+    innerHeight: 800,
+    visualViewport: viewport,
+    document: {
+      body,
+      documentElement: page,
+      activeElement: { isConnected: true, focus: (options) => { restoredFocus = options; } },
+    },
+    addEventListener(type, callback) { windowListeners.set(type, callback); },
+    removeEventListener(type, callback) {
+      assert.equal(windowListeners.get(type), callback);
+      windowListeners.delete(type);
+    },
+    scrollTo: (...position) => {
+      assert.equal(page.style.scrollBehavior, "auto");
+      restoredScroll = position;
+    },
+  };
+  try {
+    const tree = hooks.render("FinanceModal", { title: "Edit this occurrence", onClose() {} });
+    tree.props.ref.current = element;
+    hooks.flushEffects();
+    assert.equal(body.style.position, "fixed");
+    assert.equal(body.style.top, "-640px");
+    assert.equal(body.style.left, "-12px");
+    assert.equal(body.style.overflow, "hidden");
+    assert.equal(variables.get("--fp-dialog-viewport-height"), "740px");
+    assert.equal(restoredFocus, undefined);
+
+    viewport.height = 330;
+    viewport.offsetTop = 20;
+    viewportListeners.get("resize")();
+    assert.equal(variables.get("--fp-dialog-viewport-height"), "330px");
+    assert.equal(variables.get("--fp-dialog-viewport-top"), "20px");
+    hooks.render("FinanceModal", { title: "Edit this occurrence", busy: true, onClose() {} });
+    hooks.flushEffects();
+    assert.equal(body.style.top, "-640px");
+    assert.equal(viewportListeners.size, 2);
+
+    hooks.unmount();
+    assert.equal(element.open, false);
+    assert.deepEqual(body.style, originalStyle);
+    assert.deepEqual(restoredFocus, { preventScroll: true });
+    assert.deepEqual(restoredScroll, [12, 640]);
+    assert.equal(page.style.scrollBehavior, "smooth");
+    assert.equal(viewportListeners.size, 0);
+    assert.equal(windowListeners.size, 0);
+  } finally {
+    globalThis.window = previousWindow;
+  }
+});
+
+test("dialog cleanup does not focus a removed row after a refresh", () => {
+  const previousWindow = globalThis.window;
+  const hooks = harness();
+  let restores = 0;
+  const element = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  globalThis.window = {
+    document: { activeElement: { isConnected: false, focus() { restores++; } } },
+  };
+  try {
+    const tree = hooks.render("FinanceModal", { title: "Edit", onClose() {} });
+    tree.props.ref.current = element;
+    hooks.flushEffects();
+    hooks.unmount();
+    assert.equal(restores, 0);
   } finally {
     globalThis.window = previousWindow;
   }
