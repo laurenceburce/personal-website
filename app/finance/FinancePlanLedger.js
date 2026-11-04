@@ -75,6 +75,7 @@ function SourceLabel({ row }) {
   const labels = {
     salary: "Scheduled income",
     bill: "Scheduled bill",
+    creditCardDue: "Credit card statement due",
     transaction: "Recorded transaction",
     allocation: "Payday allocation",
     reserve: "Annual bills set-aside",
@@ -85,7 +86,7 @@ function SourceLabel({ row }) {
       ? row.kind === "conversion"
         ? "Planned currency conversion"
         : row.kind === "transfer"
-          ? "Planned account transfer"
+          ? row.creditCardPaymentFor ? "Planned credit card payment" : "Planned account transfer"
           : "Plan entry"
       : labels[row.source] || "Plan flow";
   const matched = row.scheduledSource || row.matchedForecast?.source;
@@ -94,6 +95,8 @@ function SourceLabel({ row }) {
       ? "scheduled income"
       : matched === "bill"
         ? "scheduled bill"
+        : matched === "creditCardDue"
+          ? "credit card statement payment"
         : "plan entry";
   const shortfallCurrency = row.currency || (row.php ? "PHP" : "USD");
   const grossAmount = row.grossAmount ?? row.amount;
@@ -133,10 +136,29 @@ function SourceLabel({ row }) {
       {row.isOverride && (
         <small className="fpl-override-note">Edited for this plan</small>
       )}
+      {row.source === "creditCardDue" && (
+        <small className="fpl-credit-card-due-detail">
+          Statement balance {money(row.statementBalance, row.currency)}
+          {row.paidAmount > 0 && <>{" "}· Paid {money(row.paidAmount, row.currency)}</>}
+          {row.plannedPaymentAmount > 0 && <>
+            {" "}· Planned payments {money(row.plannedPaymentAmount, row.currency)}
+          </>}
+          {(row.paidAmount > 0 || row.plannedPaymentAmount > 0) && <>
+            {" "}· Remaining {money(row.amount, row.currency)}
+          </>}
+        </small>
+      )}
+      {row.cardCreditActivity && (
+        <small className="fpl-account-label">
+          Changes the card balance. Cash payments are shown with statement dues.
+        </small>
+      )}
       {row.source === "manual" && row.kind === "transfer" &&
         Boolean(row.usd || row.php) && (
           <small className="fpl-account-label">
-            {row.usd > 0 || row.php > 0
+            {row.creditCardPaymentFor
+              ? "Pays the card from available funds."
+              : row.usd > 0 || row.php > 0
               ? "Moved from savings to available funds."
               : "Moved from available funds to savings."}
           </small>
@@ -144,7 +166,7 @@ function SourceLabel({ row }) {
       {row.source === "transaction" &&
         (row.matchedForecast || row.scheduledSource) && (
           <small className="fpl-match-note">
-            Replaces {matchedLabel}
+            {matched === "creditCardDue" ? "Recorded against" : "Replaces"} {matchedLabel}
             {row.scheduledDate ? ` · ${formatDate(row.scheduledDate)}` : ""}
           </small>
         )}
@@ -223,11 +245,14 @@ function SourceLabel({ row }) {
 function CompletionStatus({ row, onToggleComplete, busy }) {
   const completed = Boolean(row.completed);
   const automatic = completed && row.completionSource === "transaction";
+  const bankReportedPayment = automatic && row.source === "creditCardDue" && !row.matchedTransactionIds?.length;
   const matched =
     row.source !== "transaction" ||
     Boolean(row.matchedForecast || row.scheduledSource);
   const label = automatic
-    ? matched
+    ? bankReportedPayment
+      ? "Done · bank payment reported"
+      : matched
       ? "Done · matched transaction"
       : "Done · recorded transaction"
     : completed
@@ -434,12 +459,12 @@ export default function Ledger({
                   <FlowAmount
                     value={row.usd}
                     currency="USD"
-                    showZero={row.annualPayment && row.currency === "USD"}
+                    showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "USD"}
                   />
                   <FlowAmount
                     value={row.php}
                     currency="PHP"
-                    showZero={row.annualPayment && row.currency === "PHP"}
+                    showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "PHP"}
                   />
                   <td data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
                     {money(row.balanceUsd)}

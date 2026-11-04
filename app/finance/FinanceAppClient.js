@@ -30,6 +30,7 @@ import FinanceNumberInput from "./FinanceNumberInput";
 import PlanForm from "./FinancePlanForm";
 import PlanOccurrenceForm from "./FinancePlanOccurrenceForm";
 import FinanceOverview from "./FinanceOverview";
+import FinanceCreditCardDuesNotice from "./FinanceCreditCardDuesNotice";
 import Ledger from "./FinancePlanLedger";
 import { BillForm, BillsTable } from "./FinanceBills";
 import {
@@ -922,6 +923,11 @@ export default function FinanceAppClient({
               planActivity?.from === plan.startDate &&
               planActivity?.to === plan.endDate
                 ? planActivity.transactions
+                : [],
+            creditCardPaymentTransactions:
+              planActivity?.from === plan.startDate &&
+              planActivity?.to === plan.endDate
+                ? planActivity.creditCardPaymentTransactions || []
                 : [],
           })
         : [],
@@ -2127,6 +2133,11 @@ export default function FinanceAppClient({
                         refresh again or review Bank accounts.
                       </p>
                     )}
+                    <FinanceCreditCardDuesNotice
+                      accounts={accounts}
+                      onReviewAccounts={() => navigate("accounts")}
+                      paymentHistoryWarning={planRecordsMatch ? planActivity?.creditCardPaymentWarning : ""}
+                    />
                     {plan.includeTransactions === false &&
                       planActivityLoading && (
                         <p className="fp-inline-note" role="status">
@@ -2276,7 +2287,8 @@ export default function FinanceAppClient({
                       </details>
                     )}
                     <p className="fp-plan-flow-note">
-                      This plan includes dated bills and your plan entries
+                      This plan includes dated bills, reported credit card dues,
+                      and your plan entries
                       {plan.includeIncome ? ", scheduled salary" : ""}
                       {plan.includeAllocations !== false
                         ? ", payday savings and expense allocations"

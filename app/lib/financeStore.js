@@ -4,6 +4,7 @@ import {
   financeActivityWindow,
   financeProviderStatus,
   mapFinanceActivityAccount,
+  normalizeFinanceCreditCardDue,
   validateFinanceTransactionInput,
 } from "./financeActivity.mjs";
 import { financePlanActivityRange } from "./financePlanActivity.mjs";
@@ -269,6 +270,8 @@ const ensureFinanceSchema = async () => {
           currency CHAR(3) NOT NULL DEFAULT 'USD',
           current_balance DECIMAL(13,2) NULL,
           available_balance DECIMAL(13,2) NULL,
+          credit_card_due_json LONGTEXT NULL,
+          credit_card_due_status VARCHAR(16) NOT NULL DEFAULT 'unavailable',
           external_provider VARCHAR(32) NULL,
           external_account_id VARCHAR(160) NULL,
           connection_id BIGINT UNSIGNED NULL,
@@ -372,6 +375,14 @@ const ensureFinanceSchema = async () => {
       await runMigration(
         pool,
         "ALTER TABLE personal_finance_accounts ADD COLUMN available_balance DECIMAL(13,2) NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN credit_card_due_json LONGTEXT NULL",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN credit_card_due_status VARCHAR(16) NOT NULL DEFAULT 'unavailable'",
       );
       await runMigration(
         pool,
@@ -668,7 +679,9 @@ async function plaidRequest(endpoint, data = {}) {
       payload?.error_message ||
       payload?.display_message ||
       "Plaid request failed.";
-    throw appError(message, response.status || 502);
+    throw Object.assign(appError(message, response.status || 502), {
+      providerCode: typeof payload?.error_code === "string" ? payload.error_code : "",
+    });
   }
 
   return payload;
@@ -676,6 +689,7 @@ async function plaidRequest(endpoint, data = {}) {
 
 function mapProviderAccountType(type, subtype) {
   const normalized = String(subtype || type || "").toLowerCase();
+  if (String(type || "").toLowerCase() === "credit") return "credit";
   if (normalized.includes("checking")) return "checking";
   if (normalized.includes("savings")) return "savings";
   if (normalized.includes("credit")) return "credit";
@@ -1193,6 +1207,9 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
     configured: false,
     ...range,
     transactions: [],
+    creditCardPaymentTransactions: [],
+    creditCardPaymentLimitHit: false,
+    creditCardPaymentWarning: "",
     limitHit: false,
   };
   try {
@@ -1229,11 +1246,13 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
       warnings.push(
         "Only the first 10,000 recorded transactions in this range are included. Plan balances may be incomplete.",
       );
+    const creditCardPayments = await getFinanceCreditCardPaymentActivity(database, range);
     return {
       ...empty,
       configured: true,
       transactions,
       limitHit,
+      ...creditCardPayments,
       ...(warnings.length ? { warning: warnings.join(" ") } : {}),
     };
   } catch {
@@ -1241,6 +1260,70 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
       ...empty,
       warning:
         "Recorded transactions could not be loaded. Your saved records have not been changed; retry to include them in this plan.",
+    };
+  }
+}
+
+// Payment evidence can precede a plan's start (or post after its end). Keep it
+// separate so earlier partial payments reduce a statement without becoming new
+// visible cash flows in the selected date range.
+async function getFinanceCreditCardPaymentActivity(database, range) {
+  const empty = {
+    creditCardPaymentTransactions: [],
+    creditCardPaymentLimitHit: false,
+    creditCardPaymentWarning: "",
+  };
+  try {
+    const [cards] = await database.query(`SELECT a.id, a.credit_card_due_json
+      FROM personal_finance_accounts a
+      LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+      WHERE a.account_type = 'credit' AND a.external_provider IS NOT NULL
+        AND a.external_provider <> '' AND a.external_account_id IS NOT NULL
+        AND a.external_account_id <> '' AND a.currency IN ('USD', 'PHP') AND a.credit_card_due_json IS NOT NULL
+        AND a.is_archived = 0 AND a.is_sync_excluded = 0 AND a.merged_into_account_id IS NULL
+        AND (c.status IS NULL OR c.status NOT IN ('disconnected', 'superseded'))`);
+    const day = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+    const starts = [];
+    let historyClamped = false;
+    for (const card of cards) {
+      const due = normalizeFinanceCreditCardDue(card.credit_card_due_json);
+      if (!due?.dueDate || due.dueDate < range.from || due.dueDate > range.to) continue;
+      const earliest = ["1900-01-01", day(due.dueDate, -731)].sort().at(-1);
+      const statementDate = due.lastStatementDate && due.lastStatementDate <= due.dueDate
+        ? due.lastStatementDate : null;
+      const start = statementDate || day(due.dueDate, -3);
+      if (start < earliest) historyClamped = true;
+      starts.push([earliest, start].sort().at(-1));
+    }
+    if (!starts.length) return empty;
+    const from = starts.sort()[0];
+    const to = [range.to, financeActivityWindow().today].sort().at(-1);
+    const [rows] = await database.query(`
+      SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+        a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
+      FROM personal_finance_transactions t
+      LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
+      LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+      WHERE t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+        AND t.currency IN ('USD', 'PHP') AND t.pending = 0
+        AND t.transaction_date >= ? AND t.transaction_date <= ?
+      ORDER BY t.transaction_date ASC, t.id ASC LIMIT 10001`, [from, to]);
+    const transactions = rows.slice(0, 10000).map(mapTransaction)
+      .filter((row) => CURRENCY_SET.has(row.currency));
+    const limitHit = rows.length > 10000;
+    const warnings = [];
+    if (historyClamped) warnings.push("Credit card payment matching uses at most two years of history before each due date.");
+    if (limitHit) warnings.push("Only the first 10,000 transactions in the credit card payment history are available for matching.");
+    return {
+      creditCardPaymentTransactions: transactions,
+      creditCardPaymentLimitHit: limitHit,
+      creditCardPaymentWarning: warnings.length
+        ? `${warnings.join(" ")} Some prior payments may be missing; review the remaining statement amounts.` : "",
+    };
+  } catch {
+    return {
+      ...empty,
+      creditCardPaymentWarning: "Credit card payment history could not be loaded. Some prior payments may be missing; review the remaining statement amounts or refresh bank data to retry.",
     };
   }
 }
@@ -2314,6 +2397,11 @@ export async function createPlaidLinkToken(email, data = {}) {
       depository: { account_subtypes: ["checking", "savings"] },
       credit: { account_subtypes: ["credit card"] },
     },
+    // Consent now, initialize only for a linked credit account. Checking-only
+    // institutions remain available and do not initialize Liabilities.
+    ...(products.includes("liabilities") ? {} : {
+      additional_consented_products: ["liabilities"],
+    }),
   };
 
   if (products.includes("transactions")) {
@@ -2341,12 +2429,23 @@ export async function createPlaidLinkToken(email, data = {}) {
     body.update = { account_selection_enabled: true };
     delete body.products;
     delete body.transactions;
+    body.additional_consented_products = ["liabilities"];
   }
 
   if (process.env.PLAID_REDIRECT_URI)
     body.redirect_uri = process.env.PLAID_REDIRECT_URI;
 
-  const payload = await plaidRequest("/link/token/create", body);
+  let payload;
+  try {
+    payload = await plaidRequest("/link/token/create", body);
+  } catch (error) {
+    if (error.providerCode !== "INVALID_PRODUCT" ||
+      !body.additional_consented_products?.includes("liabilities")) throw error;
+    // Older deployments may not have Liabilities enabled for their API keys.
+    // Keep their required products intact and retry without the enhancement.
+    delete body.additional_consented_products;
+    payload = await plaidRequest("/link/token/create", body);
+  }
   return {
     linkToken: payload.link_token,
     expiration: payload.expiration || null,
@@ -2695,6 +2794,8 @@ async function syncPlaidConnection(
       accessToken,
       connection.sync_cursor || null,
     );
+    if (accountSync.creditAccountIds?.length)
+      await syncPlaidCreditCardDues(pool, connectionId, accessToken, accountSync.creditAccountIds);
     await pool.query(
       "UPDATE personal_finance_connections SET status = 'active', last_synced_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('disconnected', 'superseded')",
       [new Date(), new Date(), connectionId],
@@ -2745,6 +2846,7 @@ async function syncPlaidAccounts(
       connectionRows[0]?.institution_id || payload?.item?.institution_id || "";
     let saved = 0;
     const seenAccounts = [];
+    const creditAccountIds = [];
     for (const account of accounts) {
       const externalId = cleanText(account?.account_id, 160);
       const balances = account?.balances || {};
@@ -2839,6 +2941,13 @@ async function syncPlaidAccounts(
       }
       await saveAccountAlias(database, externalId, accountId, connectionId);
       seenAccounts.push(accountId);
+      if (type === "credit") {
+        const [included] = await database.query(
+          "SELECT is_sync_excluded FROM personal_finance_accounts WHERE id = ? AND connection_id = ?",
+          [accountId, connectionId],
+        );
+        if (included[0] && !included[0].is_sync_excluded) creditAccountIds.push(externalId);
+      }
       saved += 1;
     }
     await database.query(
@@ -2848,9 +2957,72 @@ async function syncPlaidAccounts(
       [connectionId, ...seenAccounts],
     );
     await database.commit();
-    return { accounts: saved };
+    return { accounts: saved, creditAccountIds };
   } catch (error) {
     await database.rollback().catch(() => {});
+    throw error;
+  } finally {
+    database.release();
+  }
+}
+
+async function syncPlaidCreditCardDues(pool, connectionId, accessToken, externalIds) {
+  let payload;
+  try {
+    payload = await plaidRequest("/liabilities/get", {
+      access_token: accessToken,
+      options: { account_ids: externalIds },
+    });
+  } catch {
+    // Missing product consent, unsupported institutions, and temporary provider
+    // failures must never prevent balances and transactions from refreshing.
+    await pool.query(`UPDATE personal_finance_accounts
+      SET credit_card_due_status = IF(credit_card_due_json IS NULL, 'unavailable', 'stale')
+      WHERE connection_id = ? AND external_provider = 'plaid' AND account_type = 'credit'
+        AND is_archived = 0 AND is_sync_excluded = 0 AND merged_into_account_id IS NULL`,
+    [connectionId]);
+    return;
+  }
+  const credit = Array.isArray(payload?.liabilities?.credit) ? payload.liabilities.credit : [];
+  const database = await pool.getConnection();
+  try {
+    await database.beginTransaction();
+    const [connections] = await database.query(
+      "SELECT institution_id, status FROM personal_finance_connections WHERE id = ? FOR UPDATE",
+      [connectionId],
+    );
+    if (["disconnected", "superseded"].includes(connections[0]?.status)) {
+      await database.rollback();
+      return;
+    }
+    await database.query(`UPDATE personal_finance_accounts
+      SET credit_card_due_status = IF(credit_card_due_json IS NULL, 'unavailable', 'stale')
+      WHERE connection_id = ? AND external_provider = 'plaid' AND account_type = 'credit'
+        AND is_archived = 0 AND is_sync_excluded = 0 AND merged_into_account_id IS NULL`,
+    [connectionId]);
+    const syncedAt = new Date().toISOString();
+    for (const card of credit) {
+      if (!externalIds.includes(card?.account_id)) continue;
+      const accountId = await getAccountIdByProvider(database, "plaid", card.account_id);
+      if (!accountId) continue;
+      const due = normalizeFinanceCreditCardDue({
+        statementBalance: card.last_statement_balance,
+        minimumPayment: card.minimum_payment_amount,
+        dueDate: card.next_payment_due_date,
+        lastStatementDate: card.last_statement_issue_date,
+        lastPaymentDate: card.last_payment_date,
+        lastPaymentAmount: card.last_payment_amount,
+        syncedAt,
+      });
+      await database.query(`UPDATE personal_finance_accounts
+        SET credit_card_due_json = ?, credit_card_due_status = 'current'
+        WHERE id = ? AND connection_id = ? AND account_type = 'credit'
+          AND is_archived = 0 AND is_sync_excluded = 0 AND merged_into_account_id IS NULL`,
+      [JSON.stringify(due), accountId, connectionId]);
+    }
+    await database.commit();
+  } catch (error) {
+    await database.rollback();
     throw error;
   } finally {
     database.release();
@@ -3281,6 +3453,10 @@ export async function repairDuplicateFinanceAccounts({
         !group.accounts.some(
           (account) => !account.is_archived && active(account),
         );
+      const latestDue = group.accounts
+        .map((account) => ({ account, due: normalizeFinanceCreditCardDue(account.credit_card_due_json) }))
+        .filter(({ due }) => due)
+        .sort((a, b) => (Date.parse(b.due.syncedAt) || 0) - (Date.parse(a.due.syncedAt) || 0))[0];
       for (const account of group.accounts) {
         if (account.connection_id)
           affectedConnections.add(Number(account.connection_id));
@@ -3323,7 +3499,8 @@ export async function repairDuplicateFinanceAccounts({
       }
       await transaction.query(
         `UPDATE personal_finance_accounts SET connection_id = ?, current_balance = ?, available_balance = ?,
-        account_mask = ?, official_name = ?, persistent_account_id = ?, is_sync_excluded = ?, is_archived = ?, updated_at = NOW(3) WHERE id = ?`,
+        account_mask = ?, official_name = ?, persistent_account_id = ?, credit_card_due_json = ?,
+        credit_card_due_status = ?, is_sync_excluded = ?, is_archived = ?, updated_at = NOW(3) WHERE id = ?`,
         [
           latest.connection_id,
           latest.current_balance,
@@ -3331,6 +3508,9 @@ export async function repairDuplicateFinanceAccounts({
           latest.account_mask || null,
           latest.official_name || null,
           latest.persistent_account_id || null,
+          latestDue ? JSON.stringify(latestDue.due) : null,
+          latestDue ? latestDue.account.connection_id === latest.connection_id &&
+            latestDue.account.credit_card_due_status === "current" ? "current" : "stale" : "unavailable",
           excluded ? 1 : 0,
           archived ? 1 : 0,
           group.canonicalId,

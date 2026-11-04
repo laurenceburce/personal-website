@@ -263,6 +263,113 @@ test("salary, annual reserves and payday savings project into separate accounts 
   assert.equal(before, JSON.stringify({ plan, document, accounts }));
 });
 
+test("automatic card dues reduce the liability without inventing a funding account debit", () => {
+  const cardAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "Travel Card", type: "credit", currency: "USD", nativeCurrentBalance: 300,
+      creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
+    { accounts: cardAccounts, today: "2026-11-04" });
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 1000);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 100);
+  assert.equal(result.rows[0].balanceUsd, 800);
+  assert.deepEqual(result.rows[0].accountMovements.map((move) => [move.accountId, move.amount, move.balanceDelta]), [[2, 200, -200]]);
+  assert.ok(result.warnings.some((warning) => warning.includes("funding account is unknown")));
+});
+
+test("card purchases and posted partial payments change owed balances once alongside the remaining statement", () => {
+  const cardAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 950 },
+    { id: 2, name: "Travel Card", type: "credit", currency: "USD", nativeCurrentBalance: 290,
+      creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000,
+    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 300 }],
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const rows = buildPlanRows(cardPlan, { salary: {}, bills: [], allocations: [] }, 63, { accounts: cardAccounts, today: "2026-11-04", transactions: [
+    { id: 10, date: "2026-11-02", amount: 40, currency: "USD", kind: "expense", accountId: 2, merchant: "Market" },
+    { id: 11, date: "2026-11-03", amount: 50, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+    { id: 12, date: "2026-11-03", amount: 50, currency: "USD", kind: "expense", accountId: 1, category: "Loan Payments" },
+  ] });
+  const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
+    { accounts: cardAccounts, rows, today: "2026-11-04" });
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 950);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 140);
+  assert.equal(result.rows.at(-1).balanceUsd, 800);
+});
+
+test("annual card reserve release projects the new charge without a physical reserve payment", () => {
+  const cardAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1200 },
+    { id: 2, name: "Card", type: "credit", currency: "USD", nativeCurrentBalance: 200,
+      creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const cardDocument = { salary: {}, bills: [
+    { id: "annual", name: "Annual fee", cadence: "annual", amount: 200, currency: "USD", dueDay: 10, dueMonths: [11], savedAmount: 200,
+      accountId: 2, reserveAccountId: 1 },
+  ], allocations: [] };
+  const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const result = buildAccountPlan(cardPlan, cardDocument, 63, { accounts: cardAccounts, today: "2026-11-04" });
+  const charge = result.rows.find((row) => row.annualPayment);
+  assert.deepEqual(charge.accountMovements.map((move) => [move.accountId, move.amount, move.balanceDelta]), [[2, -200, 200]]);
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 1200);
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingAnnualReserved, 0);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 200);
+});
+
+test("explicit card transfers and statement dues project each native movement once before and after posting", () => {
+  const cardAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "Card", type: "credit", currency: "USD", nativeCurrentBalance: 200,
+      creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000,
+    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+    entries: [{ id: "pay-card", date: "2026-11-18", description: "Pay card", kind: "transfer", amount: 200, currency: "USD", fromAccountId: 1, toAccountId: 2 }] };
+  const cardDocument = { salary: {}, bills: [], allocations: [] };
+  for (const posted of [false, true]) {
+    const rows = buildPlanRows(cardPlan, cardDocument, 63, { accounts: cardAccounts, today: posted ? "2026-11-19" : "2026-11-04", transactions: posted ? [
+      { id: 1, date: "2026-11-18", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+      { id: 2, date: "2026-11-18", amount: 200, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+    ] : [] });
+    const result = buildAccountPlan(cardPlan, cardDocument, 63,
+      { accounts: cardAccounts, rows, today: posted ? "2026-11-19" : "2026-11-04" });
+    assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 800);
+    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+    assert.equal(result.rows.at(-1).balanceUsd, 800);
+  }
+});
+
+test("recognized Debt card payments suppress duplicate explicit native transfer legs with dated and live openings", () => {
+  const cardDocument = { salary: {}, bills: [], allocations: [] };
+  for (const live of [false, true]) {
+    const cardAccounts = [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 800 },
+      { id: 2, name: "Travel Card", type: "credit", currency: "USD", nativeCurrentBalance: 0,
+        creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+    ];
+    const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: live ? 0 : 1000,
+      ...(live ? { startingAccounts: [{ accountId: 1, percentage: 100 }] }
+        : { accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }] }),
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+      entries: [{ id: "pay-card", date: "2026-11-18", description: "Pay card", kind: "transfer", amount: 200, currency: "USD", fromAccountId: 1, toAccountId: 2 }] };
+    const rows = buildPlanRows(cardPlan, cardDocument, 63, { accounts: cardAccounts, today: "2026-11-18", transactions: [
+      { id: 1, date: "2026-11-18", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Debt", merchant: "Automatic payment" },
+      { id: 2, date: "2026-11-18", amount: 200, currency: "USD", kind: "expense", accountId: 1, category: "Debt", merchant: "Travel Card payment" },
+    ] });
+    const result = buildAccountPlan(cardPlan, cardDocument, 63, { accounts: cardAccounts, rows, today: "2026-11-18" });
+    assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 800);
+    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+    assert.equal(result.rows.at(-1).balanceUsd, 800);
+    assert.deepEqual(result.rows.find((row) => row.entryId === "pay-card").accountMovements, []);
+  }
+});
+
 test("current account earmarks report over-allocation without inventing saved funds", () => {
   const rows = getFinanceAccountAllocations(
     {

@@ -202,7 +202,7 @@ function completedRows(value) {
   return value.map((row) => {
     object(row, "Completed plan row");
     const rowId = text(row.rowId, "Completed row ID", 240);
-    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}|transaction:[A-Za-z0-9_-]{1,200})$/.exec(rowId);
+    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|creditCardDue:[1-9]\d{0,15}:(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}|transaction:[A-Za-z0-9_-]{1,200})$/.exec(rowId);
     if (!match || seen.has(rowId))
       throw plannerError("Completed row IDs must be unique valid plan row identifiers.");
     for (const day of match.slice(1).filter(Boolean)) date(day, "Completed row date");

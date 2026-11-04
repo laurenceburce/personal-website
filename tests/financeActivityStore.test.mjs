@@ -140,6 +140,35 @@ test("linked balances remain provider balances and unknown balances remain unkno
   );
 });
 
+test("credit statement dues preserve unknown fields and never use the revolving balance", () => {
+  const row = {
+    id: 2, name: "Credit card", account_type: "credit", currency: "USD",
+    external_provider: "plaid", external_account_id: "card", current_balance: 999,
+    credit_card_due_status: "current",
+    credit_card_due_json: JSON.stringify({
+      statementBalance: "350.126", minimumPayment: null, dueDate: "2026-11-25",
+      lastStatementDate: "2026-10-31", lastPaymentDate: "2026-10-25",
+      lastPaymentAmount: "40", syncedAt: "2026-11-04T13:00:00Z",
+      secret: "not exposed",
+    }),
+  };
+  assert.deepEqual(mapFinanceActivityAccount(row).creditCardDue, {
+    statementBalance: 350.13, minimumPayment: null, dueDate: "2026-11-25",
+    lastStatementDate: "2026-10-31", lastPaymentDate: "2026-10-25",
+    lastPaymentAmount: 40, syncedAt: "2026-11-04T13:00:00.000Z",
+  });
+  assert.equal(mapFinanceActivityAccount(row).creditCardDueStatus, "current");
+  assert.equal(mapFinanceActivityAccount({...row, credit_card_due_status: "stale"}).creditCardDueStatus, "stale");
+  assert.equal(mapFinanceActivityAccount({...row, credit_card_due_json: "bad"}).creditCardDue, null);
+  const missing = mapFinanceActivityAccount({...row, credit_card_due_json: JSON.stringify({
+    statementBalance: null, minimumPayment: 0, dueDate: "2026-02-30",
+  })}).creditCardDue;
+  assert.equal(missing.statementBalance, null);
+  assert.equal(missing.minimumPayment, 0);
+  assert.equal(missing.dueDate, null);
+  assert.equal(mapFinanceActivityAccount({...row, account_type: "checking"}).creditCardDue, null);
+});
+
 test("bank setup distinguishes sandbox and real setup, encryption and HTTPS requirements", () => {
   assert.equal(financeProviderStatus({}).plaid.configured, false);
   const env = {

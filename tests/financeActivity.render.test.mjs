@@ -363,6 +363,81 @@ const bankActivity = {
   ],
 };
 
+test("account categories keep linked checking, savings and credit cards separate from other account types", () => {
+  const html = render(BankAccountsPanel, {
+    activity: {
+      ...bankActivity,
+      accounts: [
+        { ...bankAccounts[0], name: "Main checking" },
+        { ...bankAccounts[1], name: "Emergency savings" },
+        { ...bankAccounts[0], id: 21, type: "credit", name: "Rewards card" },
+        { ...bankAccounts[0], id: 22, type: "investment", name: "Brokerage" },
+        { ...bankAccounts[0], id: 23, type: "loan", name: "Auto loan" },
+        { ...account, id: 24, name: "Pocket cash" },
+      ],
+    },
+    rate: 63,
+  });
+  const group = (id) => html.match(
+    new RegExp(`<section class="fa-account-group" aria-labelledby="fa-account-group-${id}">([\\s\\S]*?)</section>`),
+  )?.[1];
+  assert.match(group("checking"), /Main checking/);
+  assert.match(group("savings"), /Emergency savings/);
+  assert.match(group("credit"), /Credit cards[\s\S]*Rewards card/);
+  assert.match(group("other"), /Others[\s\S]*Brokerage[\s\S]*Auto loan[\s\S]*Pocket cash/);
+  assert.doesNotMatch(group("checking"), /Emergency savings|Rewards card|Brokerage/);
+  assert.match(group("other"), /fa-count">3</);
+});
+
+test("credit cards show full statement amounts and dated dues separately from current balances", () => {
+  const html = render(BankAccountsPanel, {
+    activity: {
+      ...bankActivity,
+      accounts: [{
+        ...bankAccounts[0],
+        name: "Rewards card",
+        type: "credit",
+        nativeCurrentBalance: 990,
+        creditCardDueStatus: "current",
+        creditCardDue: {
+          statementBalance: 472.35,
+          minimumPayment: 25,
+          dueDate: "2026-11-20",
+        },
+      }],
+    },
+    rate: 63,
+  });
+  assert.match(html, /Balance owed[\s\S]*\$990\.00/);
+  assert.match(html, /Statement balance[\s\S]*\$472\.35/);
+  assert.match(html, /Payment due[\s\S]*Nov 20, 2026/);
+  assert.match(html, /automatically in Budget Plans for the due date/);
+  assert.doesNotMatch(html, /\$25\.00/);
+  assert.match(html, /No accounts in this category/);
+});
+
+test("missing statement data stays unavailable and stale statement data is labeled", () => {
+  const renderCard = (extra) => render(BankAccountsPanel, {
+    activity: {
+      ...bankActivity,
+      accounts: [{ ...bankAccounts[0], type: "credit", nativeCurrentBalance: 990, ...extra }],
+    },
+    rate: 63,
+  });
+  const missing = renderCard({ creditCardDue: null, creditCardDueStatus: "unavailable" });
+  const missingDetails = missing.match(/<div class="fa-credit-card-due">([\s\S]*?)<\/dl>/)?.[1];
+  assert.match(missingDetails, /Statement balance<\/dt><dd>Unavailable/);
+  assert.match(missingDetails, /Payment due<\/dt><dd>Unavailable/);
+  assert.doesNotMatch(missingDetails, /\$990\.00|\$0\.00/);
+  assert.match(missing, /has not supplied complete statement details/);
+  const stale = renderCard({
+    creditCardDueStatus: "stale",
+    creditCardDue: { statementBalance: 0, dueDate: "2026-11-20" },
+  });
+  assert.match(stale, /Statement balance[\s\S]*\$0\.00/);
+  assert.match(stale, /Last known statement details/);
+});
+
 test("bank cards distinguish savings accounts and show their annual and payday allocations", () => {
   const html = render(BankAccountsPanel, {
     activity: bankActivity,

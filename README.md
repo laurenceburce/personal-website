@@ -190,6 +190,18 @@ The finance workspace separates recorded activity from your plans:
   focus, and every five minutes while visible. Automatic provider refresh attempts
   share a 60-second cooldown; **Refresh bank data** forces a fresh request. Failures
   keep the last known data with an explicit notice.
+  Linked credit card statement balances and payment dates are included
+  automatically when the bank supplies them through Plaid Liabilities. Plans use
+  the full statement balance for payment in full, never the current revolving
+  balance or the minimum payment. Only reported payment dates are forecast;
+  future monthly statements are not invented. Missing statement details and
+  cached details from a failed refresh are identified in the workspace.
+  For cards with complete statement details, charges update projected card debt;
+  statement payments reduce available cash. Posted payments, including earlier
+  statement-cycle payments, reduce the remaining due. A planned account transfer
+  to that card covers the corresponding due amount without another forecast
+  payment. Automatic dues do not guess a funding account; add a transfer to
+  project its source account. Statement amounts and dates stay synced to bank data.
   Edit a scheduled row to change its date, description, or amount for that one
   occurrence in that plan. Recurring settings and other dates stay unchanged;
   **Reset** restores the recurring default. Enter zero to skip an occurrence's
@@ -204,6 +216,8 @@ The finance workspace separates recorded activity from your plans:
   details. Search and filter history, edit manual entries, and view bank imports.
 - **Bank accounts:** connect US accounts through Plaid, view native balances,
   and sync transactions. Production and sandbox connections are clearly labeled.
+  Accounts are grouped into Checking, Savings, Credit cards, and Others. Credit
+  cards show their reported statement balance and next payment due date.
   Use **Update accounts** on an existing connection when adding another bank
   account. Account identities and masked account numbers keep confirmed copies
   from a re-link together while distinct savings accounts stay separate.
@@ -253,6 +267,16 @@ Plaid requires `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV`, plus
 `FINANCE_TOKEN_SECRET` or the existing `AUTH_SECRET` for encrypted token storage.
 For OAuth banks, register an HTTPS `PLAID_REDIRECT_URI` ending at `/finance`
 in your Plaid dashboard. The app resumes bank redirects on the accounts view.
+New and updated links request additional consent for Liabilities, then retrieve
+statement data only for linked credit accounts. Enable the Liabilities product
+for the Plaid application to receive this data; existing links may need **Update
+accounts** to grant the additional consent. Unsupported banks and failed
+Liabilities requests keep balance and transaction syncing available. Previously
+reported statement details are retained and marked stale. The implementation
+retries Link token creation without additional statement consent if the Plaid
+credentials are not enabled for Liabilities, preserving existing bank linking.
+It follows Plaid's [personal finance product initialization guidance](https://plaid.com/docs/link/initializing-products/)
+and [Liabilities field definitions](https://plaid.com/docs/api/products/liabilities/).
 Philippine bank authorization through Brankas requires a configured
 `BRANKAS_LINK_URL`; this existing integration saves authorization only and does
 not import balances or transactions. Its callback verifies a short-lived,

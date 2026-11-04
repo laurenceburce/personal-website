@@ -124,6 +124,62 @@ function render(tab, savedAmount, documentOverrides, activityOverrides) {
 }
 const plain = (html) => html.replace(/<[^>]*>/g, "");
 
+test("budget plans automatically include full card statements on their due dates", () => {
+  const html = render("plans", 0, { bills: [] }, {
+    accounts: [{
+      id: 7, name: "Travel card", type: "credit", isLinked: true,
+      currency: "USD", nativeCurrentBalance: 650,
+      creditCardDueStatus: "current",
+      creditCardDue: { statementBalance: 300, minimumPayment: 25, dueDate: "2026-11-15" },
+    }],
+  });
+  assert.match(plain(html), /Credit card statement due/);
+  assert.match(plain(html), /Statement balance \$300\.00/);
+  assert.match(plain(html), /Available funds · USD\$450\.00/);
+  assert.match(html, /Nov 15/);
+  assert.ok(!html.includes("Statement balance $25.00"));
+});
+
+test("plans flag unavailable and stale statements while retaining known dues", () => {
+  const html = render("plans", 0, { bills: [] }, {
+    accounts: [
+      { id: 7, name: "Missing card", type: "credit", isLinked: true, currency: "USD", nativeCurrentBalance: 100 },
+      {
+        id: 8, name: "Cached card", type: "credit", isLinked: true, currency: "USD", nativeCurrentBalance: 500,
+        creditCardDueStatus: "stale", creditCardDue: { statementBalance: 200, dueDate: "2026-11-20" },
+      },
+    ],
+  });
+  assert.match(plain(html), /Statement balances or due dates are unavailable for Missing card/);
+  assert.match(plain(html), /Using last known statement details for Cached card/);
+  assert.match(plain(html), /Available funds · USD\$550\.00/);
+  assert.match(plain(html), /Review Bank accounts/);
+});
+
+test("statement-cycle payment history reduces future dues without adding earlier flows to the ledger", () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const props = fixture("plans", 0, { bills: [], plans: [{ ...base, startDate: "2026-11-15" }] }, {
+    accounts: [{
+      id: 7, name: "Travel card", type: "credit", isLinked: true, currency: "USD", nativeCurrentBalance: 500,
+      creditCardDueStatus: "current", creditCardDue: { statementBalance: 300, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" },
+    }],
+  });
+  props.today = "2026-11-10";
+  props.initialPlanActivity = {
+    configured: true, from: "2026-11-15", to: base.endDate, transactions: [],
+    creditCardPaymentTransactions: [
+      { id: 8, date: "2026-11-02", kind: "income", amount: 50, currency: "USD", accountId: 7, category: "Transfer In" },
+      { id: 9, date: "2026-11-07", kind: "income", amount: 70, currency: "USD", accountId: 7, category: "Transfer In" },
+    ],
+    creditCardPaymentWarning: "Some statement payment history could not be checked.",
+  };
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  assert.match(plain(html), /Statement balance \$300\.00 · Paid \$120\.00 · Remaining \$180\.00/);
+  assert.match(plain(html), /Available funds · USD\$570\.00/);
+  assert.match(plain(html), /Some statement payment history could not be checked/);
+  assert.ok(!html.includes("fpl-row-transaction"));
+});
+
 test("monthly bill reserves and commitment cards recalculate from saved balances", () => {
   for (const [saved, monthly, remaining] of [
     [0, "$427.92", "$395.00"],

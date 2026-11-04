@@ -107,6 +107,50 @@ const completionCheckbox = (record, props = {}) =>
     (element) => element.type === "input" && element.props.type === "checkbox",
   );
 
+test("statement dues explain the full balance and payments without occurrence editing", () => {
+  const html = render([row({
+    id: "creditCardDue:7:2026-11-15",
+    source: "creditCardDue",
+    description: "Travel card statement",
+    date: "2026-11-15",
+    currency: "USD",
+    statementBalance: 500,
+    paidAmount: 125,
+    amount: 375,
+    usd: -375,
+    balanceUsd: 375,
+    editable: false,
+  })], { onEditOccurrence() {} });
+  assert.match(plain(html), /Credit card statement dueStatement balance \$500\.00 · Paid \$125\.00 · Remaining \$375\.00/);
+  assert.ok(!html.includes("Edit this occurrence"));
+});
+
+test("card activity and posted statement payments identify their cash flow treatment", () => {
+  const html = render([
+    row({ source: "transaction", cardCreditActivity: true, description: "Card purchase" }),
+    row({ id: "payment", source: "transaction", scheduledSource: "creditCardDue", description: "Card payment" }),
+  ]);
+  assert.match(plain(html), /Changes the card balance\. Cash payments are shown with statement dues\./);
+  assert.match(plain(html), /Recorded against credit card statement payment/);
+});
+
+test("planned card payments explain remaining dues without marking the statement paid", () => {
+  const html = render([
+    row({ id: "transfer", source: "manual", kind: "transfer", creditCardPaymentFor: 7, usd: -125 }),
+    row({ source: "creditCardDue", statementBalance: 500, plannedPaymentAmount: 125, amount: 375, currency: "USD", usd: -375 }),
+  ]);
+  assert.match(plain(html), /Planned credit card payment/);
+  assert.match(plain(html), /Pays the card from available funds/);
+  assert.match(plain(html), /Statement balance \$500\.00 · Planned payments \$125\.00 · Remaining \$375\.00/);
+  assert.ok(!plain(html).includes("Done · bank payment reported"));
+});
+
+test("provider-reported payments use an honest completion label without loaded transaction matches", () => {
+  const html = render([row({ source: "creditCardDue", currency: "USD", statementBalance: 200, paidAmount: 200,
+    amount: 0, completed: true, completionSource: "transaction", matchedTransactionIds: [] })]);
+  assert.match(plain(html), /Done · bank payment reported/);
+});
+
 test("opening balances keep annual reserve pockets distinct from available USD and PHP", () => {
   const html = render();
   const opening = cells(findRow(html, "fpl-opening-row"));

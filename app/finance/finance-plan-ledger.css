@@ -81,6 +81,9 @@
 .fp-app .fpl-table .fpl-annual-payment-detail {
   color: #617568;
 }
+.fp-app .fpl-table .fpl-credit-card-due-detail {
+  color: #617568;
+}
 .fp-app .fpl-table .fpl-reconciliation-note {
   color: #577083;
 }

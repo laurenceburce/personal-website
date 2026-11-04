@@ -691,6 +691,34 @@
   color: #657e6b;
   font-size: 11px;
 }
+.fa-account-groups {
+  display: grid;
+  gap: 26px;
+}
+.fa-account-group {
+  min-width: 0;
+}
+.fa-account-group + .fa-account-group {
+  border-top: 1px solid #e8eee6;
+  padding-top: 22px;
+}
+.fa-account-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 13px;
+}
+.fa-account-group-heading h3 {
+  margin: 0;
+  font-size: 13px !important;
+  font-weight: 700;
+  color: #3c5f46 !important;
+}
+.fa-account-group-empty {
+  margin: 0 !important;
+  font-size: 11px !important;
+  color: #65766a !important;
+}
 .fa-accounts-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -727,7 +755,8 @@
   min-width: 0;
   flex: 1;
 }
-.fa-account-heading h3 {
+.fa-account-heading h4 {
+  margin: 0;
   font-size: 12px !important;
   font-weight: 700;
   color: #3c5f46 !important;
@@ -772,6 +801,39 @@
   color: #65766a;
   display: block;
   margin-top: 5px;
+}
+.fa-credit-card-due {
+  margin-bottom: 18px;
+  padding: 12px;
+  background: #f5f8f1;
+  border-radius: 7px;
+}
+.fa-credit-card-due dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.fa-credit-card-due dt {
+  color: #65766a;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+.fa-credit-card-due dd {
+  margin: 0;
+  color: #3c5f46;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.fa-credit-card-due > small,
+.fa-credit-card-due > p {
+  display: block;
+  margin: 9px 0 0 !important;
+  color: #65766a !important;
+  font-size: 10px !important;
+  line-height: 1.7 !important;
 }
 .fa-account-card > footer {
   display: flex;
@@ -1278,7 +1340,7 @@
   .fa-account-heading {
     gap: 9px;
   }
-  .fa-account-heading h3 {
+  .fa-account-heading h4 {
     font-size: 12px !important;
   }
   .fa-account-heading p {
@@ -1297,6 +1359,11 @@
   }
   .fa-account-currency {
     font-size: 10px;
+  }
+  .fa-credit-card-due dt,
+  .fa-credit-card-due > small,
+  .fa-credit-card-due > p {
+    font-size: 11px !important;
   }
   .fa-account-card > footer > small,
   .fa-account-source {

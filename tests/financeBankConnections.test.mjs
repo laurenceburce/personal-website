@@ -195,6 +195,60 @@ test("update mode reuses the existing Item and enables account selection without
   });
   assert.equal(requests[0].body.products, undefined);
   assert.equal(requests[0].body.transactions, undefined);
+  assert.deepEqual(requests[0].body.additional_consented_products, ["liabilities"]);
+});
+
+test("new Plaid links collect optional liability consent without restricting checking-only banks", async (t) => {
+  let body;
+  bankEnvironment(t, async (_url, options) => {
+    body = JSON.parse(options.body);
+    return response({link_token: "mock-link"});
+  });
+  const {api} = backend(() => []);
+  await api.createPlaidLinkToken("owner@example.com");
+  assert.ok(body.products.includes("transactions"));
+  assert.ok(!body.products.includes("liabilities"));
+  assert.deepEqual(body.additional_consented_products, ["liabilities"]);
+});
+
+test("Link retries only optional Liabilities product access failures and preserves required products", async (t) => {
+  const requests = [];
+  bankEnvironment(t, async (_url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    return body.additional_consented_products
+      ? response({error_code: "INVALID_PRODUCT", error_message: "client is not authorized to access liabilities"}, 400)
+      : response({link_token: "fallback-link"});
+  });
+  const {api} = backend((sql) => sql.includes("FROM personal_finance_connections")
+    ? [{provider: "plaid", status: "active", encrypted_access_token: encryptedToken("existing-token")}]
+    : []);
+  for (const data of [{}, {connectionId: 3}]) {
+    requests.length = 0;
+    const result = await api.createPlaidLinkToken("owner@example.com", data);
+    assert.equal(result.linkToken, "fallback-link");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[0].products, requests[1].products);
+    assert.deepEqual(requests[0].update, requests[1].update);
+    assert.deepEqual(requests[0].transactions, requests[1].transactions);
+    assert.equal(requests[1].additional_consented_products, undefined);
+  }
+});
+
+test("Link does not retry authentication and outage errors as optional product failures", async (t) => {
+  let count = 0;
+  let providerCode = "INVALID_API_KEYS";
+  bankEnvironment(t, async () => {
+    count++;
+    return response({error_code: providerCode, error_message: "Provider request failed"}, 400);
+  });
+  const {api} = backend(() => []);
+  for (const code of ["INVALID_API_KEYS", "INTERNAL_SERVER_ERROR"]) {
+    count = 0;
+    providerCode = code;
+    await assert.rejects(api.createPlaidLinkToken("owner@example.com"), /Provider request failed/);
+    assert.equal(count, 1);
+  }
 });
 
 test("unlink revokes the provider Item then atomically disables syncing while retaining transaction rows", async (t) => {
@@ -463,6 +517,22 @@ function syncBackend({ excluded = false, removedOwner = 3, onQuery } = {}) {
     return { affectedRows: 1 };
   });
 }
+test("merging re-linked cards preserves the newest statement cache on the canonical account", async (t) => {
+  bankEnvironment(t);
+  const rows = [identityAccount(2, 1, {account_type: "credit", credit_card_due_json: JSON.stringify({
+    statementBalance: 100, dueDate: "2026-10-25", syncedAt: "2026-10-01T12:00:00Z",
+  }), credit_card_due_status: "current"}), identityAccount(30, 3, {account_type: "credit",
+    credit_card_due_json: JSON.stringify({statementBalance: 350, dueDate: "2026-11-25", syncedAt: "2026-11-01T12:00:00Z"}),
+    credit_card_due_status: "current"})];
+  const {api, queries} = backend((sql) => sql.startsWith("SELECT a.*, c.institution_id") ? rows : []);
+  await api.repairDuplicateFinanceAccounts({preview: false});
+  const update = queries.find(({sql}) => sql.includes("SET connection_id = ?"));
+  assert.equal(JSON.parse(update.params[6]).statementBalance, 350);
+  assert.equal(JSON.parse(update.params[6]).dueDate, "2026-11-25");
+  assert.equal(update.params[7], "current");
+  assert.equal(update.params.at(-1), 2);
+});
+
 function bankSyncResponse(url, transactions) {
   return response(
     url.endsWith("/accounts/balance/get")
@@ -494,6 +564,93 @@ function bankSyncResponse(url, transactions) {
         },
   );
 }
+
+async function creditBankResponse(url) {
+  const payload = await bankSyncResponse(url).json();
+  if (url.endsWith("/accounts/balance/get")) {
+    payload.accounts[0].type = "credit";
+    payload.accounts[0].subtype = "credit card";
+  }
+  return response(payload);
+}
+
+test("credit sync imports the full statement and due date separately from current balances", async (t) => {
+  const requests = [];
+  bankEnvironment(t, async (url, options) => {
+    requests.push({url, body: JSON.parse(options.body)});
+    if (url.endsWith("/liabilities/get")) return response({liabilities: {credit: [{
+      account_id: "account-new", last_statement_balance: 350.12,
+      minimum_payment_amount: 25, next_payment_due_date: "2026-11-25",
+      last_statement_issue_date: "2026-10-31", last_payment_date: "2026-10-25",
+      last_payment_amount: 40, private_extra_field: "not-stored",
+    }, {account_id: "unrelated-card", last_statement_balance: 999}]}});
+    return creditBankResponse(url);
+  });
+  const {api, queries} = syncBackend();
+  const result = await api.syncFinanceConnection(3);
+  assert.equal(result.accounts, 1);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests[2].body.options, {account_ids: ["account-new"]});
+  const updates = queries.filter(({sql}) => sql.includes("SET credit_card_due_json = ?"));
+  assert.equal(updates.length, 1);
+  assert.match(updates[0].sql, /is_archived = 0 AND is_sync_excluded = 0/);
+  assert.deepEqual(updates[0].params.slice(1), [2, 3]);
+  assert.deepEqual(JSON.parse(updates[0].params[0]), {
+    statementBalance: 350.12, minimumPayment: 25, dueDate: "2026-11-25",
+    lastStatementDate: "2026-10-31", lastPaymentDate: "2026-10-25", lastPaymentAmount: 40,
+    syncedAt: JSON.parse(updates[0].params[0]).syncedAt,
+  });
+  assert.doesNotMatch(updates[0].params[0], /not-stored|unrelated-card/);
+  assert.ok(updates[0].inTransaction);
+});
+
+test("credit sync stores zero and missing statement fields without inferring from balances", async (t) => {
+  bankEnvironment(t, async (url) => url.endsWith("/liabilities/get")
+    ? response({liabilities: {credit: [{account_id: "account-new", last_statement_balance: null,
+      minimum_payment_amount: 0, next_payment_due_date: null, last_payment_amount: 0}]}})
+    : creditBankResponse(url));
+  const {api, queries} = syncBackend();
+  await api.syncFinanceConnection(3);
+  const saved = JSON.parse(queries.find(({sql}) => sql.includes("SET credit_card_due_json = ?")).params[0]);
+  assert.equal(saved.statementBalance, null);
+  assert.equal(saved.minimumPayment, 0);
+  assert.equal(saved.dueDate, null);
+  assert.equal(saved.lastPaymentAmount, 0);
+});
+
+test("unsupported liability access keeps cached dues stale while balances and transactions still refresh", async (t) => {
+  bankEnvironment(t, async (url) => url.endsWith("/liabilities/get")
+    ? response({error_code: "PRODUCT_NOT_READY", error_message: "sync-token secret-provider-info"}, 400)
+    : creditBankResponse(url));
+  const {api, queries} = syncBackend();
+  const result = await api.syncFinanceConnection(3);
+  assert.equal(result.accounts, 1);
+  assert.ok(queries.some(({sql}) => sql.includes("credit_card_due_status = IF(credit_card_due_json IS NULL, 'unavailable', 'stale')")));
+  assert.ok(!queries.some(({sql}) => sql.includes("SET credit_card_due_json = ?")));
+  assert.ok(queries.some(({sql}) => sql.includes("SET status = 'active'")));
+  assert.doesNotMatch(JSON.stringify(result), /sync-token|secret-provider-info/);
+});
+
+test("removed credit accounts do not initialize liability access", async (t) => {
+  const requests = [];
+  bankEnvironment(t, async (url) => {
+    requests.push(url);
+    return creditBankResponse(url);
+  });
+  const {api} = syncBackend({excluded: true});
+  await api.syncFinanceConnection(3);
+  assert.equal(requests.length, 2);
+  assert.ok(!requests.some((url) => url.endsWith("/liabilities/get")));
+});
+
+test("a successful liability response missing a credit account retains cached dues as stale", async (t) => {
+  bankEnvironment(t, async (url) => url.endsWith("/liabilities/get")
+    ? response({liabilities: {credit: []}}) : creditBankResponse(url));
+  const {api, queries} = syncBackend();
+  await api.syncFinanceConnection(3);
+  assert.ok(queries.some(({sql}) => sql.includes("credit_card_due_status = IF(credit_card_due_json IS NULL, 'unavailable', 'stale')")));
+  assert.ok(!queries.some(({sql}) => sql.includes("SET credit_card_due_json = ?")));
+});
 
 test("resync preserves an explicitly removed account and skips importing its new transactions", async (t) => {
   bankEnvironment(t, async (url) =>
@@ -981,4 +1138,99 @@ test("the private finance API exposes plan bank refresh and accepts only a boole
   allowedOrigin = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 403);
   assert.equal(calls.length, 2);
+});
+
+const planPaymentRecord = (id, date, overrides = {}) => ({
+  id, transaction_date: date, kind: "income", amount: 100, currency: "USD",
+  account_id: 2, account_name: "Credit card", account_type: "credit",
+  merchant: "Payment thank you", category: "Transfer", pending: 0,
+  external_provider: "plaid", ...overrides,
+});
+const planCardCache = (overrides = {}) => ({
+  id: 2, credit_card_due_json: JSON.stringify({
+    statementBalance: 500, dueDate: "2026-11-25", lastStatementDate: "2026-10-31", ...overrides,
+  }),
+});
+
+test("plans return earlier partial card payments as separate evidence without expanding visible flows", async (t) => {
+  bankEnvironment(t);
+  const {api, queries} = backend((sql) => {
+    if (sql.startsWith("SELECT a.id, a.credit_card_due_json")) return [planCardCache()];
+    if (sql.startsWith("SELECT t.*")) return sql.includes("t.pending = 0")
+      ? [planPaymentRecord(1, "2026-11-01"), planPaymentRecord(2, "2026-11-07"), planPaymentRecord(3, "2026-11-20")]
+      : [planPaymentRecord(3, "2026-11-20")];
+    return [];
+  });
+  const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
+  assert.equal(result.configured, true);
+  assert.equal(result.from, "2026-11-15");
+  assert.equal(result.to, "2026-11-30");
+  assert.deepEqual(result.transactions.map(({id}) => id), [3]);
+  assert.deepEqual(result.creditCardPaymentTransactions.map(({id}) => id), [1, 2, 3]);
+  assert.equal(result.creditCardPaymentWarning, "");
+  const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
+  assert.equal(history.params[0], "2026-10-31");
+  assert.ok(history.params[1] >= "2026-11-30");
+  assert.match(history.sql, /duplicate_of_id IS NULL AND t.is_provider_removed = 0/);
+  assert.match(history.sql, /currency IN \('USD', 'PHP'\)/);
+});
+
+test("late payment evidence extends through today while missing statement dates use a narrow due-date window", async (t) => {
+  bankEnvironment(t);
+  const {api, queries} = backend((sql) => sql.startsWith("SELECT a.id, a.credit_card_due_json")
+    ? [planCardCache({dueDate: "2020-01-25", lastStatementDate: null})] : []);
+  const result = await api.getFinancePlanActivity({startDate: "2020-01-15", endDate: "2020-01-31"});
+  assert.equal(result.creditCardPaymentWarning, "");
+  const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
+  assert.deepEqual(history.params, ["2020-01-22", activity.financeActivityWindow().today]);
+});
+
+test("plans skip the payment-history query when cached cards have no due date in the selected range", async (t) => {
+  bankEnvironment(t);
+  const {api, queries} = backend((sql) => sql.startsWith("SELECT a.id, a.credit_card_due_json")
+    ? [planCardCache({dueDate: "2026-12-25"}), planCardCache({dueDate: null})] : []);
+  const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
+  assert.deepEqual(result.creditCardPaymentTransactions, []);
+  assert.equal(queries.filter(({sql}) => sql.startsWith("SELECT t.*")).length, 1);
+});
+
+test("payment-history failures retain visible plan transactions with a separate evidence warning", async (t) => {
+  bankEnvironment(t);
+  for (const failCards of [false, true]) {
+    const {api} = backend((sql) => {
+      if (sql.startsWith("SELECT a.id, a.credit_card_due_json")) {
+        if (failCards) throw new Error("Cache read failed");
+        return [planCardCache()];
+      }
+      if (sql.startsWith("SELECT t.*")) {
+        if (sql.includes("t.pending = 0")) throw new Error("Evidence read failed");
+        return [planPaymentRecord(3, "2026-11-20")];
+      }
+      return [];
+    });
+    const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
+    assert.equal(result.configured, true);
+    assert.deepEqual(result.transactions.map(({id}) => id), [3]);
+    assert.deepEqual(result.creditCardPaymentTransactions, []);
+    assert.match(result.creditCardPaymentWarning, /payment history could not be loaded/);
+    assert.equal(result.warning, undefined);
+  }
+});
+
+test("payment evidence has its own 10,000-row cap and warns about clamped statement history", async (t) => {
+  bankEnvironment(t);
+  const {api} = backend((sql) => {
+    if (sql.startsWith("SELECT a.id, a.credit_card_due_json")) return [planCardCache({lastStatementDate: "1900-01-01"})];
+    if (sql.startsWith("SELECT t.*")) return sql.includes("t.pending = 0")
+      ? Array.from({length: 10001}, (_, index) => planPaymentRecord(index + 1, "2026-11-01"))
+      : [planPaymentRecord(3, "2026-11-20")];
+    return [];
+  });
+  const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
+  assert.equal(result.transactions.length, 1);
+  assert.equal(result.limitHit, false);
+  assert.equal(result.creditCardPaymentTransactions.length, 10000);
+  assert.equal(result.creditCardPaymentLimitHit, true);
+  assert.match(result.creditCardPaymentWarning, /two years/);
+  assert.match(result.creditCardPaymentWarning, /10,000/);
 });

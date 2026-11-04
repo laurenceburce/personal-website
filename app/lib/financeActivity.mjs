@@ -127,6 +127,35 @@ export function financeProviderStatus(env = process.env) {
   };
 }
 
+// Provider statements are separate from the current revolving balance. Unknown
+// fields stay unknown, including a missing due date or a missing statement.
+export function normalizeFinanceCreditCardDue(value) {
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const amount = (input) =>
+    ["number", "string"].includes(typeof input) && String(input).trim() &&
+    Number.isFinite(Number(input)) && Math.abs(Number(input)) <= MAX_AMOUNT
+      ? Math.round(Number(input) * 100) / 100 : null;
+  const date = (input) => {
+    if (typeof input !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input)) return null;
+    const parsed = Date.parse(`${input}T00:00:00Z`);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === input
+      ? input : null;
+  };
+  const timestamp = typeof value.syncedAt === "string" ? Date.parse(value.syncedAt) : NaN;
+  return {
+    statementBalance: amount(value.statementBalance),
+    minimumPayment: amount(value.minimumPayment),
+    dueDate: date(value.dueDate),
+    lastStatementDate: date(value.lastStatementDate),
+    lastPaymentDate: date(value.lastPaymentDate),
+    lastPaymentAmount: amount(value.lastPaymentAmount),
+    syncedAt: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null,
+  };
+}
+
 export function mapFinanceActivityAccount(row) {
   const currency = String(row.currency || "USD").toUpperCase();
   if (!CURRENCIES.has(currency)) return null;
@@ -138,6 +167,8 @@ export function mapFinanceActivityAccount(row) {
   const liability = ["credit", "loan"].includes(row.account_type);
   const opening = Number(row.opening_balance || 0);
   const movement = Number(row.native_movement || 0);
+  const creditCardDue = isLinked && row.account_type === "credit"
+    ? normalizeFinanceCreditCardDue(row.credit_card_due_json) : null;
   return {
     id: Number(row.id),
     name: row.name,
@@ -160,5 +191,9 @@ export function mapFinanceActivityAccount(row) {
       : null,
     connectionStatus: row.connection_status || "",
     color: row.color || "#34d399",
+    creditCardDue,
+    creditCardDueStatus: creditCardDue
+      ? row.credit_card_due_status === "current" ? "current" : "stale"
+      : "unavailable",
   };
 }

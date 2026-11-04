@@ -350,6 +350,14 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         currency,
         row.description,
       );
+    } else if (row.source === "creditCardDue") {
+      const result = movement(row.creditAccountId, row.amount, currency, "cardPayment", row.description);
+      if (result) movements.push(result);
+      if (row.amount > 0)
+        warnings.add(`${row.description}: the funding account is unknown; available funds include this payment, but no bank account debit is projected.`);
+    } else if (row.annualPayment && row.cardCreditActivity) {
+      const result = movement(row.accountId, -(row.grossAmount ?? row.amount), currency, "payment", row.description);
+      if (result) movements.push(result);
     } else if (row.annualPayment) {
       const reserve = checkedId(
         row.reserveAccountId,
@@ -464,9 +472,9 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   const transferActuals = rawRows.filter(
     (row) =>
       row.source === "transaction" &&
-      transferCategory(row) &&
+      (transferCategory(row) || row.creditCardPaymentFor) &&
       !row.annualPayment &&
-      !row.scheduledSource,
+      (!row.scheduledSource || row.scheduledSource === "creditCardDue"),
   );
   const consumed = new Set();
   const rows = rawRows.map((row) => {
@@ -583,6 +591,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
             row.reserveAccountId,
             row.fromAccountId,
             row.toAccountId,
+            row.creditAccountId,
             ...(row.reserveAllocations || []).flatMap((allocation) => [
               allocation.reserveAccountId,
               allocation.sourceAccountId,

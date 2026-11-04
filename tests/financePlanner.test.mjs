@@ -2688,3 +2688,268 @@ test("multiple installment cycles are fully funded by each deadline and conserve
 function roundCents(value) {
   return Math.round(value * 100) / 100;
 }
+
+function cardStatementFixture() {
+  return {
+    plan: { startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: 1000, openingPhp: 10000,
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] },
+    document: { salary: {}, bills: [], allocations: [] },
+    accounts: [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+      { id: 2, name: "Travel Card", institutionName: "Example Bank", mask: "1234", type: "credit", currency: "USD", nativeCurrentBalance: 500,
+        creditCardDue: { statementBalance: 200, minimumPayment: 25, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+    ],
+  };
+}
+
+test("linked full statement dues appear once on their actual dates in each native currency", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const input = [...accounts, { ...accounts[1], id: 3, name: "PHP Card", currency: "PHP",
+    creditCardDue: { statementBalance: 3250.25, minimumPayment: 100, dueDate: "2026-11-30" } }];
+  const before = JSON.stringify(input);
+  const rows = buildPlanRows(plan, document, 63, { accounts: input, today: "2026-11-04" });
+  assert.deepEqual(rows.map((row) => [row.id, row.date, row.amount, row.usd, row.php]), [
+    ["creditCardDue:2:2026-11-20", "2026-11-20", 200, -200, 0],
+    ["creditCardDue:3:2026-11-30", "2026-11-30", 3250.25, 0, -3250.25],
+  ]);
+  assert.equal(rows[0].editable, false);
+  assert.equal(rows[0].accountId, null);
+  assert.equal(rows[0].creditAccountId, 2);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+  assert.equal(rows.at(-1).balancePhp, 6749.75);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test("missing, invalid, zero, removed and out-of-range statements never use the current balance or minimum", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  for (const change of [
+    { creditCardDue: null },
+    { creditCardDue: { statementBalance: null, minimumPayment: 20, dueDate: "2026-11-20" } },
+    { creditCardDue: { statementBalance: "", dueDate: "2026-11-20" } },
+    { creditCardDue: { statementBalance: 200, dueDate: "2026-11-31" } },
+    { creditCardDue: { statementBalance: 200, dueDate: "2027-01-20" } },
+    { creditCardDue: { statementBalance: 0, dueDate: "2026-11-20" } },
+    { creditCardDue: { statementBalance: -20, dueDate: "2026-11-20" } },
+    { isArchived: true }, { mergedIntoAccountId: 5 }, { currency: "CAD" }, { type: "loan" },
+  ]) assert.deepEqual(buildPlanRows(plan, document, 63, { accounts: [{ ...accounts[1], ...change }] }), []);
+});
+
+test("credit purchases and card-billed plans change debt while statement dues alone consume available cash", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const rows = buildPlanRows(plan, { ...document, bills: [
+    { id: "streaming", name: "Streaming", cadence: "monthly", amount: 10, currency: "USD", dueDay: 10, accountId: 2 },
+  ] }, 63, { accounts, today: "2026-11-04", transactions: [
+    { id: 10, date: "2026-11-02", amount: 40, currency: "USD", kind: "expense", accountId: 2, category: "Groceries", merchant: "Market" },
+    { id: 11, date: "2026-11-03", amount: 5, currency: "USD", kind: "income", accountId: 2, category: "Shopping", merchant: "Refund" },
+  ] });
+  assert.ok(rows.filter((row) => row.source !== "creditCardDue").every((row) => row.cardCreditActivity && row.usd === 0));
+  assert.equal(rows.at(-1).balanceUsd, 800);
+  // Existing behavior is preserved when a card has no usable statement data.
+  const withoutDues = buildPlanRows(plan, document, 63, { accounts: [accounts[0], { ...accounts[1], creditCardDue: null }],
+    transactions: [{ id: 10, date: "2026-11-02", amount: 40, currency: "USD", kind: "expense", accountId: 2 }] });
+  assert.equal(withoutDues.at(-1).balanceUsd, 960);
+});
+
+test("posted partial card payments reduce the remaining statement once despite both transfer legs and shifted provider dates", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1].creditCardDue = { ...accounts[1].creditCardDue, lastPaymentAmount: 50, lastPaymentDate: "2026-11-05" };
+  const transactions = [
+    { id: 10, date: "2026-11-02", amount: 30, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+    { id: 11, date: "2026-11-02", amount: 30, currency: "USD", kind: "expense", accountId: 1, category: "Loan Payments" },
+    { id: 12, date: "2026-11-04", amount: 50, currency: "USD", kind: "income", accountId: 2, merchant: "Automatic payment" },
+    { id: 13, date: "2026-11-04", amount: 50, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions, today: "2026-11-06" });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.statementBalance, 200);
+  assert.equal(due.paidAmount, 80);
+  assert.equal(due.amount, 120);
+  assert.equal(due.completed, false);
+  assert.deepEqual(due.paymentTransactionIds, [10, 12, 11, 13]);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+  assert.equal(rows.find((row) => row.transactionId === 13).scheduledSource, "creditCardDue");
+});
+
+test("provider payment evidence completes a fully paid statement without inventing another cash payment", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1].creditCardDue = { ...accounts[1].creditCardDue, lastPaymentDate: "2026-11-03", lastPaymentAmount: 200 };
+  const [due] = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-04" });
+  assert.equal(due.amount, 0);
+  assert.equal(due.usd, 0);
+  assert.equal(due.paidAmount, 200);
+  assert.equal(due.completed, true);
+  assert.equal(due.completionSource, "transaction");
+  assert.equal(due.balanceUsd, 1000);
+});
+
+test("duplicate payment records reduce a statement once and another card purchase cannot act as its bank debit", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const payment = { id: 1, date: "2026-11-02", amount: 40, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" };
+  accounts.push({ id: 3, type: "credit", name: "Other Card", currency: "USD", nativeCurrentBalance: 0 });
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-04", transactions: [
+    payment, { ...payment },
+    { id: 2, date: "2026-11-02", amount: 40, currency: "USD", kind: "expense", accountId: 3, category: "Transfer Out", merchant: "Travel Card payment" },
+  ] });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.paidAmount, 40);
+  assert.deepEqual(due.paymentTransactionIds, [1]);
+  assert.equal(due.amount, 160);
+});
+
+test("pending payments, refunds and payments before statement close do not satisfy a statement", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1].creditCardDue = { ...accounts[1].creditCardDue, lastPaymentDate: "2026-10-23", lastPaymentAmount: 200 };
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-04", transactions: [
+    { id: 1, date: "2026-11-02", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Transfer", pending: true },
+    { id: 2, date: "2026-11-03", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Shopping", merchant: "Refund" },
+    { id: 3, date: "2026-10-23", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Transfer" },
+  ] });
+  assert.equal(rows.at(-1).amount, 200);
+  assert.equal(rows.at(-1).paidAmount, 0);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+});
+
+test("payments posted well after the due date satisfy overdue statements using either bank records or provider metadata", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  for (const viaMetadata of [false, true]) {
+    accounts[1].creditCardDue = { ...accounts[1].creditCardDue,
+      lastPaymentDate: viaMetadata ? "2026-11-30" : null, lastPaymentAmount: viaMetadata ? 200 : null };
+    const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-12-01", transactions: viaMetadata ? [] : [
+      { id: 1, date: "2026-11-30", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+      { id: 2, date: "2026-11-30", amount: 200, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+    ] });
+    const due = rows.find((row) => row.source === "creditCardDue");
+    assert.equal(due.amount, 0);
+    assert.equal(due.paidAmount, 200);
+    assert.equal(due.completed, true);
+    assert.equal(rows.at(-1).balanceUsd, viaMetadata ? 1000 : 800);
+  }
+});
+
+test("a bank debit cannot pay two cards at the same issuer and a mask identifies a single card", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts.push({ ...accounts[1], id: 3, name: "Rewards Card", mask: "5678" });
+  const debit = { id: 10, date: "2026-11-02", amount: 200, currency: "USD", kind: "expense", accountId: 1,
+    category: "Loan Payments", merchant: "Example Bank payment" };
+  let rows = buildPlanRows(plan, document, 63, { accounts, transactions: [debit], today: "2026-11-04" });
+  assert.deepEqual(rows.filter((row) => row.source === "creditCardDue").map((row) => row.paidAmount), [0, 0]);
+  rows = buildPlanRows(plan, document, 63, { accounts, transactions: [{ ...debit, merchant: "Example Bank 5678 payment" }], today: "2026-11-04" });
+  assert.deepEqual(rows.filter((row) => row.source === "creditCardDue").map((row) => row.paidAmount), [0, 200]);
+  assert.equal(rows.at(-1).balanceUsd, 600);
+});
+
+test("charging a reserved annual bill to a card releases its earmark for the statement cash payment", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const rows = buildPlanRows({ ...plan, endDate: "2026-11-30" }, { ...document, bills: [
+    { id: "annual", name: "Annual fee", cadence: "annual", amount: 200, currency: "USD", dueDay: 10, dueMonths: [11], savedAmount: 200, accountId: 2 },
+  ] }, 63, { accounts, today: "2026-11-04" });
+  const charge = rows.find((row) => row.annualPayment);
+  assert.equal(charge.cardCreditActivity, true);
+  assert.equal(charge.usd, 200);
+  assert.equal(charge.reserveUsd, 0);
+  assert.equal(rows.at(-1).balanceUsd, 1000);
+});
+
+test("explicit planned card transfers fund the statement once and stay pending until posted", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const entry = { id: "card-payment", date: "2026-11-18", description: "Pay travel card", kind: "transfer",
+    fromAccountId: 1, toAccountId: 2, amount: 80, currency: "USD" };
+  let rows = buildPlanRows({ ...plan, entries: [entry] }, document, 63, { accounts, today: "2026-11-04" });
+  let due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.plannedPaymentAmount, 80);
+  assert.equal(due.paidAmount, 0);
+  assert.equal(due.amount, 120);
+  assert.equal(due.completed, false);
+  assert.equal(rows.find((row) => row.entryId === entry.id).usd, -80);
+  assert.equal(rows.find((row) => row.entryId === entry.id).creditCardPaymentFor, 2);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+  rows = buildPlanRows({ ...plan, entries: [{ ...entry, amount: 200 }] }, document, 63, { accounts, today: "2026-11-04" });
+  due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.plannedPaymentAmount, 200);
+  assert.equal(due.amount, 0);
+  assert.equal(due.completed, false);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+});
+
+test("posted explicit card transfers replace their planned cash movement and current live opening counts it once", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const entry = { id: "card-payment", date: "2026-11-18", description: "Pay travel card", kind: "transfer",
+    fromAccountId: 1, toAccountId: 2, amount: 200, currency: "USD" };
+  const transactions = [
+    { id: 1, date: "2026-11-18", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+    { id: 2, date: "2026-11-18", amount: 200, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+  ];
+  for (const live of [false, true]) {
+    const rows = buildPlanRows({ ...plan, entries: [entry],
+      ...(live ? { openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }] } : {}) }, document, 63,
+    { accounts: [{ ...accounts[0], nativeCurrentBalance: 800 }, accounts[1]], transactions, today: "2026-11-19" });
+    const due = rows.find((row) => row.source === "creditCardDue");
+    assert.equal(due.amount, 0);
+    assert.equal(due.plannedPaymentAmount, 0);
+    assert.equal(due.paidAmount, 200);
+    assert.equal(rows.find((row) => row.entryId === entry.id).balanceAppliedUsd, 0);
+    assert.equal(rows.at(-1).balanceUsd, 800);
+  }
+});
+
+test("recognized Debt and Other card payments complete explicit transfers and count once with dated and live cash", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const entry = { id: "card-payment", date: "2026-11-18", description: "Pay travel card", kind: "transfer",
+    fromAccountId: 1, toAccountId: 2, amount: 200, currency: "USD" };
+  for (const category of ["Debt", "Other"]) for (const live of [false, true]) {
+    const rows = buildPlanRows({ ...plan, entries: [entry],
+      ...(live ? { openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }] } : {}) }, document, 63,
+    { accounts: [{ ...accounts[0], nativeCurrentBalance: 800 }, accounts[1]], today: "2026-11-18", transactions: [
+      { id: 1, date: "2026-11-18", amount: 200, currency: "USD", kind: "income", accountId: 2, category, merchant: "Automatic payment" },
+      { id: 2, date: "2026-11-18", amount: 200, currency: "USD", kind: "expense", accountId: 1, category, merchant: "Travel Card payment" },
+    ] });
+    const transfer = rows.find((row) => row.entryId === entry.id);
+    assert.equal(transfer.completed, true);
+    assert.equal(transfer.balanceAppliedUsd, 0);
+    assert.deepEqual(transfer.matchedTransactionIds, [2, 1]);
+    assert.equal(rows.find((row) => row.source === "creditCardDue").amount, 0);
+    assert.equal(rows.at(-1).balanceUsd, 800);
+  }
+});
+
+test("a named bank-only partial payment remains evidence alongside another paired card payment", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-11", transactions: [
+    { id: 1, date: "2026-11-02", amount: 50, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+    { id: 2, date: "2026-11-02", amount: 50, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+    { id: 3, date: "2026-11-10", amount: 70, currency: "USD", kind: "expense", accountId: 1, category: "Loan Payments", merchant: "Card 1234 payment" },
+  ] });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.paidAmount, 120);
+  assert.equal(due.amount, 80);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+});
+
+test("statement-cycle evidence before the plan reduces dues without replaying earlier cash transactions", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const earlierPayment = { id: 1, date: "2026-11-02", amount: 50, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" };
+  const laterPayment = { id: 2, date: "2026-11-16", amount: 30, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" };
+  const rows = buildPlanRows({ ...plan, startDate: "2026-11-15", endDate: "2026-11-30" }, document, 63,
+    { accounts, today: "2026-11-17", transactions: [laterPayment],
+      creditCardPaymentTransactions: [earlierPayment, laterPayment] });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.paidAmount, 80);
+  assert.equal(due.amount, 120);
+  assert.equal(rows.some((row) => row.transactionId === earlierPayment.id), false);
+  assert.equal(rows.at(-1).balanceUsd, 880);
+});
+
+test("an explicit savings-funded card payment consumes outside savings before available-owned cash", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts.push({ id: 3, name: "Savings", type: "savings", currency: "USD", nativeCurrentBalance: 200 });
+  const entry = { id: "card-payment", date: "2026-11-18", description: "Pay from savings", kind: "transfer",
+    fromAccountId: 3, toAccountId: 2, amount: 200, currency: "USD" };
+  const cardDocument = { ...document, allocations: [{ id: "savings", name: "Savings", kind: "savings", amount: 0, accountId: 3, currency: "USD" }] };
+  for (const selected of [0, 50, 100]) {
+    const rows = buildPlanRows({ ...plan, entries: [entry], startingAccounts: selected ? [{ accountId: 3, percentage: selected }] : [] },
+      cardDocument, 63, { accounts, today: "2026-11-04" });
+    assert.equal(rows.find((row) => row.entryId === entry.id).usd, -2 * selected || 0);
+    assert.equal(rows.find((row) => row.source === "creditCardDue").amount, 0);
+    assert.equal(rows.at(-1).balanceUsd, 1000);
+  }
+});

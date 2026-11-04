@@ -245,16 +245,20 @@ test("completed plan rows retain orphan history but store only validated identif
   planner.plans[0].completedRows = [
     { rowId: "bill:removed-bill:2025-01-01", completedAt, arbitrary: "discard" },
     { rowId: "entry:conversion-1", completedAt },
+    { rowId: "creditCardDue:7:2026-11-15", completedAt },
   ];
   const clean = validateFinancePlanner(planner);
   assert.deepEqual(clean.plans[0].completedRows, [
     { rowId: "bill:removed-bill:2025-01-01", completedAt },
     { rowId: "entry:conversion-1", completedAt },
+    { rowId: "creditCardDue:7:2026-11-15", completedAt },
   ]);
   assert.deepEqual(validateFinancePlanner(clean), clean);
   for (const completed of [
     [{ rowId: "arbitrary:thing", completedAt }],
     [{ rowId: "salary:2026-02-30", completedAt }],
+    [{ rowId: "creditCardDue:7:2026-02-30", completedAt }],
+    [{ rowId: "creditCardDue:0:2026-11-15", completedAt }],
     [{ rowId: "entry:conversion-1", completedAt: "2026-02-30T15:00:00.000Z" }],
     [{ rowId: "entry:conversion-1", completedAt: "yesterday" }],
     [{ rowId: "entry:conversion-1", completedAt }, { rowId: "entry:conversion-1", completedAt }],

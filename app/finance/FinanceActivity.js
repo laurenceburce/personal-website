@@ -18,6 +18,14 @@ const PLAID_SCRIPT = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
 const PLAID_SESSION_KEY = "finance:plaid-link-session";
 const LINK_MAX_AGE = 4 * 60 * 60 * 1000;
 const PAGE_SIZE = 25;
+const ACCOUNT_GROUPS = [
+  { id: "checking", label: "Checking" },
+  { id: "savings", label: "Savings" },
+  { id: "credit", label: "Credit cards" },
+  { id: "other", label: "Others" },
+];
+const accountGroup = (account) =>
+  ["checking", "savings", "credit"].includes(account.type) ? account.type : "other";
 let plaidScriptPromise;
 
 function ActivityIcon({ name, size = 19 }) {
@@ -117,6 +125,48 @@ function NativeMoney({ value, currency }) {
       </>
     );
   }
+}
+
+function CreditCardDue({ account }) {
+  const due = account.creditCardDue;
+  const statementAvailable =
+    due?.statementBalance !== null &&
+    due?.statementBalance !== undefined &&
+    Number.isFinite(Number(due.statementBalance));
+  const dueDate = formatDate(due?.dueDate, { year: "numeric" });
+  const complete = statementAvailable && dueDate !== "—";
+  return (
+    <div className="fa-credit-card-due">
+      <dl>
+        <div>
+          <dt>Statement balance</dt>
+          <dd>
+            <NativeMoney
+              value={due?.statementBalance}
+              currency={account.currency}
+            />
+          </dd>
+        </div>
+        <div>
+          <dt>Payment due</dt>
+          <dd>{dueDate === "—" ? "Unavailable" : dueDate}</dd>
+        </div>
+      </dl>
+      {account.creditCardDueStatus === "stale" && (
+        <p>
+          Last known statement details. Refresh this bank connection to check for
+          updates.
+        </p>
+      )}
+      <small>
+        {complete
+          ? "Statement dues appear automatically in Budget Plans for the due date."
+          : account.isLinked
+            ? "This bank connection has not supplied complete statement details for Budget Plans."
+            : "Statement details are imported for linked credit cards."}
+      </small>
+    </div>
+  );
 }
 
 function signedMoney(transaction) {
@@ -1626,213 +1676,241 @@ export function BankAccountsPanel({
             </p>
           </div>
         ) : (
-          <div className="fa-accounts-grid">
-            {activity.accounts.map((account) => {
-              const allocation = accountAllocations.find(
-                (item) => String(item.accountId) === String(account.id),
+          <div className="fa-account-groups">
+            {ACCOUNT_GROUPS.map((group) => {
+              const groupedAccounts = activity.accounts.filter(
+                (account) => accountGroup(account) === group.id,
               );
-              const liability = ["credit", "loan"].includes(account.type);
-              const balance = account.nativeCurrentBalance;
-              const hasBalance =
-                balance !== null &&
-                balance !== undefined &&
-                Number.isFinite(Number(balance));
-              const creditBalance =
-                liability && hasBalance && Number(balance) < 0;
-              const nativeDisplay = creditBalance
-                ? Math.abs(Number(balance))
-                : balance;
-              const label = !hasBalance
-                ? "Current balance"
-                : liability
-                  ? creditBalance
-                    ? "Credit balance"
-                    : "Balance owed"
-                  : Number(balance) < 0
-                    ? "Overdrawn balance"
-                    : "Current balance";
-              const supported = ["USD", "PHP"].includes(account.currency);
               return (
-                <article className="fa-account-card" key={account.id}>
-                  <div className="fa-account-heading">
-                    <span
-                      className={`fa-account-icon ${liability ? "fa-liability-icon" : ""}`}
-                    >
-                      <ActivityIcon
-                        name={liability ? "card" : "bank"}
-                        size={19}
-                      />
-                    </span>
-                    <div>
-                      <h3>{account.name}</h3>
-                      {account.mask && (
-                        <small className="fa-account-mask">
-                          Account ending {account.mask}
-                        </small>
-                      )}
-                      <p>
-                        {account.institutionName ||
-                          (account.isLinked
-                            ? providerName(account.provider)
-                            : "Manually tracked")}{" "}
-                        ·{" "}
-                        {String(account.type || "account").replaceAll("_", " ")}
-                      </p>
-                    </div>
-                    <span className="fa-account-currency">
-                      {account.currency}
-                    </span>
-                  </div>
-                  <div className="fa-account-balance">
-                    <span>{label}</span>
-                    <strong
-                      className={
-                        hasBalance &&
-                        ((liability && !creditBalance && balance > 0) ||
-                          (!liability && balance < 0))
-                          ? "fa-negative"
-                          : ""
-                      }
-                    >
-                      <NativeMoney
-                        value={nativeDisplay}
-                        currency={account.currency}
-                      />
-                    </strong>
-                    {hasBalance &&
-                      supported &&
-                      account.currency !== currency && (
-                        <small>
-                          ≈{" "}
-                          {money(
-                            convert(
-                              nativeDisplay,
-                              account.currency,
-                              currency,
-                              rate,
-                            ),
-                            currency,
-                          )}{" "}
-                          {creditBalance
-                            ? "credit"
-                            : liability
-                              ? "owed"
-                              : "equivalent"}
-                        </small>
-                      )}
-                  </div>
-                  {allocation &&
-                    (allocation.roles?.length > 0 ||
-                      allocation.annualReserved > 0) && (
-                      <div className="fa-account-allocations">
-                        {allocation.annualReserved > 0 && (
-                          <div>
-                            <span>Allocated to annual bills</span>
-                            <b>
-                              {money(
-                                allocation.annualReserved,
-                                account.currency,
-                              )}
-                            </b>
-                          </div>
-                        )}
-                        {allocation.annualPerPayday > 0 && (
-                          <div>
-                            <span>Annual bills each payday</span>
-                            <b>
-                              {money(
-                                allocation.annualPerPayday,
-                                account.currency,
-                              )}
-                            </b>
-                          </div>
-                        )}
-                        {allocation.savingsPerPayday > 0 && (
-                          <div>
-                            <span>Savings each payday</span>
-                            <b>
-                              {money(
-                                allocation.savingsPerPayday,
-                                account.currency,
-                              )}
-                            </b>
-                          </div>
-                        )}
-                        {allocation.salaryPerPayday > 0 && (
-                          <div>
-                            <span>Receives salary each payday</span>
-                            <b>
-                              {money(
-                                allocation.salaryPerPayday,
-                                account.currency,
-                              )}
-                            </b>
-                          </div>
-                        )}
-                        {allocation.bankBalance !== null &&
-                          allocation.bankBalance !== undefined &&
-                          allocation.annualReserved > 0 && (
-                            <div>
-                              <span>Balance outside annual reserves</span>
-                              <b>
-                                {money(
-                                  allocation.unallocatedBalance,
-                                  account.currency,
+                <section
+                  className="fa-account-group"
+                  aria-labelledby={`fa-account-group-${group.id}`}
+                  key={group.id}
+                >
+                  <header className="fa-account-group-heading">
+                    <h3 id={`fa-account-group-${group.id}`}>{group.label}</h3>
+                    <span className="fa-count">{groupedAccounts.length}</span>
+                  </header>
+                  {!groupedAccounts.length ? (
+                    <p className="fa-account-group-empty">
+                      No accounts in this category.
+                    </p>
+                  ) : (
+                    <div className="fa-accounts-grid">
+                      {groupedAccounts.map((account) => {
+                        const allocation = accountAllocations.find(
+                          (item) => String(item.accountId) === String(account.id),
+                        );
+                        const liability = ["credit", "loan"].includes(account.type);
+                        const balance = account.nativeCurrentBalance;
+                        const hasBalance =
+                          balance !== null &&
+                          balance !== undefined &&
+                          Number.isFinite(Number(balance));
+                        const creditBalance =
+                          liability && hasBalance && Number(balance) < 0;
+                        const nativeDisplay = creditBalance
+                          ? Math.abs(Number(balance))
+                          : balance;
+                        const label = !hasBalance
+                          ? "Current balance"
+                          : liability
+                            ? creditBalance
+                              ? "Credit balance"
+                              : "Balance owed"
+                            : Number(balance) < 0
+                              ? "Overdrawn balance"
+                              : "Current balance";
+                        const supported = ["USD", "PHP"].includes(account.currency);
+                        return (
+                          <article className="fa-account-card" key={account.id}>
+                            <div className="fa-account-heading">
+                              <span
+                                className={`fa-account-icon ${liability ? "fa-liability-icon" : ""}`}
+                              >
+                                <ActivityIcon
+                                  name={liability ? "card" : "bank"}
+                                  size={19}
+                                />
+                              </span>
+                              <div>
+                                <h4>{account.name}</h4>
+                                {account.mask && (
+                                  <small className="fa-account-mask">
+                                    Account ending {account.mask}
+                                  </small>
                                 )}
-                              </b>
+                                <p>
+                                  {account.institutionName ||
+                                    (account.isLinked
+                                      ? providerName(account.provider)
+                                      : "Manually tracked")}{" "}
+                                  ·{" "}
+                                  {String(account.type || "account").replaceAll("_", " ")}
+                                </p>
+                              </div>
+                              <span className="fa-account-currency">
+                                {account.currency}
+                              </span>
                             </div>
-                          )}
-                        {allocation.overassigned > 0 && (
-                          <p className="fa-negative">
-                            Annual allocations exceed this bank balance by{" "}
-                            {money(allocation.overassigned, account.currency)}.
-                            Update saved balances or account assignments.
-                          </p>
-                        )}
-                        {allocation.roles?.length > 0 && (
-                          <small>
-                            {[
-                              ...new Set(
-                                allocation.roles
-                                  .map((role) => role.name)
-                                  .filter(Boolean),
-                              ),
-                            ].join(" · ")}
-                          </small>
-                        )}
-                      </div>
-                    )}
-                  <footer>
-                    <span
-                      className={`fa-account-source ${account.isLinked ? "fa-is-linked" : ""}`}
-                    >
-                      {account.isLinked ? "Bank synced" : "Manual account"}
-                    </span>
-                    {account.nativeAvailableBalance !== null &&
-                      account.nativeAvailableBalance !== undefined && (
-                        <small>
-                          {liability ? "Available credit" : "Available"}{" "}
-                          <NativeMoney
-                            value={account.nativeAvailableBalance}
-                            currency={account.currency}
-                          />
-                        </small>
-                      )}
-                  </footer>
-                  <div className="fa-account-controls">
-                    <ActionButton
-                      icon="trash"
-                      disabled={working || unavailable}
-                      onClick={() =>
-                        setConfirmation({ kind: "account", id: account.id })
-                      }
-                      aria-label={`Remove ${financeAccountLabel(account)}`}
-                    >
-                      Remove
-                    </ActionButton>
-                  </div>
-                  {removalConfirmation("account", account.id)}
-                </article>
+                            <div className="fa-account-balance">
+                              <span>{label}</span>
+                              <strong
+                                className={
+                                  hasBalance &&
+                                  ((liability && !creditBalance && balance > 0) ||
+                                    (!liability && balance < 0))
+                                    ? "fa-negative"
+                                    : ""
+                                }
+                              >
+                                <NativeMoney
+                                  value={nativeDisplay}
+                                  currency={account.currency}
+                                />
+                              </strong>
+                              {hasBalance &&
+                                supported &&
+                                account.currency !== currency && (
+                                  <small>
+                                    ≈{" "}
+                                    {money(
+                                      convert(
+                                        nativeDisplay,
+                                        account.currency,
+                                        currency,
+                                        rate,
+                                      ),
+                                      currency,
+                                    )}{" "}
+                                    {creditBalance
+                                      ? "credit"
+                                      : liability
+                                        ? "owed"
+                                        : "equivalent"}
+                                  </small>
+                                )}
+                            </div>
+                            {account.type === "credit" && (
+                              <CreditCardDue account={account} />
+                            )}
+                            {allocation &&
+                              (allocation.roles?.length > 0 ||
+                                allocation.annualReserved > 0) && (
+                                <div className="fa-account-allocations">
+                                  {allocation.annualReserved > 0 && (
+                                    <div>
+                                      <span>Allocated to annual bills</span>
+                                      <b>
+                                        {money(
+                                          allocation.annualReserved,
+                                          account.currency,
+                                        )}
+                                      </b>
+                                    </div>
+                                  )}
+                                  {allocation.annualPerPayday > 0 && (
+                                    <div>
+                                      <span>Annual bills each payday</span>
+                                      <b>
+                                        {money(
+                                          allocation.annualPerPayday,
+                                          account.currency,
+                                        )}
+                                      </b>
+                                    </div>
+                                  )}
+                                  {allocation.savingsPerPayday > 0 && (
+                                    <div>
+                                      <span>Savings each payday</span>
+                                      <b>
+                                        {money(
+                                          allocation.savingsPerPayday,
+                                          account.currency,
+                                        )}
+                                      </b>
+                                    </div>
+                                  )}
+                                  {allocation.salaryPerPayday > 0 && (
+                                    <div>
+                                      <span>Receives salary each payday</span>
+                                      <b>
+                                        {money(
+                                          allocation.salaryPerPayday,
+                                          account.currency,
+                                        )}
+                                      </b>
+                                    </div>
+                                  )}
+                                  {allocation.bankBalance !== null &&
+                                    allocation.bankBalance !== undefined &&
+                                    allocation.annualReserved > 0 && (
+                                      <div>
+                                        <span>Balance outside annual reserves</span>
+                                        <b>
+                                          {money(
+                                            allocation.unallocatedBalance,
+                                            account.currency,
+                                          )}
+                                        </b>
+                                      </div>
+                                    )}
+                                  {allocation.overassigned > 0 && (
+                                    <p className="fa-negative">
+                                      Annual allocations exceed this bank balance by{" "}
+                                      {money(allocation.overassigned, account.currency)}.
+                                      Update saved balances or account assignments.
+                                    </p>
+                                  )}
+                                  {allocation.roles?.length > 0 && (
+                                    <small>
+                                      {[
+                                        ...new Set(
+                                          allocation.roles
+                                            .map((role) => role.name)
+                                            .filter(Boolean),
+                                        ),
+                                      ].join(" · ")}
+                                    </small>
+                                  )}
+                                </div>
+                              )}
+                            <footer>
+                              <span
+                                className={`fa-account-source ${account.isLinked ? "fa-is-linked" : ""}`}
+                              >
+                                {account.isLinked ? "Bank synced" : "Manual account"}
+                              </span>
+                              {account.nativeAvailableBalance !== null &&
+                                account.nativeAvailableBalance !== undefined && (
+                                  <small>
+                                    {liability ? "Available credit" : "Available"}{" "}
+                                    <NativeMoney
+                                      value={account.nativeAvailableBalance}
+                                      currency={account.currency}
+                                    />
+                                  </small>
+                                )}
+                            </footer>
+                            <div className="fa-account-controls">
+                              <ActionButton
+                                icon="trash"
+                                disabled={working || unavailable}
+                                onClick={() =>
+                                  setConfirmation({ kind: "account", id: account.id })
+                                }
+                                aria-label={`Remove ${financeAccountLabel(account)}`}
+                              >
+                                Remove
+                              </ActionButton>
+                            </div>
+                            {removalConfirmation("account", account.id)}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
               );
             })}
           </div>
