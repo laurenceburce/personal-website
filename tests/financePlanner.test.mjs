@@ -7,6 +7,7 @@ import {
   billOccurrences,
   buildPlanRows,
   convert,
+  entryOccurrences,
   formatDate,
   getAnnualBillFunding,
   getAnnualReserveOpening,
@@ -2952,4 +2953,144 @@ test("an explicit savings-funded card payment consumes outside savings before av
     assert.equal(rows.find((row) => row.source === "creditCardDue").amount, 0);
     assert.equal(rows.at(-1).balanceUsd, 1000);
   }
+});
+
+function recurringEntryFixture() {
+  return {
+    plan: {
+      startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000, openingPhp: 0,
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+      entries: [{ id: "daily", date: "2026-11-01", description: "Coffee", kind: "expense", amount: 10,
+        currency: "USD", recurrence: "daily", repeatUntil: "2026-11-03" }],
+    },
+    document: { salary: { payFrequency: "biweekly", firstPayDate: "2026-10-23", amount: 2000, currency: "USD" }, bills: [], allocations: [] },
+  };
+}
+
+test("daily plan entries follow inclusive calendar days through leap dates and New York DST", () => {
+  const entry = { id: "daily", date: "2028-02-28", recurrence: "daily", repeatUntil: "2028-03-01", amount: 1.25, currency: "PHP" };
+  const before = JSON.stringify(entry);
+  assert.deepEqual(entryOccurrences(entry, "2028-02-01", "2028-03-31").map((row) => row.date),
+    ["2028-02-28", "2028-02-29", "2028-03-01"]);
+  assert.deepEqual(entryOccurrences({ ...entry, date: "2026-10-31", repeatUntil: "2026-11-03" }, "2026-10-01", "2026-11-30").map((row) => row.date),
+    ["2026-10-31", "2026-11-01", "2026-11-02", "2026-11-03"]);
+  assert.equal(JSON.stringify(entry), before);
+});
+
+test("monthly plan entries retain their original day after short and leap-year months", () => {
+  const entry = { id: "monthly", date: "2027-01-31", recurrence: "monthly", amount: 30, currency: "USD" };
+  assert.deepEqual(entryOccurrences(entry, "2027-01-01", "2027-04-30").map((row) => row.date),
+    ["2027-01-31", "2027-02-28", "2027-03-31", "2027-04-30"]);
+  assert.deepEqual(entryOccurrences({ ...entry, date: "2028-01-31" }, "2028-02-01", "2028-03-31").map((row) => row.date),
+    ["2028-02-29", "2028-03-31"]);
+  assert.deepEqual(entryOccurrences({ ...entry, repeatUntil: "2027-03-30" }, "2027-02-01", "2027-04-30").map((row) => row.date), ["2027-02-28"]);
+});
+
+test("entry schedules reject impossible or reversed dates and retain legacy single-entry behavior", () => {
+  const entry = { id: "once", date: "2026-11-10", amount: 12, currency: "USD" };
+  assert.deepEqual(entryOccurrences(entry, "2026-11-01", "2026-11-30"), [{ date: entry.date, amount: 12, currency: "USD", entryId: "once" }]);
+  for (const change of [{ date: "2026-11-31" }, { recurrence: "weekly" }, { recurrence: "daily", repeatUntil: "2026-02-30" }, { recurrence: "daily", repeatUntil: "2026-11-01" }])
+    assert.deepEqual(entryOccurrences({ ...entry, ...change }, "2026-11-01", "2026-11-30"), []);
+  assert.deepEqual(entryOccurrences(entry, "2026-11-30", "2026-11-01"), []);
+});
+
+test("every-payday entries follow the salary schedule even when salary forecasts are switched off", () => {
+  const { plan, document } = recurringEntryFixture();
+  const entry = { ...plan.entries[0], date: "2026-11-01", recurrence: "payday", repeatUntil: null };
+  const build = (salary) => buildPlanRows({ ...plan, entries: [entry] }, { ...document, salary }, 63, { today: "2026-11-01" });
+  let rows = build(document.salary);
+  assert.deepEqual(rows.map((row) => row.date), ["2026-11-06", "2026-11-20"]);
+  assert.ok(rows.every((row) => row.source === "manual" && row.amount === 10 && row.recurring));
+  rows = build({ ...document.salary, payFrequency: "semimonthly", firstPayDate: "2026-11-06" });
+  assert.deepEqual(rows.map((row) => row.date), ["2026-11-06", "2026-11-21"]);
+  assert.deepEqual(build({}), []);
+});
+
+test("recurring entries have independent stable occurrence IDs and native running balances", () => {
+  const { plan, document } = recurringEntryFixture();
+  const before = JSON.stringify(plan);
+  const rows = buildPlanRows({ ...plan, entries: [...plan.entries,
+    { id: "income", date: "2026-11-02", description: "Small income", kind: "income", amount: 100, currency: "PHP", recurrence: "daily", repeatUntil: "2026-11-03" },
+  ] }, document, 63, { today: "2026-11-01" });
+  assert.deepEqual(rows.filter((row) => row.entryId === "daily").map((row) => row.id),
+    ["entry:daily:2026-11-01", "entry:daily:2026-11-02", "entry:daily:2026-11-03"]);
+  assert.ok(rows.every((row) => row.recurring && row.editable));
+  assert.equal(rows.at(-1).balanceUsd, 970);
+  assert.equal(rows.at(-1).balancePhp, 200);
+  assert.equal(JSON.stringify(plan), before);
+});
+
+test("editing or completing one recurring occurrence leaves the series and its other dates unchanged", () => {
+  const { plan, document } = recurringEntryFixture();
+  const overridden = { ...plan,
+    rowOverrides: [{ rowId: "entry:daily:2026-11-02", date: "2026-11-03", description: "Skipped coffee", amount: 0 }],
+    completedRows: [{ rowId: "entry:daily:2026-11-01", completedAt: "2026-11-01T12:00:00.000Z" }],
+  };
+  const rows = buildPlanRows(overridden, document, 63, { today: "2026-11-01" });
+  assert.equal(rows.find((row) => row.id === "entry:daily:2026-11-01").completed, true);
+  assert.equal(rows.find((row) => row.id === "entry:daily:2026-11-03").completed, false);
+  const exception = rows.find((row) => row.id === "entry:daily:2026-11-02");
+  assert.equal(exception.date, "2026-11-03");
+  assert.equal(exception.originalDate, "2026-11-02");
+  assert.equal(exception.originalAmount, 10);
+  assert.equal(exception.amount, 0);
+  assert.equal(exception.isOverride, true);
+  assert.equal(rows.at(-1).balanceUsd, 980);
+  assert.equal(plan.entries[0].amount, 10);
+});
+
+test("moved monthly occurrence overrides are reconstructed only for real dates in the source series", () => {
+  const { plan, document } = recurringEntryFixture();
+  const entry = { ...plan.entries[0], date: "2026-11-10", recurrence: "monthly", repeatUntil: null };
+  const rows = buildPlanRows({ ...plan, entries: [entry], rowOverrides: [
+    { rowId: "entry:daily:2026-12-10", date: "2026-11-15", description: "Moved monthly", amount: 20 },
+    { rowId: "entry:daily:2026-12-11", date: "2026-11-16", description: "Not a source occurrence", amount: 99 },
+  ] }, document, 63, { today: "2026-11-01" });
+  assert.deepEqual(rows.map((row) => [row.id, row.date, row.amount]), [
+    ["entry:daily:2026-11-10", "2026-11-10", 10],
+    ["entry:daily:2026-12-10", "2026-11-15", 20],
+  ]);
+});
+
+test("posted recurring expenses replace only their matching occurrence and preserve completion identity", () => {
+  const { plan, document } = recurringEntryFixture();
+  const rows = buildPlanRows(plan, document, 63, { today: "2026-11-03", transactions: [
+    { id: 80, date: "2026-11-02", merchant: "Coffee", kind: "expense", amount: 10, currency: "USD" },
+  ] });
+  assert.equal(rows.length, 3);
+  const actual = rows.find((row) => row.transactionId === 80);
+  assert.equal(actual.completionKey, "entry:daily:2026-11-02");
+  assert.equal(actual.matchedForecast.entryId, "daily");
+  assert.equal(actual.matchedForecast.recurring, true);
+  assert.equal(actual.completed, true);
+  assert.equal(rows.filter((row) => row.source === "manual").length, 2);
+  assert.equal(rows.at(-1).balanceUsd, 970);
+});
+
+test("recurring conversion overrides recompute both native sides instead of keeping the previous conversion amount", () => {
+  const { plan, document } = recurringEntryFixture();
+  const rows = buildPlanRows({ ...plan, entries: [{ ...plan.entries[0], kind: "conversion" }], rowOverrides: [
+    { rowId: "entry:daily:2026-11-02", date: "2026-11-02", description: "Larger conversion", amount: 20 },
+  ] }, document, 63, { today: "2026-11-01" });
+  assert.deepEqual(rows.map((row) => [row.amount, row.usd, row.php]), [[10, -10, 630], [20, -20, 1260], [10, -10, 630]]);
+  assert.equal(rows.at(-1).balanceUsd, 960);
+  assert.equal(rows.at(-1).balancePhp, 2520);
+});
+
+test("each recurring card-payment transfer covers its statement share without counting paid occurrences again", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const entry = { id: "card-series", date: "2026-11-17", description: "Card payment", kind: "transfer",
+    amount: 50, currency: "USD", fromAccountId: 1, toAccountId: 2, recurrence: "daily", repeatUntil: "2026-11-19" };
+  const rows = buildPlanRows({ ...plan, entries: [entry] }, document, 63, { accounts, today: "2026-11-18", transactions: [
+    { id: 1, date: "2026-11-17", amount: 50, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+    { id: 2, date: "2026-11-17", amount: 50, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+  ] });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.paidAmount, 50);
+  assert.equal(due.plannedPaymentAmount, 100);
+  assert.equal(due.amount, 50);
+  assert.equal(rows.filter((row) => row.recurring && row.source === "manual").length, 3);
+  assert.equal(rows.find((row) => row.id === "entry:card-series:2026-11-17").completed, true);
+  assert.equal(rows.filter((row) => row.source === "manual" && row.completed).length, 1);
+  assert.equal(rows.at(-1).balanceUsd, 800);
 });

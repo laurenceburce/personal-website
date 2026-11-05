@@ -441,6 +441,75 @@ function workspaceHarness(props) {
   };
 }
 
+test("adding a recurring plan entry stores one series and expands independent dated ledger rows", async () => {
+  const props = fixture("plans", 0, { bills: [] });
+  const renderWorkspace = workspaceHarness(props);
+  let tree = renderWorkspace();
+  findElement(tree, (node) => node.type?.name === "Button" && node.props.children === "Add entry").props.onClick();
+  tree = renderWorkspace();
+  const form = findElement(tree, (node) => node.type?.name === "FinancePlanEntryForm");
+  assert.ok(form);
+  assert.deepEqual(form.props.salary, props.snapshot.document.salary);
+  const entry = { id: "coffee", date: "2026-11-01", description: "Coffee", kind: "expense", amount: 10,
+    currency: "USD", recurrence: "daily", repeatUntil: "2026-11-03" };
+  const originalFetch = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, "/api/finance/planner");
+    saved = JSON.parse(options.body).document;
+    return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) };
+  };
+  try {
+    await form.props.onSave(entry);
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(saved.plans[0].entries.length, 1);
+  assert.deepEqual(saved.plans[0].entries[0], entry);
+  const ledger = findElement(renderWorkspace(), (node) => node.type?.name === "Ledger");
+  assert.deepEqual(ledger.props.rows.map((row) => row.id), [
+    "entry:coffee:2026-11-01", "entry:coffee:2026-11-02", "entry:coffee:2026-11-03",
+  ]);
+  assert.equal(ledger.props.rows.at(-1).balanceUsd, 720);
+});
+
+test("a recurring series stays manageable with no occurrences and deleting it clears only its plan metadata", async () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const entry = { id: "payday", date: "2026-11-01", description: "Payday fund", kind: "expense", amount: 25,
+    currency: "USD", recurrence: "payday", repeatUntil: null };
+  const props = fixture("plans", 0, { bills: [], plans: [{
+    ...base, endDate: "2026-11-03", entries: [entry],
+    rowOverrides: [{ rowId: "entry:payday:2026-11-02", date: "2026-11-02", amount: 20, description: "Earlier edit" }],
+    completedRows: [
+      { rowId: "entry:payday:2026-11-02", completedAt: "2026-11-02T12:00:00.000Z" },
+      { rowId: "bill:retained:2026-11-02", completedAt: "2026-11-02T12:00:00.000Z" },
+    ],
+  }] });
+  const renderWorkspace = workspaceHarness(props);
+  let tree = renderWorkspace();
+  assert.equal(findElement(tree, (node) => node.type?.name === "Ledger").props.rows.length, 0);
+  const edit = findElement(tree, (node) => node.props?.["aria-label"] === "Edit recurring entry: Payday fund");
+  assert.ok(edit);
+  edit.props.onClick();
+  tree = renderWorkspace();
+  assert.equal(findElement(tree, (node) => node.type?.name === "FinancePlanEntryForm").props.entry, entry);
+  findElement(tree, (node) => node.type?.name === "FinanceModal").props.onClose();
+  tree = renderWorkspace();
+  findElement(tree, (node) => node.props?.["aria-label"] === "Delete recurring entry: Payday fund").props.onClick();
+  tree = renderWorkspace();
+  assert.match(plain(renderToStaticMarkup(tree)), /All occurrences of this recurring entry will be removed from this plan/);
+  const originalFetch = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    saved = JSON.parse(options.body).document;
+    return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) };
+  };
+  try {
+    await findElement(tree, (node) => node.type?.name === "Button" && node.props.variant === "danger").props.onClick();
+  } finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual(saved.plans[0].entries, []);
+  assert.deepEqual(saved.plans[0].rowOverrides, []);
+  assert.deepEqual(saved.plans[0].completedRows, [props.snapshot.document.plans[0].completedRows[1]]);
+});
+
 test("a savings withdrawal updates available funds, savings, and the ledger flow together", () => {
   const base = fixture("plans", 0).snapshot.document;
   const accounts = [

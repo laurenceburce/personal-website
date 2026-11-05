@@ -46,7 +46,9 @@ export default function FinancePlanOccurrenceForm({
     >
       <p className="fp-inline-note">
         Changes apply only to this occurrence in {plan.name}. Your recurring
-        salary, bills, and savings settings stay the same.
+        {row.recurring
+          ? " entry and its other dates stay the same."
+          : " salary, bills, and savings settings stay the same."}
       </p>
       <Field label="Description">
         <input

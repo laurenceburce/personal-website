@@ -515,6 +515,51 @@
 .fp-app .fp-plan-account-details > summary {
   font-weight: 700;
 }
+.fp-app .fp-plan-recurring-entries {
+  margin: 12px 0;
+  padding: 0 12px;
+  border: 1px solid #e3ebe5;
+  border-radius: 8px;
+}
+.fp-app .fp-plan-recurring-entries > summary {
+  min-height: 42px;
+  padding: 11px 0;
+  color: #37694f;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.fp-app .fp-plan-recurring-entries ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fp-app .fp-plan-recurring-entries li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 10px 0;
+  border-top: 1px solid #e3ebe5;
+}
+.fp-app .fp-plan-recurring-entries li > div:first-child {
+  flex: 1 1 170px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fp-app .fp-plan-recurring-entries strong,
+.fp-app .fp-plan-recurring-entries small {
+  display: block;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.fp-app .fp-plan-recurring-entries small {
+  color: #617568;
+}
+.fp-app .fp-plan-recurring-entries .fp-button {
+  min-height: 40px;
+}
 
 @media (min-width: 761px) {
   .fp-app .fp-content {

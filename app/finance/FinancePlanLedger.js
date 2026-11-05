@@ -85,7 +85,9 @@ function SourceLabel({ row }) {
   };
   const label =
     row.source === "manual"
-      ? row.kind === "conversion"
+      ? row.recurring
+        ? `${({ daily: "Daily", monthly: "Monthly", payday: "Every payday" })[row.recurrence] || "Recurring"} plan entry`
+        : row.kind === "conversion"
         ? "Planned currency conversion"
         : row.kind === "transfer"
           ? row.creditCardPaymentFor ? "Planned credit card payment" : "Planned account transfer"
@@ -524,7 +526,9 @@ export default function Ledger({
                   : null;
               const editableOccurrence =
                 row.editable &&
-                ["salary", "bill", "allocation", "reserve"].includes(row.source);
+                (["salary", "bill", "allocation", "reserve"].includes(row.source) ||
+                  (row.source === "manual" && row.recurring));
+              const recurringEntry = manualEntry && row.recurring;
               return (
                 <tr
                   id={`${ledgerId}-row-${rowIndex}`}
@@ -590,26 +594,39 @@ export default function Ledger({
                           type="button"
                           className="fp-button fp-secondary fp-icon-button"
                           aria-label={
-                            manualEntry
-                              ? `Edit ${row.description}`
-                              : `Edit this occurrence: ${row.description}`
+                            editableOccurrence
+                              ? `Edit this occurrence: ${row.description}`
+                              : `Edit ${row.description}`
                           }
                           disabled={
-                            busy || !(manualEntry ? onEdit : onEditOccurrence)
+                            busy || !(editableOccurrence ? onEditOccurrence : onEdit)
                           }
                           onClick={() => {
                             if (busy) return;
-                            if (manualEntry) onEdit?.(manualEntry);
-                            else onEditOccurrence?.(row);
+                            if (editableOccurrence) onEditOccurrence?.(row);
+                            else if (manualEntry) onEdit?.(manualEntry);
                           }}
                         >
                           <ActionIcon kind="edit" />
                         </button>
+                        {recurringEntry && (
+                          <button
+                            type="button"
+                            className="fp-button fp-secondary fpl-edit-series"
+                            aria-label={`Edit recurring entry: ${manualEntry.description}`}
+                            disabled={busy || !onEdit}
+                            onClick={() => {
+                              if (!busy) onEdit?.(manualEntry);
+                            }}
+                          >
+                            Series
+                          </button>
+                        )}
                         {manualEntry && (
                           <button
                             type="button"
                             className="fp-button fp-secondary fp-icon-button"
-                            aria-label={`Delete ${row.description}`}
+                            aria-label={recurringEntry ? `Delete recurring entry: ${manualEntry.description}` : `Delete ${row.description}`}
                             disabled={busy || !onDelete}
                             onClick={() => {
                               if (!busy) onDelete?.(manualEntry);

@@ -178,6 +178,42 @@ export function billOccurrences(bill, start, end, salary) {
   return occurrences;
 }
 
+/** A plan entry repeats from its original calendar date, in its native currency. */
+export function entryOccurrences(entry, start, end, salary) {
+  if (!validRange(start, end) || !Number.isFinite(dateTime(entry?.date))) return [];
+  const recurrence = entry.recurrence || "once";
+  if (!["once", "daily", "monthly", "payday"].includes(recurrence)) return [];
+  const occurrence = (date) => ({
+    date,
+    amount: roundMoney(entry.amount),
+    currency: entry.currency,
+    entryId: entry.id,
+  });
+  if (recurrence === "once")
+    return entry.date >= start && entry.date <= end ? [occurrence(entry.date)] : [];
+  if (entry.repeatUntil && !Number.isFinite(dateTime(entry.repeatUntil))) return [];
+  const first = [start, entry.date].sort().at(-1);
+  const last = entry.repeatUntil ? [end, entry.repeatUntil].sort()[0] : end;
+  if (first > last) return [];
+  if (recurrence === "daily") {
+    const result = [];
+    for (let time = dateTime(first); time <= dateTime(last); time += DAY_MS)
+      result.push(occurrence(isoDate(time)));
+    return result;
+  }
+  if (recurrence === "payday") {
+    if (!salary || !["biweekly", "semimonthly"].includes(salary.payFrequency)) return [];
+    return salaryOccurrences(salary, first, last).map(({ date }) => occurrence(date));
+  }
+  const result = [];
+  const day = Number(entry.date.slice(8));
+  eachMonth(first, last, (year, month) => {
+    const date = monthDate(year, month, day);
+    if (date >= first && date <= last) result.push(occurrence(date));
+  });
+  return result;
+}
+
 /** A suggested reserve target within the current renewal cycle, not a bank balance. */
 export function annualSavingsTarget(bill, asOf = localDate()) {
   const missing = {
@@ -949,13 +985,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         ...nativeFlow(occurrence.amount, occurrence.currency, "expense"),
       }));
   }
-  for (const entry of plan.entries || []) {
-    if (
-      !Number.isFinite(dateTime(entry.date)) ||
-      entry.date < plan.startDate ||
-      entry.date > plan.endDate
-    )
-      continue;
+  const entryFlow = (entry) => {
     const flow = nativeFlow(entry.amount, entry.currency, entry.kind);
     if (entry.kind === "transfer") {
       flow.usd = 0;
@@ -966,18 +996,40 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         flow.usd = convert(entry.amount, "PHP", "USD", rate);
       else flow.php = convert(entry.amount, "USD", "PHP", rate);
     }
-    forecasts.push({
-      id: `entry:${entry.id}`,
-      entryId: entry.id,
-      date: entry.date,
-      description: entry.description,
-      kind: entry.kind,
-      source: "manual",
-      accountId: entry.accountId ?? null,
-      fromAccountId: entry.fromAccountId ?? null,
-      toAccountId: entry.toAccountId ?? null,
-      ...flow,
-    });
+    return flow;
+  };
+  for (const entry of plan.entries || []) {
+    const recurring = Boolean(entry.recurrence && entry.recurrence !== "once");
+    const occurrences = entryOccurrences(entry, plan.startDate, plan.endDate, salary);
+    if (recurring) {
+      // Only reconstruct an out-of-range date when it is a real occurrence of
+      // this series with an override. Unrelated IDs cannot invent extra rows.
+      const prefix = `entry:${entry.id}:`;
+      for (const rowId of overrides.keys()) {
+        if (!String(rowId).startsWith(prefix)) continue;
+        const originalDate = String(rowId).slice(prefix.length);
+        if (originalDate >= plan.startDate && originalDate <= plan.endDate) continue;
+        if (!originalDates.includes(originalDate)) continue;
+        occurrences.push(...entryOccurrences(entry, originalDate, originalDate, salary));
+      }
+    }
+    for (const occurrence of occurrences) {
+      let row = {
+        id: recurring ? `entry:${entry.id}:${occurrence.date}` : `entry:${entry.id}`,
+        entryId: entry.id,
+        date: occurrence.date,
+        description: entry.description,
+        kind: entry.kind,
+        source: "manual",
+        accountId: entry.accountId ?? null,
+        fromAccountId: entry.fromAccountId ?? null,
+        toAccountId: entry.toAccountId ?? null,
+        ...(recurring ? { recurring: true, recurrence: entry.recurrence } : {}),
+        ...entryFlow(entry),
+      };
+      if (recurring) row = applyOverride(row);
+      forecasts.push({ ...row, ...entryFlow(row) });
+    }
   }
 
   const actual = [];
@@ -991,7 +1043,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const payments = creditCardPayments(statement, cardPaymentTransactions, today, consumedCardDebits, statements, cardAccountsById);
     let plannedPaymentAmount = 0;
     const consumedEvidence = new Set();
-    for (const entry of plan.entries || []) {
+    for (const entry of forecasts.filter((row) => row.source === "manual")) {
       const source = cardAccountsById.get(Number(entry.fromAccountId));
       if (entry.kind !== "transfer" || Number(entry.toAccountId) !== accountId || entry.currency !== statement.account.currency ||
           !source || source.currency !== entry.currency || ["credit", "loan"].includes(source.type || source.account_type) ||
@@ -1119,6 +1171,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       source: matched.source,
       date: matched.date,
       description: matched.description,
+      ...(matched.entryId !== undefined ? { entryId: matched.entryId } : {}),
+      ...(matched.recurring ? { recurring: true, recurrence: matched.recurrence } : {}),
     };
     if (matched.billId !== undefined) transaction.billId = matched.billId;
     if (matched.entryId !== undefined) transaction.entryId = matched.entryId;
@@ -1128,6 +1182,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       transaction.sourceAccountId = matched.sourceAccountId;
     if (matched.originalDate !== undefined)
       transaction.originalDate = matched.originalDate;
+    if (matched.recurring) {
+      transaction.recurring = true;
+      transaction.recurrence = matched.recurrence;
+      transaction.originalDescription = matched.originalDescription;
+      transaction.originalAmount = matched.originalAmount;
+    }
     transaction.annualPayment = Boolean(matched.annualPayment);
     if (matched.source === "salary")
       actualPayDates.set(matched.paydayDate || matched.originalDate || matched.date, transaction.date);

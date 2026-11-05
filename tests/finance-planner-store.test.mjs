@@ -310,11 +310,101 @@ test("round trips annual installments, savings and two-currency conversion entri
     clean.plans[0].entries,
     planner.plans[0].entries.map((entry) => ({
       ...entry,
+      recurrence: "once",
+      repeatUntil: null,
       accountId: null,
       fromAccountId: null,
       toAccountId: null,
     })),
   );
+});
+
+test("recurring plan entries persist schedules, optional end dates and native account links", () => {
+  const planner = document();
+  planner.plans[0].entries = [
+    { id: "daily", date: "2026-11-01", description: " Daily food ", kind: "expense", amount: 12.126, currency: "USD", accountId: "1", recurrence: "daily", repeatUntil: "2026-11-20", arbitrary: "discard" },
+    { id: "monthly", date: "2026-11-15", description: "Convert monthly", kind: "conversion", amount: 100, currency: "USD", fromAccountId: 1, toAccountId: 2, recurrence: "monthly", repeatUntil: null },
+    { id: "payday", date: "2026-11-01", description: "Payday savings", kind: "transfer", amount: 200, currency: "USD", fromAccountId: 1, toAccountId: 3, recurrence: "payday" },
+  ];
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].entries.map((entry) => [entry.recurrence, entry.repeatUntil]), [
+    ["daily", "2026-11-20"], ["monthly", null], ["payday", null],
+  ]);
+  assert.equal(clean.plans[0].entries[0].accountId, 1);
+  assert.equal(clean.plans[0].entries[0].description, "Daily food");
+  assert.equal(clean.plans[0].entries[0].amount, 12.13);
+  assert.equal(clean.plans[0].entries[1].toAccountId, 2);
+  assert.equal(clean.plans[0].entries[2].fromAccountId, 1);
+  assert.ok(!Object.hasOwn(clean.plans[0].entries[0], "arbitrary"));
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  assert.deepEqual(planner, before);
+});
+
+test("legacy one-time entries keep their date and clear inactive recurrence end dates", () => {
+  const planner = document();
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.plans[0].entries[0].recurrence, "once");
+  assert.equal(clean.plans[0].entries[0].repeatUntil, null);
+  assert.equal(clean.plans[0].entries[0].date, "2026-11-06");
+  Object.assign(planner.plans[0].entries[0], { recurrence: "once", repeatUntil: "2026-11-30" });
+  assert.equal(validateFinancePlanner(planner).plans[0].entries[0].repeatUntil, null);
+});
+
+test("entry recurrence rejects unsupported schedules and invalid or out-of-plan end dates", () => {
+  for (const recurrence of [null, "weekly", "Daily", true, {}, []]) {
+    const planner = document();
+    planner.plans[0].entries[0].recurrence = recurrence;
+    assert.throws(() => validateFinancePlanner(planner), /Entry recurrence/);
+  }
+  for (const repeatUntil of ["", "2026-02-30", "2026-11-05", "2026-12-01", true, {}, []]) {
+    const planner = document();
+    Object.assign(planner.plans[0].entries[0], { recurrence: "daily", repeatUntil });
+    assert.throws(() => validateFinancePlanner(planner), /repeat end date/);
+  }
+  const planner = document();
+  Object.assign(planner.plans[0].entries[0], { recurrence: "daily", repeatUntil: "2026-11-06" });
+  assert.equal(validateFinancePlanner(planner).plans[0].entries[0].repeatUntil, "2026-11-06");
+});
+
+test("manual recurrence expansion is bounded at ten thousand dated occurrences per plan", () => {
+  const planner = document();
+  const plan = planner.plans[0];
+  plan.startDate = "2026-01-01";
+  plan.endDate = "2028-01-02";
+  plan.entries = Array.from({ length: 14 }, (_, index) => ({
+    id: `daily-${index}`, date: plan.startDate, description: "Daily expense", kind: "expense",
+    amount: 1, currency: "USD", recurrence: "daily", repeatUntil: null,
+  }));
+  // Thirteen full 732-day schedules plus 484 dates exactly reach the limit.
+  plan.entries[13].repeatUntil = new Date(Date.UTC(2026, 0, 1) + 483 * 86400000).toISOString().slice(0, 10);
+  assert.doesNotThrow(() => validateFinancePlanner(planner));
+  plan.entries[13].repeatUntil = new Date(Date.UTC(2026, 0, 1) + 484 * 86400000).toISOString().slice(0, 10);
+  assert.throws(() => validateFinancePlanner(planner), /at most 10000 entry occurrences/);
+});
+
+test("recurring entry occurrence progress and exceptions keep their own dated identifiers", () => {
+  const planner = document();
+  Object.assign(planner.plans[0].entries[0], { recurrence: "daily", repeatUntil: "2026-11-10" });
+  const completedAt = "2026-11-07T15:00:00.000Z";
+  planner.plans[0].completedRows = [
+    { rowId: "entry:conversion-1:2026-11-06", completedAt },
+    { rowId: "entry:removed-series:2025-12-31", completedAt },
+  ];
+  planner.plans[0].rowOverrides = [{ rowId: "entry:conversion-1:2026-11-07", date: "2026-11-08", description: "One adjusted conversion", amount: 50 }];
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].completedRows, planner.plans[0].completedRows);
+  assert.deepEqual(clean.plans[0].rowOverrides, planner.plans[0].rowOverrides);
+  assert.equal(clean.plans[0].entries[0].amount, 333.09);
+  assert.equal(clean.plans[0].entries[0].recurrence, "daily");
+  for (const invalid of ["entry:conversion-1:2026-02-30", "entry:conversion-1:1899-12-31", "entry:bad/id:2026-11-07"]) {
+    planner.plans[0].completedRows = [{ rowId: invalid, completedAt }];
+    assert.throws(() => validateFinancePlanner(planner), /Completed row/);
+    planner.plans[0].completedRows = [];
+    planner.plans[0].rowOverrides = [{ ...clean.plans[0].rowOverrides[0], rowId: invalid }];
+    assert.throws(() => validateFinancePlanner(planner), /row ID|row date/);
+    planner.plans[0].rowOverrides = [];
+  }
 });
 
 test("legacy annual bills receive zero saved funds without changing their source document", () => {

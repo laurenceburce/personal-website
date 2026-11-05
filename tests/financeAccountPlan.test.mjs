@@ -46,6 +46,53 @@ const accounts = [
     nativeCurrentBalance: 10000,
   },
 ];
+
+test("recurring transfers preserve native assets and posted legs replace only one occurrence", () => {
+  const transferAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "Other account", type: "checking", currency: "USD", nativeCurrentBalance: 0 },
+  ];
+  const transferPlan = {
+    startDate: "2026-11-01", endDate: "2026-11-03", openingUsd: 1000, openingPhp: 0,
+    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 0 }],
+    includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
+    entries: [{ id: "daily-transfer", date: "2026-11-01", kind: "transfer", description: "Move funds", amount: 25, currency: "USD",
+      recurrence: "daily", repeatUntil: null, fromAccountId: 1, toAccountId: 2 }],
+  };
+  const records = [
+    { id: 1, date: "2026-11-01", kind: "expense", amount: 25, currency: "USD", accountId: 1, category: "Transfer Out" },
+    { id: 2, date: "2026-11-01", kind: "income", amount: 25, currency: "USD", accountId: 2, category: "Transfer In" },
+  ];
+  const document = { salary: {}, bills: [], allocations: [] };
+  const rows = buildPlanRows(transferPlan, document, 63, { accounts: transferAccounts, transactions: records, today: "2026-11-01" });
+  const projection = buildAccountPlan(transferPlan, document, 63, { accounts: transferAccounts, rows, today: "2026-11-01" });
+  assert.equal(projection.accounts.find((account) => account.accountId === 1).endingBalance, 925);
+  assert.equal(projection.accounts.find((account) => account.accountId === 2).endingBalance, 75);
+  assert.equal(rows.at(-1).balanceUsd, 1000);
+  assert.equal(rows.filter((row) => row.source === "manual" && row.completed).length, 1);
+  assert.equal(projection.rows.filter((row) => row.source === "manual" && row.accountMovements.length === 0).length, 1);
+});
+
+test("recurring currency conversions and a single amount override project exact native balances", () => {
+  const conversionAccounts = [
+    { id: 1, name: "USD", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "PHP", type: "checking", currency: "PHP", nativeCurrentBalance: 0 },
+  ];
+  const conversionPlan = {
+    startDate: "2026-11-01", endDate: "2026-11-03", openingUsd: 1000, openingPhp: 0,
+    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 0 }],
+    includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
+    entries: [{ id: "convert", date: "2026-11-01", kind: "conversion", description: "Convert funds", amount: 10, currency: "USD",
+      recurrence: "daily", fromAccountId: 1, toAccountId: 2 }],
+    rowOverrides: [{ rowId: "entry:convert:2026-11-02", date: "2026-11-02", description: "Convert extra", amount: 20 }],
+  };
+  const projection = buildAccountPlan(conversionPlan, { salary: {}, bills: [], allocations: [] }, 63,
+    { accounts: conversionAccounts, today: "2026-11-01" });
+  assert.equal(projection.accounts.find((account) => account.accountId === 1).endingBalance, 960);
+  assert.equal(projection.accounts.find((account) => account.accountId === 2).endingBalance, 2520);
+  assert.equal(projection.rows.at(-1).balanceUsd, 960);
+  assert.equal(projection.rows.at(-1).balancePhp, 2520);
+});
 const salary = {
   amount: 2000,
   currency: "USD",

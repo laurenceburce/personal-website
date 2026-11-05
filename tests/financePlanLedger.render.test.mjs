@@ -1168,6 +1168,26 @@ test("phone column controls default to flows and balances and support native res
   assert.equal(plain(renderToStaticMarkup(reset)), "Reset columns");
 });
 
+test("recurring rows distinguish editing one occurrence from editing or deleting the series", () => {
+  const entry = { id: "coffee", date: "2026-11-06", description: "Coffee", recurrence: "daily", amount: 5, currency: "USD", kind: "expense" };
+  const occurrence = row({ id: "entry:coffee:2026-11-07", entryId: "coffee", source: "manual", recurring: true,
+    recurrence: "daily", editable: true, description: "Coffee", date: "2026-11-07", amount: 5, currency: "USD" });
+  let editedOccurrence, editedSeries, deletedSeries;
+  const nodes = elements(Ledger({
+    plan: { ...plan, entries: [entry] }, rows: [occurrence],
+    onEditOccurrence(value) { editedOccurrence = value; },
+    onEdit(value) { editedSeries = value; },
+    onDelete(value) { deletedSeries = value; },
+  }));
+  nodes.find((node) => node.type === "button" && node.props["aria-label"] === "Edit this occurrence: Coffee").props.onClick();
+  nodes.find((node) => node.type === "button" && node.props["aria-label"] === "Edit recurring entry: Coffee").props.onClick();
+  nodes.find((node) => node.type === "button" && node.props["aria-label"] === "Delete recurring entry: Coffee").props.onClick();
+  assert.equal(editedOccurrence, occurrence);
+  assert.equal(editedSeries, entry);
+  assert.equal(deletedSeries, entry);
+  assert.match(plain(renderToStaticMarkup(Ledger({ plan: { ...plan, entries: [entry] }, rows: [occurrence] }))), /Daily plan entry/);
+});
+
 test("all hideable column headers match each opening and budget-row cell", () => {
   const records = [row({ id: "usd", usd: -20 }), row({ id: "php", php: -1500, savingsPhp: null })];
   const nodes = elements(Ledger({ plan, rows: records }));

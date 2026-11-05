@@ -215,6 +215,14 @@ The finance workspace separates recorded activity from your plans:
   Open **Columns** to choose currencies and balances, tap **⋯** for row details,
   or use **Upcoming** to jump to the next unfinished item. **Reset columns**
   restores the default view.
+  **Add entry → Repeat** supports daily, monthly, or every-payday entries, plus
+  one-time entries. Choose a start date and optional stop date; a blank stop date
+  repeats through the plan end. Monthly entries retain their original day and
+  use month-end in shorter months. Payday entries follow the saved salary
+  schedule even when forecast salary is hidden. Each occurrence has its own
+  completion status and can be edited separately. Use **Recurring entries** or
+  **Series** to edit the recurring default; individual overrides remain in force.
+  Deleting a series removes its occurrences from that plan.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.

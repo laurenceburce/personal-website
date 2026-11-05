@@ -29,6 +29,7 @@ import Modal from "./FinanceModal";
 import FinanceNumberInput from "./FinanceNumberInput";
 import PlanForm from "./FinancePlanForm";
 import PlanOccurrenceForm from "./FinancePlanOccurrenceForm";
+import EntryForm from "./FinancePlanEntryForm";
 import FinanceOverview from "./FinanceOverview";
 import FinanceCreditCardDuesNotice from "./FinanceCreditCardDuesNotice";
 import Ledger from "./FinancePlanLedger";
@@ -105,6 +106,8 @@ const MONTHS = [
   "Dec",
 ];
 const uid = () => globalThis.crypto.randomUUID();
+const recurringEntryLabel = (recurrence) =>
+  ({ daily: "Daily", monthly: "Monthly", payday: "Every payday" })[recurrence] || "Once";
 const amount = (value) => Number(value || 0);
 const signed = (value, currency) =>
   `${value > 0 ? "+" : ""}${money(value, currency)}`;
@@ -689,177 +692,6 @@ function AllocationForm({
   );
 }
 
-function EntryForm({
-  entry,
-  plan,
-  accounts = [],
-  onSave,
-  busy,
-  disabled,
-  rate,
-}) {
-  const [draft, setDraft] = useState(
-    entry || {
-      date: plan.startDate,
-      description: "",
-      kind: "expense",
-      amount: "",
-      currency: "USD",
-    },
-  );
-  const set = (key, value) =>
-    setDraft((current) => ({ ...current, [key]: value }));
-  return (
-    <form
-      className="fp-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSave({
-          ...draft,
-          id: draft.id || uid(),
-          amount: amount(draft.amount),
-        });
-      }}
-    >
-      <div className="fp-form-grid">
-        <Field label="Date">
-          <input
-            required
-            type="date"
-            min={plan.startDate}
-            max={plan.endDate}
-            value={draft.date}
-            onChange={(e) => set("date", e.target.value)}
-          />
-        </Field>
-        <Field label="Entry type">
-          <select
-            value={draft.kind}
-            onChange={(e) => set("kind", e.target.value)}
-          >
-            <option value="expense">Expense / savings</option>
-            <option value="income">Income</option>
-            <option value="transfer">Transfer between accounts</option>
-            <option value="conversion">Currency conversion</option>
-          </select>
-        </Field>
-      </div>
-      <Field label="Description">
-        <input
-          autoFocus
-          required
-          maxLength={120}
-          placeholder="e.g. Insurance, savings, convert to PHP"
-          value={draft.description}
-          onChange={(e) => set("description", e.target.value)}
-        />
-      </Field>
-      <div className="fp-form-grid">
-        <Field
-          label={draft.kind === "conversion" ? "Amount to convert" : "Amount"}
-        >
-          <FinanceNumberInput
-            required
-            min="0.01"
-            max="999999999"
-            step="0.01"
-            value={draft.amount}
-            onChange={(e) => set("amount", e.target.value)}
-          />
-        </Field>
-        <Field
-          label={draft.kind === "conversion" ? "Convert from" : "Currency"}
-        >
-          <CurrencySelect
-            value={draft.currency}
-            onChange={(value) =>
-              setDraft((current) => ({
-                ...current,
-                currency: value,
-                accountId: null,
-                fromAccountId: null,
-                toAccountId: null,
-              }))
-            }
-          />
-        </Field>
-      </div>
-      {draft.kind === "transfer" || draft.kind === "conversion" ? (
-        <div className="fp-form-grid">
-          <Field label="From account">
-            <FinanceAccountSelect
-              accounts={accounts}
-              currency={draft.currency}
-              value={draft.fromAccountId}
-              onChange={(value) => set("fromAccountId", value)}
-              allowNone={draft.kind !== "transfer"}
-              required={draft.kind === "transfer"}
-            />
-          </Field>
-          <Field label="To account">
-            <FinanceAccountSelect
-              accounts={accounts.filter(
-                (account) => Number(account.id) !== Number(draft.fromAccountId),
-              )}
-              currency={
-                draft.kind === "conversion"
-                  ? draft.currency === "USD"
-                    ? "PHP"
-                    : "USD"
-                  : draft.currency
-              }
-              value={draft.toAccountId}
-              onChange={(value) => set("toAccountId", value)}
-              allowNone={draft.kind !== "transfer"}
-              required={draft.kind === "transfer"}
-            />
-          </Field>
-        </div>
-      ) : (
-        <Field
-          label={
-            draft.kind === "income"
-              ? "Receive into account"
-              : "Pay from account"
-          }
-        >
-          <FinanceAccountSelect
-            accounts={accounts}
-            currency={draft.currency}
-            value={draft.accountId}
-            onChange={(value) => set("accountId", value)}
-          />
-        </Field>
-      )}
-      {draft.kind === "transfer" && (
-        <p className="fp-inline-note">
-          This planned transfer moves money between accounts and leaves your
-          total funds unchanged. Moving linked savings into a spending account
-          increases available funds; moving money into savings sets it aside. No bank
-          transfer is initiated.
-        </p>
-      )}
-      {draft.kind === "conversion" && (
-        <p className="fp-conversion-note">
-          Receive{" "}
-          {money(
-            convert(
-              draft.amount,
-              draft.currency,
-              draft.currency === "USD" ? "PHP" : "USD",
-              rate,
-            ),
-            draft.currency === "USD" ? "PHP" : "USD",
-          )}{" "}
-          at the current reference rate. Fees aren’t included.
-        </p>
-      )}
-      <Button type="submit" variant="primary" disabled={busy || disabled}>
-        {busy ? "Saving…" : entry ? "Save entry" : "Add entry"}
-      </Button>
-    </form>
-  );
-}
 
 export default function FinanceAppClient({
   snapshot,
@@ -959,6 +791,9 @@ export default function FinanceAppClient({
   const activeNav = NAV.find((item) => item.id === tab);
   const undated = document.bills.filter(
     (bill) => bill.cadence !== "payday" && !bill.dueDay,
+  );
+  const recurringEntries = (plan?.entries || []).filter(
+    (entry) => entry.recurrence && entry.recurrence !== "once",
   );
   const saveLock = useRef(false);
   const activityRequest = useRef(0);
@@ -1329,6 +1164,16 @@ export default function FinanceAppClient({
   }
   const saveEntry = (row) =>
     savePlan({ ...plan, entries: upsert(plan.entries, row) });
+  const removePlanEntry = (entry) => {
+    const belongsToEntry = (row) =>
+      row.rowId === `entry:${entry.id}` || row.rowId.startsWith(`entry:${entry.id}:`);
+    return savePlan({
+      ...plan,
+      entries: plan.entries.filter((item) => item.id !== entry.id),
+      rowOverrides: (plan.rowOverrides || []).filter((row) => !belongsToEntry(row)),
+      completedRows: (plan.completedRows || []).filter((row) => !belongsToEntry(row)),
+    });
+  };
 
   async function savePlanOccurrence(override) {
     const target = document.plans.find((item) => item.id === modal?.planId);
@@ -2254,6 +2099,41 @@ export default function FinanceAppClient({
                         </button>
                       </p>
                     )}
+                    {recurringEntries.length > 0 && (
+                      <details className="fp-plan-recurring-entries">
+                        <summary>Recurring entries · {recurringEntries.length}</summary>
+                        <ul>
+                          {recurringEntries.map((entry) => (
+                            <li key={entry.id}>
+                              <div>
+                                <strong>{entry.description}</strong>
+                                <small>
+                                  {recurringEntryLabel(entry.recurrence)} · {money(entry.amount, entry.currency)}
+                                  {" "}· {formatDate(entry.date, { year: "numeric" })} –{" "}
+                                  {formatDate(entry.repeatUntil || plan.endDate, { year: "numeric" })}
+                                </small>
+                              </div>
+                              <div className="fp-button-row">
+                                <Button
+                                  disabled={busy || !state.configured}
+                                  aria-label={`Edit recurring entry: ${entry.description}`}
+                                  onClick={() => open({ type: "entry", entry })}
+                                >
+                                  Edit series
+                                </Button>
+                                <Button
+                                  disabled={busy || !state.configured}
+                                  aria-label={`Delete recurring entry: ${entry.description}`}
+                                  onClick={() => open({ type: "deleteEntry", row: entry })}
+                                >
+                                  Delete series
+                                </Button>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
                     {planWaitingForRecords ? (
                       <div className="fp-card fp-loading-state" role="status">
                         Loading recorded money flows for these dates…
@@ -2358,7 +2238,9 @@ export default function FinanceAppClient({
                         ? "Edit this plan occurrence"
                         : modal.type === "entry"
                           ? modal.entry
-                            ? "Edit entry"
+                            ? modal.entry.recurrence && modal.entry.recurrence !== "once"
+                              ? "Edit recurring entry"
+                              : "Edit entry"
                             : "Add a plan entry"
                           : modal.type === "example"
                             ? "Start with your workbook"
@@ -2454,6 +2336,7 @@ export default function FinanceAppClient({
               entry={modal.entry}
               plan={plan}
               accounts={accounts}
+              salary={document.salary}
               onSave={saveEntry}
               busy={busy}
               disabled={!state.configured}
@@ -2477,6 +2360,8 @@ export default function FinanceAppClient({
                 <strong>{modal.row?.name || modal.row?.description}</strong>?{" "}
                 {modal.collection === "bills"
                   ? "It will also be removed from every budget forecast."
+                  : modal.type === "deleteEntry" && modal.row?.recurrence && modal.row.recurrence !== "once"
+                    ? "All occurrences of this recurring entry will be removed from this plan."
                   : "This cannot be undone."}
               </p>
               <div className="fp-button-row">
@@ -2486,12 +2371,7 @@ export default function FinanceAppClient({
                   disabled={busy || !state.configured}
                   onClick={() =>
                     modal.type === "deleteEntry"
-                      ? savePlan({
-                          ...plan,
-                          entries: plan.entries.filter(
-                            (item) => item.id !== modal.row.id,
-                          ),
-                        })
+                      ? removePlanEntry(modal.row)
                       : save(
                           {
                             ...document,

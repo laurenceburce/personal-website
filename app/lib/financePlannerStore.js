@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise";
+import { entryOccurrences } from "./financePlanner.mjs";
 
 const MAX_BYTES = 1_000_000;
 const RATE_CACHE_MS = 60 * 60 * 1000;
@@ -169,6 +170,60 @@ function startingAccounts(value) {
   });
 }
 
+function planEntries(value, startDate, endDate, salary) {
+  const entries = rows(value, "Plan entries", 1000, (entry) => {
+    const entryDate = date(entry.date, "Entry date");
+    if (entryDate < startDate || entryDate > endDate)
+      throw plannerError("Entry dates must be within the plan's date range.");
+    const recurrence = entry.recurrence === undefined
+      ? "once"
+      : oneOf(entry.recurrence, ["once", "daily", "monthly", "payday"], "Entry recurrence");
+    const repeatUntil = recurrence === "once" || entry.repeatUntil == null
+      ? null
+      : date(entry.repeatUntil, "Entry repeat end date");
+    if (repeatUntil !== null && (repeatUntil < entryDate || repeatUntil > endDate))
+      throw plannerError("Entry repeat end dates must be on or after the entry start and within the plan's date range.");
+    const kind = oneOf(
+      entry.kind,
+      ["income", "expense", "conversion", "transfer"],
+      "Entry kind",
+    );
+    const fromAccountId = ["conversion", "transfer"].includes(kind)
+      ? accountId(entry.fromAccountId, "From account")
+      : null;
+    const toAccountId = ["conversion", "transfer"].includes(kind)
+      ? accountId(entry.toAccountId, "To account")
+      : null;
+    if (kind === "transfer" && (!fromAccountId || !toAccountId || fromAccountId === toAccountId))
+      throw plannerError("Choose two different accounts for a transfer.");
+    if (kind === "conversion" &&
+        ((fromAccountId === null) !== (toAccountId === null) ||
+          (fromAccountId !== null && fromAccountId === toAccountId)))
+      throw plannerError("Choose two different conversion accounts, or leave both unassigned.");
+    return {
+      date: entryDate,
+      description: text(entry.description, "Entry description", 160),
+      kind,
+      recurrence,
+      repeatUntil,
+      accountId: ["income", "expense"].includes(kind)
+        ? accountId(entry.accountId, "Entry account")
+        : null,
+      fromAccountId,
+      toAccountId,
+      amount: amount(entry.amount, "Entry amount"),
+      currency: oneOf(entry.currency, ["USD", "PHP"], "Entry currency"),
+    };
+  });
+  let occurrences = 0;
+  for (const entry of entries) {
+    occurrences += entryOccurrences(entry, startDate, endDate, salary).length;
+    if (occurrences > 10000)
+      throw plannerError("A plan can contain at most 10000 entry occurrences. Shorten the schedule or reduce recurring entries.");
+  }
+  return entries;
+}
+
 function rowOverrides(value, startDate, endDate) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 10000)
@@ -177,7 +232,7 @@ function rowOverrides(value, startDate, endDate) {
   return value.map((row) => {
     object(row, "Plan row override");
     const rowId = text(row.rowId, "Overridden row ID", 240);
-    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2}))$/.exec(rowId);
+    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2}))$/.exec(rowId);
     if (!match || seen.has(rowId))
       throw plannerError("Overridden row IDs must be unique scheduled plan row identifiers.");
     for (const day of match.slice(1).filter(Boolean)) date(day, "Original row date");
@@ -202,7 +257,7 @@ function completedRows(value) {
   return value.map((row) => {
     object(row, "Completed plan row");
     const rowId = text(row.rowId, "Completed row ID", 240);
-    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|creditCardDue:[1-9]\d{0,15}:(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}|transaction:[A-Za-z0-9_-]{1,200})$/.exec(rowId);
+    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|creditCardDue:[1-9]\d{0,15}:(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}(?::(\d{4}-\d{2}-\d{2}))?|transaction:[A-Za-z0-9_-]{1,200})$/.exec(rowId);
     if (!match || seen.has(rowId))
       throw plannerError("Completed row IDs must be unique valid plan row identifiers.");
     for (const day of match.slice(1).filter(Boolean)) date(day, "Completed row date");
@@ -390,49 +445,7 @@ export function validateFinancePlanner(value) {
           plan.includeAnnualReserve === undefined
             ? true
             : boolean(plan.includeAnnualReserve, "Include annual reserves"),
-        entries: rows(plan.entries, "Plan entries", 1000, (entry) => {
-          const entryDate = date(entry.date, "Entry date");
-          if (entryDate < startDate || entryDate > endDate)
-            throw plannerError(
-              "Entry dates must be within the plan's date range.",
-            );
-          const kind = oneOf(
-            entry.kind,
-            ["income", "expense", "conversion", "transfer"],
-            "Entry kind",
-          );
-          const fromAccountId = ["conversion", "transfer"].includes(kind)
-            ? accountId(entry.fromAccountId, "From account")
-            : null;
-          const toAccountId = ["conversion", "transfer"].includes(kind)
-            ? accountId(entry.toAccountId, "To account")
-            : null;
-          if (
-            kind === "transfer" &&
-            (!fromAccountId || !toAccountId || fromAccountId === toAccountId)
-          )
-            throw plannerError("Choose two different accounts for a transfer.");
-          if (
-            kind === "conversion" &&
-            ((fromAccountId === null) !== (toAccountId === null) ||
-              (fromAccountId !== null && fromAccountId === toAccountId))
-          )
-            throw plannerError(
-              "Choose two different conversion accounts, or leave both unassigned.",
-            );
-          return {
-            date: entryDate,
-            description: text(entry.description, "Entry description", 160),
-            kind,
-            accountId: ["income", "expense"].includes(kind)
-              ? accountId(entry.accountId, "Entry account")
-              : null,
-            fromAccountId,
-            toAccountId,
-            amount: amount(entry.amount, "Entry amount"),
-            currency: oneOf(entry.currency, ["USD", "PHP"], "Entry currency"),
-          };
-        }),
+        entries: planEntries(plan.entries, startDate, endDate, salary),
       };
     }),
   };
