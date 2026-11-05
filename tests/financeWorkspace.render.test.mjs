@@ -140,6 +140,89 @@ test("budget plans automatically include full card statements on their due dates
   assert.ok(!html.includes("Statement balance $25.00"));
 });
 
+function nextCycleCardFixture(endDate) {
+  const props = fixture("plans", 0, { bills: [] }, {
+    accounts: [{
+      id: 32, name: "Venture X", type: "credit", isLinked: true,
+      currency: "USD", nativeCurrentBalance: 1380.16,
+      creditCardDueStatus: "current",
+      creditCardDue: {
+        statementBalance: 0, minimumPayment: 0, dueDate: "2026-12-18",
+        lastStatementDate: null, lastPaymentDate: null, lastPaymentAmount: null,
+      },
+    }],
+  });
+  props.today = "2026-11-05";
+  Object.assign(props.snapshot.document.plans[0], {
+    startDate: "2026-11-06", endDate, openingUsd: 2000,
+  });
+  return props;
+}
+
+test("a future unbilled Venture X balance appears as an estimated payment within the plan", () => {
+  const props = nextCycleCardFixture("2027-01-01");
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  const text = plain(html);
+  assert.match(text, /Estimated next card payment/);
+  assert.match(text, /Unbilled balance \$1,380\.16/);
+  assert.match(text, /Available funds · USD\$619\.84/);
+  assert.match(html, /Dec 18/);
+  assert.ok(!text.includes("fall after this plan ends"));
+  assert.ok(!text.includes("Statement balance $0.00"));
+});
+
+test("short plans disclose next-cycle estimates without charging them before the payment date", () => {
+  const props = nextCycleCardFixture("2026-12-04");
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  const text = plain(html);
+  assert.match(text, /Venture X: \$1,380\.16 estimated for Dec 18, 2026/);
+  assert.match(text, /fall after this plan ends on Dec 4, 2026/);
+  assert.match(text, /not included in its available funds/);
+  assert.match(text, /Planned payments are not deducted from these amounts/);
+  assert.match(text, /Available funds · USD\$2,000\.00/);
+  assert.match(text, /Extend the plan’s end date to include these payments/);
+  const renderWorkspace = workspaceHarness(props);
+  let tree = renderWorkspace();
+  const notice = findElement(tree, (node) => node.type?.name === "FinanceCreditCardDuesNotice");
+  const edit = findElement(notice.type(notice.props), (node) => node.type === "button" && node.props.children === "Edit plan");
+  assert.equal(findElement(tree, (node) => node.type?.name === "Ledger").props.rows.length, 0);
+  edit.props.onClick();
+  tree = renderWorkspace();
+  assert.equal(findElement(tree, (node) => node.type?.name === "FinancePlanForm").props.plan, props.snapshot.document.plans[0]);
+});
+
+test("missing statement amounts can use known current balances without a false unavailable-dues warning", () => {
+  const props = nextCycleCardFixture("2027-01-01");
+  props.initialActivity.accounts[0].creditCardDue.statementBalance = null;
+  const text = plain(renderToStaticMarkup(createElement(Workspace, props)));
+  assert.match(text, /Statement balances are unavailable for Venture X/);
+  assert.match(text, /Using their current balances as estimates until the bank reports a statement/);
+  assert.match(text, /Unbilled balance \$1,380\.16/);
+  assert.ok(!text.includes("before dues can appear in this plan"));
+});
+
+test("unknown card balances and missing payment dates never create a payment estimate", () => {
+  for (const missing of ["balance", "date"]) {
+    const props = nextCycleCardFixture("2027-01-01");
+    const card = props.initialActivity.accounts[0];
+    card.creditCardDue.statementBalance = null;
+    if (missing === "balance") card.nativeCurrentBalance = null;
+    else card.creditCardDue.dueDate = null;
+    const html = renderToStaticMarkup(createElement(Workspace, props));
+    const text = plain(html);
+    assert.match(text, /Statement balances or due dates are unavailable for Venture X/);
+    assert.match(text, /Available funds · USD\$2,000\.00/);
+    assert.ok(!text.includes("Unbilled balance $1,380.16"));
+    assert.ok(!text.includes("$1,380.16 estimated for"));
+    const tree = workspaceHarness(props)();
+    assert.equal(findElement(tree, (node) => node.type?.name === "Ledger").props.rows.length, 0);
+    if (missing === "date") {
+      assert.match(text, /A payment date could not be determined/);
+      assert.match(text, /No unbilled estimate is included for these cards/);
+    }
+  }
+});
+
 test("plans flag unavailable and stale statements while retaining known dues", () => {
   const html = render("plans", 0, { bills: [] }, {
     accounts: [

@@ -1175,20 +1175,36 @@ test("plans return earlier partial card payments as separate evidence without ex
   assert.match(history.sql, /currency IN \('USD', 'PHP'\)/);
 });
 
-test("late payment evidence extends through today while missing statement dates use a narrow due-date window", async (t) => {
+test("payment evidence without statement dates also covers the plan boundary for posted transfer matching", async (t) => {
   bankEnvironment(t);
   const {api, queries} = backend((sql) => sql.startsWith("SELECT a.id, a.credit_card_due_json")
     ? [planCardCache({dueDate: "2020-01-25", lastStatementDate: null})] : []);
   const result = await api.getFinancePlanActivity({startDate: "2020-01-15", endDate: "2020-01-31"});
   assert.equal(result.creditCardPaymentWarning, "");
   const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
-  assert.deepEqual(history.params, ["2020-01-22", activity.financeActivityWindow().today]);
+  assert.deepEqual(history.params, ["2020-01-12", activity.financeActivityWindow().today]);
 });
 
-test("plans skip the payment-history query when cached cards have no due date in the selected range", async (t) => {
+test("plans retain statement payment history even when the current due is outside the selected range", async (t) => {
+  bankEnvironment(t);
+  const {api, queries} = backend((sql) => {
+    if (sql.startsWith("SELECT a.id, a.credit_card_due_json"))
+      return [planCardCache({dueDate: "2026-11-25"}), planCardCache({dueDate: null})];
+    if (sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"))
+      return [planPaymentRecord(1, "2026-11-01"), planPaymentRecord(2, "2026-11-07")];
+    return [];
+  });
+  const result = await api.getFinancePlanActivity({startDate: "2026-12-01", endDate: "2026-12-31"});
+  assert.deepEqual(result.transactions, []);
+  assert.deepEqual(result.creditCardPaymentTransactions.map(({id}) => id), [1, 2]);
+  const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
+  assert.equal(history.params[0], "2026-10-31");
+});
+
+test("plans skip the payment-history query when cached cards have no usable due date", async (t) => {
   bankEnvironment(t);
   const {api, queries} = backend((sql) => sql.startsWith("SELECT a.id, a.credit_card_due_json")
-    ? [planCardCache({dueDate: "2026-12-25"}), planCardCache({dueDate: null})] : []);
+    ? [planCardCache({dueDate: null})] : []);
   const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
   assert.deepEqual(result.creditCardPaymentTransactions, []);
   assert.equal(queries.filter(({sql}) => sql.startsWith("SELECT t.*")).length, 1);

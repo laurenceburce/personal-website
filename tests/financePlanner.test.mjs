@@ -11,6 +11,7 @@ import {
   formatDate,
   getAnnualBillFunding,
   getAnnualReserveOpening,
+  getCreditCardObligations,
   getPlanOpening,
   getSummary as summarize,
   localDate,
@@ -2702,6 +2703,147 @@ function cardStatementFixture() {
     ],
   };
 }
+
+test("a linked Venture X balance with no issued statement appears once on its reported future due date", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], name: "Venture X", isLinked: true, nativeCurrentBalance: 1380.16,
+    creditCardDue: { statementBalance: 0, minimumPayment: 0, dueDate: "2026-12-18", lastStatementDate: null } };
+  const before = JSON.stringify(accounts);
+  const obligations = getCreditCardObligations(accounts, { today: "2026-11-05" });
+  assert.equal(obligations.length, 1);
+  assert.equal(obligations[0].estimated, true);
+  assert.equal(obligations[0].estimatedBalance, 1380.16);
+  assert.equal(obligations[0].statementBalance, null);
+  assert.equal(obligations[0].estimateDateIsReported, true);
+  assert.deepEqual(obligations[0].paymentTransactionIds, []);
+  assert.deepEqual(buildPlanRows({ ...plan, startDate: "2026-11-06", endDate: "2026-12-04" }, document, 63,
+    { accounts, today: "2026-11-05" }), []);
+  const rows = buildPlanRows({ ...plan, startDate: "2026-11-06", endDate: "2027-11-05" }, document, 63,
+    { accounts, today: "2026-11-05" });
+  assert.deepEqual(rows.map((row) => [row.id, row.date, row.amount, row.usd, row.completed]), [
+    ["creditCardDue:2:2026-12-18", "2026-12-18", 1380.16, -1380.16, false],
+  ]);
+  assert.equal(JSON.stringify(accounts), before);
+});
+
+test("unbilled debt subtracts the remaining paid statement before a separate next-cycle estimate", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], isLinked: true,
+    creditCardDue: { ...accounts[1].creditCardDue, lastPaymentDate: "2026-11-03", lastPaymentAmount: 50 } };
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-05" });
+  assert.deepEqual(rows.map((row) => [row.date, row.amount, row.paidAmount, Boolean(row.estimated)]), [
+    ["2026-11-20", 150, 50, false], ["2026-12-20", 350, 0, true],
+  ]);
+  assert.equal(rows.at(-1).balanceUsd, 500);
+  const laterPlan = buildPlanRows({ ...plan, startDate: "2026-12-01" }, document, 63, { accounts, today: "2026-11-05" });
+  assert.equal(laterPlan[0].amount, 350);
+  assert.equal(laterPlan[0].estimateDateIsReported, false);
+  assert.equal(laterPlan[0].statementBalance, null);
+});
+
+test("an issued zero statement uses the next cycle while an unknown statement uses a future reported due", () => {
+  const { accounts } = cardStatementFixture();
+  const card = { ...accounts[1], isLinked: true, nativeCurrentBalance: 100 };
+  const zero = getCreditCardObligations([{ ...card,
+    creditCardDue: { statementBalance: 0, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } }], { today: "2026-11-05" });
+  assert.deepEqual(zero.map((row) => [row.date, row.amount, row.estimateDateIsReported]), [["2026-12-20", 100, false]]);
+  const unknown = getCreditCardObligations([{ ...card,
+    creditCardDue: { statementBalance: null, dueDate: "2026-12-18", lastStatementDate: "2026-10-25" } }], { today: "2026-11-05" });
+  assert.deepEqual(unknown.map((row) => [row.date, row.amount, row.estimateDateIsReported]), [["2026-12-18", 100, true]]);
+});
+
+test("estimated monthly due dates clamp short months and roll past anchors without repeating debt", () => {
+  const { accounts } = cardStatementFixture();
+  const card = { ...accounts[1], isLinked: true,
+    creditCardDue: { statementBalance: 200, dueDate: "2026-01-31", lastStatementDate: "2026-01-05" } };
+  let estimates = getCreditCardObligations([card], { today: "2026-01-20" }).filter((row) => row.estimated);
+  assert.deepEqual(estimates.map((row) => [row.date, row.amount]), [["2026-02-28", 300]]);
+  estimates = getCreditCardObligations([card], { today: "2026-03-01" }).filter((row) => row.estimated);
+  assert.deepEqual(estimates.map((row) => [row.date, row.amount]), [["2026-03-31", 300]]);
+  card.creditCardDue.dueDate = "2028-01-31";
+  card.creditCardDue.lastStatementDate = "2028-01-05";
+  assert.equal(getCreditCardObligations([card], { today: "2028-01-20" }).find((row) => row.estimated).date, "2028-02-29");
+});
+
+test("unavailable, zero, negative and unlinked current balances cannot create a speculative card payment", () => {
+  const { accounts } = cardStatementFixture();
+  const card = { ...accounts[1], isLinked: true,
+    creditCardDue: { statementBalance: 0, dueDate: "2026-12-18" } };
+  for (const nativeCurrentBalance of [null, undefined, "", 0, -10, Number.NaN])
+    assert.deepEqual(getCreditCardObligations([{ ...card, nativeCurrentBalance }], { today: "2026-11-05" }), []);
+  for (const change of [
+    { isLinked: false }, { isLinked: undefined }, { isArchived: true }, { mergedIntoAccountId: 4 },
+    { creditCardDue: { statementBalance: 0, dueDate: null } },
+    { creditCardDue: { statementBalance: 0, dueDate: "2026-11-31" } },
+    { creditCardDue: { statementBalance: 0, dueDate: "2026-10-18" } },
+    { creditCardDue: { statementBalance: -10, dueDate: "2026-12-18" } },
+  ]) assert.deepEqual(getCreditCardObligations([{ ...card, ...change }], { today: "2026-11-05" }), []);
+});
+
+test("planned card transfers split once between the current statement and next-cycle balance", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], isLinked: true };
+  const entry = { id: "pay", date: "2026-11-18", description: "Pay card", kind: "transfer",
+    fromAccountId: 1, toAccountId: 2, amount: 250, currency: "USD" };
+  const rows = buildPlanRows({ ...plan, entries: [entry] }, document, 63, { accounts, today: "2026-11-05" });
+  assert.deepEqual(rows.filter((row) => row.source === "creditCardDue").map((row) => [row.amount, row.plannedPaymentAmount]), [[0, 200], [250, 50]]);
+  assert.equal(rows.at(-1).balanceUsd, 500);
+  assert.equal(rows.find((row) => row.estimated).completed, false);
+  const late = buildPlanRows({ ...plan, entries: [{ ...entry, date: "2026-11-25" }] }, document, 63, { accounts, today: "2026-11-05" });
+  assert.deepEqual(late.filter((row) => row.source === "creditCardDue").map((row) => [row.amount, row.plannedPaymentAmount]), [[200, 0], [50, 250]]);
+  assert.equal(late.at(-1).balanceUsd, 500);
+});
+
+test("bank-reflected transfers and purchases do not reduce or charge an estimate twice", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], isLinked: true, nativeCurrentBalance: 450 };
+  const entry = { id: "paid", date: "2026-11-03", description: "Pay card", kind: "transfer",
+    fromAccountId: 1, toAccountId: 2, amount: 50, currency: "USD" };
+  const rows = buildPlanRows({ ...plan, entries: [entry] }, document, 63, { accounts, today: "2026-11-05", transactions: [
+    { id: 1, date: "2026-11-03", amount: 50, currency: "USD", kind: "income", accountId: 2, category: "Transfer In" },
+    { id: 2, date: "2026-11-03", amount: 50, currency: "USD", kind: "expense", accountId: 1, category: "Transfer Out" },
+    { id: 3, date: "2026-11-04", amount: 30, currency: "USD", kind: "expense", accountId: 2, merchant: "Market" },
+  ] });
+  assert.deepEqual(rows.filter((row) => row.source === "creditCardDue").map((row) => [row.amount, row.plannedPaymentAmount]), [[150, 0], [300, 0]]);
+  assert.equal(rows.find((row) => row.transactionId === 3).usd, 0);
+  assert.equal(rows.at(-1).balanceUsd, 500);
+});
+
+test("an issued statement replaces the prior estimate with the same dated payment identity", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const card = { ...accounts[1], isLinked: true, nativeCurrentBalance: 1380.16,
+    creditCardDue: { statementBalance: 0, dueDate: "2026-12-18" } };
+  const estimated = buildPlanRows(plan, document, 63, { accounts: [card], today: "2026-11-05" });
+  card.creditCardDue = { statementBalance: 1380.16, dueDate: "2026-12-18", lastStatementDate: "2026-11-23" };
+  const issued = buildPlanRows(plan, document, 63, { accounts: [card], today: "2026-11-24" });
+  assert.equal(estimated.length, 1);
+  assert.equal(issued.length, 1);
+  assert.equal(issued[0].id, estimated[0].id);
+  assert.equal(issued[0].amount, 1380.16);
+  assert.equal(Boolean(issued[0].estimated), false);
+});
+
+test("same-day posted transfers cannot pay an unissued estimate a second time", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  for (const statementBalance of [0, null]) {
+    const linked = [accounts[0], { ...accounts[1], isLinked: true, nativeCurrentBalance: 1000,
+      creditCardDue: { statementBalance, dueDate: "2026-12-18" } }];
+    const rows = buildPlanRows({ ...plan, entries: [
+      { id: "paid-today", date: "2026-11-05", description: "Pay card", kind: "transfer",
+        fromAccountId: 1, toAccountId: 2, amount: 300, currency: "USD" },
+    ] }, document, 63, { accounts: linked, today: "2026-11-05", transactions: [
+      { id: 1, date: "2026-11-05", amount: 300, currency: "USD", kind: "income", accountId: 2, category: "Debt", merchant: "Automatic payment" },
+      { id: 2, date: "2026-11-05", amount: 300, currency: "USD", kind: "expense", accountId: 1, category: "Debt", merchant: "Travel Card payment" },
+    ] });
+    const estimate = rows.find((row) => row.estimated);
+    assert.equal(estimate.amount, 1000);
+    assert.equal(estimate.plannedPaymentAmount, 0);
+    assert.equal(estimate.paidAmount, 0);
+    assert.deepEqual(estimate.paymentTransactionIds, []);
+    assert.equal(rows.find((row) => row.entryId === "paid-today").completed, true);
+    assert.equal(rows.at(-1).balanceUsd, -300);
+  }
+});
 
 test("linked full statement dues appear once on their actual dates in each native currency", () => {
   const { plan, document, accounts } = cardStatementFixture();

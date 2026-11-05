@@ -8,6 +8,7 @@ import {
   formatDate,
   getSummary,
   getAnnualReserveOpening,
+  getCreditCardObligations,
   getPlanOpening,
   localDate,
   addDays,
@@ -780,6 +781,15 @@ export default function FinanceAppClient({
     plan &&
     planActivity?.from === plan.startDate &&
     planActivity?.to === plan.endDate,
+  );
+  const creditCardObligations = useMemo(
+    () => getCreditCardObligations(accounts, {
+      today,
+      transactions: planRecordsMatch
+        ? [...(planActivity.transactions || []), ...(planActivity.creditCardPaymentTransactions || [])]
+        : [],
+    }),
+    [accounts, today, planRecordsMatch, planActivity],
   );
   const planWaitingForRecords = Boolean(
     plan &&
@@ -1980,7 +1990,10 @@ export default function FinanceAppClient({
                     )}
                     <FinanceCreditCardDuesNotice
                       accounts={accounts}
+                      obligations={creditCardObligations}
+                      plan={plan}
                       onReviewAccounts={() => navigate("accounts")}
+                      onEditPlan={() => open({ type: "plan", plan })}
                       paymentHistoryWarning={planRecordsMatch ? planActivity?.creditCardPaymentWarning : ""}
                     />
                     {plan.includeTransactions === false &&

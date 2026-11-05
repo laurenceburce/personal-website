@@ -191,11 +191,17 @@ The finance workspace separates recorded activity from your plans:
   share a 60-second cooldown; **Refresh bank data** forces a fresh request. Failures
   keep the last known data with an explicit notice.
   Linked credit card statement balances and payment dates are included
-  automatically when the bank supplies them through Plaid Liabilities. Plans use
-  the full statement balance for payment in full, never the current revolving
-  balance or the minimum payment. Only reported payment dates are forecast;
-  future monthly statements are not invented. Missing statement details and
-  cached details from a failed refresh are identified in the workspace.
+  automatically when the bank supplies them through Plaid Liabilities. Reported
+  statements use the full statement balance, reduced by known payments. Linked
+  cards also show an **Estimated** next payment for their currently unbilled
+  balance, using the current balance less the remaining reported statement.
+  The bank's next payment date is used when no issued statement is available;
+  otherwise the following monthly due date is estimated. Purchases, payments,
+  refunds, and interest can change the final amount. The known balance is
+  included once; it is not repeated as new debt in every future month. New bank
+  statements replace the estimate. Payments beyond the plan end are listed in
+  a notice so the plan can be extended. Missing dates and cached details from a
+  failed refresh are identified in the workspace.
   For cards with complete statement details, charges update projected card debt;
   statement payments reduce available cash. Posted payments, including earlier
   statement-cycle payments, reduce the remaining due. A planned account transfer

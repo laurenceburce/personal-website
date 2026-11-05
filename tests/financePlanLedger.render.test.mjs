@@ -126,6 +126,31 @@ test("statement dues explain the full balance and payments without occurrence ed
   assert.ok(!html.includes("Edit this occurrence"));
 });
 
+test("next-cycle estimates identify unbilled balance without claiming a confirmed statement", () => {
+  for (const estimateDateIsReported of [true, false]) {
+    const html = render([row({
+      id: "creditCardDue:32:2026-12-18", source: "creditCardDue", estimated: true,
+      description: "Venture X · estimated next payment", date: "2026-12-18", currency: "USD",
+      statementBalance: null, estimatedBalance: 1380.16, amount: 1380.16, usd: -1380.16,
+      estimateDateIsReported, editable: false,
+    })]);
+    assert.match(plain(html), /Estimated next card payment/);
+    assert.match(plain(html), /Unbilled balance \$1,380\.16/);
+    assert.match(html, /class="fpl-estimate-tag">Estimated<\/span>/);
+    assert.match(plain(html), estimateDateIsReported
+      ? /Uses the bank’s next payment date/
+      : /Payment date estimated from the monthly billing cycle/);
+    assert.ok(!plain(html).includes("Statement balance $0.00"));
+    assert.ok(!html.includes("Edit this occurrence"));
+  }
+});
+
+test("estimated dues explain the share already covered by planned payments", () => {
+  const html = render([row({ source: "creditCardDue", estimated: true, currency: "USD",
+    estimatedBalance: 500, plannedPaymentAmount: 125, amount: 375, usd: -375 })]);
+  assert.match(plain(html), /Unbilled balance \$500\.00 · Planned payments \$125\.00 · Remaining \$375\.00/);
+});
+
 test("card activity and posted statement payments identify their cash flow treatment", () => {
   const html = render([
     row({ source: "transaction", cardCreditActivity: true, description: "Card purchase" }),

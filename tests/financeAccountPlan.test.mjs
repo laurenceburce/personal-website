@@ -327,6 +327,66 @@ test("automatic card dues reduce the liability without inventing a funding accou
   assert.ok(result.warnings.some((warning) => warning.includes("funding account is unknown")));
 });
 
+test("a next-cycle estimate pays the known native card debt once without guessing the funding account", () => {
+  const cardAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 2000 },
+    { id: 2, name: "Venture X", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 1380.16,
+      creditCardDue: { statementBalance: 0, dueDate: "2026-12-18" } },
+  ];
+  const cardPlan = { startDate: "2026-11-06", endDate: "2027-01-01", openingUsd: 2000,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
+    { accounts: cardAccounts, today: "2026-11-05" });
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 2000);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+  assert.deepEqual(result.rows[0].accountMovements.map((move) => [move.accountId, move.amount, move.balanceDelta]), [[2, 1380.16, -1380.16]]);
+  assert.equal(result.rows[0].balanceUsd, 619.84);
+  assert.equal(result.rows[0].estimated, true);
+});
+
+test("planned payments split between actual and estimated dues conserve native account balances", () => {
+  const cardAccounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "Travel Card", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 500,
+      creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const cardPlan = { startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: 1000,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [
+      { id: "pay", date: "2026-11-18", description: "Pay card", kind: "transfer", amount: 250, currency: "USD", fromAccountId: 1, toAccountId: 2 },
+    ] };
+  const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
+    { accounts: cardAccounts, today: "2026-11-05" });
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 750);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+  assert.equal(result.rows.at(-1).balanceUsd, 500);
+});
+
+test("same-day reflected payments do not shrink an estimate or replay native transfer legs", () => {
+  const cardDocument = { salary: {}, bills: [], allocations: [] };
+  for (const statementBalance of [0, null]) for (const live of [false, true]) {
+    const cardAccounts = [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 700 },
+      { id: 2, name: "Travel Card", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 1000,
+        creditCardDue: { statementBalance, dueDate: "2026-12-18" } },
+    ];
+    const cardPlan = { startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: live ? 0 : 1000,
+      ...(live ? { startingAccounts: [{ accountId: 1, percentage: 100 }] }
+        : { accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 1300 }] }),
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [
+        { id: "paid", date: "2026-11-05", description: "Pay card", kind: "transfer", amount: 300, currency: "USD", fromAccountId: 1, toAccountId: 2 },
+      ] };
+    const result = buildAccountPlan(cardPlan, cardDocument, 63, { accounts: cardAccounts, today: "2026-11-05", transactions: [
+      { id: 1, date: "2026-11-05", amount: 300, currency: "USD", kind: "income", accountId: 2, category: "Debt", merchant: "Automatic payment" },
+      { id: 2, date: "2026-11-05", amount: 300, currency: "USD", kind: "expense", accountId: 1, category: "Debt", merchant: "Travel Card payment" },
+    ] });
+    assert.equal(result.rows.find((row) => row.estimated).amount, 1000);
+    assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 700);
+    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+    assert.equal(result.rows.at(-1).balanceUsd, -300);
+    assert.deepEqual(result.rows.find((row) => row.entryId === "paid").accountMovements, []);
+  }
+});
+
 test("card purchases and posted partial payments change owed balances once alongside the remaining statement", () => {
   const cardAccounts = [
     { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 950 },

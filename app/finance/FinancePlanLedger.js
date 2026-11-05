@@ -92,7 +92,9 @@ function SourceLabel({ row }) {
         : row.kind === "transfer"
           ? row.creditCardPaymentFor ? "Planned credit card payment" : "Planned account transfer"
           : "Plan entry"
-      : labels[row.source] || "Plan flow";
+      : row.source === "creditCardDue" && row.estimated
+        ? "Estimated next card payment"
+        : labels[row.source] || "Plan flow";
   const matched = row.scheduledSource || row.matchedForecast?.source;
   const matchedLabel =
     matched === "salary"
@@ -140,7 +142,7 @@ function SourceLabel({ row }) {
       {row.isOverride && (
         <small className="fpl-override-note">Edited for this plan</small>
       )}
-      {row.source === "creditCardDue" && (
+      {row.source === "creditCardDue" && !row.estimated && (
         <small className="fpl-credit-card-due-detail">
           Statement balance {money(row.statementBalance, row.currency)}
           {row.paidAmount > 0 && <>{" "}· Paid {money(row.paidAmount, row.currency)}</>}
@@ -151,6 +153,23 @@ function SourceLabel({ row }) {
             {" "}· Remaining {money(row.amount, row.currency)}
           </>}
         </small>
+      )}
+      {row.source === "creditCardDue" && row.estimated && (
+        <>
+          <small className="fpl-credit-card-due-detail">
+            Unbilled balance {money(row.estimatedBalance ?? row.amount, row.currency)}
+            {row.plannedPaymentAmount > 0 && <>
+              {" "}· Planned payments {money(row.plannedPaymentAmount, row.currency)}
+              {" "}· Remaining {money(row.amount, row.currency)}
+            </>}
+          </small>
+          <small className="fpl-reconciliation-note">
+            {row.estimateDateIsReported
+              ? "Uses the bank’s next payment date."
+              : "Payment date estimated from the monthly billing cycle."}
+            {" "}The amount can change with purchases, payments, refunds, and interest.
+          </small>
+        </>
       )}
       {row.cardCreditActivity && (
         <small className="fpl-account-label">
@@ -249,7 +268,7 @@ function SourceLabel({ row }) {
 function CompletionStatus({ row, onToggleComplete, busy }) {
   const completed = Boolean(row.completed);
   const automatic = completed && row.completionSource === "transaction";
-  const bankReportedPayment = automatic && row.source === "creditCardDue" && !row.matchedTransactionIds?.length;
+  const bankReportedPayment = automatic && row.source === "creditCardDue" && !row.estimated && !row.matchedTransactionIds?.length;
   const matched =
     row.source !== "transaction" ||
     Boolean(row.matchedForecast || row.scheduledSource);
@@ -539,6 +558,7 @@ export default function Ledger({
                   <td data-column="description" className="fpl-description-cell">
                     <time className="fpl-mobile-date" dateTime={row.date}>{formatDate(row.date, { year: "2-digit" })}</time>
                     <strong title={row.description}>{row.description}</strong>
+                    {row.estimated && <span className="fpl-estimate-tag">Estimated</span>}
                     <details className="fpl-row-details">
                       <summary aria-label={`Details for ${row.description}`}>
                         <span className="fpl-details-text">Details</span>

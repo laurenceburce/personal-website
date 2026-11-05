@@ -1,31 +1,88 @@
 import { financeAccountLabel } from "./FinanceAccountSelect";
+import { formatDate, money } from "../lib/financePlanner.mjs";
 
-export default function FinanceCreditCardDuesNotice({ accounts = [], onReviewAccounts, paymentHistoryWarning }) {
+export default function FinanceCreditCardDuesNotice({
+  accounts = [],
+  obligations = [],
+  plan,
+  onReviewAccounts,
+  onEditPlan,
+  paymentHistoryWarning,
+}) {
   const cards = accounts.filter(
     (account) => account.isLinked && account.type === "credit" &&
       !account.isArchived && !account.mergedIntoAccountId,
   );
   if (!cards.length) return null;
+  const estimates = obligations.filter((row) => row.estimated && row.amount > 0);
+  const estimatedAccountIds = new Set(estimates.map((row) => String(row.creditAccountId)));
   const missing = cards.filter((account) => {
     const due = account.creditCardDue;
     return due?.statementBalance == null || !Number.isFinite(Number(due.statementBalance)) ||
-      !due.dueDate;
+      formatDate(due.dueDate) === "—";
   });
+  const missingWithEstimate = missing.filter((account) => estimatedAccountIds.has(String(account.id)));
+  const missingWithoutEstimate = missing.filter((account) => !estimatedAccountIds.has(String(account.id)));
+  const unplannedBalances = cards.filter((account) => {
+    const balance = Object.hasOwn(account, "nativeCurrentBalance")
+      ? account.nativeCurrentBalance : account.currentBalance;
+    return Number.isFinite(Number(balance)) && Number(balance) > 0 &&
+      !obligations.some((row) => String(row.creditAccountId) === String(account.id) &&
+        row.amount > 0 && formatDate(row.date) !== "—");
+  });
+  const afterPlan = plan?.endDate
+    ? estimates.filter((row) => row.date > plan.endDate)
+    : [];
   const stale = cards.filter(
-    (account) => account.creditCardDueStatus === "stale" && !missing.includes(account),
+    (account) => account.creditCardDueStatus === "stale" &&
+      (!missing.includes(account) || estimatedAccountIds.has(String(account.id))),
   );
   const names = (items) => items.map(financeAccountLabel).join(", ");
   return (
     <div className="fp-credit-card-dues-notice">
       <p className="fp-plan-flow-note">
-        Credit card statement balances are included automatically on their reported
-        due dates. Future statements appear after the bank provides them.
+        Reported credit card statements are included on their due dates. Unbilled
+        balances use the next available payment date and are labeled as estimates.
+        Future purchases, payments, and statement updates can change these estimates.
       </p>
-      {missing.length > 0 && (
+      {afterPlan.length > 0 && (
+        <div className="fp-plan-warning" role="status">
+          <p>
+            These estimates from current unbilled balances fall after this plan ends on {formatDate(plan.endDate, { year: "numeric" })} and are not included in its available funds.
+            {" "}Planned payments are not deducted from these amounts:
+          </p>
+          <ul>
+            {afterPlan.map((row) => (
+              <li key={row.id}>
+                <strong>{row.accountName || "Credit card"}</strong>: {money(row.amount, row.currency)} estimated for {formatDate(row.date, { year: "numeric" })}.
+                {" "}{row.estimateDateIsReported ? "Bank-reported payment date." : "Estimated payment date."}
+              </li>
+            ))}
+          </ul>
+          <p>
+            Extend the plan’s end date to include these payments.
+            {onEditPlan && <>{" "}<button onClick={onEditPlan}>Edit plan</button></>}
+          </p>
+        </div>
+      )}
+      {missingWithEstimate.length > 0 && (
         <p className="fp-plan-warning" role="status">
-          Statement balances or due dates are unavailable for {names(missing)}.
-          {" "}These cards need statement details before dues can appear in this plan.
+          Statement balances are unavailable for {names(missingWithEstimate)}.
+          {" "}Using their current balances as estimates until the bank reports a statement.
+        </p>
+      )}
+      {missingWithoutEstimate.length > 0 && (
+        <p className="fp-plan-warning" role="status">
+          Statement balances or due dates are unavailable for {names(missingWithoutEstimate)}.
+          {" "}These cards need statement or cycle details before dues can appear in this plan.
           {onReviewAccounts && <>{" "}<button onClick={onReviewAccounts}>Review Bank accounts</button></>}
+        </p>
+      )}
+      {unplannedBalances.length > 0 && (
+        <p className="fp-plan-warning" role="status">
+          A payment date could not be determined for the current balances on {names(unplannedBalances)}.
+          {" "}No unbilled estimate is included for these cards.
+          {onReviewAccounts && !missingWithoutEstimate.length && <>{" "}<button onClick={onReviewAccounts}>Review Bank accounts</button></>}
         </p>
       )}
       {stale.length > 0 && (

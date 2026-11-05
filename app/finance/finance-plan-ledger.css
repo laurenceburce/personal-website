@@ -84,6 +84,17 @@
 .fp-app .fpl-table .fpl-credit-card-due-detail {
   color: #617568;
 }
+.fp-app .fpl-estimate-tag {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 1px 5px;
+  border: 1px solid #ded9bc;
+  border-radius: 4px;
+  background: #faf7e9;
+  color: #776735;
+  font-size: 9px;
+  line-height: 1.4;
+}
 .fp-app .fpl-table .fpl-reconciliation-note {
   color: #577083;
 }

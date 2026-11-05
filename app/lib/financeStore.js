@@ -1285,19 +1285,24 @@ async function getFinanceCreditCardPaymentActivity(database, range) {
     const day = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
     const starts = [];
     let historyClamped = false;
+    const today = financeActivityWindow().today;
     for (const card of cards) {
       const due = normalizeFinanceCreditCardDue(card.credit_card_due_json);
-      if (!due?.dueDate || due.dueDate < range.from || due.dueDate > range.to) continue;
+      // Earlier statement payments determine the unbilled portion of today's
+      // balance even when only the next cycle falls in the selected plan.
+      if (!due?.dueDate) continue;
       const earliest = ["1900-01-01", day(due.dueDate, -731)].sort().at(-1);
       const statementDate = due.lastStatementDate && due.lastStatementDate <= due.dueDate
         ? due.lastStatementDate : null;
-      const start = statementDate || day(due.dueDate, -3);
+      const start = statementDate || [
+        day(due.dueDate, -3), day(range.from, -3), day(today, -3),
+      ].sort()[0];
       if (start < earliest) historyClamped = true;
       starts.push([earliest, start].sort().at(-1));
     }
     if (!starts.length) return empty;
     const from = starts.sort()[0];
-    const to = [range.to, financeActivityWindow().today].sort().at(-1);
+    const to = [range.to, today].sort().at(-1);
     const [rows] = await database.query(`
       SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
         a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
