@@ -2260,6 +2260,7 @@ export default function FinanceAppClient({
                       </div>
                     ) : (
                       <Ledger
+                        today={today}
                         plan={plan}
                         rows={accountPlan?.rows || planRows}
                         openingReserve={planOpeningReserve}

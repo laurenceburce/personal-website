@@ -211,6 +211,10 @@ The finance workspace separates recorded activity from your plans:
   planned movements, with annual reserves excluded. Accounts are counted once;
   savings without an assigned account accumulate separately from zero. Unknown
   bank balances are shown as unavailable.
+  On phones, budget plans use compact table rows with a pinned item column.
+  Open **Columns** to choose currencies and balances, tap **⋯** for row details,
+  or use **Upcoming** to jump to the next unfinished item. **Reset columns**
+  restores the default view.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.

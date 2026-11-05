@@ -1,6 +1,6 @@
 "use client";
 
-import { formatDate, money } from "../lib/financePlanner.mjs";
+import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 import "./finance-plan-ledger.css";
 
 const signed = (value, currency) =>
@@ -32,6 +32,7 @@ function ActionIcon({ kind }) {
 function FlowAmount({ value, currency, showZero = false }) {
   return (
     <td
+      data-column={`flow-${currency.toLowerCase()}`}
       data-label={`Flow · ${currency}`}
       className={
         value < 0 ? "fp-negative" : value > 0 ? "fp-positive" : "fp-zero"
@@ -44,7 +45,7 @@ function FlowAmount({ value, currency, showZero = false }) {
 
 function ReserveBalance({ value = 0, delta = 0, currency, unusedOnPhone = false }) {
   return (
-    <td data-label={`Annual reserve · ${currency}`} className={`fpl-reserve-balance ${balanceClass(value)}${unusedOnPhone ? " fpl-unused-on-phone" : ""}`}>
+    <td data-column={`reserve-${currency.toLowerCase()}`} data-label={`Annual reserve · ${currency}`} className={`fpl-reserve-balance ${balanceClass(value)}${unusedOnPhone ? " fpl-unused-on-phone" : ""}`}>
       <span>{money(value, currency)}</span>
       {delta !== 0 && (
         <small className="fpl-reserve-change">
@@ -59,6 +60,7 @@ function SavingsBalance({ value = 0, currency, unusedOnPhone = false }) {
   const available = Number.isFinite(value);
   return (
     <td
+      data-column={`savings-${currency.toLowerCase()}`}
       data-label={`Savings · ${currency}`}
       className={`fpl-savings-balance ${available ? balanceClass(value) : "fp-zero"}${unusedOnPhone ? " fpl-unused-on-phone" : ""}`}
     >
@@ -342,11 +344,28 @@ export default function Ledger({
   onResetOccurrence,
   onToggleComplete,
   busy = false,
+  today = localDate(),
 }) {
+  const ledgerId = `budget-ledger-${String(plan.id || `${plan.startDate}-${plan.endDate}`).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const upcomingIndex = rows.findIndex((row) => row.date >= today && !row.completed);
+  const columns = [
+    { key: "flow", label: "Flow", visible: true },
+    { key: "available", label: "Available balances", visible: true },
+    { key: "reserves", label: "Annual reserves", visible: false },
+    { key: "savings", label: "Savings", visible: false },
+    { key: "status", label: "Status", visible: false },
+    { key: "actions", label: "Actions", visible: true },
+  ];
+  const scrollColumns = (event, direction) => {
+    const scroller = event.currentTarget.closest(".fpl-ledger")?.querySelector(".fpl-scroll");
+    scroller?.scrollBy({
+      left: direction * Math.max(160, scroller.clientWidth * 0.75),
+      behavior: "smooth",
+    });
+  };
   const openingUsd = openingBalances?.usd ?? plan.openingUsd ?? 0;
   const openingPhp = openingBalances?.php ?? plan.openingPhp ?? 0;
-  // Only omit a reserve/savings currency when its complete plan is known zero.
-  // Missing old-document values default to zero; explicit null stays visible.
+  // Retain currency availability metadata without omitting any financial values.
   const unusedCurrency = (opening, key) =>
     [opening, ...rows.map((row) => row[key])].every(
       (value) => value === 0 || value === undefined,
@@ -362,11 +381,70 @@ export default function Ledger({
   const unusedSavingsUsd = unusedCurrency(openingSavings?.usd, "savingsUsd");
   const unusedSavingsPhp = unusedCurrency(openingSavings?.php, "savingsPhp");
   return (
-    <>
+    <div className="fpl-ledger">
+      <div className="fpl-mobile-toolbar">
+        <form className="fpl-display-controls" onSubmit={(event) => event.preventDefault()}>
+          <details className="fpl-column-options">
+            <summary>Columns</summary>
+            <div className="fpl-column-panel">
+              <fieldset>
+                <legend>Show columns</legend>
+                {columns.map((column) => (
+                  <label key={column.key}>
+                    <input
+                      type="checkbox"
+                      className={`fpl-show-${column.key}`}
+                      defaultChecked={column.visible}
+                    />
+                    {column.label}
+                  </label>
+                ))}
+              </fieldset>
+              <fieldset className="fpl-currency-options">
+                <legend>Currency</legend>
+                {[
+                  ["both", "Both currencies"],
+                  ["usd", "USD"],
+                  ["php", "PHP"],
+                ].map(([value, label]) => (
+                  <label key={value}>
+                    <input
+                      type="radio"
+                      name={`${ledgerId}-currency`}
+                      value={value}
+                      className={`fpl-currency-${value}`}
+                      defaultChecked={value === "both"}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </fieldset>
+              <button type="reset" className="fp-button fp-secondary fpl-reset-columns">
+                Reset columns
+              </button>
+            </div>
+          </details>
+        </form>
+        <span className="fpl-row-count">{rows.length} {rows.length === 1 ? "row" : "rows"}</span>
+        {upcomingIndex >= 0 && (
+          <a className="fpl-upcoming-link" href={`#${ledgerId}-row-${upcomingIndex}`}>
+            Upcoming
+          </a>
+        )}
+        <div className="fpl-scroll-buttons">
+          <button type="button" aria-label="Scroll budget columns left" aria-controls={ledgerId} onClick={(event) => scrollColumns(event, -1)}>←</button>
+          <button type="button" aria-label="Scroll budget columns right" aria-controls={ledgerId} onClick={(event) => scrollColumns(event, 1)}>→</button>
+        </div>
+      </div>
+      <p className="fpl-mobile-hint" id={`${ledgerId}-hint`}>
+        Swipe sideways for more columns. Tap ⋯ for row details.
+      </p>
       <div
+        id={ledgerId}
         className="fp-table-wrap fp-ledger-wrap fpl-scroll"
         role="region"
         aria-label="Budget money flows, available balances, annual reserves, and savings"
+        aria-describedby={`${ledgerId}-hint`}
         tabIndex={0}
       >
         <table className="fp-table fp-ledger fpl-table" role="table">
@@ -379,48 +457,49 @@ export default function Ledger({
           </caption>
           <thead>
             <tr>
-              <th scope="col">Date</th>
-              <th scope="col">Description</th>
-              <th scope="col">Flow · USD</th>
-              <th scope="col">Flow · PHP</th>
-              <th scope="col" className="fp-running">
+              <th scope="col" data-column="date">Date</th>
+              <th scope="col" data-column="description"><span className="fpl-desktop-column-label">Description</span><span className="fpl-mobile-column-label">Item / date</span></th>
+              <th scope="col" data-column="flow-usd">Flow · USD</th>
+              <th scope="col" data-column="flow-php">Flow · PHP</th>
+              <th scope="col" data-column="available-usd" className="fp-running">
                 Available · USD
               </th>
-              <th scope="col" className="fp-running">
+              <th scope="col" data-column="available-php" className="fp-running">
                 Available · PHP
               </th>
-              <th scope="col" className="fpl-reserve-balance">
+              <th scope="col" data-column="reserve-usd" className="fpl-reserve-balance">
                 Annual reserve · USD
               </th>
-              <th scope="col" className="fpl-reserve-balance">
+              <th scope="col" data-column="reserve-php" className="fpl-reserve-balance">
                 Annual reserve · PHP
               </th>
-              <th scope="col" className="fpl-savings-balance">
+              <th scope="col" data-column="savings-usd" className="fpl-savings-balance">
                 Savings · USD
               </th>
-              <th scope="col" className="fpl-savings-balance">
+              <th scope="col" data-column="savings-php" className="fpl-savings-balance">
                 Savings · PHP
               </th>
-              <th scope="col">Status</th>
-              <th scope="col">
+              <th scope="col" data-column="status">Status</th>
+              <th scope="col" data-column="actions">
                 <span className="fp-sr-only">Actions</span>
               </th>
             </tr>
           </thead>
           <tbody>
             <tr className="fp-opening-row fpl-opening-row">
-              <td className="fpl-date-cell">{formatDate(plan.startDate, { year: "numeric" })}</td>
-              <td className="fpl-description-cell">
+              <td data-column="date" className="fpl-date-cell">{formatDate(plan.startDate, { year: "numeric" })}</td>
+              <td data-column="description" className="fpl-description-cell">
+                <time className="fpl-mobile-date" dateTime={plan.startDate}>{formatDate(plan.startDate, { year: "2-digit" })}</time>
                 <strong>Starting balances</strong>
                 <small>Available funds, annual reserves, and savings</small>
                 <OpeningDetails openingBalances={openingBalances} />
               </td>
-              <td data-label="Flow · USD" className="fp-zero fpl-opening-flow">—</td>
-              <td data-label="Flow · PHP" className="fp-zero fpl-opening-flow">—</td>
-              <td data-label="Available · USD" className={`fp-running ${balanceClass(openingUsd)}`}>
+              <td data-column="flow-usd" data-label="Flow · USD" className="fp-zero fpl-opening-flow">—</td>
+              <td data-column="flow-php" data-label="Flow · PHP" className="fp-zero fpl-opening-flow">—</td>
+              <td data-column="available-usd" data-label="Available · USD" className={`fp-running ${balanceClass(openingUsd)}`}>
                 {money(openingUsd)}
               </td>
-              <td data-label="Available · PHP" className={`fp-running ${balanceClass(openingPhp)}`}>
+              <td data-column="available-php" data-label="Available · PHP" className={`fp-running ${balanceClass(openingPhp)}`}>
                 {money(openingPhp, "PHP")}
               </td>
               <ReserveBalance
@@ -435,10 +514,10 @@ export default function Ledger({
               />
               <SavingsBalance value={openingSavings?.usd} currency="USD" unusedOnPhone={unusedSavingsUsd} />
               <SavingsBalance value={openingSavings?.php} currency="PHP" unusedOnPhone={unusedSavingsPhp} />
-              <td className="fp-zero fpl-opening-status">—</td>
-              <td className="fpl-actions-cell" />
+              <td data-column="status" className="fp-zero fpl-opening-status">—</td>
+              <td data-column="actions" className="fpl-actions-cell" />
             </tr>
-            {rows.map((row) => {
+            {rows.map((row, rowIndex) => {
               const manualEntry =
                 row.source === "manual"
                   ? plan.entries.find((entry) => entry.id === row.entryId)
@@ -448,13 +527,24 @@ export default function Ledger({
                 ["salary", "bill", "allocation", "reserve"].includes(row.source);
               return (
                 <tr
+                  id={`${ledgerId}-row-${rowIndex}`}
                   key={row.id}
                   className={`fpl-row fpl-row-${row.source}${row.completed ? " fpl-row-completed" : ""}`}
                 >
-                  <td className="fpl-date-cell">{formatDate(row.date, { year: "numeric" })}</td>
-                  <td className="fpl-description-cell">
-                    <strong>{row.description}</strong>
-                    <SourceLabel row={row} />
+                  <td data-column="date" className="fpl-date-cell">{formatDate(row.date, { year: "numeric" })}</td>
+                  <td data-column="description" className="fpl-description-cell">
+                    <time className="fpl-mobile-date" dateTime={row.date}>{formatDate(row.date, { year: "2-digit" })}</time>
+                    <strong title={row.description}>{row.description}</strong>
+                    <details className="fpl-row-details">
+                      <summary aria-label={`Details for ${row.description}`}>
+                        <span className="fpl-details-text">Details</span>
+                        <span className="fpl-details-icon" aria-hidden="true">⋯</span>
+                      </summary>
+                      <div className="fpl-row-notes">
+                        <span className="fpl-detail-title">{row.description}</span>
+                        <SourceLabel row={row} />
+                      </div>
+                    </details>
                   </td>
                   <FlowAmount
                     value={row.usd}
@@ -466,10 +556,10 @@ export default function Ledger({
                     currency="PHP"
                     showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "PHP"}
                   />
-                  <td data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
+                  <td data-column="available-usd" data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
                     {money(row.balanceUsd)}
                   </td>
-                  <td data-label="Available · PHP" className={`fp-running ${balanceClass(row.balancePhp)}`}>
+                  <td data-column="available-php" data-label="Available · PHP" className={`fp-running ${balanceClass(row.balancePhp)}`}>
                     {money(row.balancePhp, "PHP")}
                   </td>
                   <ReserveBalance
@@ -486,14 +576,14 @@ export default function Ledger({
                   />
                   <SavingsBalance value={row.savingsUsd} currency="USD" unusedOnPhone={unusedSavingsUsd} />
                   <SavingsBalance value={row.savingsPhp} currency="PHP" unusedOnPhone={unusedSavingsPhp} />
-                  <td className="fpl-status-cell">
+                  <td data-column="status" className="fpl-status-cell">
                     <CompletionStatus
                       row={row}
                       onToggleComplete={onToggleComplete}
                       busy={busy}
                     />
                   </td>
-                  <td className="fpl-actions-cell">
+                  <td data-column="actions" className="fpl-actions-cell">
                     {(manualEntry || editableOccurrence) && (
                       <div className="fp-row-actions">
                         <button
@@ -563,6 +653,6 @@ export default function Ledger({
         date in this plan; Reset restores the recurring value.
         </p>
       </details>
-    </>
+    </div>
   );
 }

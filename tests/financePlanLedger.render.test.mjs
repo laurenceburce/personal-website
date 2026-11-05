@@ -86,7 +86,7 @@ const cells = (html) =>
   );
 const findRow = (html, className) =>
   html.match(
-    new RegExp(`<tr class="[^"]*${className}[^"]*">([\\s\\S]*?)<\\/tr>`),
+    new RegExp(`<tr(?=[^>]*class="[^"]*${className}[^"]*")[^>]*>([\\s\\S]*?)<\\/tr>`),
   )?.[1] || "";
 const elements = (node) => {
   if (Array.isArray(node)) return node.flatMap(elements);
@@ -94,6 +94,9 @@ const elements = (node) => {
   if (typeof node.type === "function") return elements(node.type(node.props));
   return [node, ...elements(node.props?.children)];
 };
+const isCompletionInput = (element) =>
+  element.type === "input" && element.props.type === "checkbox" &&
+  /^(?:Mark done: |Reopen |Done)/.test(element.props["aria-label"] || "");
 const completionCheckbox = (record, props = {}) =>
   elements(
     Ledger({
@@ -103,9 +106,7 @@ const completionCheckbox = (record, props = {}) =>
       onDelete() {},
       ...props,
     }),
-  ).find(
-    (element) => element.type === "input" && element.props.type === "checkbox",
-  );
+  ).find(isCompletionInput);
 
 test("statement dues explain the full balance and payments without occurrence editing", () => {
   const html = render([row({
@@ -161,12 +162,12 @@ test("opening balances keep annual reserve pockets distinct from available USD a
   assert.equal(opening[7], "₱12,600.00");
   assert.ok(html.includes("Available · USD"));
   assert.ok(html.includes("Annual reserve · PHP"));
-  assert.ok(html.includes('<th scope="col">Status</th>'));
+  assert.match(html, /<th[^>]*scope="col"[^>]*>Status<\/th>/);
   assert.ok(html.includes('role="region"'));
   assert.ok(html.includes('tabindex="0"'));
 });
 
-test("phone cards label every money value without duplicating the table or row controls", () => {
+test("compact phone rows retain every money value and one set of row controls", () => {
   const record = row({
     id: "allocation:saving:2026-11-06",
     description: "Savings · A long account purpose that can wrap on a phone",
@@ -186,22 +187,22 @@ test("phone cards label every money value without duplicating the table or row c
   });
   const nodes = elements(tree);
   assert.equal(nodes.filter((node) => node.type === "table").length, 1);
-  assert.equal(nodes.filter((node) => node.type === "input" && node.props.type === "checkbox").length, 1);
+  assert.equal(nodes.filter(isCompletionInput).length, 1);
   const edit = nodes.filter((node) => node.type === "button" && node.props["aria-label"]?.startsWith("Edit this occurrence:"));
   assert.equal(edit.length, 1);
   edit[0].props.onClick();
   assert.equal(edited, record);
-  nodes.find((node) => node.type === "input" && node.props.type === "checkbox").props.onChange();
+  nodes.find(isCompletionInput).props.onChange();
   assert.equal(completed, record);
   for (const label of ["Flow · USD", "Flow · PHP", "Available · USD", "Available · PHP", "Annual reserve · USD", "Annual reserve · PHP", "Savings · USD", "Savings · PHP"])
     assert.equal(nodes.filter((node) => node.type === "td" && node.props["data-label"] === label).length, 2, label);
   const html = renderToStaticMarkup(tree);
   assert.match(html, /<thead>/);
-  assert.match(html, /<th scope="col">Flow · USD<\/th>/);
+  assert.match(html, /<th[^>]*scope="col"[^>]*>Flow · USD<\/th>/);
   assert.equal(cells(findRow(html, "fpl-row-allocation"))[8], "$746.73");
 });
 
-test("phone account disclosures keep essential annual payment information outside the closed details", () => {
+test("compact row details retain annual payment explanations and account disclosures", () => {
   const html = render([row({
     annualPayment: true,
     currency: "USD",
@@ -221,30 +222,28 @@ test("phone account disclosures keep essential annual payment information outsid
   assert.match(html, /<details class="fpl-legend"><summary>How balances work<\/summary>/);
 });
 
-test("phone cards omit only reserve and savings currencies known zero for the complete plan", () => {
+test("optional phone columns retain zero, future, and unknown money values in the table", () => {
   const initial = { openingReserve: { usd: 0, php: 0 }, openingSavings: { usd: 0, php: 0 } };
   const base = row({ reserveUsd: 100, reservePhp: 0, savingsUsd: 250, savingsPhp: 0 });
   const cases = [
-    { rows: [base], omitted: true },
-    { rows: [base, row({ id: "later", date: "2026-11-20", reserveUsd: 100, reservePhp: 25, savingsUsd: 250, savingsPhp: 50 })], omitted: false },
-    { rows: [{ ...base, reservePhp: null, savingsPhp: null }], omitted: false },
+    { rows: [base] },
+    { rows: [base, row({ id: "later", date: "2026-11-20", reserveUsd: 100, reservePhp: 25, savingsUsd: 250, savingsPhp: 50 })] },
+    { rows: [{ ...base, reservePhp: null, savingsPhp: null }] },
   ];
   for (const fixture of cases) {
     const nodes = elements(Ledger({ plan, rows: fixture.rows, ...initial }));
     for (const label of ["Annual reserve · PHP", "Savings · PHP"]) {
       const moneyCells = nodes.filter((node) => node.type === "td" && node.props["data-label"] === label);
       assert.equal(moneyCells.length, fixture.rows.length + 1);
-      assert.equal(moneyCells.every((node) => node.props.className.includes("fpl-unused-on-phone")), fixture.omitted, label);
+      assert.ok(moneyCells.every((node) => node.props["data-column"]), label);
     }
-    for (const label of ["Flow · USD", "Flow · PHP", "Available · USD", "Available · PHP", "Annual reserve · USD", "Savings · USD"])
-      assert.ok(nodes.filter((node) => node.type === "td" && node.props["data-label"] === label).every((node) => !node.props.className.includes("fpl-unused-on-phone")), label);
-    // Cells remain in the single desktop table; only the phone stylesheet omits them.
+    // Column selection changes presentation without dropping any financial cells.
     const html = render(fixture.rows, initial);
     assert.equal(cells(findRow(html, "fpl-opening-row")).length, 12);
-    assert.equal((html.match(/type="checkbox"/g) || []).length, fixture.rows.length);
+    assert.equal(nodes.filter(isCompletionInput).length, fixture.rows.length);
   }
   const unknownOpening = elements(Ledger({ plan, rows: [base], ...initial, openingSavings: { usd: 0, php: null } }));
-  assert.ok(unknownOpening.filter((node) => node.type === "td" && node.props["data-label"] === "Savings · PHP").every((node) => !node.props.className.includes("fpl-unused-on-phone")));
+  assert.ok(unknownOpening.filter((node) => node.type === "td" && node.props["data-label"] === "Savings · PHP").every((node) => node.props["data-column"] === "savings-php"));
 });
 
 test("running savings show both native currencies separately from available funds and annual reserves", () => {
@@ -336,7 +335,7 @@ test("occurrence controls stay disabled during saves and imported rows never exp
   const record = row({ editable: true, isOverride: true });
   for (const props of [{}, { busy: true, onEditOccurrence() { throw Error("Must not edit while busy"); }, onResetOccurrence() { throw Error("Must not reset while busy"); } }]) {
     const controls = elements(Ledger({ plan, rows: [record], ...props })).filter(
-      (element) => element.type === "button",
+      (element) => element.type === "button" && /^(?:Edit this occurrence:|Reset this occurrence:)/.test(element.props["aria-label"] || ""),
     );
     assert.equal(controls.length, 2);
     for (const control of controls) {
@@ -1129,4 +1128,121 @@ test("historical reserve movements retain their planned flow without showing an 
       assert.doesNotMatch(reserve[6] + reserve[7], /set aside|used/);
     }
   }
+});
+
+const hasClass = (node, name) =>
+  (` ${node.props?.className || ""} `).includes(` ${name} `);
+
+test("phone column controls default to flows and balances and support native reset", () => {
+  const nodes = elements(Ledger({ plan, rows: [row()] }));
+  const form = nodes.find((node) => node.type === "form" && hasClass(node, "fpl-display-controls"));
+  assert.ok(form, "Column choices belong to a native resettable form");
+  const controls = elements(form);
+  const expected = {
+    "fpl-show-flow": true,
+    "fpl-show-available": true,
+    "fpl-show-reserves": false,
+    "fpl-show-savings": false,
+    "fpl-show-status": false,
+    "fpl-show-actions": true,
+  };
+  assert.equal(controls.filter((node) => node.type === "input" && node.props.type === "checkbox").length, 6);
+  for (const [name, checked] of Object.entries(expected)) {
+    const input = controls.find((node) => node.type === "input" && hasClass(node, name));
+    assert.ok(input, name);
+    assert.equal(Boolean(input.props.defaultChecked), checked, name);
+    assert.equal(input.props.checked, undefined, "Native reset restores each initial choice");
+    const label = controls.find((node) => node.type === "label" && elements(node).includes(input));
+    assert.ok(label && plain(renderToStaticMarkup(label)).trim(), `${name} has a visible label`);
+  }
+  const currency = controls.filter((node) => node.type === "input" && node.props.type === "radio");
+  assert.equal(currency.length, 3);
+  assert.equal(new Set(currency.map((node) => node.props.name)).size, 1);
+  assert.ok(currency.every((node) => node.props.name));
+  assert.equal(currency.filter((node) => node.props.defaultChecked).length, 1);
+  assert.ok(currency.find((node) => node.props.defaultChecked && hasClass(node, "fpl-currency-both")));
+  assert.ok(currency.find((node) => hasClass(node, "fpl-currency-usd")));
+  assert.ok(currency.find((node) => hasClass(node, "fpl-currency-php")));
+  const reset = controls.find((node) => node.type === "button" && node.props.type === "reset");
+  assert.ok(reset);
+  assert.equal(plain(renderToStaticMarkup(reset)), "Reset columns");
+});
+
+test("all hideable column headers match each opening and budget-row cell", () => {
+  const records = [row({ id: "usd", usd: -20 }), row({ id: "php", php: -1500, savingsPhp: null })];
+  const nodes = elements(Ledger({ plan, rows: records }));
+  const columns = [
+    "date", "description", "flow-usd", "flow-php", "available-usd", "available-php",
+    "reserve-usd", "reserve-php", "savings-usd", "savings-php", "status", "actions",
+  ];
+  assert.equal(nodes.filter((node) => node.type === "table").length, 1);
+  assert.equal(nodes.filter((node) => node.type === "tr").length, records.length + 2);
+  for (const column of columns) {
+    const header = nodes.filter((node) => node.type === "th" && node.props["data-column"] === column);
+    assert.equal(header.length, 1, `${column} has one matching header`);
+    assert.equal(header[0].props.scope, "col");
+    assert.equal(nodes.filter((node) => node.type === "td" && node.props["data-column"] === column).length,
+      records.length + 1, `${column} stays aligned when hidden or shown`);
+  }
+  assert.equal(nodes.filter(isCompletionInput).length, records.length);
+  const html = render(records);
+  assert.match(html, /-\$20\.00/);
+  assert.match(html, /-₱1,500\.00/);
+  assert.match(html, /Savings balance unavailable in PHP/);
+});
+
+test("compact rows expose full descriptions and financial explanations in closed details", () => {
+  const description = "A long annual subscription name that remains readable when its item cell is compact";
+  const nodes = elements(Ledger({ plan, rows: [row({
+    description, annualPayment: true, amount: 395, grossAmount: 395, currency: "USD",
+    reserveUsed: 100, reserveShortfall: 295, usd: -295,
+  })] }));
+  const detail = nodes.find((node) => node.type === "details" && hasClass(node, "fpl-row-details"));
+  assert.ok(detail);
+  assert.ok(!detail.props.open);
+  const summary = elements(detail).find((node) => node.type === "summary");
+  assert.equal(summary.props["aria-label"], `Details for ${description}`);
+  const html = renderToStaticMarkup(detail);
+  assert.ok(plain(html).includes(description));
+  assert.match(plain(html), /Total bill \$395\.00 · \$100\.00 from reserves · \$295\.00 additional cash/);
+  assert.equal(nodes.filter((node) => node.type === "time" && hasClass(node, "fpl-mobile-date") && node.props.dateTime === "2026-11-06").length, 2);
+});
+
+test("phone scroll buttons move only the ledger scrollport in either direction", () => {
+  const nodes = elements(Ledger({ plan, rows: [row()] }));
+  const buttons = nodes.filter((node) => node.type === "button" && /^Scroll budget columns (left|right)$/.test(node.props["aria-label"] || ""));
+  assert.equal(buttons.length, 2);
+  const calls = [];
+  const scrollport = { clientWidth: 240, scrollBy: (options) => calls.push(options) };
+  const event = { currentTarget: { closest(selector) {
+    assert.equal(selector, ".fpl-ledger");
+    return { querySelector(selector) { assert.equal(selector, ".fpl-scroll"); return scrollport; } };
+  } } };
+  for (const direction of ["left", "right"]) {
+    const button = buttons.find((node) => node.props["aria-label"].endsWith(direction));
+    assert.equal(button.props.type, "button");
+    button.props.onClick(event);
+  }
+  assert.deepEqual(calls, [ { left: -180, behavior: "smooth" }, { left: 180, behavior: "smooth" } ]);
+  scrollport.clientWidth = 100;
+  buttons.find((node) => node.props["aria-label"].endsWith("right")).props.onClick(event);
+  assert.equal(calls.at(-1).left, 160);
+});
+
+test("the upcoming shortcut targets the first unfinished row on or after today", () => {
+  const records = [
+    row({ id: "past", date: "2026-11-06", description: "Earlier bill" }),
+    row({ id: "done", date: "2026-11-11", description: "Already paid", completed: true }),
+    row({ id: "next", date: "2026-11-12", description: "Next bill" }),
+    row({ id: "later", date: "2026-11-20", description: "Later bill" }),
+  ];
+  const nodes = elements(Ledger({ plan, rows: records, today: "2026-11-10" }));
+  const shortcut = nodes.find((node) => node.type === "a" && hasClass(node, "fpl-upcoming-link"));
+  assert.ok(shortcut);
+  assert.ok(shortcut.props.href.startsWith("#"));
+  const target = nodes.find((node) => node.type === "tr" && node.props.id === decodeURIComponent(shortcut.props.href.slice(1)));
+  assert.ok(target);
+  assert.ok(plain(renderToStaticMarkup(target)).includes("Next bill"));
+  const pastOnly = elements(Ledger({ plan, rows: records.slice(0, 1), today: "2026-12-01" }));
+  assert.ok(!pastOnly.some((node) => node.type === "a" && hasClass(node, "fpl-upcoming-link")));
 });
