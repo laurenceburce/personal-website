@@ -1141,3 +1141,46 @@ test("linked checking, annual reserve and Smartly columns share reconciled balan
   assert.match(plain(html), /Annual reserve · USD\$526\.59/);
   assert.match(html, /fpl-column-account">Smartly Savings · •0230/);
 });
+
+test("a historical Venture X annual fee is funded once inside the December card payment", () => {
+  for (const issued of [false, true]) {
+    const props = nextCycleCardFixture("2026-12-18");
+    props.today = issued ? "2026-11-18" : "2026-11-06";
+    const card = props.initialActivity.accounts[0];
+    card.nativeCurrentBalance = 1658.16;
+    card.creditCardDue.statementBalance = issued ? 1658.16 : 0;
+    card.creditCardDue.lastStatementDate = issued ? "2026-11-17" : null;
+    props.initialActivity.accounts.push(
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 2000 },
+      { id: 2, name: "Savings", type: "savings", currency: "USD", nativeCurrentBalance: 395 },
+      { id: 28, name: "Smartly Savings", type: "savings", currency: "USD", nativeCurrentBalance: 500 },
+    );
+    props.snapshot.document.bills = [{ id: "venture", name: "Venture X", cadence: "annual", amount: 395, savedAmount: 395,
+      dueDay: 1, dueMonths: [11], currency: "USD", accountId: 32, reserveAccountId: 2, sourceAccountId: 1 }];
+    const plan = props.snapshot.document.plans[0];
+    plan.startDate = "2026-11-05";
+    plan.includeTransactions = true;
+    plan.accountLinks = { availableUsdAccountId: 1, annualReserveUsdAccountId: 2, savingsUsdAccountId: 28 };
+    props.initialPlanActivity = { configured: true, from: plan.startDate, to: plan.endDate, transactions: [],
+      creditCardPaymentTransactions: [{ id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395,
+        currency: "USD", merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees", pending: false }] };
+    const tree = workspaceHarness(props)();
+    const ledger = findElement(tree, (node) => node.type?.name === "Ledger");
+    assert.equal(ledger.props.rows.length, 1, `issued=${issued}`);
+    const due = ledger.props.rows[0];
+    assert.equal(due.source, "creditCardDue");
+    assert.equal(due.date, "2026-12-18");
+    assert.equal(due.amount, 1658.16);
+    assert.equal(due.annualBillCoverage.length, 1);
+    assert.equal(due.annualBillCoverage[0].chargeTransactionId, 2506);
+    assert.equal(due.balanceUsd, 736.84);
+    assert.equal(due.reserveUsd, 0);
+    assert.equal(due.savingsUsd, 500);
+    assert.equal(due.accountBalances[32], 0);
+    const html = renderToStaticMarkup(tree);
+    assert.match(html, /Includes annual bill · \$395\.00/);
+    assert.match(html, /\$395\.00 charged Nov 1, 2026/);
+    assert.match(html, /\$395\.00 covered by its annual reserve/);
+    assert.match(plain(html), /Available funds · USD\$736\.84/);
+  }
+});

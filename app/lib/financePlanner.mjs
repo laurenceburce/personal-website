@@ -874,6 +874,50 @@ export function getCreditCardObligations(accounts, options = {}) {
   return creditCardObligations(accounts || [], options).obligations;
 }
 
+// A card's current balance already contains its posted annual fees. Keep the
+// charge and its cash settlement separate, including charges before a plan.
+function annualCardCharges(document, accounts, obligations, transactions, today) {
+  const byAccount = new Map(accounts.map((account) => [Number(account.id), account]));
+  const seen = new Set();
+  const posted = transactions.filter((transaction) => {
+    if (transaction.id == null || seen.has(String(transaction.id))) return false;
+    seen.add(String(transaction.id));
+    return !transaction.pending && transaction.kind === "expense" &&
+      Number.isFinite(dateTime(transaction.date)) && transaction.date <= today &&
+      !transferTransaction(transaction) && Number(transaction.amount) > 0;
+  });
+  const candidates = [];
+  for (const bill of document.bills || []) {
+    const account = byAccount.get(Number(bill.accountId));
+    if (bill.cadence !== "annual" || !account || (account.type || account.account_type) !== "credit" ||
+        account.isArchived || account.is_archived || account.mergedIntoAccountId || account.merged_into_account_id ||
+        account.currency !== bill.currency) continue;
+    for (const transaction of posted) {
+      if (Number(transaction.accountId) !== Number(account.id) || transaction.currency !== bill.currency) continue;
+      const occurrences = billOccurrences(bill, addDays(transaction.date, -3), addDays(transaction.date, 3), document.salary);
+      if (occurrences.length !== 1) continue;
+      const occurrence = occurrences[0];
+      if (Math.abs(Number(transaction.amount) - Number(occurrence.amount)) > 0.0100001) continue;
+      const forecast = { ...occurrence, source: "bill", kind: "expense", accountId: bill.accountId, description: bill.name };
+      const description = normalizedDescription([transaction.merchant, transaction.category, transaction.note].filter(Boolean).join(" "));
+      if (!forecastMatchesTransaction(forecast, transaction) &&
+          !/\b(?:annual|membership|member)\s+(?:fee|charge)\b/.test(description)) continue;
+      const close = account.creditCardDue?.lastStatementDate;
+      const closed = Number.isFinite(dateTime(close)) && close <= today;
+      const expectedEstimated = closed ? transaction.date > close
+        : !(Number(account.creditCardDue?.statementBalance) > 0);
+      const due = obligations.filter((row) => row.creditAccountId === Number(account.id) &&
+        Boolean(row.estimated) === expectedEstimated &&
+        (row.amount > 0 || (!row.estimated && row.statementBalance > 0 && row.paidAmount >= row.statementBalance)) && row.date >= transaction.date &&
+        transaction.date >= addDays(row.date, -93)).sort((a, b) => a.date.localeCompare(b.date))[0];
+      candidates.push({ bill, account, transaction, occurrence, due });
+    }
+  }
+  return candidates.filter((candidate) =>
+    candidates.filter((other) => String(other.transaction.id) === String(candidate.transaction.id)).length === 1 &&
+    candidates.filter((other) => other.bill.id === candidate.bill.id && other.occurrence.date === candidate.occurrence.date).length === 1);
+}
+
 // Allocate a one-off reserve total in cents while respecting each next payment's
 // remaining funding. Repeating the weighted split after a cap is reached keeps
 // larger overrides useful without overfunding an individual annual bill.
@@ -950,7 +994,8 @@ function planCompletion(rows, plan, actual, document, rate, today) {
     if (!matches.length && row.source !== "transaction") {
       if (["salary", "bill", "manual"].includes(row.source)) {
         const match = posted.find((transaction) =>
-          !consumed.has(transaction.id) && forecastMatchesTransaction(row, transaction),
+          !consumed.has(transaction.id) && (forecastMatchesTransaction(row, transaction) ||
+            (row.deferReserveToCardDue && row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.transactionId))),
         );
         if (match) matches = [match];
       }
@@ -1141,6 +1186,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const today = Number.isFinite(dateTime(options.today)) ? options.today : localDate();
   const cardObligations = creditCardObligations(options.accounts || [], { transactions: cardPaymentTransactions, today });
   const { statements } = cardObligations;
+  const annualCardLinks = annualCardCharges(document, options.accounts || [], cardObligations.obligations, cardPaymentTransactions, today);
   const overrides = new Map((plan.rowOverrides || []).map((row) => [row.rowId, row]));
   // Keep an occurrence addressable when its date is moved across a plan boundary.
   const originalDates = [...overrides.keys()]
@@ -1187,7 +1233,11 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       matchingStart,
       matchingEnd,
       salary,
-    ))
+    )) {
+      const recordedCharge = annualCardLinks.find((link) => link.bill.id === bill.id && link.occurrence.date === occurrence.date);
+      const creditAccount = cardAccountsById.get(Number(bill.accountId));
+      const cardBilled = bill.cadence === "annual" && creditAccount &&
+        (creditAccount.type || creditAccount.account_type) === "credit";
       forecasts.push(applyOverride({
         id: `bill:${bill.id}:${occurrence.date}`,
         billId: bill.id,
@@ -1199,8 +1249,14 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         accountId: bill.accountId ?? null,
         reserveAccountId: linkedAccount("annualReserve", occurrence.currency, bill.reserveAccountId),
         sourceAccountId: linkedAccount("available", occurrence.currency, bill.sourceAccountId ?? salary.accountId),
+        ...(cardBilled ? { deferReserveToCardDue: true } : {}),
+        ...(recordedCharge ? { annualChargeTransactionId: recordedCharge.transaction.id,
+          annualCardDueId: recordedCharge.due?.id || null, annualChargeDate: recordedCharge.transaction.date } : {}),
         ...nativeFlow(occurrence.amount, occurrence.currency, "expense"),
       }));
+      if (recordedCharge) Object.assign(forecasts.at(-1), { date: recordedCharge.transaction.date,
+        ...nativeFlow(recordedCharge.transaction.amount, recordedCharge.transaction.currency, "expense") });
+    }
   }
   const entryFlow = (entry) => {
     const flow = nativeFlow(entry.amount, entry.currency, entry.kind);
@@ -1253,6 +1309,24 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const seenTransactions = new Set();
   const plannedCardPayments = new Map();
   const recordedEntryPayments = new Map();
+  const committedTransferLeg = (entry) => {
+    const competing = forecasts.filter((other) => other.source === "manual" && other.kind === "transfer" &&
+      (Number(other.fromAccountId) === Number(entry.fromAccountId) || Number(other.toAccountId) === Number(entry.toAccountId)) && other.currency === entry.currency &&
+      Math.abs(other.amount - entry.amount) < 0.005 && Math.abs(dateTime(other.date) - dateTime(entry.date)) <= 3 * DAY_MS);
+    if (competing.length !== 1) return null;
+    const seen = new Set();
+    const matches = cardPaymentTransactions.filter((transaction) => {
+      if (transaction.id == null || seen.has(String(transaction.id))) return false;
+      seen.add(String(transaction.id));
+      return !transaction.pending && transaction.date <= today && transferTransaction(transaction) &&
+        ((transaction.kind === "expense" && Number(transaction.accountId) === Number(entry.fromAccountId)) ||
+          (transaction.kind === "income" && Number(transaction.accountId) === Number(entry.toAccountId))) && transaction.currency === entry.currency &&
+        Math.abs(Number(transaction.amount) - entry.amount) < 0.005 && Math.abs(dateTime(transaction.date) - dateTime(entry.date)) <= 3 * DAY_MS;
+    });
+    const debits = matches.filter((transaction) => transaction.kind === "expense");
+    const credits = matches.filter((transaction) => transaction.kind === "income");
+    return debits.length === 1 && credits.length <= 1 ? debits[0] : debits.length === 0 && credits.length === 1 ? credits[0] : null;
+  };
   for (const [accountId, statement] of statements) {
     const payment = cardObligations.recordedPayments.get(accountId);
     const consumedEvidence = new Set();
@@ -1276,7 +1350,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           consumedEvidence.add(String(transaction.id));
           recordedEntryPayments.set(String(transaction.id), accountId);
         }
-      } else entries.push({ date: entry.date, remaining: roundMoney(entry.amount) });
+      } else entries.push({ date: entry.date, remaining: roundMoney(entry.amount), committed: Boolean(committedTransferLeg(entry)) });
     }
     plannedCardPayments.set(accountId, entries);
   }
@@ -1284,12 +1358,19 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     if (obligation.date < plan.startDate || obligation.date > plan.endDate) continue;
     let remaining = obligation.amount;
     for (const payment of plannedCardPayments.get(obligation.creditAccountId) || []) {
-      if (payment.date > obligation.date || (obligation.estimated && payment.date < today)) continue;
+      if (payment.date > obligation.date || (obligation.estimated && payment.date < today && !payment.committed)) continue;
       const allocated = Math.min(remaining, payment.remaining);
       remaining = roundMoney(remaining - allocated);
       payment.remaining = roundMoney(payment.remaining - allocated);
     }
+    const annualBillCoverage = annualCardLinks.filter((link) => link.due?.id === obligation.id).map((link) => ({
+      billId: link.bill.id, billName: link.bill.name, chargeDate: link.transaction.date,
+      chargeTransactionId: link.transaction.id, occurrenceDate: link.occurrence.date,
+      amount: roundMoney(link.transaction.amount), reserveUsed: 0,
+      reserveAccountId: linkedAccount("annualReserve", obligation.currency, link.bill.reserveAccountId),
+    }));
     forecasts.push({ ...obligation, plannedPaymentAmount: roundMoney(obligation.amount - remaining),
+      ...(annualBillCoverage.length ? { annualBillCoverage } : {}),
       ...nativeFlow(remaining, obligation.currency, "expense") });
   }
   {
@@ -1373,7 +1454,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const candidates = forecasts.filter(
       (forecast) =>
         !usedForecasts.has(forecast.id) &&
-        forecastMatchesTransaction(forecast, transaction),
+        (forecastMatchesTransaction(forecast, transaction) ||
+          (forecast.deferReserveToCardDue && forecast.annualChargeTransactionId != null && String(forecast.annualChargeTransactionId) === String(transaction.transactionId))),
     );
     candidates.sort(
       (first, second) =>
@@ -1410,6 +1492,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       transaction.originalAmount = matched.originalAmount;
     }
     transaction.annualPayment = Boolean(matched.annualPayment);
+    if (matched.deferReserveToCardDue) {
+      transaction.deferReserveToCardDue = true;
+      transaction.annualChargeTransactionId = matched.annualChargeTransactionId;
+      transaction.annualCardDueId = matched.annualCardDueId;
+      transaction.annualChargeDate = matched.annualChargeDate;
+    }
     if (matched.source === "salary")
       actualPayDates.set(matched.paydayDate || matched.originalDate || matched.date, transaction.date);
   }
@@ -1507,11 +1595,91 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const billFunding = new Map();
   const reserveKey = (billId, currency) => `${currency}:${billId}`;
   const annualPayments = new Map();
-  for (const row of rows.filter((row) => row.annualPayment)) {
+  for (const row of rows.filter((row) => row.annualPayment && !row.deferReserveToCardDue)) {
     const key = reserveKey(row.billId, row.currency);
     if (!annualPayments.has(key)) annualPayments.set(key, []);
     annualPayments.get(key).push(row);
   }
+  for (const row of rows.filter((row) => row.source === "creditCardDue")) {
+    for (const coverage of row.annualBillCoverage || []) {
+      const key = reserveKey(coverage.billId, row.currency);
+      if (!annualPayments.has(key)) annualPayments.set(key, []);
+      annualPayments.get(key).push({ date: row.date, originalDate: coverage.occurrenceDate,
+        billId: coverage.billId, amount: coverage.amount });
+    }
+  }
+  const reserveFundingTransfers = [];
+  const reserveIds = new Set(rows.flatMap((row) => (row.annualBillCoverage || []).map((coverage) => Number(coverage.reserveAccountId))).filter(Boolean));
+  const fundingHistorySeen = new Set();
+  const fundingHistory = reserveIds.size ? cardPaymentTransactions.filter((transaction) => {
+    if (transaction.id == null || fundingHistorySeen.has(String(transaction.id))) return false;
+    fundingHistorySeen.add(String(transaction.id));
+    return !transaction.pending && Number.isFinite(dateTime(transaction.date)) &&
+      transaction.date <= today && Number(transaction.amount) > 0;
+  }) : [];
+  const fundingTransactionIds = new Set();
+  for (const [cardId, payment] of cardObligations.recordedPayments) {
+    for (const transaction of fundingHistory) {
+      if (transaction.kind !== "expense" || !reserveIds.has(Number(transaction.accountId)) ||
+          !payment.paymentTransactionIds.some((id) => String(id) === String(transaction.id)) || fundingTransactionIds.has(String(transaction.id))) continue;
+      reserveFundingTransfers.push({ source: Number(transaction.accountId), target: cardId, kind: "card",
+        date: transaction.date, remaining: roundMoney(transaction.amount), transactionIds: [transaction.id] });
+      fundingTransactionIds.add(String(transaction.id));
+    }
+  }
+  for (const debit of fundingHistory.filter((transaction) => transaction.kind === "expense" && reserveIds.has(Number(transaction.accountId)) &&
+      transferTransaction(transaction) && !fundingTransactionIds.has(String(transaction.id)))) {
+    const checking = linkedAccount("available", debit.currency, salary.currency === debit.currency ? salary.accountId : null);
+    if (!checking || Number(checking) === Number(debit.accountId)) continue;
+    // Dated hypothetical plans that hide bank flows retain their own explicit
+    // transfer forecasts. Live accounts already contain posted preparation.
+    if (plan.includeTransactions === false && (plan.accountOpeningBalances || []).some((opening) =>
+      [Number(debit.accountId), Number(checking)].includes(Number(opening.accountId)))) continue;
+    const credits = fundingHistory.filter((credit) => credit.kind === "income" && Number(credit.accountId) === Number(checking) &&
+      credit.currency === debit.currency && transferTransaction(credit) && !fundingTransactionIds.has(String(credit.id)) &&
+      Math.abs(Number(credit.amount) - Number(debit.amount)) < 0.005 && Math.abs(dateTime(credit.date) - dateTime(debit.date)) <= 3 * DAY_MS);
+    if (credits.length !== 1) continue;
+    const credit = credits[0];
+    const debits = fundingHistory.filter((other) => other.kind === "expense" && reserveIds.has(Number(other.accountId)) &&
+      other.currency === credit.currency && transferTransaction(other) && !fundingTransactionIds.has(String(other.id)) &&
+      Math.abs(Number(other.amount) - Number(credit.amount)) < 0.005 && Math.abs(dateTime(other.date) - dateTime(credit.date)) <= 3 * DAY_MS);
+    if (debits.length !== 1) continue;
+    reserveFundingTransfers.push({ source: Number(debit.accountId), target: Number(checking), kind: "checking",
+      date: [debit.date, credit.date].sort().at(-1), remaining: roundMoney(debit.amount), transactionIds: [debit.id, credit.id] });
+    fundingTransactionIds.add(String(debit.id));
+    fundingTransactionIds.add(String(credit.id));
+  }
+  const matchedFundingEntries = new Set();
+  for (const entry of forecasts.filter((row) => row.source === "manual" && row.kind === "transfer")) {
+    if (!reserveIds.has(Number(entry.fromAccountId))) continue;
+    const source = cardAccountsById.get(Number(entry.fromAccountId));
+    const target = cardAccountsById.get(Number(entry.toAccountId));
+    if (!source || !target || source.currency !== entry.currency || target.currency !== entry.currency ||
+        source.isArchived || source.is_archived || source.mergedIntoAccountId || source.merged_into_account_id ||
+        target.isArchived || target.is_archived || target.mergedIntoAccountId || target.merged_into_account_id) continue;
+    const kind = statements.has(Number(entry.toAccountId)) ? "card"
+      : Number(entry.toAccountId) === Number(linkedAccount("available", entry.currency, salary.currency === entry.currency ? salary.accountId : null)) ? "checking" : null;
+    if (!kind) continue;
+    const recorded = reserveFundingTransfers.find((transfer, index) => !matchedFundingEntries.has(index) && transfer.transactionIds?.length &&
+      transfer.kind === kind && transfer.source === Number(entry.fromAccountId) && transfer.target === Number(entry.toAccountId) &&
+      Math.abs(transfer.remaining - entry.amount) < 0.005 && Math.abs(dateTime(transfer.date) - dateTime(entry.date)) <= 3 * DAY_MS);
+    if (recorded) { matchedFundingEntries.add(reserveFundingTransfers.indexOf(recorded)); continue; }
+    const committedLeg = committedTransferLeg(entry);
+    if (entry.date < today && !committedLeg) continue;
+    reserveFundingTransfers.push({ source: Number(entry.fromAccountId), target: Number(entry.toAccountId), kind,
+      date: committedLeg?.date || entry.date, remaining: roundMoney(entry.amount), entryId: entry.id });
+  }
+  const consumeReserveFunding = (kind, source, target, coverage, dueDate, amount) => {
+    let used = 0;
+    for (const transfer of reserveFundingTransfers) {
+      if (transfer.kind !== kind || transfer.source !== Number(source) || transfer.target !== Number(target) ||
+          transfer.date < coverage.chargeDate || transfer.date > dueDate) continue;
+      const portion = Math.min(Math.max(0, roundMoney(amount - used)), transfer.remaining);
+      used = roundMoney(used + portion);
+      transfer.remaining = roundMoney(transfer.remaining - portion);
+    }
+    return used;
+  };
   for (const bill of annualBills) {
     const key = reserveKey(bill.id, bill.currency);
     const funding = getAnnualBillFunding(bill, payPeriods);
@@ -1713,6 +1881,56 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const fundingPair = linkedFundingPair(row, row.amount, rows, completionActual, today, document);
       if (fundingPair) row = { ...row, plannedAmount: row.amount, actualTransferAmount: true,
         ...nativeFlow(fundingPair.amount, row.currency, "expense") };
+    }
+    if (row.annualPayment && row.deferReserveToCardDue) {
+      const held = Math.min(row.amount, billReserves.get(reserveKey(row.billId, row.currency)) || 0);
+      append({ ...row, grossAmount: row.amount, reserveUsed: 0, reserveShortfall: 0,
+        reserveHeld: held, reserveFundingNeeded: roundMoney(row.amount - held),
+        usd: 0, php: 0, cardCreditActivity: true, reserveDeltaUsd: 0, reserveDeltaPhp: 0 });
+      continue;
+    }
+    if (row.source === "creditCardDue" && row.annualBillCoverage?.length) {
+      let remaining = row.amount;
+      let totalReserve = 0;
+      let totalEarmark = 0;
+      let totalTransferred = 0;
+      const annualBillCoverage = row.annualBillCoverage.map((coverage) => {
+        const key = reserveKey(coverage.billId, row.currency);
+        const saved = billReserves.get(key) || 0;
+        const reserve = cardAccountsById.get(Number(coverage.reserveAccountId));
+        const eligibleReserve = reserve && reserve.currency === row.currency &&
+          !["credit", "loan"].includes(reserve.type || reserve.account_type) &&
+          !reserve.isArchived && !reserve.is_archived && !reserve.mergedIntoAccountId && !reserve.merged_into_account_id;
+        const reserveAlreadyPaidAmount = consumeReserveFunding("card", coverage.reserveAccountId,
+          row.creditAccountId, coverage, row.date, coverage.amount);
+        const checking = linkedAccount("available", row.currency, salary.currency === row.currency ? salary.accountId : null);
+        const reserveTransferredAmount = consumeReserveFunding("checking", coverage.reserveAccountId,
+          checking, coverage, row.date, roundMoney(coverage.amount - reserveAlreadyPaidAmount));
+        const committed = Math.min(saved, coverage.amount);
+        const alreadyPaid = eligibleReserve ? Math.min(committed, reserveAlreadyPaidAmount) : 0;
+        const transferred = eligibleReserve ? Math.min(roundMoney(committed - alreadyPaid), reserveTransferredAmount) : 0;
+        const directReserve = eligibleReserve ? Math.min(roundMoney(committed - alreadyPaid - transferred), remaining) : 0;
+        const reserveUsed = roundMoney(alreadyPaid + transferred + directReserve);
+        remaining = roundMoney(remaining - directReserve);
+        totalReserve = roundMoney(totalReserve + directReserve);
+        totalEarmark = roundMoney(totalEarmark + reserveUsed);
+        totalTransferred = roundMoney(totalTransferred + transferred);
+        billReserves.set(key, roundMoney(saved - reserveUsed));
+        const funding = billFunding.get(key);
+        if (funding && reserveUsed > 0) {
+          funding.base = funding.amount;
+          funding.paidThrough = coverage.occurrenceDate;
+        }
+        return { ...coverage, reserveUsed,
+          ...(alreadyPaid ? { reserveAlreadyPaidAmount: alreadyPaid } : {}),
+          ...(transferred ? { reserveTransferredAmount: transferred } : {}) };
+      });
+      const availablePayment = Math.max(0, roundMoney(remaining - totalTransferred));
+      append({ ...row, annualBillCoverage, reserveUsed: totalEarmark, directReservePayment: totalReserve,
+        usd: row.currency === "USD" && availablePayment > 0 ? -availablePayment : 0, php: row.currency === "PHP" && availablePayment > 0 ? -availablePayment : 0,
+        reserveDeltaUsd: row.currency === "USD" && totalEarmark > 0 ? -totalEarmark : 0,
+        reserveDeltaPhp: row.currency === "PHP" && totalEarmark > 0 ? -totalEarmark : 0 });
+      continue;
     }
     if (row.annualPayment) {
       const key = reserveKey(row.billId, row.currency);

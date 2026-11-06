@@ -111,6 +111,27 @@ test("unavailable linked available and reserve balances are never rendered as ze
     assert.ok(cells.every((cell) => !cell[1].includes("$0.00") && cell[1].includes("—")));
   }
 });
+
+test("annual fees are attributed inside one card payment without another annual charge row", () => {
+  const html = render([row({ source: "creditCardDue", description: "Venture X · estimated next statement", currency: "USD",
+    estimated: true, amount: 1658.16, estimatedBalance: 1658.16, usd: -1263.16,
+    annualBillCoverage: [{ billId: "venture", billName: "Venture X", chargeTransactionId: 2506,
+      chargeDate: "2026-11-01", amount: 395, reserveUsed: 395, reserveAccountId: 2 }],
+  })]);
+  assert.equal((html.match(/class="fpl-row /g) || []).length, 1);
+  assert.match(html, /Includes annual bill · \$395\.00/);
+  assert.match(html, /Venture X · \$395\.00 charged Nov 1, 2026/);
+  assert.match(html, /\$395\.00 covered by its annual reserve/);
+  assert.match(html, /paid once with this statement/);
+});
+
+test("future annual card charges hold their reserve and never claim an immediate cash payment", () => {
+  const html = render([row({ source: "bill", description: "Venture X", annualPayment: true, cardCreditActivity: true,
+    amount: 395, grossAmount: 395, reserveHeld: 395, reserveUsed: 0, reserveShortfall: 0, currency: "USD", usd: 0 })]);
+  assert.match(html, /Card charge \$395\.00 · \$395\.00 held in annual reserves/);
+  assert.match(html, /no separate cash payment on the charge date/);
+  assert.doesNotMatch(html, /additional cash/);
+});
 const plain = (html) => html.replace(/<[^>]*>/g, "");
 const cells = (html) =>
   [...html.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(([, value]) =>

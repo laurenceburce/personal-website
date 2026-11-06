@@ -1264,9 +1264,9 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
   }
 }
 
-// Payment evidence can precede a plan's start (or post after its end). Keep it
-// separate so earlier partial payments reduce a statement without becoming new
-// visible cash flows in the selected date range.
+// Statement evidence can precede a plan's start (or post after its end). Keep
+// purchases and payments separate from visible flows so a reserved annual
+// charge can be linked to its statement without replaying the original charge.
 async function getFinanceCreditCardPaymentActivity(database, range) {
   const empty = {
     creditCardPaymentTransactions: [],
@@ -1288,15 +1288,17 @@ async function getFinanceCreditCardPaymentActivity(database, range) {
     const today = financeActivityWindow().today;
     for (const card of cards) {
       const due = normalizeFinanceCreditCardDue(card.credit_card_due_json);
-      // Earlier statement payments determine the unbilled portion of today's
-      // balance even when only the next cycle falls in the selected plan.
+      // Earlier payments determine the unbilled portion of today's balance.
+      // Charges before the last close can belong to the issued statement, and
+      // an unknown close still needs the preceding billing cycle for matching.
       if (!due?.dueDate) continue;
       const earliest = ["1900-01-01", day(due.dueDate, -731)].sort().at(-1);
       const statementDate = due.lastStatementDate && due.lastStatementDate <= due.dueDate
         ? due.lastStatementDate : null;
-      const start = statementDate || [
-        day(due.dueDate, -3), day(range.from, -3), day(today, -3),
-      ].sort()[0];
+      const chargeWindowStart = day(due.dueDate, -93);
+      const start = statementDate
+        ? [day(statementDate, -62), chargeWindowStart].sort()[0]
+        : [chargeWindowStart, day(range.from, -3), day(today, -3)].sort()[0];
       if (start < earliest) historyClamped = true;
       starts.push([earliest, start].sort().at(-1));
     }
@@ -1323,12 +1325,12 @@ async function getFinanceCreditCardPaymentActivity(database, range) {
       creditCardPaymentTransactions: transactions,
       creditCardPaymentLimitHit: limitHit,
       creditCardPaymentWarning: warnings.length
-        ? `${warnings.join(" ")} Some prior payments may be missing; review the remaining statement amounts.` : "",
+        ? `${warnings.join(" ")} Some prior payments or charges may be missing; review the statement amounts and linked annual bills.` : "",
     };
   } catch {
     return {
       ...empty,
-      creditCardPaymentWarning: "Credit card payment history could not be loaded. Some prior payments may be missing; review the remaining statement amounts or refresh bank data to retry.",
+      creditCardPaymentWarning: "Credit card payment history could not be loaded. Some prior payments or charges may be missing; review the statement amounts and linked annual bills or refresh bank data to retry.",
     };
   }
 }

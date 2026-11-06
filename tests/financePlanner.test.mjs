@@ -3331,16 +3331,177 @@ test("a bank debit cannot pay two cards at the same issuer and a mask identifies
   assert.equal(rows.at(-1).balanceUsd, 600);
 });
 
-test("charging a reserved annual bill to a card releases its earmark for the statement cash payment", () => {
+function annualCardFeeFixture() {
+  return {
+    document: {
+      salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-10-23", accountId: 1 },
+      bills: [{ id: "venture-fee", name: "Venture X", cadence: "annual", amount: 395, currency: "USD",
+        dueDay: 1, dueMonths: [11], savedAmount: 395, accountId: 32, reserveAccountId: 2, sourceAccountId: 1 }],
+      allocations: [],
+    },
+    plan: { startDate: "2026-11-05", endDate: "2027-01-01", openingUsd: 2000, openingPhp: 0,
+      includeIncome: false, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false, entries: [],
+      accountLinks: { availableUsdAccountId: 1, availablePhpAccountId: null, annualReserveUsdAccountId: 2,
+        annualReservePhpAccountId: null, savingsUsdAccountId: 28, savingsPhpAccountId: null } },
+    accounts: [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 2000 },
+      { id: 2, name: "Annual savings", type: "savings", currency: "USD", nativeCurrentBalance: 395 },
+      { id: 28, name: "Smartly Savings", type: "savings", currency: "USD", nativeCurrentBalance: 500 },
+      { id: 32, name: "Venture X", type: "credit", currency: "USD", nativeCurrentBalance: 1658.16, isLinked: true,
+        creditCardDue: { statementBalance: 0, dueDate: "2026-12-18", lastStatementDate: null } },
+    ],
+    charge: { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, currency: "USD", amount: 395,
+      merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" },
+  };
+}
+
+test("a historical annual card fee funds one full statement payment without another charge or cash credit", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  const before = JSON.stringify({ document, plan, accounts, charge });
+  const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge], today: "2026-11-06" });
+  assert.equal(rows.length, 1);
+  const due = rows[0];
+  assert.equal(due.source, "creditCardDue");
+  assert.equal(due.amount, 1658.16);
+  assert.equal(due.usd, -1263.16);
+  assert.equal(due.reserveUsd, 0);
+  assert.equal(due.balanceUsd, 736.84);
+  assert.deepEqual(due.annualBillCoverage, [{ billId: "venture-fee", billName: "Venture X", chargeDate: "2026-11-01",
+    chargeTransactionId: 2506, occurrenceDate: "2026-11-01", amount: 395, reserveUsed: 395, reserveAccountId: 2 }]);
+  assert.equal(before, JSON.stringify({ document, plan, accounts, charge }));
+});
+
+test("annual charge attribution follows its statement cycle when an estimate becomes an issued statement", () => {
+  for (const issued of [false, true]) {
+    const { document, plan, accounts, charge } = annualCardFeeFixture();
+    accounts[3].creditCardDue = issued
+      ? { statementBalance: 1658.16, dueDate: "2026-12-18", lastStatementDate: "2026-11-17" }
+      : { statementBalance: 200, dueDate: "2026-11-18", lastStatementDate: "2026-10-17" };
+    const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge], today: issued ? "2026-11-20" : "2026-11-06" });
+    const covered = rows.filter((row) => row.annualBillCoverage?.length);
+    assert.equal(covered.length, 1);
+    assert.equal(covered[0].date, "2026-12-18");
+    assert.equal(Boolean(covered[0].estimated), !issued);
+    assert.equal(covered[0].annualBillCoverage[0].reserveUsed, 395);
+    assert.equal(rows.filter((row) => row.annualPayment).length, 0);
+  }
+});
+
+test("card-fee matching requires a unique posted native charge near its annual anniversary", () => {
+  for (const change of ["pending", "wrong account", "wrong currency", "wrong amount", "wrong date", "unrelated description", "duplicate charge", "ambiguous bill", "old cycle"]) {
+    const { document, plan, accounts, charge } = annualCardFeeFixture();
+    let evidence = [charge];
+    if (change === "pending") charge.pending = true;
+    if (change === "wrong account") charge.accountId = 1;
+    if (change === "wrong currency") charge.currency = "PHP";
+    if (change === "wrong amount") charge.amount = 396;
+    if (change === "wrong date") charge.date = "2026-11-05";
+    if (change === "unrelated description") { charge.merchant = "Groceries"; charge.category = "Food"; }
+    if (change === "duplicate charge") evidence.push({ ...charge, id: 2507 });
+    if (change === "ambiguous bill") document.bills.push({ ...document.bills[0], id: "another-fee", name: "Another fee" });
+    if (change === "old cycle") charge.date = "2025-11-01";
+    const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: evidence, today: "2026-11-06" });
+    assert.ok(rows.every((row) => !row.annualBillCoverage?.length), change);
+  }
+});
+
+test("an annual installment matches its native charge amount instead of the full yearly total", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  document.bills[0].amount = 790;
+  document.bills[0].dueMonths = [5, 11];
+  const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge], today: "2026-11-06" });
+  assert.equal(rows[0].annualBillCoverage[0].amount, 395);
+  assert.equal(rows[0].annualBillCoverage[0].reserveUsed, 395);
+});
+
+test("recorded annual card charges stay cash-neutral even without statement details", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  accounts[3].creditCardDue = null;
+  plan.startDate = "2026-11-01";
+  plan.endDate = "2026-11-10";
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [charge], today: "2026-11-06" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, "transaction");
+  assert.equal(rows[0].transactionId, 2506);
+  assert.equal(rows[0].annualPayment, true);
+  assert.equal(rows[0].cardCreditActivity, true);
+  assert.equal(rows[0].usd, 0);
+  assert.equal(rows[0].reserveHeld, 395);
+  assert.equal(rows[0].reserveUsd, 395);
+});
+
+test("a historical fee cannot claim the following year's genuine annual charge", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  plan.endDate = "2027-11-02";
+  const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge], today: "2026-11-06" });
+  assert.equal(rows.filter((row) => row.annualBillCoverage?.length).length, 1);
+  const future = rows.find((row) => row.annualPayment);
+  assert.equal(future.date, "2027-11-01");
+  assert.equal(future.annualChargeTransactionId, undefined);
+  assert.equal(future.cardCreditActivity, true);
+  assert.equal(future.usd, 0);
+});
+
+test("posted reserve-funded card payments fund annual coverage once and leave no second reserve debit", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  accounts[1].nativeCurrentBalance = 0;
+  accounts[3].nativeCurrentBalance = 1263.16;
+  const payment = [
+    { id: 3001, date: "2026-11-03", kind: "expense", accountId: 2, amount: 395, currency: "USD", merchant: "Venture X payment", category: "Transfer Out" },
+    { id: 3002, date: "2026-11-03", kind: "income", accountId: 32, amount: 395, currency: "USD", merchant: "Payment", category: "Transfer In" },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge, ...payment], today: "2026-11-06" });
+  assert.equal(rows[0].amount, 1263.16);
+  assert.equal(rows[0].annualBillCoverage[0].reserveUsed, 395);
+  assert.equal(rows[0].annualBillCoverage[0].reserveAlreadyPaidAmount, 395);
+  assert.equal(rows[0].usd, -1263.16);
+  assert.equal(rows[0].directReservePayment, 0);
+  assert.equal(rows[0].reserveDeltaUsd, -395);
+});
+
+test("a flat plan consumes transferred annual earmarks without charging available funds for them twice", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  delete plan.accountLinks;
+  plan.entries = [{ id: "prepare", description: "Move annual savings", date: "2026-11-10", kind: "transfer",
+    fromAccountId: 2, toAccountId: 1, amount: 395, currency: "USD" }];
+  const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge], today: "2026-11-06" });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.annualBillCoverage[0].reserveTransferredAmount, 395);
+  assert.equal(due.amount, 1658.16);
+  assert.equal(due.usd, -1263.16);
+  assert.equal(due.reserveUsd, 0);
+  assert.equal(due.balanceUsd, 736.84);
+});
+
+test("fully paid statements retain proven annual reserve attribution without creating another payment", () => {
+  const { document, plan, accounts, charge } = annualCardFeeFixture();
+  accounts[1].nativeCurrentBalance = 0;
+  accounts[3].nativeCurrentBalance = 0;
+  accounts[3].creditCardDue = { statementBalance: 395, dueDate: "2026-12-18", lastStatementDate: "2026-11-17" };
+  const payment = [
+    { id: 3001, date: "2026-12-01", kind: "expense", accountId: 2, amount: 395, currency: "USD", merchant: "Venture X payment", category: "Transfer Out" },
+    { id: 3002, date: "2026-12-01", kind: "income", accountId: 32, amount: 395, currency: "USD", merchant: "Payment", category: "Transfer In" },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { accounts, creditCardPaymentTransactions: [charge, ...payment], today: "2026-12-02" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].amount, 0);
+  assert.equal(rows[0].usd, 0);
+  assert.equal(rows[0].annualBillCoverage[0].reserveUsed, 395);
+  assert.equal(rows[0].annualBillCoverage[0].reserveAlreadyPaidAmount, 395);
+  assert.equal(rows[0].completed, true);
+});
+
+test("a future annual card charge holds its reserve without creating available cash", () => {
   const { plan, document, accounts } = cardStatementFixture();
   const rows = buildPlanRows({ ...plan, endDate: "2026-11-30" }, { ...document, bills: [
     { id: "annual", name: "Annual fee", cadence: "annual", amount: 200, currency: "USD", dueDay: 10, dueMonths: [11], savedAmount: 200, accountId: 2 },
   ] }, 63, { accounts, today: "2026-11-04" });
   const charge = rows.find((row) => row.annualPayment);
   assert.equal(charge.cardCreditActivity, true);
-  assert.equal(charge.usd, 200);
-  assert.equal(charge.reserveUsd, 0);
-  assert.equal(rows.at(-1).balanceUsd, 1000);
+  assert.equal(charge.usd, 0);
+  assert.equal(charge.reserveUsd, 200);
+  assert.equal(charge.reserveHeld, 200);
+  assert.equal(rows.at(-1).balanceUsd, 800);
 });
 
 test("explicit planned card transfers fund the statement once and stay pending until posted", () => {

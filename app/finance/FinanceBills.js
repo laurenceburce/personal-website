@@ -150,7 +150,7 @@ function FundingDetails({ funding, currency }) {
   );
 }
 
-export function DueLabel({ bill, salary, asOf = localDate() }) {
+export function DueLabel({ bill, salary, accounts = [], asOf = localDate() }) {
   if (bill.cadence === "payday") {
     const next = nextPayday(salary, asOf);
     return (
@@ -188,7 +188,15 @@ export function DueLabel({ bill, salary, asOf = localDate() }) {
     );
   return (
     <>
+      {accounts.some((account) => Number(account.id) === Number(bill.accountId) && account.type === "credit") && "Card charge: "}
       {months.map((month) => `${MONTHS[month - 1]} ${bill.dueDay}`).join(" · ")}
+      {accounts.filter((account) => Number(account.id) === Number(bill.accountId) && account.type === "credit").map((account) => (
+        <small key={account.id}>
+          {account.creditCardDue?.dueDate
+            ? `Next card payment: ${formatDate(account.creditCardDue.dueDate, { year: "numeric" })}`
+            : "Card payment follows its statement due date."}
+        </small>
+      ))}
     </>
   );
 }
@@ -234,6 +242,7 @@ export function BillForm({
     setDraft((current) => ({ ...current, [key]: value }));
   };
   const annual = draft.cadence === "annual";
+  const cardBilled = annual && accounts.some((account) => Number(account.id) === Number(draft.accountId) && account.type === "credit");
   const payday = draft.cadence === "payday";
   const next = payday ? nextPayday(salary, asOf) : null;
   const payPeriods = salary?.payFrequency === "biweekly" ? 26 : 24;
@@ -511,7 +520,7 @@ export function BillForm({
           </select>
         </Field>
         {annual ? (
-          <Field label="Due day" hint="Shorter months use their last day.">
+          <Field label={cardBilled ? "Card charge day" : "Due day"} hint={cardBilled ? "When the annual fee is charged to the card. Its statement payment is scheduled separately." : "Shorter months use their last day."}>
             <FinanceNumberInput
               min="1"
               max="31"
@@ -590,7 +599,7 @@ export function BillForm({
       )}
       {annual && (
         <fieldset className="fp-month-field">
-          <legend>Payment month{draft.dueMonths.length > 1 ? "s" : ""}</legend>
+          <legend>{cardBilled ? "Card charge month" : "Payment month"}{draft.dueMonths.length > 1 ? "s" : ""}</legend>
           <div>
             {MONTHS.map((name, index) => (
               <label key={name}>
@@ -629,6 +638,11 @@ export function BillForm({
           onChange={(value) => set("accountId", value)}
         />
       </Field>
+      {cardBilled && (
+        <p className="fp-inline-note">
+          Use the date this bill is charged to the credit card. Budget Plans links a matching posted charge to the card’s statement payment and uses this bill’s saved reserve toward that payment.
+        </p>
+      )}
       {annual && (
         <>
           <Field
@@ -1066,7 +1080,7 @@ export function BillsTable({
                     </>
                   )}
                   <td data-label="Due date">
-                    <DueLabel bill={bill} salary={salary} asOf={asOf} />
+                    <DueLabel bill={bill} salary={salary} accounts={accounts} asOf={asOf} />
                   </td>
                   <td data-label="Auto payment">
                     <span>{bill.paymentMethod || "—"}</span>

@@ -183,6 +183,20 @@ function SourceLabel({ row }) {
           </small>
         </>
       )}
+      {row.source === "creditCardDue" && row.annualBillCoverage?.length > 0 && (
+        <div className="fpl-annual-card-coverage">
+          <small className="fpl-credit-card-due-detail">Annual bills included in this card payment:</small>
+          <ul>
+            {row.annualBillCoverage.map((coverage) => (
+              <li key={`${coverage.billId}-${coverage.chargeTransactionId}`}>
+                {coverage.billName} · {money(coverage.amount, row.currency)} charged {formatDate(coverage.chargeDate, { year: "numeric" })}
+                <small>{money(coverage.reserveUsed, row.currency)} covered by its annual reserve</small>
+              </li>
+            ))}
+          </ul>
+          <small className="fpl-reconciliation-note">These charges are already part of the card balance. They are paid once with this statement.</small>
+        </div>
+      )}
       {row.cardCreditActivity && (
         <small className="fpl-account-label">
           Changes the card balance. Cash payments are shown with statement dues.
@@ -205,7 +219,14 @@ function SourceLabel({ row }) {
             {row.scheduledDate ? ` · ${formatDate(row.scheduledDate)}` : ""}
           </small>
         )}
-      {annualPayment && (
+      {annualPayment && row.cardCreditActivity && (
+        <small className="fpl-annual-payment-detail">
+          Card charge {money(grossAmount, shortfallCurrency)}
+          {row.reserveHeld > 0 && <> · {money(row.reserveHeld, shortfallCurrency)} held in annual reserves</>}
+          . Paid with the card statement; no separate cash payment on the charge date.
+        </small>
+      )}
+      {annualPayment && !row.cardCreditActivity && (
         <small className="fpl-annual-payment-detail">
           Total bill {money(grossAmount, shortfallCurrency)} ·{" "}
           {money(row.reserveUsed ?? 0, shortfallCurrency)} from reserves ·{" "}
@@ -594,6 +615,9 @@ export default function Ledger({
                     <time className="fpl-mobile-date" dateTime={row.date}>{formatDate(row.date, { year: "2-digit" })}</time>
                     <strong title={row.description}>{row.description}</strong>
                     {row.estimated && <span className="fpl-estimate-tag">Estimated</span>}
+                    {row.source === "creditCardDue" && row.annualBillCoverage?.length > 0 && (
+                      <small className="fpl-match-note">Includes annual bill · {money(row.annualBillCoverage.reduce((total, coverage) => total + coverage.amount, 0), row.currency)}</small>
+                    )}
                     <details className="fpl-row-details">
                       <summary aria-label={`Details for ${row.description}`}>
                         <span className="fpl-details-text">Details</span>

@@ -222,8 +222,15 @@ The finance workspace separates recorded activity from your plans:
   statement payments reduce available cash. Posted payments, including earlier
   statement-cycle payments, reduce the remaining due. A planned account transfer
   to that card covers the corresponding due amount without another forecast
-  payment. Automatic dues do not guess a funding account; add a transfer to
-  project its source account. Statement amounts and dates stay synced to bank data.
+  payment. Linked-column plans use their Available account for card payments;
+  other plans require an explicit transfer to project a funding account.
+  Annual card bills use their charge anniversary, separately from the card's
+  payment due date. A uniquely matched posted annual fee already in the card
+  balance is attributed inside its statement payment, including charges before
+  the plan starts. Its saved annual reserve covers that part of the payment;
+  Checking covers the remainder. The charge is not added again on the payment
+  date, and the full statement amount is preserved. Statement amounts and dates
+  stay synced to bank data.
   Edit a scheduled row to change its date, description, or amount for that one
   occurrence in that plan. Recurring settings and other dates stay unchanged;
   **Reset** restores the recurring default. Enter zero to skip an occurrence's

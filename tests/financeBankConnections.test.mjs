@@ -1169,7 +1169,7 @@ test("plans return earlier partial card payments as separate evidence without ex
   assert.deepEqual(result.creditCardPaymentTransactions.map(({id}) => id), [1, 2, 3]);
   assert.equal(result.creditCardPaymentWarning, "");
   const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
-  assert.equal(history.params[0], "2026-10-31");
+  assert.equal(history.params[0], "2026-08-24");
   assert.ok(history.params[1] >= "2026-11-30");
   assert.match(history.sql, /duplicate_of_id IS NULL AND t.is_provider_removed = 0/);
   assert.match(history.sql, /currency IN \('USD', 'PHP'\)/);
@@ -1182,7 +1182,7 @@ test("payment evidence without statement dates also covers the plan boundary for
   const result = await api.getFinancePlanActivity({startDate: "2020-01-15", endDate: "2020-01-31"});
   assert.equal(result.creditCardPaymentWarning, "");
   const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
-  assert.deepEqual(history.params, ["2020-01-12", activity.financeActivityWindow().today]);
+  assert.deepEqual(history.params, ["2019-10-24", activity.financeActivityWindow().today]);
 });
 
 test("plans retain statement payment history even when the current due is outside the selected range", async (t) => {
@@ -1198,7 +1198,41 @@ test("plans retain statement payment history even when the current due is outsid
   assert.deepEqual(result.transactions, []);
   assert.deepEqual(result.creditCardPaymentTransactions.map(({id}) => id), [1, 2]);
   const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
-  assert.equal(history.params[0], "2026-10-31");
+  assert.equal(history.params[0], "2026-08-24");
+});
+
+test("annual card charges before a plan remain separate evidence with an unknown or newly issued statement close", async (t) => {
+  bankEnvironment(t);
+  const fee = planPaymentRecord(2506, "2026-11-01", {
+    kind: "expense", amount: 395, account_id: 32, account_name: "Venture X",
+    merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees",
+  });
+  const payment = planPaymentRecord(2510, "2026-11-18", { account_id: 32 });
+  for (const lastStatementDate of [null, "2026-11-17"]) {
+    const {api, queries} = backend((sql, params) => {
+      if (sql.startsWith("SELECT a.id, a.credit_card_due_json")) return [{
+        id: 32, credit_card_due_json: JSON.stringify({
+          statementBalance: lastStatementDate ? 1658.16 : 0,
+          dueDate: "2026-12-18", lastStatementDate,
+        }),
+      }];
+      if (sql.startsWith("SELECT t.*"))
+        return [fee, payment].filter((row) => row.transaction_date >= params[0] && row.transaction_date <= params[1]);
+      return [];
+    });
+    const result = await api.getFinancePlanActivity({startDate: "2026-12-01", endDate: "2026-12-31"});
+    assert.deepEqual(result.transactions, [], String(lastStatementDate));
+    const recordedFee = result.creditCardPaymentTransactions.find(({id}) => id === 2506);
+    assert.equal(recordedFee.date, "2026-11-01");
+    assert.equal(recordedFee.amount, 395);
+    assert.equal(recordedFee.kind, "expense");
+    assert.equal(recordedFee.accountId, 32);
+    assert.equal(recordedFee.merchant, "CAPITAL ONE MEMBER FEE");
+    assert.deepEqual(result.creditCardPaymentTransactions.map(({id}) => id), [2506, 2510]);
+    const history = queries.find(({sql}) => sql.startsWith("SELECT t.*") && sql.includes("t.pending = 0"));
+    assert.equal(history.params[0], "2026-09-16", String(lastStatementDate));
+    assert.equal(result.creditCardPaymentWarning, "");
+  }
 });
 
 test("plans skip the payment-history query when cached cards have no usable due date", async (t) => {

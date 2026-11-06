@@ -364,6 +364,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     });
     embeddedTransactions.set(row.id, transactions);
   }
+  const cardReserveConsumptions = new Map();
   const rawRows = sourceRows.map((row) => {
     let movements = [];
     const currency = row.currency || (row.php ? "PHP" : "USD");
@@ -406,9 +407,33 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     } else if (row.source === "creditCardDue") {
       const result = movement(row.creditAccountId, row.amount, currency, "cardPayment", row.description);
       if (result) movements.push(result);
-      const funding = movement(linkedId("available", currency), -row.amount, currency, "cardFunding", row.description);
+      let reserveFunding = 0;
+      const reserveConsumptions = [];
+      for (const coverage of row.annualBillCoverage || []) {
+        const selected = plan.accountLinks ? linkedId("annualReserve", currency) : id(coverage.reserveAccountId);
+        const account = accountById.get(selected);
+        const earmark = Math.max(0, roundMoney(coverage.reserveUsed));
+        const alreadyPaid = Math.min(earmark, Math.max(0, roundMoney(coverage.reserveAlreadyPaidAmount)));
+        const transferred = Math.min(roundMoney(earmark - alreadyPaid), Math.max(0, roundMoney(coverage.reserveTransferredAmount)));
+        const amount = Math.min(roundMoney(earmark - alreadyPaid - transferred), Math.max(0, roundMoney(row.amount - reserveFunding)));
+        const covered = roundMoney(amount + alreadyPaid + transferred);
+        if (!covered) continue;
+        if (!account || archived(account) || liability(account) || account.currency !== currency) {
+          warnings.add(`${coverage.billName || "Annual bill"}: its statement reserve account is unavailable; the remaining card payment needs another funding account.`);
+          continue;
+        }
+        reserveConsumptions.push({ accountId: selected, amount: covered });
+        const reserve = movement(selected, -amount, currency, "cardReserveFunding", `${coverage.billName || "Annual bill"} · statement reserve`);
+        if (reserve) {
+          movements.push({ ...reserve, billId: coverage.billId });
+          reserveFunding = roundMoney(reserveFunding + amount);
+        }
+      }
+      cardReserveConsumptions.set(row.id, reserveConsumptions);
+      const remainingFunding = Math.max(0, roundMoney(row.amount - reserveFunding));
+      const funding = movement(linkedId("available", currency), -remainingFunding, currency, "cardFunding", row.description);
       if (funding) movements.push(funding);
-      if (row.amount > 0 && !funding)
+      if (remainingFunding > 0 && !funding)
         warnings.add(plan.accountLinks
           ? `${row.description}: choose a linked available-funds account in ${currency} to include this planned payment in that balance.`
           : `${row.description}: the funding account is unknown; available funds include this payment, but no bank account debit is projected.`);
@@ -558,6 +583,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   let previousReserve = { usd: openingReserve.usd, php: openingReserve.php };
   const rows = rawRows.map((row) => {
     const currentReserveReceipts = new Set();
+    const partialTransfer = row.source === "manual" && row.kind === "transfer" && row.completionSource !== "transaction" &&
+      (embeddedTransactions.get(row.id) || []).some((transaction) => !transaction.pending && transaction.date <= today);
     const projected = row.accountMovements
       .filter((move) => {
         if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense" && !move.recordedDate)
@@ -599,7 +626,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         (move) =>
           opening.has(move.accountId) ||
           (move.recordedDate ? move.recordedDate > today :
-            (row.date >= today &&
+            ((row.date >= today || (partialTransfer && move.kind === "transfer")) &&
               !(row.source === "transaction" && row.date <= today))),
       );
     for (const move of projected) {
@@ -641,6 +668,11 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
             ),
           ),
         );
+    }
+    if (row.source === "creditCardDue") {
+      for (const consumption of cardReserveConsumptions.get(row.id) || [])
+        if (opening.has(consumption.accountId) || row.date >= today)
+          annualReserved.set(consumption.accountId, Math.max(0, roundMoney((annualReserved.get(consumption.accountId) || 0) - consumption.amount)));
     }
     if (
       row.source === "allocation" &&

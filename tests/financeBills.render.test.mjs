@@ -137,6 +137,23 @@ test("annual bills display the suggested target, its date basis, and the next in
   assert.doesNotMatch(html, /NaN|undefined|Infinity/);
 });
 
+test("annual card bills distinguish their charge anniversary from the card statement payment date", () => {
+  const card = { id: 32, name: "Venture X", type: "credit", currency: "USD",
+    creditCardDue: { dueDate: "2026-12-18" } };
+  const bill = { ...baseBill, name: "Venture X", amount: 395, dueDay: 1, dueMonths: [11], accountId: 32 };
+  const html = renderTable([bill], { accounts: [card] });
+  assert.match(html, /Card charge: Nov 1/);
+  assert.match(html, /Next card payment: Dec 18, 2026/);
+  const form = renderToStaticMarkup(createElement(BillForm, { bill, accounts: [card], cadence: "annual", rate: 63, salary: annualSalary, onSave() {} }));
+  assert.match(form, /Card charge day/);
+  assert.match(form, /Card charge month/);
+  assert.match(form, /Its statement payment is scheduled separately/);
+  const result = submitDraft({ ...bill, amount: "395", monthlyPayments: "1" }, { accounts: [card] });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.saved.dueDay, 1);
+  assert.deepEqual(result.saved.dueMonths, [11]);
+});
+
 test("the annual target total aggregates native currencies without losing pesos in a USD roundtrip", () => {
   const bills = [
     { ...baseBill, amount: 1, dueDay: 2, dueMonths: [7] },

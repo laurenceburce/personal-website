@@ -494,13 +494,13 @@ test("salary, annual reserves and payday savings project into separate accounts 
   const before = JSON.stringify({ plan, document, accounts });
   const result = project();
   assert.equal(byId(result, 1).endingBalance, 1455);
-  assert.equal(byId(result, 2).endingBalance, 0);
-  assert.equal(byId(result, 2).endingAnnualReserved, 0);
+  assert.equal(byId(result, 2).endingBalance, 395);
+  assert.equal(byId(result, 2).endingAnnualReserved, 395);
   assert.equal(byId(result, 3).endingBalance, 1000);
   assert.equal(byId(result, 3).savingsAllocated, 1000);
   assert.equal(
     byId(result, 4).endingBalance,
-    20,
+    415,
     "credit expenses increase a positive balance owed",
   );
   assert.equal(result.openingSource, "plan");
@@ -513,8 +513,6 @@ test("salary, annual reserves and payday savings project into separate accounts 
       move.balanceDelta,
     ]),
     [
-      [2, -395, -395],
-      [4, 395, -395],
       [4, -395, 395],
     ],
   );
@@ -620,7 +618,7 @@ test("card purchases and posted partial payments change owed balances once along
   assert.equal(result.rows.at(-1).balanceUsd, 800);
 });
 
-test("annual card reserve release projects the new charge without a physical reserve payment", () => {
+test("annual card charges increase debt while keeping their reserve held for statement payment", () => {
   const cardAccounts = [
     { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1200 },
     { id: 2, name: "Card", type: "credit", currency: "USD", nativeCurrentBalance: 200,
@@ -635,9 +633,228 @@ test("annual card reserve release projects the new charge without a physical res
   const result = buildAccountPlan(cardPlan, cardDocument, 63, { accounts: cardAccounts, today: "2026-11-04" });
   const charge = result.rows.find((row) => row.annualPayment);
   assert.deepEqual(charge.accountMovements.map((move) => [move.accountId, move.amount, move.balanceDelta]), [[2, -200, 200]]);
+  assert.equal(charge.reserveHeld, 200);
+  assert.equal(charge.reserveUsed, 0);
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 1200);
-  assert.equal(result.accounts.find((account) => account.accountId === 1).endingAnnualReserved, 0);
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingAnnualReserved, 200);
   assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 200);
+});
+
+function annualCardCoverageFixture(reserveUsed = 395) {
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 2000 },
+    { id: 2, name: "Annual savings", type: "savings", currency: "USD", nativeCurrentBalance: 526.59 },
+    { id: 28, name: "Smartly Savings", type: "savings", currency: "USD", nativeCurrentBalance: 500 },
+    { id: 32, name: "Venture X", type: "credit", currency: "USD", nativeCurrentBalance: 1658.16 },
+  ];
+  const document = { salary: {}, allocations: [], bills: [
+    { id: "venture-annual", name: "Venture X", cadence: "annual", amount: 395, currency: "USD", dueMonths: [11], dueDay: 1,
+      savedAmount: 395, accountId: 32, reserveAccountId: 2, sourceAccountId: 1 },
+  ] };
+  const plan = { startDate: "2026-11-05", endDate: "2026-12-31", openingUsd: 0, openingPhp: 0, entries: [],
+    includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
+    accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 2, savingsUsdAccountId: 28 } };
+  const row = { id: "creditCardDue:32:2026-12-18", date: "2026-12-18", source: "creditCardDue", kind: "expense",
+    description: "Venture X · estimated next statement", amount: 1658.16, currency: "USD", creditAccountId: 32,
+    usd: -1658.16, php: 0, annualBillCoverage: [{ billId: "venture-annual", billName: "Venture X", chargeDate: "2026-11-01",
+      chargeTransactionId: 2506, amount: 395, reserveUsed, reserveAccountId: 2 }] };
+  return { accounts, document, plan, row };
+}
+
+test("annual fee coverage pays a card statement from annual reserves and checking exactly once", () => {
+  for (const reserveUsed of [0, 100, 395]) {
+    const { accounts, document, plan, row } = annualCardCoverageFixture(reserveUsed);
+    const before = JSON.stringify({ accounts, document, plan, row });
+    const result = buildAccountPlan(plan, document, 63, { accounts, rows: [row], today: "2026-11-06" });
+    assert.equal(byId(result, 32).endingBalance, 0);
+    assert.equal(byId(result, 1).endingBalance, Math.round((2000 - 1658.16 + reserveUsed) * 100) / 100);
+    assert.equal(byId(result, 2).endingBalance, Math.round((526.59 - reserveUsed) * 100) / 100);
+    assert.equal(byId(result, 2).endingAnnualReserved, 395 - reserveUsed);
+    assert.equal(byId(result, 28).endingBalance, 500);
+    assert.equal(result.rows[0].reserveUsd, byId(result, 2).endingBalance);
+    assert.equal(result.rows[0].savingsUsd, 500);
+    assert.equal(result.rows[0].balanceAppliedUsd, -(1658.16 - reserveUsed));
+    assert.equal(result.rows[0].accountMovements.filter((move) => move.accountId === 32).length, 1);
+    assert.equal(result.rows[0].accountMovements.filter((move) => move.accountId === 32)[0].amount, 1658.16);
+    assert.equal(before, JSON.stringify({ accounts, document, plan, row }));
+  }
+});
+
+test("annual statement coverage cannot exceed the remaining card payment or use an unavailable reserve account", () => {
+  const { accounts, document, plan, row } = annualCardCoverageFixture();
+  const result = buildAccountPlan(plan, document, 63, {
+    accounts, rows: [{ ...row, amount: 100, usd: -100 }], today: "2026-11-06",
+  });
+  assert.equal(byId(result, 2).endingBalance, 426.59);
+  assert.equal(byId(result, 1).endingBalance, 2000);
+  assert.equal(byId(result, 32).endingBalance, 1558.16);
+  const unavailable = buildAccountPlan(plan, document, 63, {
+    accounts: accounts.map((account) => account.id === 2 ? { ...account, isArchived: true } : account), rows: [row], today: "2026-11-06",
+  });
+  assert.equal(byId(unavailable, 1).endingBalance, 341.84);
+  assert.equal(byId(unavailable, 2).endingBalance, 526.59);
+  assert.ok(unavailable.warnings.some((warning) => warning.includes("statement reserve account is unavailable")));
+});
+
+test("zero remaining card dues do not draw annual reserve funding again", () => {
+  const { accounts, document, plan, row } = annualCardCoverageFixture();
+  const result = buildAccountPlan(plan, document, 63, { accounts, rows: [{ ...row, amount: 0, usd: 0 }], today: "2026-11-06" });
+  assert.equal(byId(result, 1).endingBalance, 2000);
+  assert.equal(byId(result, 2).endingBalance, 526.59);
+  assert.equal(byId(result, 32).endingBalance, 1658.16);
+  assert.deepEqual(result.rows[0].accountMovements, []);
+});
+
+test("annual reserve funding already transferred to checking is consumed without another reserve withdrawal", () => {
+  const { accounts, document, plan, row } = annualCardCoverageFixture();
+  const transfer = { id: "entry:fund", date: "2026-12-17", source: "manual", kind: "transfer", description: "Move annual fee funding",
+    amount: 395, currency: "USD", fromAccountId: 2, toAccountId: 1, usd: 0, php: 0 };
+  const result = buildAccountPlan(plan, document, 63, { accounts, rows: [transfer, {
+    ...row, annualBillCoverage: row.annualBillCoverage.map((coverage) => ({ ...coverage, reserveTransferredAmount: 395 })),
+  }], today: "2026-11-06" });
+  assert.equal(byId(result, 2).endingBalance, 131.59);
+  assert.equal(byId(result, 2).endingAnnualReserved, 0);
+  assert.equal(byId(result, 1).endingBalance, 736.84);
+  assert.equal(byId(result, 32).endingBalance, 0);
+  assert.equal(result.rows[1].accountMovements.some((move) => move.accountId === 2), false);
+});
+
+test("an annual fee already paid directly from reserves is not funded twice by its remaining card statement", () => {
+  const { accounts, document, plan, row } = annualCardCoverageFixture();
+  for (const fullyPlanned of [false, true]) {
+    const transfer = { id: "entry:reserve-pay", date: "2026-12-17", source: "manual", kind: "transfer", description: "Pay annual fee from reserves",
+      amount: 395, currency: "USD", fromAccountId: 2, toAccountId: 32, usd: 0, php: 0 };
+    const checkingTransfer = { ...transfer, id: "entry:checking-pay", fromAccountId: 1, amount: 1263.16 };
+    const remaining = fullyPlanned ? 0 : 1263.16;
+    const due = { ...row, amount: remaining, usd: -remaining,
+      annualBillCoverage: row.annualBillCoverage.map((coverage) => ({ ...coverage, reserveAlreadyPaidAmount: 395 })) };
+    const result = buildAccountPlan(plan, document, 63, { accounts,
+      rows: [transfer, ...(fullyPlanned ? [checkingTransfer] : []), due], today: "2026-11-06" });
+    assert.equal(byId(result, 2).endingBalance, 131.59);
+    assert.equal(byId(result, 2).endingAnnualReserved, 0);
+    assert.equal(byId(result, 1).endingBalance, 736.84);
+    assert.equal(byId(result, 32).endingBalance, 0);
+    assert.equal(result.rows.at(-1).accountMovements.some((move) => move.accountId === 2), false);
+  }
+});
+
+test("a historical card annual fee funds the existing next statement without another card charge", () => {
+  const { accounts, document, plan } = annualCardCoverageFixture();
+  Object.assign(accounts.find((account) => account.id === 32), { isLinked: true, creditCardDueStatus: "current",
+    creditCardDue: { statementBalance: 0, dueDate: "2026-12-18", lastStatementDate: null } });
+  const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+    merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+  const result = buildAccountPlan(plan, document, 63, { accounts, transactions: [], creditCardPaymentTransactions: [fee], today: "2026-11-06" });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].amount, 1658.16);
+  assert.equal(result.rows[0].annualBillCoverage[0].chargeTransactionId, 2506);
+  assert.equal(result.rows[0].annualBillCoverage[0].reserveUsed, 395);
+  assert.equal(byId(result, 32).endingBalance, 0);
+  assert.equal(byId(result, 1).endingBalance, 736.84);
+  assert.equal(byId(result, 2).endingBalance, 131.59);
+  assert.equal(byId(result, 28).endingBalance, 500);
+});
+
+test("an in-range annual card charge changes dated debt once and keeps its reserve until the statement", () => {
+  const { accounts, document, plan } = annualCardCoverageFixture();
+  Object.assign(accounts.find((account) => account.id === 32), { isLinked: true,
+    creditCardDue: { statementBalance: 0, dueDate: "2026-12-18", lastStatementDate: null } });
+  const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+    merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+  const result = buildAccountPlan({ ...plan, startDate: "2026-10-31",
+    accountOpeningBalances: accounts.map((account) => ({ accountId: account.id, balance: account.id === 32 ? 1263.16 : account.nativeCurrentBalance })),
+  }, document, 63, { accounts, transactions: [fee], creditCardPaymentTransactions: [fee], today: "2026-11-06" });
+  const charge = result.rows.find((row) => row.transactionId === 2506);
+  assert.equal(charge.deferReserveToCardDue, true);
+  assert.equal(charge.reserveUsd, 526.59);
+  assert.equal(charge.accountAnnualReserves[2], 395);
+  assert.equal(charge.accountBalances[32], 1658.16);
+  assert.equal(byId(result, 32).endingBalance, 0);
+  assert.equal(byId(result, 1).endingBalance, 736.84);
+  assert.equal(byId(result, 2).endingBalance, 131.59);
+});
+
+test("linked annual card coverage honors explicit reserve funding and card payments without duplicate native debits", () => {
+  for (const funding of ["checking transfer", "reserve card payment", "full card payments"]) {
+    const { accounts, document, plan } = annualCardCoverageFixture();
+    Object.assign(accounts.find((account) => account.id === 32), { isLinked: true,
+      creditCardDue: { statementBalance: 0, dueDate: "2026-12-18", lastStatementDate: null } });
+    const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+      merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+    const entry = { id: "fund", date: "2026-12-17", kind: "transfer", description: "Fund card annual fee", amount: 395,
+      currency: "USD", fromAccountId: 2, toAccountId: funding === "checking transfer" ? 1 : 32 };
+    const entries = [entry, ...(funding === "full card payments" ? [{ ...entry, id: "remaining", fromAccountId: 1, amount: 1263.16 }] : [])];
+    const result = buildAccountPlan({ ...plan, entries }, document, 63, {
+      accounts, transactions: [], creditCardPaymentTransactions: [fee], today: "2026-11-06",
+    });
+    assert.equal(byId(result, 1).endingBalance, 736.84, funding);
+    assert.equal(byId(result, 2).endingBalance, 131.59, funding);
+    assert.equal(byId(result, 2).endingAnnualReserved, 0, funding);
+    assert.equal(byId(result, 32).endingBalance, 0, funding);
+    assert.equal(byId(result, 28).endingBalance, 500, funding);
+  }
+});
+
+test("posted partial reserve payments are not withdrawn again from confirmed or estimated annual statements", () => {
+  for (const issued of [false, true]) {
+    for (const paymentDate of ["2026-11-04", "2026-11-06"]) {
+      const { accounts, document, plan } = annualCardCoverageFixture();
+      accounts.find((account) => account.id === 2).nativeCurrentBalance = 426.59;
+      Object.assign(accounts.find((account) => account.id === 32), { isLinked: true, nativeCurrentBalance: 1558.16,
+        creditCardDue: { statementBalance: issued ? 1658.16 : 0, dueDate: "2026-12-18", lastStatementDate: issued ? "2026-11-02" : null } });
+      const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+        merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+      const records = [
+        { id: 2507, date: paymentDate, kind: "expense", accountId: 2, amount: 100, currency: "USD", category: "Transfer Out", merchant: "Venture X card payment" },
+        { id: 2508, date: paymentDate, kind: "income", accountId: 32, amount: 100, currency: "USD", category: "Transfer In", merchant: "Payment received" },
+      ];
+      const result = buildAccountPlan(plan, document, 63, { accounts, transactions: records.filter((transaction) => transaction.date >= plan.startDate),
+        creditCardPaymentTransactions: [fee, ...records], today: "2026-11-06" });
+      assert.equal(byId(result, 1).endingBalance, 736.84);
+      assert.equal(byId(result, 2).endingBalance, 131.59);
+      assert.equal(byId(result, 2).endingAnnualReserved, 0);
+      assert.equal(byId(result, 32).endingBalance, 0);
+      assert.equal(byId(result, 28).endingBalance, 500);
+      const due = result.rows.find((row) => row.source === "creditCardDue");
+      assert.equal(due.annualBillCoverage[0].reserveAlreadyPaidAmount, 100);
+      assert.equal(due.accountMovements.find((move) => move.kind === "cardReserveFunding").amount, -295);
+    }
+  }
+});
+
+test("a reserve transfer in transit keeps only its missing native leg after its scheduled date", () => {
+  for (const [postedLeg, pendingCounterpart] of [
+    ["reserve debit", false], ["reserve debit", true], ["checking credit", false], ["checking credit", true],
+  ]) {
+    const { accounts, document, plan } = annualCardCoverageFixture();
+    const debitPosted = postedLeg === "reserve debit";
+    accounts.find((account) => account.id === 2).nativeCurrentBalance = debitPosted ? 131.59 : 526.59;
+    accounts.find((account) => account.id === 1).nativeCurrentBalance = debitPosted ? 2000 : 2395;
+    Object.assign(accounts.find((account) => account.id === 32), { isLinked: true,
+      creditCardDue: { statementBalance: 0, dueDate: "2026-12-18", lastStatementDate: null } });
+    const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+      merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+    const debit = { id: 2510, date: "2026-11-10", kind: "expense", accountId: 2, amount: 395, currency: "USD",
+      merchant: "Bank transfer withdrawal", category: "Transfer Out", pending: !debitPosted };
+    const credit = { id: 2511, date: "2026-11-10", kind: "income", accountId: 1, amount: 395, currency: "USD",
+      merchant: "Bank transfer deposit", category: "Transfer In", pending: debitPosted };
+    const records = [debitPosted ? debit : credit, ...(pendingCounterpart ? [debitPosted ? credit : debit] : [])];
+    const entry = { id: "reserve-funding", date: "2026-11-10", kind: "transfer", amount: 395, currency: "USD",
+      fromAccountId: 2, toAccountId: 1, description: "Prepare annual fee funding" };
+    const result = buildAccountPlan({ ...plan, entries: [entry] }, document, 63, { accounts,
+      transactions: records, creditCardPaymentTransactions: [fee, ...records], today: "2026-11-11" });
+    const transfer = result.rows.find((row) => row.entryId === entry.id);
+    assert.equal(transfer.completed, false);
+    assert.equal(transfer.recordedTransactions.length, 1);
+    assert.deepEqual(transfer.accountMovements.map((move) => [move.accountId, move.amount]), debitPosted ? [[1, 395]] : [[2, -395]]);
+    assert.equal(transfer.accountBalances[1], 2395);
+    assert.equal(transfer.accountBalances[2], 131.59);
+    const due = result.rows.find((row) => row.source === "creditCardDue");
+    assert.equal(due.annualBillCoverage[0].reserveTransferredAmount, 395);
+    assert.equal(byId(result, 1).endingBalance, 736.84);
+    assert.equal(byId(result, 2).endingBalance, 131.59);
+    assert.equal(byId(result, 32).endingBalance, 0);
+  }
 });
 
 test("explicit card transfers and statement dues project each native movement once before and after posting", () => {
