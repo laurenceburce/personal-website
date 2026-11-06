@@ -738,11 +738,11 @@ export default function FinanceAppClient({
   const plan =
     document.plans.find((item) => item.id === selectedPlanId) ||
     document.plans[0];
-  const planOpeningReserve = useMemo(
+  const legacyPlanOpeningReserve = useMemo(
     () => getAnnualReserveOpening(plan, document),
     [plan, document],
   );
-  const planOpening = useMemo(
+  const legacyPlanOpening = useMemo(
     () => getPlanOpening(plan, accounts, document),
     [plan, accounts, document],
   );
@@ -777,6 +777,10 @@ export default function FinanceAppClient({
         : null,
     [plan, document, rate, accounts, planRows, today],
   );
+  const displayedPlanRows = accountPlan?.rows || planRows;
+  const planOpening = plan?.accountLinks ? accountPlan?.openingBalances || legacyPlanOpening : legacyPlanOpening;
+  const planOpeningReserve = plan?.accountLinks ? accountPlan?.openingReserve || legacyPlanOpeningReserve : legacyPlanOpeningReserve;
+  const planBalance = (value, currency = "USD") => Number.isFinite(value) ? money(value, currency) : "—";
   const planRecordsMatch = Boolean(
     plan &&
     planActivity?.from === plan.startDate &&
@@ -1963,7 +1967,9 @@ export default function FinanceAppClient({
                       </summary>
                       <p className="fp-inline-note">
                         Balances{" "}
-                        {plan.startingAccounts?.length
+                        {plan.accountLinks
+                          ? "follow the accounts named in each column. Posted bank movements already included in their current balances are not counted again."
+                          : plan.startingAccounts?.length
                           ? "use current live account contributions. Already-posted flows reflected in those balances are not counted again."
                           : "begin before the first day’s flows."}
                       </p>
@@ -2007,15 +2013,15 @@ export default function FinanceAppClient({
                         <span>Available funds · USD</span>
                         <strong
                           className={
-                            (planRows.at(-1)?.balanceUsd ?? planOpening.usd) < 0
+                            (displayedPlanRows.at(-1)?.balanceUsd ?? planOpening.usd) < 0
                               ? "fp-negative"
                               : "fp-positive"
                           }
                         >
                           {planWaitingForRecords
                             ? "—"
-                            : money(
-                                planRows.at(-1)?.balanceUsd ?? planOpening.usd,
+                            : planBalance(
+                                displayedPlanRows.length ? displayedPlanRows.at(-1).balanceUsd : planOpening.usd,
                               )}
                         </strong>
                       </div>
@@ -2023,15 +2029,15 @@ export default function FinanceAppClient({
                         <span>Available funds · PHP</span>
                         <strong
                           className={
-                            (planRows.at(-1)?.balancePhp ?? planOpening.php) < 0
+                            (displayedPlanRows.at(-1)?.balancePhp ?? planOpening.php) < 0
                               ? "fp-negative"
                               : ""
                           }
                         >
                           {planWaitingForRecords
                             ? "—"
-                            : money(
-                                planRows.at(-1)?.balancePhp ?? planOpening.php,
+                            : planBalance(
+                                displayedPlanRows.length ? displayedPlanRows.at(-1).balancePhp : planOpening.php,
                                 "PHP",
                               )}
                         </strong>
@@ -2041,9 +2047,8 @@ export default function FinanceAppClient({
                         <strong>
                           {planWaitingForRecords
                             ? "—"
-                            : money(
-                                planRows.at(-1)?.reserveUsd ??
-                                  planOpeningReserve.usd,
+                            : planBalance(
+                                displayedPlanRows.length ? displayedPlanRows.at(-1).reserveUsd : planOpeningReserve.usd,
                               )}
                         </strong>
                       </div>
@@ -2052,9 +2057,8 @@ export default function FinanceAppClient({
                         <strong>
                           {planWaitingForRecords
                             ? "—"
-                            : money(
-                                planRows.at(-1)?.reservePhp ??
-                                  planOpeningReserve.php,
+                            : planBalance(
+                                displayedPlanRows.length ? displayedPlanRows.at(-1).reservePhp : planOpeningReserve.php,
                                 "PHP",
                               )}
                         </strong>
@@ -2155,7 +2159,8 @@ export default function FinanceAppClient({
                       <Ledger
                         today={today}
                         plan={plan}
-                        rows={accountPlan?.rows || planRows}
+                        accounts={accounts}
+                        rows={displayedPlanRows}
                         openingReserve={planOpeningReserve}
                         openingBalances={planOpening}
                         openingSavings={accountPlan?.openingSavings}

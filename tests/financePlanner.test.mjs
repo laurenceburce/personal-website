@@ -40,6 +40,256 @@ function transferFixture() {
   };
 }
 
+function linkedPocketFixture() {
+  return {
+    document: {
+      salary: { amount: 2300, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-10-23", accountId: 1 },
+      bills: [{ id: "annual", name: "Annual renewal", cadence: "annual", amount: 595.26, savedAmount: 503.70,
+        currency: "USD", dueDay: 31, dueMonths: [12], sourceAccountId: 2, reserveAccountId: 2, accountId: 1 }],
+      allocations: [{ id: "smartly", name: "Smartly Savings", kind: "savings", amount: 500, currency: "USD", sourceAccountId: 1, accountId: 28 }],
+    },
+    plan: {
+      startDate: "2026-11-05", endDate: "2026-11-07", openingUsd: 160.72, openingPhp: 0,
+      includeIncome: true, includeTransactions: true, entries: [],
+      accountLinks: { availableUsdAccountId: 1, availablePhpAccountId: null, annualReserveUsdAccountId: 2,
+        annualReservePhpAccountId: null, savingsUsdAccountId: 28, savingsPhpAccountId: null },
+      rowOverrides: [
+        { rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 },
+        { rowId: "allocation:smartly:2026-11-06", date: "2026-11-06", description: "Savings", amount: 253.27 },
+      ],
+    },
+    accounts: [
+      { id: 1, name: "Checking", currency: "USD", type: "checking", nativeCurrentBalance: 854.23 },
+      { id: 2, name: "Savings", currency: "USD", type: "savings", nativeCurrentBalance: 526.59 },
+      { id: 28, name: "Smartly Savings", currency: "USD", type: "savings", nativeCurrentBalance: 500 },
+    ],
+    transactions: [
+      { id: 2534, date: "2026-11-06", kind: "income", accountId: 1, currency: "USD", amount: 969.67,
+        merchant: "Electronic Deposit 11/06 Maxx Potential", category: "Income" },
+      { id: 2533, date: "2026-11-06", kind: "expense", accountId: 1, currency: "USD", amount: 22.89, category: "Transfer Out" },
+      { id: 2535, date: "2026-11-06", kind: "income", accountId: 2, currency: "USD", amount: 22.89, category: "Transfer In" },
+      { id: 2532, date: "2026-11-06", kind: "expense", accountId: 1, currency: "USD", amount: 253.27, category: "Transfer Out" },
+      { id: 2536, date: "2026-11-06", kind: "income", accountId: 28, currency: "USD", amount: 253.27, category: "Transfer In" },
+    ],
+  };
+}
+
+test("linked reserve and Smartly transfers replace their bank legs with one logical row per pocket", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const before = JSON.stringify({ document, plan, accounts, transactions });
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions, today: "2026-11-06" });
+  assert.equal(rows.length, 3);
+  assert.equal(rows.filter((row) => row.source === "transaction").length, 1, "the posted salary remains visible");
+  const reserve = rows.find((row) => row.source === "reserve");
+  assert.equal(reserve.amount, 22.89);
+  assert.deepEqual(reserve.reserveAllocations.map((allocation) => [allocation.sourceAccountId, allocation.reserveAccountId]), [[1, 2]]);
+  assert.deepEqual(reserve.recordedTransactions.map((row) => row.transactionId), [2533, 2535]);
+  assert.equal(reserve.completionSource, "transaction");
+  const savings = rows.find((row) => row.source === "allocation");
+  assert.equal(savings.accountId, 28);
+  assert.equal(savings.sourceAccountId, 1);
+  assert.deepEqual(savings.recordedTransactions.map((row) => row.transactionId), [2532, 2536]);
+  assert.equal(savings.completed, true);
+  assert.equal(before, JSON.stringify({ document, plan, accounts, transactions }));
+});
+
+test("one posted reserve leg remains attached to its task without completing it or becoming available income", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const receipt = transactions.find((row) => row.id === 2535);
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [receipt], today: "2026-11-06" });
+  const reserve = rows.find((row) => row.source === "reserve");
+  assert.equal(reserve.completed, false);
+  assert.deepEqual(reserve.recordedTransactions.map((row) => row.transactionId), [2535]);
+  assert.equal(rows.some((row) => row.transactionId === 2535), false);
+});
+
+test("linked transfer matching preserves amount, native account, date, category and posting checks", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const debit = transactions.find((row) => row.id === 2533);
+  const credit = transactions.find((row) => row.id === 2535);
+  for (const patch of [{ amount: 23 }, { accountId: 99 }, { currency: "PHP" }, { date: "2026-11-02" }, { category: "Income" }, { pending: true }]) {
+    const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [debit, { ...credit, ...patch }], today: "2026-11-06" });
+    const reserve = rows.find((row) => row.source === "reserve");
+    assert.equal(reserve.completed, false, JSON.stringify(patch));
+    assert.deepEqual(reserve.recordedTransactions.map((row) => row.transactionId), [2533], JSON.stringify(patch));
+  }
+});
+
+test("bank transfer evidence can explain only one linked recurring savings task", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  document.allocations.push({ ...document.allocations[0], id: "second", amount: 253.27 });
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions, today: "2026-11-06" });
+  const savings = rows.filter((row) => row.source === "allocation");
+  assert.equal(savings.length, 2);
+  assert.equal(savings.filter((row) => row.recordedTransactions?.length).length, 1);
+  assert.equal(savings.filter((row) => row.completionSource === "transaction").length, 1);
+});
+
+test("unplanned transfers between linked accounts combine only mutually unambiguous posted pairs", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const onlyTransfer = transactions.filter((row) => [2533, 2535].includes(row.id));
+  const options = { accounts, transactions: onlyTransfer, today: "2026-11-06" };
+  const noForecast = { ...plan, includeIncome: false, includeAnnualReserve: false, includeAllocations: false };
+  const rows = buildPlanRows(noForecast, document, 63, options);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "transfer");
+  assert.equal(rows[0].source, "transaction");
+  assert.deepEqual([rows[0].fromAccountId, rows[0].toAccountId], [1, 2]);
+  assert.deepEqual(rows[0].recordedTransactions.map((row) => row.transactionId), [2533, 2535]);
+  const ambiguous = buildPlanRows(noForecast, document, 63, { ...options,
+    transactions: [...onlyTransfer, { ...onlyTransfer.find((row) => row.kind === "income"), id: 999 }] });
+  assert.equal(ambiguous.length, 3);
+  assert.ok(ambiguous.every((row) => !row.recordedTransactions));
+});
+
+test("bank receipts outside a linked available account never become available income", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const rows = buildPlanRows({ ...plan, includeIncome: false, includeAnnualReserve: false, includeAllocations: false }, document, 63, {
+    accounts, transactions: transactions.filter((row) => row.kind === "income" && row.accountId !== 1), today: "2026-11-06",
+  });
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.usd === 0 && row.balanceAppliedUsd === 0));
+});
+
+test("hidden recorded flows retain posted salary evidence for linked live account projections", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const rows = buildPlanRows({ ...plan, includeTransactions: false }, document, 63, { accounts, transactions, today: "2026-11-06" });
+  assert.equal(rows.length, 3);
+  assert.equal(rows.find((row) => row.source === "salary").recordedTransactions[0].transactionId, 2534);
+  assert.ok(rows.every((row) => row.recordedTransactionsIncluded === false));
+  assert.ok(rows.every((row) => row.completionSource === "transaction"));
+});
+
+test("explicitly unassigned pocket links cannot silently reuse legacy salary or savings accounts", () => {
+  const { document, plan, accounts } = linkedPocketFixture();
+  const rows = buildPlanRows({ ...plan, accountLinks: Object.fromEntries(Object.keys(plan.accountLinks).map((key) => [key, null])) },
+    document, 63, { accounts, today: "2026-11-06" });
+  assert.equal(rows.find((row) => row.source === "salary").accountId, null);
+  const savings = rows.find((row) => row.source === "allocation");
+  assert.equal(savings.accountId, null);
+  assert.equal(savings.sourceAccountId, null);
+  assert.deepEqual(rows.find((row) => row.source === "reserve").reserveAllocations.map((allocation) =>
+    [allocation.sourceAccountId, allocation.reserveAccountId]), [[null, null]]);
+});
+
+test("linked posted reserve receipts keep future bill funding stable after the posting day", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  const current = { ...plan, endDate: "2026-12-19", openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }] };
+  for (const today of ["2026-11-06", "2026-11-07"]) {
+    const rows = buildPlanRows(current, document, 63, { accounts, transactions, today });
+    assert.deepEqual(rows.filter((row) => row.source === "reserve" && row.date > "2026-11-06")
+      .map((row) => [row.date, row.amount]), [["2026-11-20", 22.89], ["2026-12-04", 22.89], ["2026-12-18", 22.89]], today);
+  }
+});
+
+test("unique same-day bank funding replaces changed reserve and savings amounts without changing definitions", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  document.bills[0].savedAmount = 526.59;
+  const current = { ...plan, endDate: "2026-12-19", openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    rowOverrides: plan.rowOverrides.filter((row) => !row.rowId.startsWith("allocation:")) };
+  const before = JSON.stringify({ document, current, accounts, transactions });
+  for (const today of ["2026-11-06", "2026-11-07"]) {
+    const rows = buildPlanRows(current, document, 63, { accounts, transactions, today });
+    const firstReserve = rows.find((row) => row.source === "reserve");
+    assert.equal(firstReserve.amount, 22.89, today);
+    assert.equal(firstReserve.plannedAmount, 17.17, today);
+    assert.equal(firstReserve.actualTransferAmount, true, today);
+    assert.deepEqual(firstReserve.matchedTransactionIds, [2533, 2535], today);
+    assert.deepEqual(rows.filter((row) => row.source === "reserve" && row.date > "2026-11-06").map((row) => row.amount), [22.89, 22.89, 22.89], today);
+    const firstSavings = rows.find((row) => row.source === "allocation");
+    assert.equal(firstSavings.amount, 253.27, today);
+    assert.equal(firstSavings.plannedAmount, 500, today);
+    assert.equal(firstSavings.originalAmount, 500, today);
+    assert.deepEqual(firstSavings.matchedTransactionIds, [2532, 2536], today);
+    assert.equal(rows.filter((row) => row.source === "transaction").length, 1, today);
+  }
+  assert.equal(before, JSON.stringify({ document, current, accounts, transactions }));
+});
+
+test("changed linked funding amounts require unique complete same-day pairs without competing tasks", () => {
+  for (const change of ["extra credit", "pending credit", "wrong source", "shifted date", "competing task"]) {
+    const { document, plan, accounts, transactions } = linkedPocketFixture();
+    document.bills[0].savedAmount = 526.59;
+    let records = transactions.filter((row) => [2533, 2535].includes(row.id));
+    if (change === "extra credit") records.push({ ...records.find((row) => row.kind === "income"), id: 999, accountId: 99 });
+    if (change === "pending credit") records = records.map((row) => row.kind === "income" ? { ...row, pending: true } : row);
+    if (change === "wrong source") records = records.map((row) => row.kind === "expense" ? { ...row, accountId: 99 } : row);
+    if (change === "shifted date") records = records.map((row) => ({ ...row, date: "2026-11-05" }));
+    if (change === "competing task") plan.entries.push({ id: "other", date: "2026-11-06", kind: "transfer", description: "Other reserve transfer",
+      amount: 25, currency: "USD", fromAccountId: 1, toAccountId: 2 });
+    const rows = buildPlanRows(plan, document, 63, { accounts, transactions: records, today: "2026-11-06" });
+    const reserve = rows.find((row) => row.source === "reserve");
+    assert.equal(reserve.amount, 17.17, change);
+    assert.equal(reserve.actualTransferAmount, undefined, change);
+    assert.equal(reserve.recordedTransactions, undefined, change);
+  }
+});
+
+test("bank reserve funding beyond a bill's remaining capacity stays one recorded transfer with unassigned excess", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  document.bills[0].savedAmount = 590;
+  accounts.find((account) => account.id === 2).nativeCurrentBalance = 612.89;
+  const rows = buildPlanRows(plan, document, 63, { accounts,
+    transactions: transactions.filter((row) => [2533, 2535].includes(row.id)), today: "2026-11-06" });
+  const reserve = rows.find((row) => row.source === "reserve");
+  assert.equal(reserve.amount, 22.89);
+  assert.deepEqual(reserve.reserveAllocations.map((allocation) => [allocation.billId, allocation.amount]), [["annual", 5.26], [null, 17.63]]);
+  assert.deepEqual(reserve.matchedTransactionIds, [2533, 2535]);
+  assert.equal(rows.some((row) => row.source === "transaction"), false);
+});
+
+test("adaptive savings cannot reuse a bank debit already assigned to a card statement", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  accounts.push({ id: 3, name: "Travel card", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 253.27,
+    creditCardDue: { statementBalance: 253.27, dueDate: "2026-11-06", lastStatementDate: "2026-10-23" } });
+  plan.rowOverrides = plan.rowOverrides.filter((row) => !row.rowId.startsWith("allocation:"));
+  const records = transactions.filter((transaction) => [2532, 2536].includes(transaction.id))
+    .map((transaction) => transaction.kind === "expense" ? { ...transaction, merchant: "Travel card payment" } : transaction);
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: records, today: "2026-11-06" });
+  const payment = rows.find((row) => row.transactionId === 2532);
+  assert.equal(payment.matchedForecast.source, "creditCardDue");
+  const savings = rows.find((row) => row.source === "allocation");
+  assert.equal(savings.amount, 500);
+  assert.equal(savings.actualTransferAmount, undefined);
+});
+
+test("adaptive savings funding cannot reuse either bank leg already claimed by a scalar forecast", () => {
+  for (const claimedKind of ["expense", "income"]) {
+    const { document, plan, accounts, transactions } = linkedPocketFixture();
+    const records = transactions.filter((row) => [2532, 2536].includes(row.id))
+      .map((row) => ({ ...row, merchant: row.kind === "expense" ? "Mobile Banking Transfer Withdrawal" : "Mobile Banking Transfer Deposit" }));
+    const claimed = records.find((row) => row.kind === claimedKind);
+    const current = { ...plan, includeIncome: false, includeAnnualReserve: false,
+      rowOverrides: [], entries: [{ id: "intentional", date: claimed.date, kind: claimed.kind, amount: claimed.amount,
+        currency: claimed.currency, accountId: claimed.accountId, description: claimed.merchant }] };
+    const rows = buildPlanRows(current, document, 63, { accounts, transactions: records, today: "2026-11-06" });
+    const savings = rows.find((row) => row.source === "allocation");
+    assert.equal(savings.amount, 500, claimedKind);
+    assert.equal(savings.actualTransferAmount, undefined, claimedKind);
+    assert.equal(savings.recordedTransactions, undefined, claimedKind);
+    const scalar = rows.find((row) => row.matchedForecast?.id === "entry:intentional");
+    assert.equal(scalar.transactionId, claimed.id, claimedKind);
+    assert.equal(rows.filter((row) => row.recordedTransactions?.some((transaction) => transaction.transactionId === claimed.id)).length, 0, claimedKind);
+  }
+});
+
+test("adaptive funding cannot claim a debit scheduled for a named expense allocation", () => {
+  const { document, plan, accounts, transactions } = linkedPocketFixture();
+  document.allocations.push({ id: "other-expense", name: "Mobile Banking Transfer Withdrawal", kind: "expense",
+    amount: 253.27, currency: "USD", accountId: 1 });
+  const records = transactions.filter((row) => [2532, 2536].includes(row.id))
+    .map((row) => ({ ...row, merchant: row.kind === "expense" ? "Mobile Banking Transfer Withdrawal" : "Mobile Banking Transfer Deposit" }));
+  const rows = buildPlanRows({ ...plan, includeIncome: false, includeAnnualReserve: false, rowOverrides: [] },
+    document, 63, { accounts, transactions: records, today: "2026-11-06" });
+  const savings = rows.find((row) => row.source === "allocation" && row.allocationKind === "savings");
+  assert.equal(savings.amount, 500);
+  assert.equal(savings.actualTransferAmount, undefined);
+  assert.equal(savings.recordedTransactions, undefined);
+  const expense = rows.find((row) => row.source === "allocation" && row.allocationKind === "expense");
+  assert.equal(expense.completed, true);
+  assert.deepEqual(expense.recordedTransactions.map((row) => row.transactionId), [2532]);
+});
+
 test("a manual transfer releases general savings into available cash and the reverse earmarks cash", () => {
   const { document, plan, accounts } = transferFixture();
   for (const [fromAccountId, toAccountId, delta, ending] of [[2, 1, 96.73, 1018.13], [1, 2, -96.73, 824.67]]) {

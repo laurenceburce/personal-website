@@ -1093,3 +1093,51 @@ test("salary, annual reserves and payday savings remain linked across the worksp
   const spending = plain(render("spending", 0, planner, activity));
   assert.ok(spending.includes("Savings · ••1003 · Test Bank · savings · USD"));
 });
+
+test("linked checking, annual reserve and Smartly columns share reconciled balances with one row per bank transfer", () => {
+  const accounts = [
+    { id: 1, name: "Checking", mask: "5483", type: "checking", currency: "USD", nativeCurrentBalance: 854.23 },
+    { id: 2, name: "Savings", mask: "5742", type: "savings", currency: "USD", nativeCurrentBalance: 526.59 },
+    { id: 28, name: "Smartly Savings", mask: "0230", type: "savings", currency: "USD", nativeCurrentBalance: 500 },
+  ];
+  const base = fixture("plans", 0).snapshot.document;
+  const plan = { ...base.plans[0], startDate: "2026-11-05", endDate: "2026-11-10", openingUsd: 160.72,
+    includeIncome: true, includeTransactions: true, includeAnnualReserve: true, includeAllocations: true,
+    accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 2, savingsUsdAccountId: 28 },
+    rowOverrides: [
+      { rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 },
+      { rowId: "reserve:USD:2026-11-06", date: "2026-11-06", description: "Set aside for annual bills", amount: 22.89 },
+    ],
+  };
+  const props = fixture("plans", 0, {
+    salary: { ...base.salary, amount: 2300, accountId: 1 },
+    bills: [{ id: "annual", name: "Annual bill", cadence: "annual", amount: 1000, savedAmount: 503.70,
+      currency: "USD", dueMonths: [12], dueDay: null, sourceAccountId: 1, reserveAccountId: 2 }],
+    allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 253.27, currency: "USD", sourceAccountId: 1, accountId: 28 }],
+    plans: [plan],
+  }, { accounts });
+  props.today = "2026-11-06";
+  props.initialPlanActivity = { configured: true, from: plan.startDate, to: plan.endDate, transactions: [
+    { id: 2534, date: "2026-11-06", kind: "income", accountId: 1, amount: 969.67, currency: "USD", merchant: "Electronic Deposit 11/06 Maxx Potential", category: "Income" },
+    ...[[2533, 1, "expense", 22.89], [2535, 2, "income", 22.89], [2532, 1, "expense", 253.27], [2536, 28, "income", 253.27]]
+      .map(([id, accountId, kind, amount]) => ({ id, accountId, kind, amount, currency: "USD", date: "2026-11-06",
+        merchant: `Mobile Banking Transfer ${kind === "income" ? "Deposit" : "Withdrawal"}`, category: kind === "income" ? "Transfer In" : "Transfer Out" })),
+  ] };
+  const tree = workspaceHarness(props)();
+  const ledger = findElement(tree, (node) => node.type?.name === "Ledger");
+  assert.equal(ledger.props.rows.length, 3);
+  assert.equal(ledger.props.openingBalances.usd, 854.23);
+  assert.equal(ledger.props.openingReserve.usd, 526.59);
+  assert.equal(ledger.props.openingSavings.usd, 500);
+  assert.ok(ledger.props.rows.every((row) => row.balanceUsd === 854.23 && row.reserveUsd === 526.59 && row.savingsUsd === 500));
+  for (const source of ["reserve", "allocation"]) {
+    const row = ledger.props.rows.find((row) => row.source === source);
+    assert.equal(row.recordedTransactions.length, 2);
+    assert.equal(row.completionSource, "transaction");
+    assert.equal(row.reflectedInStartingBalance, true);
+  }
+  const html = renderToStaticMarkup(tree);
+  assert.match(plain(html), /Available funds · USD\$854\.23/);
+  assert.match(plain(html), /Annual reserve · USD\$526\.59/);
+  assert.match(html, /fpl-column-account">Smartly Savings · •0230/);
+});

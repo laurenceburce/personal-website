@@ -206,6 +206,175 @@ const project = (planner = plan, doc = document, extra = {}) =>
 const byId = (result, accountId) =>
   result.accounts.find((account) => account.accountId === accountId);
 
+function linkedPocketFixture(dated = false) {
+  const bank = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 854.23 },
+    { id: 2, name: "Savings", type: "savings", currency: "USD", nativeCurrentBalance: 526.59 },
+    { id: 28, name: "Smartly Savings", type: "savings", currency: "USD", nativeCurrentBalance: 500 },
+  ];
+  const doc = {
+    salary: { amount: 2300, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-10-23", accountId: 1 },
+    bills: [{ id: "annual", name: "Annual bill", cadence: "annual", amount: 1000, currency: "USD", dueDay: 31,
+      dueMonths: [12], savedAmount: 503.70, reserveAccountId: 2, sourceAccountId: 2 }],
+    allocations: [{ id: "save", name: "Savings", kind: "savings", amount: 253.27, currency: "USD", accountId: 28, sourceAccountId: 2 }],
+  };
+  const planner = {
+    startDate: "2026-11-05", endDate: "2026-11-07", openingUsd: 0, openingPhp: 0,
+    includeIncome: true, includeTransactions: true, includeAnnualReserve: true, includeAllocations: true, entries: [],
+    accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 2, savingsUsdAccountId: 28 },
+    startingAccounts: [{ accountId: 1, percentage: 0 }],
+    accountOpeningBalances: dated ? [{ accountId: 1, balance: 160.72 }, { accountId: 2, balance: 503.70 }, { accountId: 28, balance: 246.73 }] : [],
+    rowOverrides: [
+      { rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 },
+      { rowId: "reserve:USD:2026-11-06", date: "2026-11-06", description: "Set aside for annual bills", amount: 22.89 },
+    ],
+  };
+  const records = [
+    { id: 2534, accountId: 1, date: "2026-11-06", kind: "income", amount: 969.67, currency: "USD", merchant: "Electronic Deposit 11/06 Maxx Potential", category: "Income" },
+    { id: 2533, accountId: 1, date: "2026-11-06", kind: "expense", amount: 22.89, currency: "USD", category: "Transfer Out" },
+    { id: 2535, accountId: 2, date: "2026-11-06", kind: "income", amount: 22.89, currency: "USD", category: "Transfer In" },
+    { id: 2532, accountId: 1, date: "2026-11-06", kind: "expense", amount: 253.27, currency: "USD", category: "Transfer Out" },
+    { id: 2536, accountId: 28, date: "2026-11-06", kind: "income", amount: 253.27, currency: "USD", category: "Transfer In" },
+  ];
+  return { bank, doc, planner, records };
+}
+
+for (const dated of [false, true]) for (const includeTransactions of [false, true]) {
+  test(`linked columns follow their own native accounts with ${dated ? "dated" : "live"} openings and ${includeTransactions ? "visible" : "hidden"} reconciled bank transfers`, () => {
+    const { bank, doc, planner, records } = linkedPocketFixture(dated);
+    planner.includeTransactions = includeTransactions;
+    const before = JSON.stringify({ bank, doc, planner, records });
+    const result = buildAccountPlan(planner, doc, 63, { accounts: bank, transactions: records, today: "2026-11-06" });
+    assert.deepEqual(result.openingBalances, { usd: dated ? 160.72 : 854.23, php: 0 });
+    assert.equal(result.openingReserve.usd, dated ? 503.70 : 526.59);
+    assert.equal(result.openingSavings.usd, dated ? 246.73 : 500);
+    assert.equal(result.rows.length, 3, "each paycheck or matched transfer has one logical row");
+    assert.equal(result.rows.at(-1).balanceUsd, 854.23);
+    assert.equal(result.rows.at(-1).reserveUsd, 526.59);
+    assert.equal(result.rows.at(-1).savingsUsd, 500);
+    const reserve = result.rows.find((row) => row.source === "reserve");
+    const savings = result.rows.find((row) => row.source === "allocation");
+    assert.equal(reserve.balanceAppliedUsd, dated ? -22.89 : 0);
+    assert.equal(reserve.reserveDeltaUsd, dated ? 22.89 : 0);
+    assert.equal(savings.balanceAppliedUsd, dated ? -253.27 : 0);
+    assert.ok(result.rows.every((row) => row.completed));
+    assert.ok(result.rows.every((row) => row.balanceUsd <= 1130.39), "savings receipts cannot inflate checking");
+    assert.equal(byId(result, 1).endingBalance, 854.23);
+    assert.equal(byId(result, 2).endingBalance, 526.59);
+    assert.equal(byId(result, 28).endingBalance, 500);
+    assert.equal(before, JSON.stringify({ bank, doc, planner, records }));
+  });
+}
+
+test("linked savings and reserve columns use full selected bank balances rather than other earmarks or allocations", () => {
+  const { bank, doc, planner } = linkedPocketFixture();
+  doc.allocations.push({ id: "another", name: "Other savings", kind: "savings", amount: 1, currency: "USD", accountId: 29 });
+  bank.push({ id: 29, name: "Other savings", currency: "USD", type: "savings", nativeCurrentBalance: 900 });
+  const result = buildAccountPlan({ ...planner, endDate: "2026-11-05" }, doc, 63, { accounts: bank, today: "2026-11-06" });
+  assert.equal(result.openingReserve.usd, 526.59);
+  assert.equal(result.openingReserve.billSavingsUsd, 503.70);
+  assert.equal(result.openingSavings.usd, 500);
+  assert.deepEqual(result.openingSavings.accountIds, [28]);
+});
+
+test("unavailable linked columns stay unknown instead of falling back to cash or another bank account", () => {
+  const { bank, doc, planner } = linkedPocketFixture();
+  bank[0].nativeCurrentBalance = null;
+  bank[1].isArchived = true;
+  const result = buildAccountPlan({ ...planner, openingUsd: 10000,
+    accountLinks: { ...planner.accountLinks, savingsUsdAccountId: 99 } }, doc, 63,
+  { accounts: bank, today: "2026-11-05" });
+  assert.equal(result.openingBalances.usd, null);
+  assert.equal(result.openingReserve.usd, null);
+  assert.equal(result.openingSavings.usd, null);
+  assert.equal(result.rows.at(-1).balanceUsd, null);
+  assert.equal(result.rows.at(-1).reserveUsd, null);
+  assert.equal(result.rows.at(-1).savingsUsd, null);
+  assert.ok(result.warnings.some((warning) => warning.includes("balance is unavailable")));
+  assert.ok(result.warnings.some((warning) => warning.includes("Annual reserves")));
+  assert.ok(result.warnings.some((warning) => warning.includes("Savings")));
+});
+
+test("unselected columns in an explicit linked plan do not inherit unrelated manual cash or bank savings", () => {
+  const { bank, doc, planner } = linkedPocketFixture();
+  const result = buildAccountPlan({ ...planner, openingUsd: 5000, openingPhp: 7000,
+    accountLinks: { annualReserveUsdAccountId: 2 }, endDate: "2026-11-05" }, doc, 63,
+  { accounts: bank, today: "2026-11-06" });
+  assert.deepEqual(result.openingBalances, { usd: 0, php: 0 });
+  assert.equal(result.openingReserve.usd, 526.59);
+  assert.equal(result.openingReserve.php, 0);
+  assert.equal(result.openingSavings.usd, 0);
+  assert.equal(result.openingSavings.php, 0);
+  assert.deepEqual(result.openingSavings.accountIds, []);
+});
+
+test("automatic card dues use the linked checking funding account once and preserve both savings columns", () => {
+  const { bank, doc, planner } = linkedPocketFixture();
+  bank.push({ id: 3, name: "Card", type: "credit", currency: "USD", nativeCurrentBalance: 200,
+    creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-20" } });
+  const result = buildAccountPlan({ ...planner, endDate: "2026-11-30", includeIncome: false,
+    includeAnnualReserve: false, includeAllocations: false }, doc, 63, { accounts: bank, today: "2026-11-06" });
+  assert.equal(result.rows.length, 1);
+  const due = result.rows[0];
+  assert.equal(due.source, "creditCardDue");
+  assert.equal(due.fundingAccountId, 1);
+  assert.equal(due.balanceUsd, 654.23);
+  assert.equal(due.balanceAppliedUsd, -200);
+  assert.equal(due.reserveUsd, 526.59);
+  assert.equal(due.savingsUsd, 500);
+  assert.equal(byId(result, 3).endingBalance, 0);
+  assert.equal(byId(result, 1).endingBalance, 654.23);
+  assert.ok(!result.warnings.some((warning) => warning.includes("funding account is unknown")));
+});
+
+test("accountless future entries and conversions use linked available accounts while explicit assignments keep their own account", () => {
+  const { bank, doc, planner } = linkedPocketFixture();
+  bank.push({ id: 34, name: "RCBC", type: "checking", currency: "PHP", nativeCurrentBalance: 0 });
+  const result = buildAccountPlan({ ...planner, includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
+    accountLinks: { ...planner.accountLinks, availablePhpAccountId: 34 }, entries: [
+      { id: "fee", date: "2026-11-07", description: "Fee", kind: "expense", amount: 10, currency: "USD" },
+      { id: "refund", date: "2026-11-07", description: "Refund", kind: "income", amount: 20, currency: "USD" },
+      { id: "convert", date: "2026-11-07", description: "Convert", kind: "conversion", amount: 50, currency: "USD" },
+      { id: "reserve-fee", date: "2026-11-07", description: "Reserve fee", kind: "expense", amount: 5, currency: "USD", accountId: 2 },
+    ] }, doc, 63, { accounts: bank, today: "2026-11-06" });
+  assert.equal(result.rows.at(-1).balanceUsd, 814.23);
+  assert.equal(result.rows.at(-1).balancePhp, 3150);
+  assert.equal(result.rows.at(-1).reserveUsd, 521.59);
+  assert.equal(result.rows.at(-1).savingsUsd, 500);
+  assert.equal(byId(result, 1).endingBalance, 814.23);
+  assert.equal(byId(result, 34).endingBalance, 3150);
+  assert.ok(!result.warnings.some((warning) => warning.includes("no account assigned")));
+});
+
+test("a grouped unplanned bank transfer moves the linked source and destination once", () => {
+  const { bank, doc, planner, records } = linkedPocketFixture(true);
+  const result = buildAccountPlan({ ...planner, includeIncome: false, includeAnnualReserve: false, includeAllocations: false }, doc, 63,
+  { accounts: bank, transactions: records.filter((record) => [2533, 2535].includes(record.id)), today: "2026-11-06" });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].kind, "transfer");
+  assert.equal(result.rows[0].accountMovements.length, 2);
+  assert.equal(result.rows[0].balanceUsd, 137.83);
+  assert.equal(result.rows[0].reserveUsd, 526.59);
+  assert.equal(result.rows[0].savingsUsd, 246.73);
+});
+
+test("a coalesced partial transfer preserves its missing forecast leg without replaying its posted leg", () => {
+  for (const dated of [false, true]) {
+    const { bank, doc, planner } = linkedPocketFixture(dated);
+    const result = buildAccountPlan({ ...planner, includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
+      entries: [{ id: "partial", date: "2026-11-07", description: "Move savings", kind: "transfer", amount: 50, currency: "USD", fromAccountId: 1, toAccountId: 28 }] }, doc, 63,
+    { accounts: bank, today: "2026-11-06", transactions: [
+      { id: 99, date: "2026-11-06", accountId: 1, kind: "expense", currency: "USD", amount: 50, category: "Transfer Out" },
+    ] });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.rows[0].completed, false);
+    assert.equal(result.rows[0].recordedTransactions.length, 1);
+    assert.equal(result.rows[0].balanceUsd, dated ? 110.72 : 854.23);
+    assert.equal(result.rows[0].savingsUsd, dated ? 296.73 : 550);
+    assert.equal(result.rows[0].accountMovements.length, dated ? 2 : 1);
+  }
+});
+
 test("running savings starts with the linked bank balance and only a single edited payday changes", () => {
   const currentAccounts = structuredClone(accounts);
   currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = 246.73;

@@ -23,6 +23,34 @@ function Field({ label, children, hint }) {
   );
 }
 const key = () => globalThis.crypto.randomUUID();
+const columnLinks = [
+  ["availableUsdAccountId", "Available · USD", "USD"],
+  ["availablePhpAccountId", "Available · PHP", "PHP"],
+  ["annualReserveUsdAccountId", "Annual reserve · USD", "USD"],
+  ["annualReservePhpAccountId", "Annual reserve · PHP", "PHP"],
+  ["savingsUsdAccountId", "Savings · USD", "USD"],
+  ["savingsPhpAccountId", "Savings · PHP", "PHP"],
+];
+function suggestedLinks(document, accounts, plan) {
+  const unique = (ids) => {
+    const selected = [...new Set(ids.filter((id) => id != null).map(Number))];
+    return selected.length === 1 ? selected[0] : null;
+  };
+  const used = new Set();
+  return Object.fromEntries(columnLinks.map(([field, , currency]) => {
+    let accountId = field.startsWith("available")
+      ? document.salary?.currency === currency ? document.salary.accountId
+        : unique((plan.startingAccounts || []).filter((row) => Number(row.percentage) > 0 && accounts.some((account) => Number(account.id) === Number(row.accountId) && account.currency === currency)).map((row) => row.accountId))
+      : field.startsWith("annualReserve")
+        ? unique((document.bills || []).filter((bill) => bill.cadence === "annual" && bill.currency === currency).map((bill) => bill.reserveAccountId))
+        : unique((document.allocations || []).filter((allocation) => allocation.kind === "savings" && allocation.currency === currency).map((allocation) => allocation.accountId));
+    const account = accounts.find((item) => Number(item.id) === Number(accountId));
+    if (!account || account.currency !== currency || account.isArchived || account.is_archived ||
+        ["credit", "loan"].includes(account.type) || used.has(Number(accountId))) accountId = null;
+    if (accountId != null) used.add(Number(accountId));
+    return [field, accountId == null ? null : Number(accountId)];
+  }));
+}
 
 export default function FinancePlanForm({
   plan,
@@ -81,14 +109,19 @@ export default function FinancePlanForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (busy || disabled) return;
+        const { accountLinks, ...fields } = draft;
+        const linked = Boolean(accountLinks);
         onSave({
-          ...draft,
+          ...fields,
+          ...(linked ? { accountLinks } : {}),
           id: draft.id || key(),
-          openingUsd: Number(draft.openingUsd),
-          openingPhp: Number(draft.openingPhp),
+          openingUsd: linked ? 0 : Number(draft.openingUsd),
+          openingPhp: linked ? 0 : Number(draft.openingPhp),
           openingReserveUsd: Number(draft.openingReserveUsd),
           openingReservePhp: Number(draft.openingReservePhp),
-          startingAccounts: draft.startingAccounts.map((row) => ({
+          startingAccounts: linked ? [accountLinks.availableUsdAccountId, accountLinks.availablePhpAccountId]
+            .filter((id) => id != null).map((accountId) => ({ accountId: Number(accountId), percentage: 100 }))
+            : draft.startingAccounts.map((row) => ({
             accountId: Number(row.accountId),
             percentage: Number(row.percentage),
           })),
@@ -126,6 +159,52 @@ export default function FinancePlanForm({
           />
         </Field>
       </div>
+      <label className="fp-checkbox">
+        <input
+          type="checkbox"
+          checked={Boolean(draft.accountLinks)}
+          onChange={(event) => set("accountLinks", event.target.checked ? suggestedLinks(document, accounts, draft) : undefined)}
+        />
+        Link balance columns to bank accounts
+      </label>
+      {draft.accountLinks && (
+        <section className="fp-plan-live-start" aria-label="Budget column account links">
+          <div className="fp-plan-live-heading">
+            <div>
+              <h3>Column accounts</h3>
+              <p>Each column starts with its account’s current balance. Posted bank movements are included once; future entries project changes to that account.</p>
+            </div>
+            {onRefreshAccounts && (
+              <button type="button" className="fp-button fp-text" disabled={refreshingAccounts || busy} onClick={onRefreshAccounts}>
+                {refreshingAccounts ? "Refreshing…" : "Refresh bank balances"}
+              </button>
+            )}
+          </div>
+          {accountRefreshError && <p className="fp-alert fp-alert-warning" role="status">{accountRefreshError} Showing the last available balances.</p>}
+          <div className="fp-form-grid">
+            {columnLinks.map(([field, label, currency]) => {
+              const accountId = draft.accountLinks[field];
+              const selected = accounts.find((account) => Number(account.id) === Number(accountId));
+              const value = selected && (Object.hasOwn(selected, "nativeCurrentBalance") ? selected.nativeCurrentBalance : selected.currentBalance);
+              const known = value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+              return (
+                <Field key={field} label={label} hint={selected ? known ? `Current balance: ${money(Number(value), currency)}` : "Current balance unavailable." : "No account linked to this column."}>
+                  <FinanceAccountSelect
+                    aria-label={`${label} account`}
+                    accounts={assetAccounts.filter((account) => Number(account.id) === Number(accountId) || !Object.values(draft.accountLinks).includes(Number(account.id)))}
+                    currency={currency}
+                    value={accountId}
+                    onChange={(value) => set("accountLinks", { ...draft.accountLinks, [field]: value })}
+                    emptyLabel="No linked account"
+                  />
+                </Field>
+              );
+            })}
+          </div>
+          <p className="fp-inline-note">Transfers move money between the linked columns. A matching bank transfer replaces its planned movement. Use a separate account for each column.</p>
+        </section>
+      )}
+      {!draft.accountLinks && <>
       <section
         className="fp-plan-live-start"
         aria-label="Live starting balance accounts"
@@ -332,6 +411,7 @@ export default function FinancePlanForm({
         additional unassigned reserves. Suggested savings targets are not bank
         balances.
       </p>
+      </>}
       {[
         ["includeIncome", "Include scheduled salary payments"],
         [

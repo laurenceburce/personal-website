@@ -1,6 +1,7 @@
 import {
   buildPlanRows,
   convert,
+  getAnnualReserveOpening,
   getPlanOpening,
   getSummary,
   localDate,
@@ -189,6 +190,9 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   const accountById = new Map(
     accounts.map((account) => [Number(account.id), account]),
   );
+  const accountLinks = plan.accountLinks || {};
+  const linkedIds = new Set(Object.values(accountLinks).map(id).filter(Boolean));
+  const linkedId = (kind, currency) => id(accountLinks[`${kind}${currency === "USD" ? "Usd" : "Php"}AccountId`]);
   const opening = new Map(
     (plan.accountOpeningBalances || []).map((balance) => [
       id(balance.accountId),
@@ -197,8 +201,10 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   );
   const liveOpening = getPlanOpening(plan, accounts, document);
   const live = new Map(liveOpening.contributions.map((contribution) => [contribution.accountId, contribution.amount]));
-  // A selected percentage is always live, even when an older plan has a snapshot.
-  for (const accountId of live.keys()) opening.delete(accountId);
+  // Explicit column links can also review a dated account opening. The legacy
+  // percentage-based starting amounts continue to use current bank balances.
+  for (const accountId of live.keys())
+    if (!linkedIds.has(accountId)) opening.delete(accountId);
   const warnings = new Set(liveOpening.warnings);
   const balances = new Map();
   const annualReserved = new Map();
@@ -208,7 +214,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     const current = accountBalance(account);
     balances.set(
       accountId,
-      live.has(accountId) ? live.get(accountId) : opening.has(accountId) ? opening.get(accountId) : current,
+      linkedIds.has(accountId) ? opening.has(accountId) ? opening.get(accountId) : current
+        : live.has(accountId) ? live.get(accountId) : opening.has(accountId) ? opening.get(accountId) : current,
     );
     annualReserved.set(
       accountId,
@@ -217,6 +224,29 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     savingsAllocated.set(accountId, 0);
   }
   const salary = document.salary || {};
+  const linkedBalance = (kind, currency, fallback) => {
+    const selected = linkedId(kind, currency);
+    if (!selected) return plan.accountLinks ? 0 : fallback;
+    const account = accountById.get(selected);
+    const label = kind === "available" ? "Available funds" : kind === "annualReserve" ? "Annual reserves" : "Savings";
+    if (!account || archived(account) || liability(account) || account.currency !== currency) {
+      warnings.add(`${label}: its linked ${currency} account is unavailable; choose an active account in ${currency}.`);
+      return null;
+    }
+    const value = balances.get(selected);
+    if (value == null) warnings.add(`${account.name}: its linked ${label.toLowerCase()} balance is unavailable.`);
+    return value ?? null;
+  };
+  const openingBalances = {
+    usd: linkedBalance("available", "USD", liveOpening.usd),
+    php: linkedBalance("available", "PHP", liveOpening.php),
+  };
+  const reserveOpening = getAnnualReserveOpening(plan, document);
+  const openingReserve = {
+    ...reserveOpening,
+    usd: linkedBalance("annualReserve", "USD", reserveOpening.usd),
+    php: linkedBalance("annualReserve", "PHP", reserveOpening.php),
+  };
   const savingsAccounts = new Map();
   const unknownSavings = new Set();
   const unassignedSavings = { USD: 0, PHP: 0 };
@@ -253,6 +283,11 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     };
   };
   const openingSavings = savingsBalance();
+  for (const currency of ["USD", "PHP"])
+    openingSavings[currency.toLowerCase()] = linkedBalance("savings", currency, openingSavings[currency.toLowerCase()]);
+  if (plan.accountLinks)
+    openingSavings.accountIds = [...new Set(["USD", "PHP"]
+      .map((currency) => linkedId("savings", currency)).filter(Boolean))];
   const openingSource = live.size ? "live" : opening.size ? "plan" : "bank";
   if (!opening.size && plan.startDate < today)
     warnings.add(
@@ -310,20 +345,38 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     ].filter(Boolean);
   };
   const defaultSource = (selected, currency, label) => {
-    const value = selected ?? salary.accountId;
+    const value = plan.accountLinks ? linkedId("available", currency) : selected ?? salary.accountId;
     if (!value) return null;
     return checkedId(value, currency, label);
   };
+  const embeddedTransactions = new Map();
+  const visibleTransactionIds = new Set(sourceRows.filter((row) => row.source === "transaction")
+    .map((row) => String(row.transactionId ?? row.id)));
+  const usedEmbeddedTransactions = new Set();
+  for (const row of sourceRows) {
+    const transactions = (row.recordedTransactions || []).filter((transaction) => {
+      const key = String(transaction.transactionId ?? transaction.id);
+      if (visibleTransactionIds.has(key) || usedEmbeddedTransactions.has(key) || transaction.pending ||
+          !["income", "expense"].includes(transaction.kind) ||
+          !["USD", "PHP"].includes(transaction.currency) || !(Number(transaction.amount) > 0)) return false;
+      usedEmbeddedTransactions.add(key);
+      return true;
+    });
+    embeddedTransactions.set(row.id, transactions);
+  }
   const rawRows = sourceRows.map((row) => {
     let movements = [];
     const currency = row.currency || (row.php ? "PHP" : "USD");
-    if (row.source === "reserve") {
+    if (row.source === "transaction" && embeddedTransactions.get(row.id)?.length) {
+      // A grouped pair contains actual bank records rather than another
+      // projected transfer between their source and destination.
+    } else if (row.source === "reserve") {
       for (const allocation of row.reserveAllocations || []) {
         const bill = document.bills?.find(
           (bill) => bill.id === allocation.billId,
         );
         const destination =
-          allocation.reserveAccountId ?? bill?.reserveAccountId;
+          plan.accountLinks ? linkedId("annualReserve", currency) : allocation.reserveAccountId ?? bill?.reserveAccountId;
         const from = defaultSource(
           allocation.sourceAccountId ?? bill?.sourceAccountId,
           currency,
@@ -345,7 +398,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     ) {
       movements = transfer(
         defaultSource(row.sourceAccountId, currency, row.description),
-        row.accountId,
+        plan.accountLinks ? linkedId("savings", currency) : row.accountId,
         row.amount,
         currency,
         row.description,
@@ -353,18 +406,22 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     } else if (row.source === "creditCardDue") {
       const result = movement(row.creditAccountId, row.amount, currency, "cardPayment", row.description);
       if (result) movements.push(result);
-      if (row.amount > 0)
-        warnings.add(`${row.description}: the funding account is unknown; available funds include this payment, but no bank account debit is projected.`);
+      const funding = movement(linkedId("available", currency), -row.amount, currency, "cardFunding", row.description);
+      if (funding) movements.push(funding);
+      if (row.amount > 0 && !funding)
+        warnings.add(plan.accountLinks
+          ? `${row.description}: choose a linked available-funds account in ${currency} to include this planned payment in that balance.`
+          : `${row.description}: the funding account is unknown; available funds include this payment, but no bank account debit is projected.`);
     } else if (row.annualPayment && row.cardCreditActivity) {
       const result = movement(row.accountId, -(row.grossAmount ?? row.amount), currency, "payment", row.description);
       if (result) movements.push(result);
     } else if (row.annualPayment) {
       const reserve = checkedId(
-        row.reserveAccountId,
+        plan.accountLinks ? linkedId("annualReserve", currency) : row.reserveAccountId,
         currency,
         row.description,
       );
-      const payFrom = checkedId(row.accountId, currency, row.description);
+      const payFrom = checkedId(row.accountId ?? linkedId("available", currency), currency, row.description);
       const gross = row.grossAmount ?? row.amount;
       if (reserve && payFrom) {
         movements.push(
@@ -417,35 +474,35 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       const destinationCurrency = currency === "USD" ? "PHP" : "USD";
       movements = [
         movement(
-          row.fromAccountId,
+          row.fromAccountId ?? linkedId("available", currency),
           -row.amount,
           currency,
           "conversion",
           row.description,
         ),
         movement(
-          row.toAccountId,
+          row.toAccountId ?? linkedId("available", destinationCurrency),
           convert(row.amount, currency, destinationCurrency, rate),
           destinationCurrency,
           "conversion",
           row.description,
         ),
       ].filter(Boolean);
-      if (!row.fromAccountId || !row.toAccountId)
+      if (!(row.fromAccountId ?? linkedId("available", currency)) || !(row.toAccountId ?? linkedId("available", destinationCurrency)))
         warnings.add(
           `${row.description}: choose conversion source and destination accounts for account projections.`,
         );
     } else {
       const value = row.kind === "income" ? row.amount : -row.amount;
       const result = movement(
-        row.accountId,
+        row.accountId ?? (row.source !== "transaction" ? linkedId("available", currency) : null),
         value,
         currency,
         row.source === "transaction" ? "recorded" : "payment",
         row.description,
       );
       if (result) movements.push(result);
-      if (!row.accountId && row.amount > 0)
+      if (!row.accountId && !(row.source !== "transaction" && linkedId("available", currency)) && row.amount > 0)
         warnings.add(`${row.description}: no account assigned.`);
     }
     const grouped = new Map();
@@ -465,23 +522,45 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         direct.push(move);
       }
     }
+    // A reconciled task owns its bank records. Keep their actual movement on
+    // that row so dated openings replay it once while live balances skip it.
+    for (const transaction of embeddedTransactions.get(row.id) || []) {
+      // Scalar forecasts such as salary can retain their bank evidence when
+      // recorded rows are hidden. That evidence replaces, rather than adds to,
+      // the same predicted native payment.
+      const duplicatePayment = direct.findIndex((move) =>
+        !["transfer", "conversion", "recorded"].includes(move.kind) &&
+        move.accountId === Number(transaction.accountId) && move.currency === transaction.currency &&
+        Math.sign(move.amount) === (transaction.kind === "income" ? 1 : -1) &&
+        Math.abs(Math.abs(move.amount) - transaction.amount) < 0.005 && distance(transaction.date, row.date) <= 3);
+      if (duplicatePayment >= 0) direct.splice(duplicatePayment, 1);
+      const recorded = movement(transaction.accountId,
+        transaction.kind === "income" ? transaction.amount : -transaction.amount,
+        transaction.currency, "recorded", transaction.description || row.description);
+      if (recorded) direct.push({ ...recorded, recordedDate: transaction.date,
+        transactionId: transaction.transactionId ?? transaction.id });
+    }
     return { ...row, accountMovements: direct };
   });
   // Imported bank-transfer legs already move their native accounts. Suppress only
   // corresponding forecast legs, once each, leaving the reserve/allocation earmark.
-  const transferActuals = rawRows.filter(
+  const transferActuals = [...rawRows.filter(
     (row) =>
       row.source === "transaction" &&
       (transferCategory(row) || row.creditCardPaymentFor) &&
       !row.annualPayment &&
       (!row.scheduledSource || row.scheduledSource === "creditCardDue"),
-  );
+  ), ...sourceRows.flatMap((row) => (embeddedTransactions.get(row.id) || [])
+    .filter((transaction) => transferCategory(transaction) || transaction.creditCardPaymentFor)
+    .map((transaction) => ({ ...transaction, coalescedOwnerId: row.id })))];
   const consumed = new Set();
+  let previousAvailable = { ...openingBalances };
+  let previousReserve = { usd: openingReserve.usd, php: openingReserve.php };
   const rows = rawRows.map((row) => {
     const currentReserveReceipts = new Set();
     const projected = row.accountMovements
       .filter((move) => {
-        if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense")
+        if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense" && !move.recordedDate)
           return false;
         // Posted legs remain known when recorded ledger rows are hidden.
         // Current bank balances already include each posted leg; explicitly
@@ -499,6 +578,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         const match = transferActuals.find(
           (actual) =>
             !consumed.has(actual.id) &&
+            (!actual.coalescedOwnerId || actual.coalescedOwnerId === row.id) &&
             Number(actual.accountId) === move.accountId &&
             actual.currency === move.currency &&
             (actual.kind === "income" ? 1 : -1) === Math.sign(move.amount) &&
@@ -518,8 +598,9 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       .filter(
         (move) =>
           opening.has(move.accountId) ||
-          (row.date >= today &&
-            !(row.source === "transaction" && row.date <= today)),
+          (move.recordedDate ? move.recordedDate > today :
+            (row.date >= today &&
+              !(row.source === "transaction" && row.date <= today))),
       );
     for (const move of projected) {
       const account = accountById.get(move.accountId);
@@ -578,8 +659,34 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       unassignedSavings[row.currency] = roundMoney(unassignedSavings[row.currency] + row.amount);
     }
     const savings = savingsBalance();
+    const linkedColumns = {};
+    for (const currency of ["USD", "PHP"]) {
+      const unit = currency.toLowerCase();
+      const suffix = currency === "USD" ? "Usd" : "Php";
+      const available = linkedBalance("available", currency, row[`balance${suffix}`]);
+      const reserve = linkedBalance("annualReserve", currency, row[`reserve${suffix}`]);
+      if (plan.accountLinks) {
+        linkedColumns[`balance${suffix}`] = available;
+        linkedColumns[`balanceApplied${suffix}`] = available == null || previousAvailable[unit] == null
+          ? null : roundMoney(available - previousAvailable[unit]);
+        const change = reserve == null || previousReserve[unit] == null
+          ? null : roundMoney(reserve - previousReserve[unit]);
+        linkedColumns[`earmarkedReserve${suffix}`] = row[`reserve${suffix}`];
+        linkedColumns[`reserve${suffix}`] = reserve;
+        linkedColumns[`reserveDelta${suffix}`] = change;
+        linkedColumns[`reserveApplied${suffix}`] = change;
+      }
+      savings[unit] = linkedBalance("savings", currency, savings[unit]);
+      previousAvailable[unit] = available;
+      previousReserve[unit] = reserve;
+    }
     return {
       ...row,
+      ...linkedColumns,
+      ...(plan.accountLinks && row.recordedTransactions?.length && !projected.length
+        ? { reflectedInStartingBalance: true } : {}),
+      ...(row.source === "creditCardDue" && linkedId("available", row.currency)
+        ? { fundingAccountId: linkedId("available", row.currency) } : {}),
       savingsUsd: savings.usd,
       savingsPhp: savings.php,
       accountMovements: projected,
@@ -607,13 +714,17 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   });
   return {
     openingSource,
+    openingBalances,
+    openingReserve,
     openingSavings,
     warnings: [...warnings],
     rows,
     accounts: associations.map((account) => {
       const source = accountById.get(account.accountId);
-      const openingBalance = live.has(account.accountId) ? live.get(account.accountId)
-        : opening.has(account.accountId) ? opening.get(account.accountId) : accountBalance(source);
+      const openingBalance = linkedIds.has(account.accountId)
+        ? opening.has(account.accountId) ? opening.get(account.accountId) : accountBalance(source)
+        : live.has(account.accountId) ? live.get(account.accountId)
+          : opening.has(account.accountId) ? opening.get(account.accountId) : accountBalance(source);
       const endingBalance = balances.get(account.accountId);
       const endingAnnualReserved = annualReserved.get(account.accountId) || 0;
       return {
@@ -622,7 +733,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         endingBalance,
         endingAnnualReserved,
         savingsAllocated: savingsAllocated.get(account.accountId) || 0,
-        openingSource: live.has(account.accountId) ? "live" : opening.has(account.accountId) ? "plan" : "bank",
+        openingSource: linkedIds.has(account.accountId) ? opening.has(account.accountId) ? "plan" : "live"
+          : live.has(account.accountId) ? "live" : opening.has(account.accountId) ? "plan" : "bank",
         availableAfterAnnualReserve:
           endingBalance === null || liability(source)
             ? null

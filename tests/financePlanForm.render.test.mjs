@@ -205,3 +205,51 @@ test("an unknown current balance stays unavailable and annual earmarks are inclu
   assert.ok(reserved.includes("Already reserved for annual bills: −$1,000.00"));
   assert.ok(reserved.includes("Available starting balance: $100.00"));
 });
+
+test("linked column editor shows separate bank balances and saves exclusive native account links", () => {
+  const linkedAccounts = [account,
+    { ...account, id: 2, name: "Annual savings", mask: "1002", type: "savings", nativeCurrentBalance: 526.59 },
+    { ...account, id: 28, name: "Smartly Savings", mask: "1003", type: "savings", nativeCurrentBalance: 500 },
+  ];
+  const links = { availableUsdAccountId: 1, availablePhpAccountId: null, annualReserveUsdAccountId: 2,
+    annualReservePhpAccountId: null, savingsUsdAccountId: 28, savingsPhpAccountId: null };
+  let saved;
+  const Component = load(filename, { ...require("react"), useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}] }).default;
+  const tree = Component({ plan: { ...plan, accountLinks: links }, document, accounts: linkedAccounts, onSave(value) { saved = value; } });
+  const html = renderToStaticMarkup(tree);
+  assert.ok(plain(html).includes("Current balance: $526.59"));
+  assert.ok(plain(html).includes("Current balance: $500.00"));
+  assert.ok(!plain(html).includes("Flat starting amount"));
+  const annual = find(tree, (node) => node.props?.label === "Annual reserve · USD").props.children;
+  assert.deepEqual(annual.props.accounts.map((item) => item.id), [2]);
+  assert.equal(annual.props.value, 2);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(saved.accountLinks, links);
+  assert.equal(saved.openingUsd, 0);
+  assert.equal(saved.openingPhp, 0);
+  assert.deepEqual(saved.startingAccounts, [{ accountId: 1, percentage: 100 }]);
+  assert.deepEqual(saved.accountOpeningBalances, []);
+});
+
+test("enabling column links suggests the configured salary, annual reserve and savings destinations", () => {
+  let state;
+  const Component = load(filename, {
+    ...require("react"),
+    useState(initial) {
+      state ??= typeof initial === "function" ? initial() : initial;
+      return [state, (next) => { state = typeof next === "function" ? next(state) : next; }];
+    },
+  }).default;
+  const props = { plan, document: { ...document, salary: { ...document.salary, accountId: 1 },
+    bills: [{ cadence: "annual", currency: "USD", reserveAccountId: 2 }],
+    allocations: [{ kind: "savings", currency: "USD", accountId: 28 }] },
+    accounts: [account, { ...account, id: 2, type: "savings" }, { ...account, id: 28, type: "savings" }], onSave() {} };
+  let tree = Component(props);
+  const toggle = find(tree, (node) => node.type === "input" && node.props.type === "checkbox" && node.props.checked === false);
+  toggle.props.onChange({ target: { checked: true } });
+  tree = Component(props);
+  assert.equal(state.accountLinks.availableUsdAccountId, 1);
+  assert.equal(state.accountLinks.annualReserveUsdAccountId, 2);
+  assert.equal(state.accountLinks.savingsUsdAccountId, 28);
+  assert.ok(renderToStaticMarkup(tree).includes("Column accounts"));
+});

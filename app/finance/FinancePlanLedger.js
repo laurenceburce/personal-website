@@ -6,6 +6,13 @@ import "./finance-plan-ledger.css";
 const signed = (value, currency) =>
   `${value > 0 ? "+" : ""}${money(value, currency)}`;
 const balanceClass = (value) => (value < 0 ? "fp-negative" : "");
+const balanceText = (value, currency = "USD") => Number.isFinite(value) ? money(value, currency) : "—";
+
+function ColumnAccount({ accountId, accounts }) {
+  if (accountId == null) return null;
+  const account = accounts.find((item) => Number(item.id) === Number(accountId));
+  return <small className="fpl-column-account">{account?.name || "Unavailable account"}{account?.mask ? ` · •${account.mask}` : ""}</small>;
+}
 
 function ActionIcon({ kind }) {
   return (
@@ -46,8 +53,8 @@ function FlowAmount({ value, currency, showZero = false }) {
 function ReserveBalance({ value = 0, delta = 0, currency, unusedOnPhone = false }) {
   return (
     <td data-column={`reserve-${currency.toLowerCase()}`} data-label={`Annual reserve · ${currency}`} className={`fpl-reserve-balance ${balanceClass(value)}${unusedOnPhone ? " fpl-unused-on-phone" : ""}`}>
-      <span>{money(value, currency)}</span>
-      {delta !== 0 && (
+      <span>{balanceText(value, currency)}</span>
+      {Number.isFinite(delta) && delta !== 0 && (
         <small className="fpl-reserve-change">
           {signed(delta, currency)} {delta > 0 ? "set aside" : "used"}
         </small>
@@ -142,6 +149,11 @@ function SourceLabel({ row }) {
       {row.isOverride && (
         <small className="fpl-override-note">Edited for this plan</small>
       )}
+      {row.actualTransferAmount && Number.isFinite(row.plannedAmount) && (
+        <small className="fpl-match-note">
+          Bank transfer {money(row.amount, row.currency)} · Planned {money(row.plannedAmount, row.currency)}
+        </small>
+      )}
       {row.source === "creditCardDue" && !row.estimated && (
         <small className="fpl-credit-card-due-detail">
           Statement balance {money(row.statementBalance, row.currency)}
@@ -219,8 +231,22 @@ function SourceLabel({ row }) {
       )}
       {row.reflectedInRecordedTransactions && (
         <small className="fpl-reconciliation-note">
-          Cash movement shown in matched recorded transactions
+          {row.recordedTransactions?.length ? "Matched bank movement included here once" : "Cash movement shown in matched recorded transactions"}
         </small>
+      )}
+      {row.recordedTransactions?.length > 0 && (
+        <details className="fpl-account-movements">
+          <summary>Matched bank records · {row.recordedTransactions.length}</summary>
+          <ul>
+            {row.recordedTransactions.map((transaction) => (
+              <li key={transaction.id}>
+                {transaction.description || transaction.merchant || "Bank transaction"} · {formatDate(transaction.date)}
+                {" "}· {signed((transaction.kind === "income" ? 1 : -1) * transaction.amount, transaction.currency)}
+                {transaction.accountName && <small>{transaction.accountName}</small>}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {reserveAlreadyIncluded && (
         <small className="fpl-reconciliation-note">
@@ -356,6 +382,7 @@ function OpeningDetails({ openingBalances }) {
 export default function Ledger({
   plan,
   rows,
+  accounts = [],
   openingReserve,
   openingBalances,
   openingSavings,
@@ -384,8 +411,8 @@ export default function Ledger({
       behavior: "smooth",
     });
   };
-  const openingUsd = openingBalances?.usd ?? plan.openingUsd ?? 0;
-  const openingPhp = openingBalances?.php ?? plan.openingPhp ?? 0;
+  const openingUsd = openingBalances?.usd !== undefined ? openingBalances.usd : plan.openingUsd ?? 0;
+  const openingPhp = openingBalances?.php !== undefined ? openingBalances.php : plan.openingPhp ?? 0;
   // Retain currency availability metadata without omitting any financial values.
   const unusedCurrency = (opening, key) =>
     [opening, ...rows.map((row) => row[key])].every(
@@ -484,21 +511,27 @@ export default function Ledger({
               <th scope="col" data-column="flow-php">Flow · PHP</th>
               <th scope="col" data-column="available-usd" className="fp-running">
                 Available · USD
+                <ColumnAccount accountId={plan.accountLinks?.availableUsdAccountId} accounts={accounts} />
               </th>
               <th scope="col" data-column="available-php" className="fp-running">
                 Available · PHP
+                <ColumnAccount accountId={plan.accountLinks?.availablePhpAccountId} accounts={accounts} />
               </th>
               <th scope="col" data-column="reserve-usd" className="fpl-reserve-balance">
                 Annual reserve · USD
+                <ColumnAccount accountId={plan.accountLinks?.annualReserveUsdAccountId} accounts={accounts} />
               </th>
               <th scope="col" data-column="reserve-php" className="fpl-reserve-balance">
                 Annual reserve · PHP
+                <ColumnAccount accountId={plan.accountLinks?.annualReservePhpAccountId} accounts={accounts} />
               </th>
               <th scope="col" data-column="savings-usd" className="fpl-savings-balance">
                 Savings · USD
+                <ColumnAccount accountId={plan.accountLinks?.savingsUsdAccountId} accounts={accounts} />
               </th>
               <th scope="col" data-column="savings-php" className="fpl-savings-balance">
                 Savings · PHP
+                <ColumnAccount accountId={plan.accountLinks?.savingsPhpAccountId} accounts={accounts} />
               </th>
               <th scope="col" data-column="status">Status</th>
               <th scope="col" data-column="actions">
@@ -513,23 +546,25 @@ export default function Ledger({
                 <time className="fpl-mobile-date" dateTime={plan.startDate}>{formatDate(plan.startDate, { year: "2-digit" })}</time>
                 <strong>Starting balances</strong>
                 <small>Available funds, annual reserves, and savings</small>
-                <OpeningDetails openingBalances={openingBalances} />
+                {plan.accountLinks
+                  ? <small>Linked account balances; posted bank movements are already included.</small>
+                  : <OpeningDetails openingBalances={openingBalances} />}
               </td>
               <td data-column="flow-usd" data-label="Flow · USD" className="fp-zero fpl-opening-flow">—</td>
               <td data-column="flow-php" data-label="Flow · PHP" className="fp-zero fpl-opening-flow">—</td>
               <td data-column="available-usd" data-label="Available · USD" className={`fp-running ${balanceClass(openingUsd)}`}>
-                {money(openingUsd)}
+                {balanceText(openingUsd)}
               </td>
               <td data-column="available-php" data-label="Available · PHP" className={`fp-running ${balanceClass(openingPhp)}`}>
-                {money(openingPhp, "PHP")}
+                {balanceText(openingPhp, "PHP")}
               </td>
               <ReserveBalance
-                value={openingReserve?.usd ?? plan.openingReserveUsd ?? 0}
+                value={openingReserve?.usd !== undefined ? openingReserve.usd : plan.openingReserveUsd ?? 0}
                 currency="USD"
                 unusedOnPhone={unusedReserveUsd}
               />
               <ReserveBalance
-                value={openingReserve?.php ?? plan.openingReservePhp ?? 0}
+                value={openingReserve?.php !== undefined ? openingReserve.php : plan.openingReservePhp ?? 0}
                 currency="PHP"
                 unusedOnPhone={unusedReservePhp}
               />
@@ -581,19 +616,19 @@ export default function Ledger({
                     showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "PHP"}
                   />
                   <td data-column="available-usd" data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
-                    {money(row.balanceUsd)}
+                    {balanceText(row.balanceUsd)}
                   </td>
                   <td data-column="available-php" data-label="Available · PHP" className={`fp-running ${balanceClass(row.balancePhp)}`}>
-                    {money(row.balancePhp, "PHP")}
+                    {balanceText(row.balancePhp, "PHP")}
                   </td>
                   <ReserveBalance
-                    value={row.reserveUsd ?? 0}
+                    value={row.reserveUsd !== undefined ? row.reserveUsd : 0}
                     delta={row.reserveAppliedUsd ?? row.reserveDeltaUsd ?? 0}
                     currency="USD"
                     unusedOnPhone={unusedReserveUsd}
                   />
                   <ReserveBalance
-                    value={row.reservePhp ?? 0}
+                    value={row.reservePhp !== undefined ? row.reservePhp : 0}
                     delta={row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0}
                     currency="PHP"
                     unusedOnPhone={unusedReservePhp}

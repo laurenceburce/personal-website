@@ -204,6 +204,12 @@ const ACCOUNT_KEYS = new Set([
   "fromAccountId",
   "toAccountId",
   "salaryAccountId",
+  "availableUsdAccountId",
+  "availablePhpAccountId",
+  "annualReserveUsdAccountId",
+  "annualReservePhpAccountId",
+  "savingsUsdAccountId",
+  "savingsPhpAccountId",
 ]);
 export function remapFinancePlannerAccountIds(document, replacements) {
   const map =
@@ -220,6 +226,15 @@ export function remapFinancePlannerAccountIds(document, replacements) {
     if (!value || typeof value !== "object") return value;
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => {
+        if (key === "accountLinks" && item && typeof item === "object" && !Array.isArray(item)) {
+          const remapped = visit(item);
+          const ids = Object.entries(remapped)
+            .filter(([field, id]) => ACCOUNT_KEYS.has(field) && id != null)
+            .map(([, id]) => Number(id));
+          if (new Set(ids).size !== ids.length)
+            throw Object.assign(new Error("Assign separate budget column accounts before merging these accounts."), { status: 400 });
+          return [key, remapped];
+        }
         if (
           ["accountOpeningBalances", "startingAccounts"].includes(key) &&
           Array.isArray(item)

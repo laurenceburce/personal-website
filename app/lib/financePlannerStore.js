@@ -5,6 +5,14 @@ const MAX_BYTES = 1_000_000;
 const RATE_CACHE_MS = 60 * 60 * 1000;
 const MAX_AMOUNT = 999_999_999;
 const DAY_MS = 86_400_000;
+const PLAN_ACCOUNT_LINKS = [
+  ["availableUsdAccountId", "Available USD account", "USD"],
+  ["availablePhpAccountId", "Available PHP account", "PHP"],
+  ["annualReserveUsdAccountId", "Annual reserve USD account", "USD"],
+  ["annualReservePhpAccountId", "Annual reserve PHP account", "PHP"],
+  ["savingsUsdAccountId", "Savings USD account", "USD"],
+  ["savingsPhpAccountId", "Savings PHP account", "PHP"],
+];
 let pool;
 let schemaPromise;
 let rateCache;
@@ -168,6 +176,18 @@ function startingAccounts(value) {
       throw plannerError("Starting balance percentage must be between 0 and 100.");
     return { accountId: id, percentage: Math.round((row.percentage + Number.EPSILON) * 100) / 100 };
   });
+}
+
+function planAccountLinks(value) {
+  object(value, "Budget column account links");
+  const seen = new Set();
+  return Object.fromEntries(PLAN_ACCOUNT_LINKS.map(([field, label]) => {
+    const id = accountId(value[field], label);
+    if (id !== null && seen.has(id))
+      throw plannerError("Budget columns must use different accounts.");
+    if (id !== null) seen.add(id);
+    return [field, id];
+  }));
 }
 
 function planEntries(value, startDate, endDate, salary) {
@@ -419,6 +439,7 @@ export function validateFinancePlanner(value) {
         openingPhp: amount(plan.openingPhp, "Opening PHP balance", true),
         accountOpeningBalances: openingAccounts(plan.accountOpeningBalances),
         startingAccounts: startingAccounts(plan.startingAccounts),
+        ...(plan.accountLinks === undefined ? {} : { accountLinks: planAccountLinks(plan.accountLinks) }),
         completedRows: completedRows(plan.completedRows),
         rowOverrides: rowOverrides(plan.rowOverrides, startDate, endDate),
         openingReserveUsd: amount(
@@ -507,6 +528,8 @@ export function validateFinancePlannerAccounts(
       );
     }
     for (const plan of planner.plans || []) {
+      for (const [field, label, currency] of PLAN_ACCOUNT_LINKS)
+        add(`plan:${plan.id}:column:${field}`, plan.accountLinks?.[field], currency, label, true);
       for (const selected of plan.startingAccounts || [])
         add(
           `plan:${plan.id}:starting:${selected.accountId}`,
@@ -603,6 +626,7 @@ function referencedAccountIds(document) {
           "sourceAccountId",
           "fromAccountId",
           "toAccountId",
+          ...PLAN_ACCOUNT_LINKS.map(([field]) => field),
         ].includes(key) &&
         child != null
       )

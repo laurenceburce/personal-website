@@ -159,6 +159,20 @@ The finance workspace separates recorded activity from your plans:
   bill replaces its scheduled row; conservative matching uses amount, currency,
   date and description, including bank descriptions such as electronic deposits
   for salary. Generic deposits and transfers do not replace salary forecasts.
+  Enable **Link balance columns to bank accounts** in the plan editor to assign
+  a separate native account to Available, Annual reserve, and Savings in each
+  currency. Linked columns start with current bank balances; an explicit dated
+  account opening can be supplied for historical projections. Bank deposits into
+  the reserve or savings account affect that column only. Matching planned
+  transfers and their posted debit/credit records appear as one row, with bank
+  evidence in its details. A unique same-day debit/credit pair can replace a
+  reserve or savings estimate with the actual amount; details retain the planned
+  amount. Partial transfers keep their unposted leg pending.
+  Posted movements already included in live balances are not replayed. Linked
+  annual reserves show the account's full bank balance; per-bill earmarks remain
+  separate funding calculations. Linked credit card dues use the corresponding
+  Available account as their planned funding source. The column headers name
+  each account, and unavailable bank balances remain unavailable.
   Each annual bill keeps its own saved balance and payday
   contributions. An annual payment row shows only the additional cash needed
   after using those funds, with the full payment and reserve used in its detail.

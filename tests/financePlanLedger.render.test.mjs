@@ -79,6 +79,38 @@ const render = (rows = [], overrides = {}) =>
       ...overrides,
     }),
   );
+
+test("linked account headers and embedded bank records keep one logical reserve row", () => {
+  const html = render([row({ id: "reserve:USD:2026-11-06", source: "reserve", description: "Set aside for annual bills",
+    completed: true, completionSource: "transaction", amount: 22.89, currency: "USD", usd: -22.89,
+    balanceUsd: 854.23, reserveUsd: 526.59, savingsUsd: 500,
+    recordedTransactions: [
+      { id: "transaction:1", date: "2026-11-06", kind: "expense", amount: 22.89, currency: "USD", description: "Transfer withdrawal", accountName: "Checking" },
+      { id: "transaction:2", date: "2026-11-06", kind: "income", amount: 22.89, currency: "USD", description: "Transfer deposit", accountName: "Savings" },
+    ],
+  })], {
+    plan: { ...plan, accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 2, savingsUsdAccountId: 28 } },
+    accounts: [{ id: 1, name: "Checking", mask: "5483" }, { id: 2, name: "Savings", mask: "5742" }, { id: 28, name: "Smartly Savings", mask: "0230" }],
+    openingBalances: { usd: 854.23, php: 0 }, openingReserve: { usd: 526.59, php: 0 }, openingSavings: { usd: 500, php: 0 },
+  });
+  assert.match(html, /Available · USD<small class="fpl-column-account">Checking · •5483/);
+  assert.match(html, /Annual reserve · USD<small class="fpl-column-account">Savings · •5742/);
+  assert.match(html, /Savings · USD<small class="fpl-column-account">Smartly Savings · •0230/);
+  assert.equal((html.match(/class="fpl-row /g) || []).length, 1);
+  assert.match(html, /Matched bank records · 2/);
+  assert.match(html, /Done · matched transaction/);
+});
+
+test("unavailable linked available and reserve balances are never rendered as zero", () => {
+  const html = render([row({ balanceUsd: null, reserveUsd: null })], {
+    openingBalances: { usd: null, php: 0 }, openingReserve: { usd: null, php: 0 },
+  });
+  for (const field of ["available-usd", "reserve-usd"]) {
+    const cells = [...html.matchAll(new RegExp(`<td data-column="${field}"[^>]*>([\\s\\S]*?)<\\/td>`, "g"))];
+    assert.equal(cells.length, 2);
+    assert.ok(cells.every((cell) => !cell[1].includes("$0.00") && cell[1].includes("—")));
+  }
+});
 const plain = (html) => html.replace(/<[^>]*>/g, "");
 const cells = (html) =>
   [...html.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map(([, value]) =>

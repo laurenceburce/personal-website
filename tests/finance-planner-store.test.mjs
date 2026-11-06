@@ -134,6 +134,68 @@ test("manual transfers require two distinct accounts and reject unsafe account I
   }
 });
 
+test("budget column account links round trip with separate native accounts and preserve legacy plans", () => {
+  assert.equal(Object.hasOwn(validateFinancePlanner(document()).plans[0], "accountLinks"), false);
+  const planner = document();
+  planner.plans[0].accountLinks = {
+    availableUsdAccountId: "1", availablePhpAccountId: "4",
+    annualReserveUsdAccountId: 2, savingsUsdAccountId: 3,
+    secret: "discard",
+  };
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].accountLinks, {
+    availableUsdAccountId: 1, availablePhpAccountId: 4,
+    annualReserveUsdAccountId: 2, annualReservePhpAccountId: null,
+    savingsUsdAccountId: 3, savingsPhpAccountId: null,
+  });
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  assert.deepEqual(planner, before);
+  const blank = document();
+  blank.plans[0].accountLinks = {};
+  assert.ok(Object.values(validateFinancePlanner(blank).plans[0].accountLinks).every((id) => id === null));
+});
+
+test("budget column account links reject invalid shapes, unsafe IDs and accounts shared across columns", () => {
+  for (const accountLinks of [
+    null, true, "accounts", [],
+    { availableUsdAccountId: -1 }, { availableUsdAccountId: 0 },
+    { availableUsdAccountId: true }, { availableUsdAccountId: [] },
+    { availableUsdAccountId: {} }, { availableUsdAccountId: Infinity },
+    { availableUsdAccountId: Number.MAX_SAFE_INTEGER + 1 },
+    { availableUsdAccountId: "1e2" },
+    { availableUsdAccountId: 1, annualReserveUsdAccountId: "1" },
+    { annualReservePhpAccountId: 4, savingsPhpAccountId: 4 },
+  ]) {
+    const planner = document();
+    planner.plans[0].accountLinks = accountLinks;
+    assert.throws(() => validateFinancePlanner(planner), /account|accounts/);
+  }
+});
+
+test("each budget column validates its active asset account and native currency", () => {
+  for (const [field, currency] of [
+    ["availableUsdAccountId", "USD"], ["availablePhpAccountId", "PHP"],
+    ["annualReserveUsdAccountId", "USD"], ["annualReservePhpAccountId", "PHP"],
+    ["savingsUsdAccountId", "USD"], ["savingsPhpAccountId", "PHP"],
+  ]) {
+    const source = document();
+    source.plans[0].accountLinks = { [field]: 1 };
+    const planner = validateFinancePlanner(source);
+    const account = { id: 1, currency, type: "savings" };
+    assert.deepEqual(validateFinancePlannerAccounts(planner, [account]), [1], field);
+    assert.throws(() => validateFinancePlannerAccounts(planner, [{ ...account, currency: currency === "USD" ? "PHP" : "USD" }]), /currency must match/, field);
+    assert.throws(() => validateFinancePlannerAccounts(planner, [{ ...account, type: "credit" }]), /must hold funds/, field);
+    assert.throws(() => validateFinancePlannerAccounts(planner, [{ ...account, type: "loan" }]), /must hold funds/, field);
+    assert.throws(() => validateFinancePlannerAccounts(planner, [{ ...account, isArchived: true }]), /unavailable/, field);
+    assert.throws(() => validateFinancePlannerAccounts(planner, []), /unavailable/, field);
+    assert.doesNotThrow(() => validateFinancePlannerAccounts(planner, [{ ...account, isArchived: true }], planner), field);
+    const changed = structuredClone(planner);
+    changed.plans[0].accountLinks[field] = 2;
+    assert.throws(() => validateFinancePlannerAccounts(changed, [account], planner), /unavailable/, field);
+  }
+});
+
 test("account validation requires native currencies and active funding accounts, while retaining removed historical links", () => {
   const planner = validateFinancePlanner(document());
   planner.salary.accountId = 1;

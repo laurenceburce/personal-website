@@ -247,6 +247,32 @@ test("account references remap across salary, bills, savings, transfers and plan
   assert.equal(JSON.stringify(document), before);
 });
 
+test("all six budget column links follow a confirmed account identity without altering legacy plans", () => {
+  const links = {
+    availableUsdAccountId: 29, availablePhpAccountId: 34,
+    annualReserveUsdAccountId: 30, annualReservePhpAccountId: 38,
+    savingsUsdAccountId: 28, savingsPhpAccountId: 39,
+  };
+  const document = { plans: [{ accountLinks: links }, { name: "Legacy" }] };
+  const before = structuredClone(document);
+  const remapped = remapFinancePlannerAccountIds(document, { 29: 1, 34: 4, 30: 2, 38: 5, 28: 3, 39: 6 });
+  assert.deepEqual(remapped.plans[0].accountLinks, {
+    availableUsdAccountId: 1, availablePhpAccountId: 4,
+    annualReserveUsdAccountId: 2, annualReservePhpAccountId: 5,
+    savingsUsdAccountId: 3, savingsPhpAccountId: 6,
+  });
+  assert.deepEqual(remapped.plans[1], { name: "Legacy" });
+  assert.deepEqual(document, before);
+});
+
+test("an account merge cannot silently assign the same balance to two budget columns", () => {
+  const document = { plans: [{ accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 29, savingsUsdAccountId: null } }] };
+  const before = structuredClone(document);
+  assert.throws(() => remapFinancePlannerAccountIds(document, { 29: 1 }),
+    (error) => error.status === 400 && /separate budget column accounts/.test(error.message));
+  assert.deepEqual(document, before);
+});
+
 test("owner-confirmed missing metadata pairs are audited while conflicting bank identities still reject", () => {
   const credit = { account_type: "credit", persistent_account_id: null };
   const rows = [
