@@ -1594,6 +1594,106 @@ test("posted records replace matching salary, bills and exact dated manual forec
   assert.equal(before, JSON.stringify({ plan, document, transactions }));
 });
 
+function electronicSalaryFixture() {
+  return {
+    document: {
+      salary: { amount: 2300, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-10-23", accountId: 1 },
+      bills: [],
+      allocations: [],
+    },
+    plan: {
+      startDate: "2026-11-01", endDate: "2026-11-10", openingUsd: 160.72,
+      includeIncome: true, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+      entries: [],
+      rowOverrides: [{ rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 }],
+    },
+    transaction: {
+      id: 2534, date: "2026-11-06", kind: "income", accountId: 1, currency: "USD",
+      amount: 969.67, merchant: "Electronic Deposit 11/06 Maxx Potential", category: "Income",
+    },
+  };
+}
+
+test("an electronic payroll deposit replaces the adjusted salary once and keeps its completion identity", () => {
+  const { document, plan, transaction } = electronicSalaryFixture();
+  const before = JSON.stringify({ document, plan, transaction });
+  const rows = buildPlanRows(plan, document, 63, { transactions: [transaction], today: "2026-11-06" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, "transaction");
+  assert.equal(rows[0].usd, 969.67);
+  assert.equal(rows[0].balanceUsd, 1130.39);
+  assert.equal(rows[0].matchedForecast.id, "salary:2026-11-06");
+  assert.equal(rows[0].completionKey, "salary:2026-11-06");
+  assert.equal(rows[0].completed, true);
+  assert.equal(rows[0].completionSource, "transaction");
+  assert.equal(before, JSON.stringify({ document, plan, transaction }));
+});
+
+test("electronic salary matching preserves its account, currency, amount, date and posting guards", () => {
+  const { document, plan, transaction } = electronicSalaryFixture();
+  for (const patch of [
+    { accountId: 2 }, { accountId: null }, { currency: "PHP" }, { amount: 970 },
+    { date: "2026-11-02" }, { date: "2026-11-10" }, { pending: true }, { kind: "expense" },
+  ]) {
+    const rows = buildPlanRows(plan, document, 63, { transactions: [{ ...transaction, ...patch }], today: "2026-11-10" });
+    assert.equal(rows.filter((row) => row.source === "salary").length, 1, JSON.stringify(patch));
+    assert.equal(rows.some((row) => row.matchedForecast), false, JSON.stringify(patch));
+    assert.equal(rows.find((row) => row.source === "salary").completed, false, JSON.stringify(patch));
+  }
+});
+
+test("generic deposits, transfers and gifts cannot consume a same-size salary forecast", () => {
+  const { document, plan, transaction } = electronicSalaryFixture();
+  for (const merchant of ["Mobile Banking Transfer Deposit 11/06 5483", "Deposit", "Birthday gift", "ATM deposit"]) {
+    const rows = buildPlanRows(plan, document, 63, {
+      transactions: [{ ...transaction, merchant, category: merchant.startsWith("Mobile") ? "Transfer In" : "Income" }],
+      today: "2026-11-06",
+    });
+    assert.equal(rows.filter((row) => row.source === "salary").length, 1, merchant);
+    assert.equal(rows.some((row) => row.matchedForecast), false, merchant);
+    assert.equal(rows.at(-1).balanceUsd, 2100.06, merchant);
+  }
+});
+
+test("only one electronic deposit replaces each payday and other recorded income is retained", () => {
+  const { document, plan, transaction } = electronicSalaryFixture();
+  const rows = buildPlanRows(plan, document, 63, {
+    transactions: [transaction, { ...transaction, id: 2538 }], today: "2026-11-06",
+  });
+  assert.equal(rows.filter((row) => row.source === "salary").length, 0);
+  assert.equal(rows.length, 2);
+  assert.equal(rows.filter((row) => row.matchedForecast).length, 1);
+  assert.equal(rows.at(-1).balanceUsd, 2100.06);
+});
+
+test("early or late electronic salary deposits move payday funding to the actual posting date once", () => {
+  const { document, plan, transaction } = electronicSalaryFixture();
+  document.bills = [annual("Renewal", 260, "USD", 30, [11])];
+  document.allocations = [{ id: "save", name: "Savings", kind: "savings", amount: 100, currency: "USD" }];
+  for (const date of ["2026-11-03", "2026-11-09"]) {
+    const rows = buildPlanRows({ ...plan, includeAnnualReserve: true, includeAllocations: true }, document, 63, {
+      transactions: [{ ...transaction, date }], today: "2026-11-10",
+    });
+    assert.equal(rows.filter((row) => row.source === "salary").length, 0, date);
+    assert.equal(rows.filter((row) => row.source === "reserve").length, 1, date);
+    assert.equal(rows.filter((row) => row.source === "allocation").length, 1, date);
+    assert.ok(rows.every((row) => row.date === date), date);
+    assert.equal(rows[0].balanceUsd, 1130.39, date);
+  }
+});
+
+test("a hidden electronic salary deposit completes the forecast without adding its cash flow twice", () => {
+  const { document, plan, transaction } = electronicSalaryFixture();
+  const rows = buildPlanRows({ ...plan, includeTransactions: false }, document, 63, {
+    transactions: [transaction], today: "2026-11-06",
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].source, "salary");
+  assert.equal(rows[0].completionSource, "transaction");
+  assert.deepEqual(rows[0].matchedTransactionIds, [2534]);
+  assert.equal(rows[0].balanceUsd, 1130.39);
+});
+
 test("matching does not discard unrelated income or nonmatching user forecasts", () => {
   const document = {
     salary: {

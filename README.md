@@ -157,7 +157,9 @@ The finance workspace separates recorded activity from your plans:
   and recorded transactions across the entire date range (including transfers).
   Pending bank entries are excluded until posted. A matching posted salary or
   bill replaces its scheduled row; conservative matching uses amount, currency,
-  date and description. Each annual bill keeps its own saved balance and payday
+  date and description, including bank descriptions such as electronic deposits
+  for salary. Generic deposits and transfers do not replace salary forecasts.
+  Each annual bill keeps its own saved balance and payday
   contributions. An annual payment row shows only the additional cash needed
   after using those funds, with the full payment and reserve used in its detail.
   For example, a $395 bill with $100 saved needs $295 more; later set-asides can

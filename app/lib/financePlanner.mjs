@@ -544,7 +544,7 @@ function forecastMatchesTransaction(forecast, transaction) {
       .join(" "),
   );
   if (forecast.source === "salary")
-    return /\b(salary|payroll|paycheck|wages|direct deposit)\b/.test(
+    return /\b(salary|payroll|paycheck|wages|direct deposit|electronic deposit)\b/.test(
       actualDescription,
     );
   if (forecast.source === "manual")

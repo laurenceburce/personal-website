@@ -47,6 +47,49 @@ const accounts = [
   },
 ];
 
+for (const liveOpening of [false, true]) {
+  test(`electronic salary deposits count once with ${liveOpening ? "live" : "dated"} account openings`, () => {
+    const depositAccounts = [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1130.39 },
+    ];
+    const depositDocument = {
+      salary: { amount: 2300, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-10-23", accountId: 1 },
+      bills: [],
+      allocations: [],
+    };
+    const depositPlan = {
+      startDate: "2026-11-05", endDate: "2026-11-07",
+      openingUsd: liveOpening ? 0 : 160.72, openingPhp: 0,
+      includeIncome: true, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+      entries: [],
+      accountOpeningBalances: [{ accountId: 1, balance: 160.72 }],
+      startingAccounts: liveOpening ? [{ accountId: 1, percentage: 100 }] : [],
+      rowOverrides: [{ rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 }],
+    };
+    const transactions = [
+      { id: 2534, date: "2026-11-06", kind: "income", amount: 969.67, currency: "USD", accountId: 1,
+        merchant: "Electronic Deposit 11/06 Maxx Potential", category: "Income" },
+    ];
+    const before = JSON.stringify({ depositPlan, depositDocument, depositAccounts, transactions });
+    const options = { accounts: depositAccounts, transactions, today: "2026-11-06" };
+    const rows = buildPlanRows(depositPlan, depositDocument, 63, options);
+    const projection = buildAccountPlan(depositPlan, depositDocument, 63, { ...options, rows });
+
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].source, "transaction");
+    assert.equal(rows[0].transactionId, 2534);
+    assert.equal(rows[0].scheduledSource, "salary");
+    assert.equal(rows[0].completionKey, "salary:2026-11-06");
+    assert.equal(rows[0].completed, true);
+    assert.equal(rows[0].completionSource, "transaction");
+    assert.equal(rows[0].balanceUsd, 1130.39);
+    assert.equal(rows[0].balanceAppliedUsd, liveOpening ? 0 : 969.67);
+    assert.equal(projection.accounts[0].endingBalance, 1130.39);
+    assert.equal(projection.rows[0].accountMovements.length, liveOpening ? 0 : 1);
+    assert.equal(before, JSON.stringify({ depositPlan, depositDocument, depositAccounts, transactions }));
+  });
+}
+
 test("recurring transfers preserve native assets and posted legs replace only one occurrence", () => {
   const transferAccounts = [
     { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
