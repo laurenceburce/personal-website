@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as planner from "../app/lib/financePlanner.mjs";
+import * as presentation from "../app/lib/financePlanPresentation.mjs";
 import * as insights from "../app/lib/financeInsights.mjs";
 import * as accountPlan from "../app/lib/financeAccountPlan.mjs";
 
@@ -33,6 +34,7 @@ function loadComponent(filename, reactOverride) {
     if (specifier === "react" && reactOverride) return reactOverride;
     if (specifier.endsWith(".css")) return {};
     if (specifier === "../lib/financePlanner.mjs") return planner;
+    if (specifier === "../lib/financePlanPresentation.mjs") return presentation;
     if (specifier === "../lib/financeInsights.mjs") return insights;
     if (specifier === "../lib/financeAccountPlan.mjs") return accountPlan;
     if (specifier.startsWith("./")) {

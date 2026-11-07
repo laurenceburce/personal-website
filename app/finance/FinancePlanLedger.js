@@ -1,6 +1,7 @@
 "use client";
 
 import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
+import { PLAN_ROW_CATEGORIES, getPlanRowCategory } from "../lib/financePlanPresentation.mjs";
 import "./finance-plan-ledger.css";
 
 const signed = (value, currency) =>
@@ -417,6 +418,16 @@ export default function Ledger({
 }) {
   const ledgerId = `budget-ledger-${String(plan.id || `${plan.startDate}-${plan.endDate}`).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   const upcomingIndex = rows.findIndex((row) => row.date >= today && !row.completed);
+  // Preserve projection order: its running balances and row anchors use this order.
+  const dateGroups = [];
+  rows.forEach((row, rowIndex) => {
+    let group = dateGroups[dateGroups.length - 1];
+    if (!group || group.date !== row.date) {
+      group = { date: row.date, rows: [] };
+      dateGroups.push(group);
+    }
+    group.rows.push({ row, rowIndex });
+  });
   const columns = [
     { key: "flow", label: "Flow", visible: true },
     { key: "available", label: "Available balances", visible: true },
@@ -451,6 +462,14 @@ export default function Ledger({
   const unusedSavingsPhp = unusedCurrency(openingSavings?.php, "savingsPhp");
   return (
     <div className="fpl-ledger">
+      <ul className="fpl-category-legend" aria-label="Row colors">
+        {PLAN_ROW_CATEGORIES.map((category) => (
+          <li key={category.key} className={`fpl-category-${category.key}`}>
+            <span className="fpl-category-swatch" aria-hidden="true" />
+            {category.label}
+          </li>
+        ))}
+      </ul>
       <div className="fpl-mobile-toolbar">
         <form className="fpl-display-controls" onSubmit={(event) => event.preventDefault()}>
           <details className="fpl-column-options">
@@ -594,146 +613,159 @@ export default function Ledger({
               <td data-column="status" className="fp-zero fpl-opening-status">—</td>
               <td data-column="actions" className="fpl-actions-cell" />
             </tr>
-            {rows.map((row, rowIndex) => {
-              const manualEntry =
-                row.source === "manual"
-                  ? plan.entries.find((entry) => entry.id === row.entryId)
-                  : null;
-              const editableOccurrence =
-                row.editable &&
-                (["salary", "bill", "allocation", "reserve"].includes(row.source) ||
-                  (row.source === "manual" && row.recurring));
-              const recurringEntry = manualEntry && row.recurring;
-              return (
-                <tr
-                  id={`${ledgerId}-row-${rowIndex}`}
-                  key={row.id}
-                  className={`fpl-row fpl-row-${row.source}${row.completed ? " fpl-row-completed" : ""}`}
-                >
-                  <td data-column="date" className="fpl-date-cell">{formatDate(row.date, { year: "numeric" })}</td>
-                  <td data-column="description" className="fpl-description-cell">
-                    <time className="fpl-mobile-date" dateTime={row.date}>{formatDate(row.date, { year: "2-digit" })}</time>
-                    <strong title={row.description}>{row.description}</strong>
-                    {row.estimated && <span className="fpl-estimate-tag">Estimated</span>}
-                    {row.source === "creditCardDue" && row.annualBillCoverage?.length > 0 && (
-                      <small className="fpl-match-note">Includes annual bill · {money(row.annualBillCoverage.reduce((total, coverage) => total + coverage.amount, 0), row.currency)}</small>
-                    )}
-                    <details className="fpl-row-details">
-                      <summary aria-label={`Details for ${row.description}`}>
-                        <span className="fpl-details-text">Details</span>
-                        <span className="fpl-details-icon" aria-hidden="true">⋯</span>
-                      </summary>
-                      <div className="fpl-row-notes">
-                        <span className="fpl-detail-title">{row.description}</span>
-                        <SourceLabel row={row} />
-                      </div>
-                    </details>
-                  </td>
-                  <FlowAmount
-                    value={row.usd}
-                    currency="USD"
-                    showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "USD"}
-                  />
-                  <FlowAmount
-                    value={row.php}
-                    currency="PHP"
-                    showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "PHP"}
-                  />
-                  <td data-column="available-usd" data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
-                    {balanceText(row.balanceUsd)}
-                  </td>
-                  <td data-column="available-php" data-label="Available · PHP" className={`fp-running ${balanceClass(row.balancePhp)}`}>
-                    {balanceText(row.balancePhp, "PHP")}
-                  </td>
-                  <ReserveBalance
-                    value={row.reserveUsd !== undefined ? row.reserveUsd : 0}
-                    delta={row.reserveAppliedUsd ?? row.reserveDeltaUsd ?? 0}
-                    currency="USD"
-                    unusedOnPhone={unusedReserveUsd}
-                  />
-                  <ReserveBalance
-                    value={row.reservePhp !== undefined ? row.reservePhp : 0}
-                    delta={row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0}
-                    currency="PHP"
-                    unusedOnPhone={unusedReservePhp}
-                  />
-                  <SavingsBalance value={row.savingsUsd} currency="USD" unusedOnPhone={unusedSavingsUsd} />
-                  <SavingsBalance value={row.savingsPhp} currency="PHP" unusedOnPhone={unusedSavingsPhp} />
-                  <td data-column="status" className="fpl-status-cell">
-                    <CompletionStatus
-                      row={row}
-                      onToggleComplete={onToggleComplete}
-                      busy={busy}
+          </tbody>
+          {dateGroups.map((group, groupIndex) => (
+            <tbody
+              key={`${group.date}-${groupIndex}`}
+              className="fpl-date-group"
+              data-date={group.date}
+              aria-label={formatDate(group.date, { year: "numeric" })}
+            >
+              {group.rows.map(({ row, rowIndex }, indexInGroup) => {
+                const category = getPlanRowCategory(row);
+                const manualEntry =
+                  row.source === "manual"
+                    ? plan.entries.find((entry) => entry.id === row.entryId)
+                    : null;
+                const editableOccurrence =
+                  row.editable &&
+                  (["salary", "bill", "allocation", "reserve"].includes(row.source) ||
+                    (row.source === "manual" && row.recurring));
+                const recurringEntry = manualEntry && row.recurring;
+                return (
+                  <tr
+                    id={`${ledgerId}-row-${rowIndex}`}
+                    key={row.id}
+                    className={`fpl-row fpl-row-${row.source} fpl-category-${category.key} ${indexInGroup === 0 ? "fpl-date-start" : "fpl-date-repeat"}${row.completed ? " fpl-row-completed" : ""}`}
+                  >
+                    <td data-column="date" className="fpl-date-cell">
+                      <time className={indexInGroup > 0 ? "fp-sr-only" : undefined} dateTime={row.date}>{formatDate(row.date, { year: "numeric" })}</time>
+                    </td>
+                    <td data-column="description" className="fpl-description-cell">
+                      <time className="fpl-mobile-date" dateTime={row.date}>{formatDate(row.date, { year: "2-digit" })}</time>
+                      <strong title={row.description}>{row.description}</strong>
+                      <span className="fpl-category-label">{category.label}</span>
+                      {row.estimated && <span className="fpl-estimate-tag">Estimated</span>}
+                      {row.source === "creditCardDue" && row.annualBillCoverage?.length > 0 && (
+                        <small className="fpl-match-note">Includes annual bill · {money(row.annualBillCoverage.reduce((total, coverage) => total + coverage.amount, 0), row.currency)}</small>
+                      )}
+                      <details className="fpl-row-details">
+                        <summary aria-label={`Details for ${row.description}`}>
+                          <span className="fpl-details-text">Details</span>
+                          <span className="fpl-details-icon" aria-hidden="true">⋯</span>
+                        </summary>
+                        <div className="fpl-row-notes">
+                          <span className="fpl-detail-title">{row.description}</span>
+                          <SourceLabel row={row} />
+                        </div>
+                      </details>
+                    </td>
+                    <FlowAmount
+                      value={row.usd}
+                      currency="USD"
+                      showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "USD"}
                     />
-                  </td>
-                  <td data-column="actions" className="fpl-actions-cell">
-                    {(manualEntry || editableOccurrence) && (
-                      <div className="fp-row-actions">
-                        <button
-                          type="button"
-                          className="fp-button fp-secondary fp-icon-button"
-                          aria-label={
-                            editableOccurrence
-                              ? `Edit this occurrence: ${row.description}`
-                              : `Edit ${row.description}`
-                          }
-                          disabled={
-                            busy || !(editableOccurrence ? onEditOccurrence : onEdit)
-                          }
-                          onClick={() => {
-                            if (busy) return;
-                            if (editableOccurrence) onEditOccurrence?.(row);
-                            else if (manualEntry) onEdit?.(manualEntry);
-                          }}
-                        >
-                          <ActionIcon kind="edit" />
-                        </button>
-                        {recurringEntry && (
-                          <button
-                            type="button"
-                            className="fp-button fp-secondary fpl-edit-series"
-                            aria-label={`Edit recurring entry: ${manualEntry.description}`}
-                            disabled={busy || !onEdit}
-                            onClick={() => {
-                              if (!busy) onEdit?.(manualEntry);
-                            }}
-                          >
-                            Series
-                          </button>
-                        )}
-                        {manualEntry && (
+                    <FlowAmount
+                      value={row.php}
+                      currency="PHP"
+                      showZero={(row.annualPayment || row.source === "creditCardDue") && row.currency === "PHP"}
+                    />
+                    <td data-column="available-usd" data-label="Available · USD" className={`fp-running ${balanceClass(row.balanceUsd)}`}>
+                      {balanceText(row.balanceUsd)}
+                    </td>
+                    <td data-column="available-php" data-label="Available · PHP" className={`fp-running ${balanceClass(row.balancePhp)}`}>
+                      {balanceText(row.balancePhp, "PHP")}
+                    </td>
+                    <ReserveBalance
+                      value={row.reserveUsd !== undefined ? row.reserveUsd : 0}
+                      delta={row.reserveAppliedUsd ?? row.reserveDeltaUsd ?? 0}
+                      currency="USD"
+                      unusedOnPhone={unusedReserveUsd}
+                    />
+                    <ReserveBalance
+                      value={row.reservePhp !== undefined ? row.reservePhp : 0}
+                      delta={row.reserveAppliedPhp ?? row.reserveDeltaPhp ?? 0}
+                      currency="PHP"
+                      unusedOnPhone={unusedReservePhp}
+                    />
+                    <SavingsBalance value={row.savingsUsd} currency="USD" unusedOnPhone={unusedSavingsUsd} />
+                    <SavingsBalance value={row.savingsPhp} currency="PHP" unusedOnPhone={unusedSavingsPhp} />
+                    <td data-column="status" className="fpl-status-cell">
+                      <CompletionStatus
+                        row={row}
+                        onToggleComplete={onToggleComplete}
+                        busy={busy}
+                      />
+                    </td>
+                    <td data-column="actions" className="fpl-actions-cell">
+                      {(manualEntry || editableOccurrence) && (
+                        <div className="fp-row-actions">
                           <button
                             type="button"
                             className="fp-button fp-secondary fp-icon-button"
-                            aria-label={recurringEntry ? `Delete recurring entry: ${manualEntry.description}` : `Delete ${row.description}`}
-                            disabled={busy || !onDelete}
+                            aria-label={
+                              editableOccurrence
+                                ? `Edit this occurrence: ${row.description}`
+                                : `Edit ${row.description}`
+                            }
+                            disabled={
+                              busy || !(editableOccurrence ? onEditOccurrence : onEdit)
+                            }
                             onClick={() => {
-                              if (!busy) onDelete?.(manualEntry);
+                              if (busy) return;
+                              if (editableOccurrence) onEditOccurrence?.(row);
+                              else if (manualEntry) onEdit?.(manualEntry);
                             }}
                           >
-                            <ActionIcon kind="delete" />
+                            <ActionIcon kind="edit" />
                           </button>
-                        )}
-                        {editableOccurrence && row.isOverride && (
-                          <button
-                            type="button"
-                            className="fp-button fp-secondary fpl-reset-occurrence"
-                            aria-label={`Reset this occurrence: ${row.description}`}
-                            disabled={busy || !onResetOccurrence}
-                            onClick={() => {
-                              if (!busy) onResetOccurrence?.(row);
-                            }}
-                          >
-                            Reset
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
+                          {recurringEntry && (
+                            <button
+                              type="button"
+                              className="fp-button fp-secondary fpl-edit-series"
+                              aria-label={`Edit recurring entry: ${manualEntry.description}`}
+                              disabled={busy || !onEdit}
+                              onClick={() => {
+                                if (!busy) onEdit?.(manualEntry);
+                              }}
+                            >
+                              Series
+                            </button>
+                          )}
+                          {manualEntry && (
+                            <button
+                              type="button"
+                              className="fp-button fp-secondary fp-icon-button"
+                              aria-label={recurringEntry ? `Delete recurring entry: ${manualEntry.description}` : `Delete ${row.description}`}
+                              disabled={busy || !onDelete}
+                              onClick={() => {
+                                if (!busy) onDelete?.(manualEntry);
+                              }}
+                            >
+                              <ActionIcon kind="delete" />
+                            </button>
+                          )}
+                          {editableOccurrence && row.isOverride && (
+                            <button
+                              type="button"
+                              className="fp-button fp-secondary fpl-reset-occurrence"
+                              aria-label={`Reset this occurrence: ${row.description}`}
+                              disabled={busy || !onResetOccurrence}
+                              onClick={() => {
+                                if (!busy) onResetOccurrence?.(row);
+                              }}
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          ))}
         </table>
       </div>
       <details className="fpl-legend">

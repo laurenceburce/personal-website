@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as planner from "../app/lib/financePlanner.mjs";
+import * as presentation from "../app/lib/financePlanPresentation.mjs";
 
 const require = createRequire(import.meta.url);
 const componentUrl = new URL(
@@ -26,6 +27,7 @@ const componentModule = { exports: {} };
 const componentRequire = (specifier) => {
   if (specifier === "./finance-plan-ledger.css") return {};
   if (specifier === "../lib/financePlanner.mjs") return planner;
+  if (specifier === "../lib/financePlanPresentation.mjs") return presentation;
   return require(specifier);
 };
 new Function("require", "module", "exports", code)(
@@ -160,6 +162,84 @@ const completionCheckbox = (record, props = {}) =>
       ...props,
     }),
   ).find(isCompletionInput);
+
+test("date groups separate full calendar dates while retaining row order, balances, and upcoming links", () => {
+  const dates = ["2026-11-06", "2026-11-06", "2026-11-07", "2026-12-06", "2027-01-06"];
+  const records = dates.map((date, index) => row({
+    id: `grouped-${index}`,
+    date,
+    description: `Item ${index}`,
+    usd: -(index + 1),
+    balanceUsd: 749 - index,
+    completed: index < 2,
+  }));
+  const props = {
+    plan: { ...plan, id: "grouping", endDate: "2027-01-06" },
+    rows: records,
+    today: "2026-11-06",
+    onToggleComplete() {},
+  };
+  const nodes = elements(Ledger(props));
+  const bodies = nodes.filter((node) => node.type === "tbody");
+  const groups = bodies.filter((node) => node.props.className === "fpl-date-group");
+  assert.equal(bodies.length, 5, "starting balances have their own row group");
+  assert.deepEqual(groups.map((group) => group.props["data-date"]), [
+    "2026-11-06", "2026-11-07", "2026-12-06", "2027-01-06",
+  ]);
+  assert.deepEqual(groups.map((group) => group.props["aria-label"]), [
+    "Nov 6, 2026", "Nov 7, 2026", "Dec 6, 2026", "Jan 6, 2027",
+  ]);
+  const groupedRows = groups.map((group) => elements(group).filter((node) => node.type === "tr"));
+  assert.deepEqual(groupedRows.map((group) => group.length), [2, 1, 1, 1]);
+  for (const group of groupedRows) {
+    assert.match(group[0].props.className, /\bfpl-date-start\b/);
+    assert.ok(group.slice(1).every((record) => /\bfpl-date-repeat\b/.test(record.props.className)));
+  }
+  const entries = groupedRows.flat();
+  assert.deepEqual(entries.map((entry) => entry.props.id), records.map((_, index) => `budget-ledger-grouping-row-${index}`));
+  assert.deepEqual(entries.map((entry) => elements(entry).find((node) => node.type === "strong").props.children), records.map((entry) => entry.description));
+  assert.deepEqual(entries.map((entry) => elements(entry).find((node) => node.type === "td" && node.props["data-column"] === "flow-usd").props.children), ["-$1.00", "-$2.00", "-$3.00", "-$4.00", "-$5.00"]);
+  assert.deepEqual(entries.map((entry) => elements(entry).find((node) => node.type === "td" && node.props["data-column"] === "available-usd").props.children), ["$749.00", "$748.00", "$747.00", "$746.00", "$745.00"]);
+  assert.equal(nodes.filter(isCompletionInput).length, records.length);
+  assert.equal(nodes.find((node) => node.type === "a" && node.props.children === "Upcoming").props.href, "#budget-ledger-grouping-row-2");
+});
+
+test("an empty ledger keeps starting balances without creating an empty date group", () => {
+  const nodes = elements(Ledger({ plan, rows: [] }));
+  assert.equal(nodes.filter((node) => node.type === "tbody").length, 1);
+  assert.equal(nodes.filter((node) => node.type === "tbody" && node.props.className === "fpl-date-group").length, 0);
+  assert.equal(nodes.filter((node) => node.type === "tr" && node.props.className?.includes("fpl-opening-row")).length, 1);
+});
+
+test("row colors and visible category names survive completion and transaction matching", () => {
+  const cases = [
+    ["savings", "Savings", { source: "allocation", allocationKind: "savings" }],
+    ["bill", "Bills", { source: "bill", completed: true, completionSource: "transaction" }],
+    ["transfer", "Transfers", { source: "manual", kind: "transfer" }],
+    ["reserve", "Annual reserves", { source: "reserve" }],
+    ["income", "Income", { source: "salary", kind: "income" }],
+    ["expense", "Expenses", { source: "manual", kind: "expense" }],
+    ["income", "Income", { source: "transaction", kind: "income", scheduledSource: "salary", completed: true }],
+    ["bill", "Bills", { source: "transaction", scheduledSource: "bill", completed: true }],
+    ["savings", "Savings", { source: "transaction", scheduledSource: "allocation", matchedForecast: { source: "allocation", allocationKind: "savings" }, completed: true }],
+  ];
+  const records = cases.map(([, , fields], index) => row({ ...fields, id: `category-${index}`, description: `Category ${index}` }));
+  const nodes = elements(Ledger({ plan, rows: records }));
+  const renderedRows = nodes.filter((node) => node.type === "tr" && node.props.id);
+  assert.equal(renderedRows.length, records.length);
+  for (let index = 0; index < cases.length; index += 1) {
+    const [key, label] = cases[index];
+    assert.match(renderedRows[index].props.className, new RegExp(`\\bfpl-category-${key}\\b`));
+    const pill = elements(renderedRows[index]).find((node) => node.type === "span" && node.props.className === "fpl-category-label");
+    assert.equal(pill?.props.children, label);
+  }
+  const legend = nodes.find((node) => node.type === "ul" && node.props.className === "fpl-category-legend");
+  assert.equal(legend?.props["aria-label"], "Row colors");
+  const legendHtml = renderToStaticMarkup(legend);
+  for (const label of ["Savings", "Bills", "Transfers", "Annual reserves", "Income", "Expenses"]) {
+    assert.ok(plain(legendHtml).includes(label), label);
+  }
+});
 
 test("statement dues explain the full balance and payments without occurrence editing", () => {
   const html = render([row({
