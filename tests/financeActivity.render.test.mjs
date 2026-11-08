@@ -82,7 +82,7 @@ function loadComponents(reactOverride) {
   );
   return componentModule.exports;
 }
-const { QuickTransactionForm, TransactionsPanel, BankAccountsPanel } =
+const { QuickTransactionForm, TransactionsPanel, BankAccountsPanel, CreditCardAutopayForm } =
   loadComponents();
 const account = {
   id: 1,
@@ -438,6 +438,81 @@ test("missing statement data stays unavailable and stale statement data is label
   assert.match(stale, /Last known statement details/);
 });
 
+test("credit card automatic payment display keeps the bank due date and statement balance intact", () => {
+  const card = { ...bankAccounts[0], type: "credit", name: "Rewards card", nativeCurrentBalance: 990,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 472.35, dueDate: "2026-11-20" } };
+  const before = structuredClone(card);
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [card] }, rate: 63 });
+  assert.match(html, /Payment due<\/dt><dd>Nov 20, 2026/);
+  assert.match(html, /Automatic payment<\/dt><dd>Nov 13, 2026/);
+  assert.match(html, /Statement balance[\s\S]*\$472\.35/);
+  assert.match(html, /Budget Plans use the automatic payment date/);
+  assert.match(html, /does not enroll the card in bank autopay or send a payment/);
+  assert.deepEqual(card, before);
+  assert.doesNotMatch(html, /type="number"/);
+});
+
+function autopayHarness(props = {}) {
+  const slots = [];
+  let cursor = 0;
+  const saved = [];
+  const components = loadComponents({ ...require("react"), useState(initial) {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+    return [slots[index], (next) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }];
+  } });
+  return { saved, render() {
+    cursor = 0;
+    return components.CreditCardAutopayForm({ account: { id: 10, creditCardDue: { dueDate: "2026-11-20" } },
+      onSave: (settings) => saved.push(settings), ...props });
+  } };
+}
+
+test("automatic payment settings default to one week early and save only after explicit submission", () => {
+  const harness = autopayHarness();
+  let tree = harness.render();
+  const checkbox = findElement(tree, (node) => node.type === "input" && node.props.type === "checkbox");
+  assert.equal(checkbox.props.checked, false);
+  checkbox.props.onChange({ target: { checked: true } });
+  tree = harness.render();
+  const days = findElement(tree, (node) => node.type === numberModule.exports.default);
+  assert.equal(days.props.value, "7");
+  assert.match(renderToStaticMarkup(tree), /Planned payment: Nov 13, 2026/);
+  assert.equal(harness.saved.length, 0);
+  findElement(tree, (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(harness.saved, [{ enabled: true, daysBeforeDue: 7 }]);
+});
+
+test("automatic payment settings require bounded whole days and allow payment on the due date", () => {
+  const harness = autopayHarness({ account: { id: 10, creditCardAutopayEnabled: true,
+    creditCardAutopayDaysBeforeDue: 7, creditCardDue: { dueDate: "2026-11-20" } } });
+  for (const value of ["", "-1", "32", "1.5", "abc"]) {
+    const tree = harness.render();
+    findElement(tree, (node) => node.type === numberModule.exports.default).props.onChange({ target: { value } });
+    findElement(harness.render(), (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(harness.saved.length, 0);
+    assert.match(renderToStaticMarkup(harness.render()), /whole number of days from 0 to 31/);
+  }
+  findElement(harness.render(), (node) => node.type === numberModule.exports.default).props.onChange({ target: { value: "0" } });
+  assert.match(renderToStaticMarkup(harness.render()), /Planned payment: Nov 20, 2026/);
+  findElement(harness.render(), (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(harness.saved, [{ enabled: true, daysBeforeDue: 0 }]);
+});
+
+test("automatic payment preferences are disabled while saving or finance is unavailable", () => {
+  for (const props of [{ disabled: true }, { saving: true }]) {
+    const harness = autopayHarness(props);
+    const tree = harness.render();
+    assert.equal(findElement(tree, (node) => node.type === "fieldset").props.disabled, true);
+    findElement(tree, (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+    assert.equal(harness.saved.length, 0);
+  }
+  const harness = bankHarness({ props: { activity: { ...bankActivity, configured: false,
+    accounts: [{ ...bankAccounts[0], type: "credit" }] } } });
+  assert.equal(findElement(harness.render(), (node) => node.type?.name === "CreditCardAutopayForm").props.disabled, true);
+});
+
 test("bank cards distinguish savings accounts and show their annual and payday allocations", () => {
   const html = render(BankAccountsPanel, {
     activity: bankActivity,
@@ -539,6 +614,32 @@ const actionButton = (tree, label) =>
     (node) =>
       node.type?.name === "ActionButton" && node.props.children === label,
   );
+
+test("saving a credit card automatic payment preference sends only settings and refreshes the workspace", async () => {
+  const card = { ...bankAccounts[0], id: 99, type: "credit", name: "Rewards card",
+    creditCardDue: { statementBalance: 472.35, dueDate: "2026-11-20" }, nativeCurrentBalance: 990 };
+  const before = structuredClone(card);
+  const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [card] } } });
+  const form = findElement(harness.render(), (node) => node.type?.name === "CreditCardAutopayForm");
+  assert.equal(form.props.disabled, false);
+  await form.props.onSave({ enabled: true, daysBeforeDue: 7 });
+  assert.deepEqual(harness.actions, [{ action: "updateCreditCardAutopay", data: { accountId: 99, enabled: true, daysBeforeDue: 7 } }]);
+  assert.equal(harness.refreshes(), 1);
+  assert.deepEqual(card, before);
+  const busy = bankHarness({ props: { activity: { ...bankActivity, accounts: [card] }, busy: true } });
+  assert.equal(findElement(busy.render(), (node) => node.type?.name === "CreditCardAutopayForm").props.disabled, true);
+});
+
+test("automatic payment save failures display the action error without claiming a refresh", async () => {
+  const errors = [];
+  const harness = bankHarness({ result() { throw new Error("The settings could not be saved."); },
+    props: { activity: { ...bankActivity, accounts: [{ ...bankAccounts[0], type: "credit" }] },
+      onError: (message) => errors.push(message) } });
+  const form = findElement(harness.render(), (node) => node.type?.name === "CreditCardAutopayForm");
+  await form.props.onSave({ enabled: true, daysBeforeDue: 7 });
+  assert.deepEqual(errors, ["The settings could not be saved."]);
+  assert.equal(harness.refreshes(), 0);
+});
 
 test("removing one account and unlinking a connection require their own concrete confirmation", async () => {
   const harness = bankHarness();

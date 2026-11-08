@@ -142,6 +142,41 @@ test("budget plans automatically include full card statements on their due dates
   assert.ok(!html.includes("Statement balance $25.00"));
 });
 
+test("budget plans include saved autopay dates before the original bank due date and plan boundary", () => {
+  for (const currency of ["USD", "PHP"]) {
+    const props = fixture("plans", 0, { bills: [] }, { accounts: [{
+      id: 7, name: "Travel card", type: "credit", isLinked: true, currency, nativeCurrentBalance: 200,
+      creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDueStatus: "current", creditCardDue: { statementBalance: 200, dueDate: "2026-11-20" },
+    }] });
+    Object.assign(props.snapshot.document.plans[0], { endDate: "2026-11-15", openingUsd: currency === "USD" ? 750 : 0,
+      openingPhp: currency === "PHP" ? 750 : 0 });
+    const tree = workspaceHarness(props)();
+    const payment = findElement(tree, (node) => node.type?.name === "Ledger").props.rows.find((row) => row.source === "creditCardDue");
+    assert.equal(payment.date, "2026-11-13");
+    assert.equal(payment.dueDate, "2026-11-20");
+    assert.equal(payment[currency === "USD" ? "balanceUsd" : "balancePhp"], 550);
+    const html = renderToStaticMarkup(createElement(Workspace, props));
+    assert.match(plain(html), /Automatic payment Nov 13, 2026 · Due Nov 20, 2026/);
+    assert.match(plain(html), /saved autopay schedule/);
+  }
+});
+
+test("unpaid autopay before the plan start warns about starting balances without rescheduling the bank cycle", () => {
+  for (const statementBalance of [null, 200]) {
+    const props = fixture("plans", 0, { bills: [] }, { accounts: [{
+      id: 7, name: "Travel card", type: "credit", isLinked: true, currency: "USD", nativeCurrentBalance: 200,
+      creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDueStatus: "current", creditCardDue: { statementBalance, dueDate: "2026-11-20" },
+    }] });
+    Object.assign(props.snapshot.document.plans[0], { startDate: "2026-11-15", endDate: "2026-11-30" });
+    const text = plain(renderToStaticMarkup(createElement(Workspace, props)));
+    assert.match(text, /automatic payments fall before this plan starts on Nov 15, 2026/);
+    assert.match(text, /Check posted payments and the plan’s starting balances/);
+    assert.match(text, /scheduled Nov 13, 2026\. Due Nov 20, 2026/);
+  }
+});
+
 function nextCycleCardFixture(endDate) {
   const props = fixture("plans", 0, { bills: [] }, {
     accounts: [{
@@ -171,6 +206,24 @@ test("a future unbilled Venture X balance appears as an estimated payment within
   assert.match(html, /Dec 18/);
   assert.ok(!text.includes("fall after this plan ends"));
   assert.ok(!text.includes("Statement balance $0.00"));
+});
+
+test("autopay moves an unbilled estimate inside the plan and its outside-plan notice keeps both dates", () => {
+  for (const endDate of ["2026-12-10", "2026-12-12"]) {
+    const props = nextCycleCardFixture(endDate);
+    Object.assign(props.initialActivity.accounts[0], { creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 });
+    const text = plain(renderToStaticMarkup(createElement(Workspace, props)));
+    if (endDate === "2026-12-12") {
+      assert.match(text, /Available funds · USD\$619\.84/);
+      assert.match(text, /Automatic payment Dec 11, 2026 · Due Dec 18, 2026/);
+      assert.doesNotMatch(text, /fall after this plan ends/);
+    } else {
+      assert.match(text, /Available funds · USD\$2,000\.00/);
+      assert.match(text, /Venture X: \$1,380\.16 estimated for Dec 11, 2026\. Automatic payment · Due Dec 18, 2026/);
+      assert.match(text, /fall after this plan ends on Dec 10, 2026/);
+      assert.doesNotMatch(text, /Bank-reported payment date/);
+    }
+  }
 });
 
 test("short plans disclose next-cycle estimates without charging them before the payment date", () => {

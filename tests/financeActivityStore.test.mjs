@@ -169,6 +169,23 @@ test("credit statement dues preserve unknown fields and never use the revolving 
   assert.equal(mapFinanceActivityAccount({...row, account_type: "checking"}).creditCardDue, null);
 });
 
+test("credit card autopay preferences expose safe defaults independently of bank statement details", () => {
+  const card = { id: 7, account_type: "credit", currency: "USD", current_balance: 250 };
+  const defaults = mapFinanceActivityAccount(card);
+  assert.equal(defaults.creditCardAutopayEnabled, false);
+  assert.equal(defaults.creditCardAutopayDaysBeforeDue, 7);
+  for (const days of [0, 7, 31]) {
+    const account = mapFinanceActivityAccount({ ...card, credit_card_autopay_enabled: 1, credit_card_autopay_days_before_due: days });
+    assert.equal(account.creditCardAutopayEnabled, true);
+    assert.equal(account.creditCardAutopayDaysBeforeDue, days);
+    assert.equal(account.creditCardDue, null);
+  }
+  for (const days of [null, undefined, -1, 32, 1.5, "invalid"]) {
+    assert.equal(mapFinanceActivityAccount({ ...card, credit_card_autopay_days_before_due: days }).creditCardAutopayDaysBeforeDue, 7);
+  }
+  assert.equal(mapFinanceActivityAccount({ ...card, account_type: "checking", credit_card_autopay_enabled: 1 }).creditCardAutopayEnabled, false);
+});
+
 test("bank setup distinguishes sandbox and real setup, encryption and HTTPS requirements", () => {
   assert.equal(financeProviderStatus({}).plaid.configured, false);
   const env = {

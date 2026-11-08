@@ -33,6 +33,9 @@ export default function FinanceCreditCardDuesNotice({
   const afterPlan = plan?.endDate
     ? estimates.filter((row) => row.date > plan.endDate)
     : [];
+  const beforePlan = plan?.startDate
+    ? obligations.filter((row) => row.autopayEnabled && row.amount > 0 && row.date < plan.startDate)
+    : [];
   const stale = cards.filter(
     (account) => account.creditCardDueStatus === "stale" &&
       (!missing.includes(account) || estimatedAccountIds.has(String(account.id))),
@@ -41,10 +44,26 @@ export default function FinanceCreditCardDuesNotice({
   return (
     <div className="fp-credit-card-dues-notice">
       <p className="fp-plan-flow-note">
-        Reported credit card statements are included on their due dates. Unbilled
+        Reported credit card statements use their due dates or saved autopay schedule. Unbilled
         balances use the next available payment date and are labeled as estimates.
         Future purchases, payments, and statement updates can change these estimates.
       </p>
+      {beforePlan.length > 0 && (
+        <div className="fp-plan-warning" role="status">
+          <p>
+            These automatic payments fall before this plan starts on {formatDate(plan.startDate, { year: "numeric" })} and are not deducted in its rows. Check posted payments and the plan’s starting balances.
+          </p>
+          <ul>
+            {beforePlan.map((row) => (
+              <li key={row.id}>
+                <strong>{row.accountName || "Credit card"}</strong>: {money(row.amount, row.currency)}{row.estimated ? " estimated" : " remaining"}, scheduled {formatDate(row.date, { year: "numeric" })}.
+                {" "}{row.estimated && !row.estimateDateIsReported ? "Estimated due" : "Due"} {formatDate(row.dueDate, { year: "numeric" })}.
+              </li>
+            ))}
+          </ul>
+          {onEditPlan && <button onClick={onEditPlan}>Edit plan</button>}
+        </div>
+      )}
       {afterPlan.length > 0 && (
         <div className="fp-plan-warning" role="status">
           <p>
@@ -55,7 +74,9 @@ export default function FinanceCreditCardDuesNotice({
             {afterPlan.map((row) => (
               <li key={row.id}>
                 <strong>{row.accountName || "Credit card"}</strong>: {money(row.amount, row.currency)} estimated for {formatDate(row.date, { year: "numeric" })}.
-                {" "}{row.estimateDateIsReported ? "Bank-reported payment date." : "Estimated payment date."}
+                {" "}{row.autopayEnabled
+                  ? <>Automatic payment · {row.estimateDateIsReported ? "Due" : "Estimated due"} {formatDate(row.dueDate, { year: "numeric" })}.</>
+                  : row.estimateDateIsReported ? "Bank-reported payment date." : "Estimated payment date."}
               </li>
             ))}
           </ul>

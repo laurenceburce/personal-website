@@ -598,6 +598,84 @@ test("automatic card dues reduce the liability without inventing a funding accou
   assert.ok(result.warnings.some((warning) => warning.includes("funding account is unknown")));
 });
 
+test("linked account forecasts pay cards on their autopay date even when the bank due date is outside the plan", () => {
+  const document = { salary: {}, bills: [], allocations: [] };
+  for (const currency of ["USD", "PHP"]) for (const enabled of [false, true]) {
+    const suffix = currency === "USD" ? "Usd" : "Php";
+    const cardAccounts = [
+      { id: 1, name: "Checking", type: "checking", currency, nativeCurrentBalance: 1000 },
+      { id: 2, name: "Travel card", type: "credit", currency, isLinked: true, nativeCurrentBalance: 200,
+        creditCardAutopayEnabled: enabled, creditCardAutopayDaysBeforeDue: 7,
+        creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+    ];
+    const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-15", openingUsd: 0, openingPhp: 0,
+      accountLinks: { [`available${suffix}AccountId`]: 1 },
+      startingAccounts: [{ accountId: 1, percentage: 100 }],
+      accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+    const result = buildAccountPlan(cardPlan, document, 63, { accounts: cardAccounts, today: "2026-11-01" });
+    const payment = result.rows.find((row) => row.source === "creditCardDue");
+    assert.equal(Boolean(payment), enabled);
+    assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, enabled ? 800 : 1000);
+    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, enabled ? 0 : 200);
+    if (enabled) {
+      assert.equal(payment.date, "2026-11-13");
+      assert.equal(payment.dueDate, "2026-11-20");
+      assert.equal(payment.id, "creditCardDue:2:2026-11-20");
+      assert.equal(payment[currency === "USD" ? "balanceUsd" : "balancePhp"], 800);
+      assert.deepEqual(payment.accountMovements.map((move) => [move.accountId, move.amount]), [[2, 200], [1, -200]]);
+    }
+  }
+});
+
+test("posted autopay bank legs replace the card forecast once for linked dated openings", () => {
+  const document = { salary: {}, bills: [], allocations: [] };
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 800 },
+    { id: 2, name: "Travel card", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 0,
+      creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: null } },
+  ];
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-15", openingUsd: 0, openingPhp: 0,
+    accountLinks: { availableUsdAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, includeTransactions: true, entries: [] };
+  const transactions = [
+    { id: 1, date: "2026-11-13", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Debt", merchant: "Automatic payment" },
+    { id: 2, date: "2026-11-13", amount: 200, currency: "USD", kind: "expense", accountId: 1, category: "Debt", merchant: "Travel card payment" },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-14", transactions });
+  const result = buildAccountPlan(plan, document, 63, { accounts, rows, today: "2026-11-14" });
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 800);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+  assert.equal(result.rows.at(-1).balanceUsd, 800);
+  const payment = result.rows.find((row) => row.source === "creditCardDue");
+  assert.equal(payment.amount, 0);
+  assert.equal(payment.paidAmount, 200);
+  assert.equal(payment.completed, true);
+  assert.equal(payment.dueDate, "2026-11-20");
+});
+
+test("estimated unbilled card payments shift before the cycle due date without moving the bank date", () => {
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "Travel card", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 200,
+      creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDue: { statementBalance: 0, dueDate: "2026-12-03", lastStatementDate: null } },
+  ];
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+    accountLinks: { availableUsdAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63, { accounts, today: "2026-11-01" });
+  const payment = result.rows.find((row) => row.source === "creditCardDue");
+  assert.equal(payment.date, "2026-11-26");
+  assert.equal(payment.dueDate, "2026-12-03");
+  assert.equal(payment.estimated, true);
+  assert.equal(result.rows.at(-1).balanceUsd, 800);
+  assert.equal(accounts[1].creditCardDue.dueDate, "2026-12-03");
+});
+
 test("a next-cycle estimate pays the known native card debt once without guessing the funding account", () => {
   const cardAccounts = [
     { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 2000 },
@@ -833,6 +911,70 @@ test("an in-range annual card charge changes dated debt once and keeps its reser
   assert.equal(byId(result, 32).endingBalance, 0);
   assert.equal(byId(result, 1).endingBalance, 736.84);
   assert.equal(byId(result, 2).endingBalance, 131.59);
+});
+
+test("annual fees use reserves on the early autopay date and later funding cannot cover that payment", () => {
+  for (const savedAmount of [0, 395]) {
+    const accounts = [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+      { id: 2, name: "Annual savings", type: "savings", currency: "USD", nativeCurrentBalance: savedAmount },
+      { id: 32, name: "Venture X", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 395,
+        creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+        creditCardDue: { statementBalance: 395, dueDate: "2026-12-18", lastStatementDate: "2026-11-02" } },
+    ];
+    const document = { salary: {}, allocations: [], bills: [{
+      id: "annual", name: "Venture X", cadence: "annual", amount: 395, currency: "USD", dueMonths: [11], dueDay: 1,
+      savedAmount, accountId: 32, reserveAccountId: 2, sourceAccountId: 1,
+    }] };
+    const plan = { startDate: "2026-11-05", endDate: "2026-12-31", openingUsd: 0, openingPhp: 0,
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+      accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 2 },
+      entries: [{ id: "fund-later", date: "2026-12-15", kind: "transfer", amount: 395, currency: "USD",
+        description: "Fund annual savings later", fromAccountId: 1, toAccountId: 2 }],
+    };
+    const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+      merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+    const result = buildAccountPlan(plan, document, 63, { accounts, creditCardPaymentTransactions: [fee], today: "2026-11-06" });
+    const payment = result.rows.find((row) => row.source === "creditCardDue");
+    assert.equal(payment.date, "2026-12-11");
+    assert.equal(payment.dueDate, "2026-12-18");
+    assert.equal(payment.annualBillCoverage[0].reserveUsed, savedAmount);
+    assert.equal(payment.accountBalances[1], savedAmount ? 1000 : 605);
+    assert.equal(payment.accountBalances[2], 0);
+    assert.equal(payment.accountBalances[32], 0);
+    assert.equal(payment.reserveUsd, 0);
+    const later = result.rows.find((row) => row.entryId === "fund-later");
+    assert.equal(later.date, "2026-12-15");
+    assert.equal(later.accountBalances[2], 395);
+  }
+});
+
+test("annual autopay reserve funding recognizes a bank payment posted after its scheduled payment date", () => {
+  const { accounts, document, plan } = annualCardCoverageFixture();
+  accounts.find((account) => account.id === 2).nativeCurrentBalance = 426.59;
+  Object.assign(accounts.find((account) => account.id === 32), {
+    isLinked: true, nativeCurrentBalance: 1558.16, creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 1658.16, dueDate: "2026-12-18", lastStatementDate: "2026-11-02" },
+  });
+  plan.accountOpeningBalances = accounts.map((account) => ({ accountId: account.id,
+    balance: account.id === 2 ? 526.59 : account.id === 32 ? 1658.16 : account.nativeCurrentBalance }));
+  const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
+    merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
+  const records = [
+    { id: 2507, date: "2026-12-12", kind: "expense", accountId: 2, amount: 100, currency: "USD", category: "Transfer Out", merchant: "Venture X card payment" },
+    { id: 2508, date: "2026-12-12", kind: "income", accountId: 32, amount: 100, currency: "USD", category: "Transfer In", merchant: "Payment received" },
+  ];
+  const result = buildAccountPlan(plan, document, 63, { accounts, transactions: records,
+    creditCardPaymentTransactions: [fee, ...records], today: "2026-12-13" });
+  const payment = result.rows.find((row) => row.source === "creditCardDue");
+  assert.equal(payment.date, "2026-12-11");
+  assert.equal(payment.dueDate, "2026-12-18");
+  assert.equal(payment.annualBillCoverage[0].reserveAlreadyPaidAmount, 100);
+  assert.equal(payment.accountMovements.find((move) => move.kind === "cardReserveFunding").amount, -295);
+  assert.equal(byId(result, 1).endingBalance, 736.84);
+  assert.equal(byId(result, 2).endingBalance, 131.59);
+  assert.equal(byId(result, 2).endingAnnualReserved, 0);
+  assert.equal(byId(result, 32).endingBalance, 0);
 });
 
 test("linked annual card coverage honors explicit reserve funding and card payments without duplicate native debits", () => {

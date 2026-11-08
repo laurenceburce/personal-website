@@ -272,6 +272,8 @@ const ensureFinanceSchema = async () => {
           available_balance DECIMAL(13,2) NULL,
           credit_card_due_json LONGTEXT NULL,
           credit_card_due_status VARCHAR(16) NOT NULL DEFAULT 'unavailable',
+          credit_card_autopay_enabled TINYINT(1) NOT NULL DEFAULT 0,
+          credit_card_autopay_days_before_due TINYINT UNSIGNED NOT NULL DEFAULT 7,
           external_provider VARCHAR(32) NULL,
           external_account_id VARCHAR(160) NULL,
           connection_id BIGINT UNSIGNED NULL,
@@ -383,6 +385,14 @@ const ensureFinanceSchema = async () => {
       await runMigration(
         pool,
         "ALTER TABLE personal_finance_accounts ADD COLUMN credit_card_due_status VARCHAR(16) NOT NULL DEFAULT 'unavailable'",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN credit_card_autopay_enabled TINYINT(1) NOT NULL DEFAULT 0",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN credit_card_autopay_days_before_due TINYINT UNSIGNED NOT NULL DEFAULT 7",
       );
       await runMigration(
         pool,
@@ -1418,6 +1428,8 @@ export async function getFinanceDashboard({ month } = {}) {
         a.currency,
         a.current_balance,
         a.available_balance,
+        a.credit_card_autopay_enabled,
+        a.credit_card_autopay_days_before_due,
         a.external_provider,
         a.external_account_id,
         a.connection_id,
@@ -1453,6 +1465,8 @@ export async function getFinanceDashboard({ month } = {}) {
         a.currency,
         a.current_balance,
         a.available_balance,
+        a.credit_card_autopay_enabled,
+        a.credit_card_autopay_days_before_due,
         a.external_provider,
         a.external_account_id,
         a.connection_id,
@@ -1673,6 +1687,10 @@ export async function getFinanceDashboard({ month } = {}) {
       connectionId: row.connection_id ? Number(row.connection_id) : null,
       institutionName: row.institution_name || "",
       isLinked: Boolean(row.external_provider && row.external_account_id),
+      creditCardAutopayEnabled: row.account_type === "credit" && Number(row.credit_card_autopay_enabled) === 1,
+      creditCardAutopayDaysBeforeDue: row.credit_card_autopay_days_before_due != null &&
+        Number.isInteger(Number(row.credit_card_autopay_days_before_due)) && Number(row.credit_card_autopay_days_before_due) >= 0 &&
+        Number(row.credit_card_autopay_days_before_due) <= 31 ? Number(row.credit_card_autopay_days_before_due) : 7,
       color: row.color || DEFAULT_COLOR,
     };
   });
@@ -2204,6 +2222,29 @@ export async function archiveFinanceAccount(id) {
     [new Date(), accountId],
   );
   return { id: accountId };
+}
+
+/** Planning preferences only; configuring these does not change bank autopay. */
+export async function updateFinanceCreditCardAutopay(data) {
+  const accountValue = data?.accountId;
+  if (!["number", "string"].includes(typeof accountValue) ||
+      (typeof accountValue === "string" && !/^\d+$/.test(accountValue)) ||
+      !Number.isSafeInteger(Number(accountValue)) || Number(accountValue) < 1)
+    throw appError("Choose a valid credit card account.");
+  if (typeof data?.enabled !== "boolean")
+    throw appError("Automatic payment must be enabled or disabled.");
+  if (!Number.isInteger(data?.daysBeforeDue) || data.daysBeforeDue < 0 || data.daysBeforeDue > 31)
+    throw appError("Automatic payment must be 0 to 31 days before the due date.");
+  const pool = requirePool(await ensureFinanceSchema());
+  const accountId = Number(accountValue);
+  const [result] = await pool.query(
+    `UPDATE personal_finance_accounts
+     SET credit_card_autopay_enabled = ?, credit_card_autopay_days_before_due = ?, updated_at = ?
+     WHERE id = ? AND account_type = 'credit' AND is_archived = 0 AND merged_into_account_id IS NULL`,
+    [data.enabled ? 1 : 0, data.daysBeforeDue, new Date(), accountId],
+  );
+  if (!result.affectedRows) throw appError("An active credit card account was not found.", 404);
+  return { accountId, enabled: data.enabled, daysBeforeDue: data.daysBeforeDue };
 }
 
 export async function upsertFinanceBudget(data) {
@@ -3464,6 +3505,11 @@ export async function repairDuplicateFinanceAccounts({
         .map((account) => ({ account, due: normalizeFinanceCreditCardDue(account.credit_card_due_json) }))
         .filter(({ due }) => due)
         .sort((a, b) => (Date.parse(b.due.syncedAt) || 0) - (Date.parse(a.due.syncedAt) || 0))[0];
+      const canonical = group.accounts.find((account) => Number(account.id) === Number(group.canonicalId));
+      const autopay = Number(canonical?.credit_card_autopay_enabled) === 1 ? canonical
+        : [...group.accounts].filter((account) => Number(account.credit_card_autopay_enabled) === 1)
+          .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0] || canonical || latest;
+      const autopayDays = Number(autopay.credit_card_autopay_days_before_due);
       for (const account of group.accounts) {
         if (account.connection_id)
           affectedConnections.add(Number(account.connection_id));
@@ -3507,7 +3553,8 @@ export async function repairDuplicateFinanceAccounts({
       await transaction.query(
         `UPDATE personal_finance_accounts SET connection_id = ?, current_balance = ?, available_balance = ?,
         account_mask = ?, official_name = ?, persistent_account_id = ?, credit_card_due_json = ?,
-        credit_card_due_status = ?, is_sync_excluded = ?, is_archived = ?, updated_at = NOW(3) WHERE id = ?`,
+        credit_card_due_status = ?, credit_card_autopay_enabled = ?, credit_card_autopay_days_before_due = ?,
+        is_sync_excluded = ?, is_archived = ?, updated_at = NOW(3) WHERE id = ?`,
         [
           latest.connection_id,
           latest.current_balance,
@@ -3518,6 +3565,8 @@ export async function repairDuplicateFinanceAccounts({
           latestDue ? JSON.stringify(latestDue.due) : null,
           latestDue ? latestDue.account.connection_id === latest.connection_id &&
             latestDue.account.credit_card_due_status === "current" ? "current" : "stale" : "unavailable",
+          Number(autopay.credit_card_autopay_enabled) === 1 ? 1 : 0,
+          autopay.credit_card_autopay_days_before_due != null && Number.isInteger(autopayDays) && autopayDays >= 0 && autopayDays <= 31 ? autopayDays : 7,
           excluded ? 1 : 0,
           archived ? 1 : 0,
           group.canonicalId,

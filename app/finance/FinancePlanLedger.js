@@ -167,6 +167,13 @@ function SourceLabel({ row }) {
           </>}
         </small>
       )}
+      {row.source === "creditCardDue" && row.autopayEnabled && (
+        <small className="fpl-credit-card-due-detail">
+          Automatic payment {formatDate(row.date, { year: "numeric" })}
+          {" "}· {row.estimated && !row.estimateDateIsReported ? "Estimated due" : "Due"} {formatDate(row.dueDate, { year: "numeric" })}
+          {" "}· {row.autopayDaysBeforeDue === 0 ? "On the due date" : `${row.autopayDaysBeforeDue} ${row.autopayDaysBeforeDue === 1 ? "day" : "days"} before due`}
+        </small>
+      )}
       {row.source === "creditCardDue" && row.estimated && (
         <>
           <small className="fpl-credit-card-due-detail">
@@ -177,9 +184,13 @@ function SourceLabel({ row }) {
             </>}
           </small>
           <small className="fpl-reconciliation-note">
-            {row.estimateDateIsReported
-              ? "Uses the bank’s next payment date."
-              : "Payment date estimated from the monthly billing cycle."}
+            {row.autopayEnabled
+              ? row.estimateDateIsReported
+                ? "Automatic payment follows the saved schedule for the bank’s next due date."
+                : "Automatic payment is based on the estimated monthly billing cycle."
+              : row.estimateDateIsReported
+                ? "Uses the bank’s next payment date."
+                : "Payment date estimated from the monthly billing cycle."}
             {" "}The amount can change with purchases, payments, refunds, and interest.
           </small>
         </>

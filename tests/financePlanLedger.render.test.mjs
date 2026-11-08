@@ -278,6 +278,29 @@ test("next-cycle estimates identify unbilled balance without claiming a confirme
   }
 });
 
+test("automatic card payments disclose their payment date separately from the original due date", () => {
+  for (const estimated of [false, true]) {
+    const html = render([row({
+      id: "creditCardDue:7:2026-11-20", source: "creditCardDue", description: "Travel card automatic payment",
+      date: "2026-11-13", dueDate: "2026-11-20", autopayEnabled: true, autopayDaysBeforeDue: 7,
+      estimated, estimateDateIsReported: !estimated, amount: 200, statementBalance: estimated ? null : 200,
+      estimatedBalance: estimated ? 200 : undefined, currency: "USD", usd: -200,
+    })]);
+    assert.match(plain(html), /Automatic payment Nov 13, 2026 · (?:Estimated due|Due) Nov 20, 2026 · 7 days before due/);
+    assert.match(html, /Nov 13/);
+    if (estimated) {
+      assert.match(plain(html), /Automatic payment is based on the estimated monthly billing cycle/);
+      assert.doesNotMatch(plain(html), /Uses the bank’s next payment date/);
+    }
+  }
+});
+
+test("same-day autopay clearly identifies an unchanged due date", () => {
+  const html = render([row({ source: "creditCardDue", date: "2026-11-20", dueDate: "2026-11-20",
+    autopayEnabled: true, autopayDaysBeforeDue: 0, currency: "USD", amount: 200, statementBalance: 200 })]);
+  assert.match(plain(html), /Automatic payment Nov 20, 2026 · Due Nov 20, 2026 · On the due date/);
+});
+
 test("estimated dues explain the share already covered by planned payments", () => {
   const html = render([row({ source: "creditCardDue", estimated: true, currency: "USD",
     estimatedBalance: 500, plannedPaymentAmount: 125, amount: 375, usd: -375 })]);

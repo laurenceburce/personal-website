@@ -1468,6 +1468,51 @@
   justify-content: flex-end;
   margin-top: 12px;
 }
+.fa-card-autopay {
+  margin-top: 12px;
+  border-top: 1px solid #e8eee6;
+  padding-top: 12px;
+  font-size: 11px;
+}
+.fa-card-autopay > summary {
+  cursor: pointer;
+  color: #355a42;
+  font-weight: 600;
+}
+.fa-card-autopay fieldset {
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.fa-card-autopay .fa-autopay-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fa-card-autopay .fa-autopay-toggle input {
+  width: auto;
+}
+.fa-card-autopay .fa-autopay-days {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+.fa-card-autopay .fa-autopay-days input {
+  max-width: 100px;
+}
+.fa-card-autopay p,
+.fa-card-autopay small {
+  color: #65766a;
+  font-size: 11px !important;
+  line-height: 1.7 !important;
+}
+.fa-card-autopay p {
+  margin: 10px 0 !important;
+}
+.fa-card-autopay .fa-form-error {
+  color: #984c3d;
+}
 .fa-account-allocations {
   padding: 12px 0;
   border-top: 1px solid #e8eee6;

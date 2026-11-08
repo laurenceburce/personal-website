@@ -192,6 +192,10 @@ export function mapFinanceActivityAccount(row) {
     connectionStatus: row.connection_status || "",
     color: row.color || "#34d399",
     creditCardDue,
+    creditCardAutopayEnabled: row.account_type === "credit" && Number(row.credit_card_autopay_enabled) === 1,
+    creditCardAutopayDaysBeforeDue: Number.isInteger(Number(row.credit_card_autopay_days_before_due)) &&
+      row.credit_card_autopay_days_before_due != null && Number(row.credit_card_autopay_days_before_due) >= 0 &&
+      Number(row.credit_card_autopay_days_before_due) <= 31 ? Number(row.credit_card_autopay_days_before_due) : 7,
     creditCardDueStatus: creditCardDue
       ? row.credit_card_due_status === "current" ? "current" : "stale"
       : "unavailable",

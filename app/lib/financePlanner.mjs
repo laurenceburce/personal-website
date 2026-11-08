@@ -72,6 +72,15 @@ export function addDays(value, days) {
     : "";
 }
 
+/** Forecast the card's configured bank autopay without changing its actual due date. */
+export function getCreditCardPaymentDate(account, dueDate = account?.creditCardDue?.dueDate) {
+  if (!Number.isFinite(dateTime(dueDate))) return "";
+  if (account?.creditCardAutopayEnabled !== true) return dueDate;
+  const days = account.creditCardAutopayDaysBeforeDue;
+  const daysBeforeDue = Number.isInteger(days) && days >= 0 && days <= 31 ? days : 7;
+  return addDays(dueDate, -daysBeforeDue);
+}
+
 export function formatDate(value, options = {}) {
   const time = dateTime(value);
   if (!Number.isFinite(time)) return "—";
@@ -734,7 +743,7 @@ function creditCardPayments(statement, transactions, today, consumedDebits, stat
   const statementDate = Number.isFinite(dateTime(due.lastStatementDate)) && due.lastStatementDate <= due.dueDate
     ? due.lastStatementDate : null;
   const inStatement = (date) => Number.isFinite(dateTime(date)) && date <= today &&
-    (statementDate ? date > statementDate : date >= addDays(due.dueDate, -3));
+    (statementDate ? date > statementDate : date >= addDays(getCreditCardPaymentDate(account, due.dueDate), -3));
   const seen = new Set();
   const posted = transactions.filter((transaction) => {
     if (transaction.id != null) {
@@ -814,10 +823,19 @@ function creditCardObligations(accounts, options = {}) {
     const due = account.creditCardDue;
     const currentBalance = knownCardBalance(Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance);
     const payment = payments.get(accountId);
-    const row = (date, amount, metadata) => ({
-      id: `creditCardDue:${accountId}:${date}`,
-      date,
-      description: `${account.name || "Credit card"} · ${metadata.estimated ? "estimated next statement" : "statement due"}`,
+    const row = (dueDate, amount, metadata) => ({
+      // Keep the bank's cycle date in the ID so adjusting autopay preserves
+      // the statement's identity, completion history and annual-fee links.
+      id: `creditCardDue:${accountId}:${dueDate}`,
+      date: getCreditCardPaymentDate(account, dueDate),
+      dueDate,
+      ...(account.creditCardAutopayEnabled === true ? {
+        autopayEnabled: true,
+        autopayDaysBeforeDue: Number.isInteger(account.creditCardAutopayDaysBeforeDue) &&
+          account.creditCardAutopayDaysBeforeDue >= 0 && account.creditCardAutopayDaysBeforeDue <= 31
+          ? account.creditCardAutopayDaysBeforeDue : 7,
+      } : {}),
+      description: `${account.name || "Credit card"} · ${metadata.estimated ? "estimated next statement" : account.creditCardAutopayEnabled === true ? "automatic payment" : "statement due"}`,
       kind: "expense", source: "creditCardDue", accountId: null, creditAccountId: accountId,
       accountName: account.name || "Credit card", lastStatementDate: due?.lastStatementDate || null,
       currentBalance, plannedPaymentAmount: 0, editable: false,
@@ -843,7 +861,7 @@ function creditCardObligations(accounts, options = {}) {
       const current = new Date(dateTime(today));
       let month = Math.max(baseMonth + 1, current.getUTCFullYear() * 12 + current.getUTCMonth());
       estimateDate = monthDate(Math.floor(month / 12), month % 12, anchor.getUTCDate());
-      if (estimateDate < today) {
+      while (getCreditCardPaymentDate(account, estimateDate) < today) {
         month += 1;
         estimateDate = monthDate(Math.floor(month / 12), month % 12, anchor.getUTCDate());
       }
@@ -1672,11 +1690,15 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     reserveFundingTransfers.push({ source: Number(entry.fromAccountId), target: Number(entry.toAccountId), kind,
       date: committedLeg?.date || entry.date, remaining: roundMoney(entry.amount), entryId: entry.id });
   }
-  const consumeReserveFunding = (kind, source, target, coverage, dueDate, amount) => {
+  const consumeReserveFunding = (kind, source, target, coverage, paymentDate, amount, lastPaymentDate) => {
     let used = 0;
     for (const transfer of reserveFundingTransfers) {
+      // A posted payment can arrive after its scheduled autopay date. Its
+      // reserve funding is already spent; future planned transfers still need
+      // to reach the account by the forecast payment date.
+      const postedAfterSchedule = transfer.transactionIds?.length && lastPaymentDate && transfer.date <= lastPaymentDate;
       if (transfer.kind !== kind || transfer.source !== Number(source) || transfer.target !== Number(target) ||
-          transfer.date < coverage.chargeDate || transfer.date > dueDate) continue;
+          transfer.date < coverage.chargeDate || (transfer.date > paymentDate && !postedAfterSchedule)) continue;
       const portion = Math.min(Math.max(0, roundMoney(amount - used)), transfer.remaining);
       used = roundMoney(used + portion);
       transfer.remaining = roundMoney(transfer.remaining - portion);
@@ -1906,10 +1928,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           !["credit", "loan"].includes(reserve.type || reserve.account_type) &&
           !reserve.isArchived && !reserve.is_archived && !reserve.mergedIntoAccountId && !reserve.merged_into_account_id;
         const reserveAlreadyPaidAmount = consumeReserveFunding("card", coverage.reserveAccountId,
-          row.creditAccountId, coverage, row.date, coverage.amount);
+          row.creditAccountId, coverage, row.date, coverage.amount, row.lastPaymentDate);
         const checking = linkedAccount("available", row.currency, salary.currency === row.currency ? salary.accountId : null);
         const reserveTransferredAmount = consumeReserveFunding("checking", coverage.reserveAccountId,
-          checking, coverage, row.date, roundMoney(coverage.amount - reserveAlreadyPaidAmount));
+          checking, coverage, row.date, roundMoney(coverage.amount - reserveAlreadyPaidAmount), row.lastPaymentDate);
         const committed = Math.min(saved, coverage.amount);
         const alreadyPaid = eligibleReserve ? Math.min(committed, reserveAlreadyPaidAmount) : 0;
         const transferred = eligibleReserve ? Math.min(roundMoney(committed - alreadyPaid), reserveTransferredAmount) : 0;

@@ -126,6 +126,41 @@ const response = (body, status = 200) => ({
   json: async () => body,
 });
 
+test("credit card autopay saves only timing preferences for an active credit account", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend(() => ({ affectedRows: 1 }));
+  for (const [enabled, daysBeforeDue] of [[true, 7], [false, 7], [true, 0], [true, 31]]) {
+    assert.deepEqual(await api.updateFinanceCreditCardAutopay({ accountId: 7, enabled, daysBeforeDue }), {
+      accountId: 7, enabled, daysBeforeDue,
+    });
+  }
+  const updates = queries.filter(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts"));
+  assert.equal(updates.length, 4);
+  for (const { sql, params } of updates) {
+    assert.match(sql, /account_type = 'credit' AND is_archived = 0 AND merged_into_account_id IS NULL/);
+    assert.doesNotMatch(sql, /current_balance|available_balance|credit_card_due_json|credit_card_due_status|opening_balance/);
+    assert.equal(params.at(-1), 7);
+  }
+  assert.deepEqual(updates.map(({ params }) => params.slice(0, 2)), [[1, 7], [0, 7], [1, 0], [1, 31]]);
+  assert.ok(queries.some(({ sql }) => sql.includes("ADD COLUMN credit_card_autopay_enabled")));
+  assert.ok(queries.some(({ sql }) => sql.includes("ADD COLUMN credit_card_autopay_days_before_due")));
+});
+
+test("credit card autopay rejects malformed preferences and unavailable accounts", async (t) => {
+  bankEnvironment(t);
+  const valid = { accountId: 7, enabled: true, daysBeforeDue: 7 };
+  const { api, queries } = backend(() => ({ affectedRows: 0 }));
+  for (const [field, values] of [
+    ["accountId", [null, true, 0, -1, 2.5, Number.MAX_SAFE_INTEGER + 1, "7x"]],
+    ["enabled", [null, undefined, "true", 1]],
+    ["daysBeforeDue", [null, undefined, "7", -1, 32, 2.5, Infinity]],
+  ]) for (const value of values) {
+    await assert.rejects(api.updateFinanceCreditCardAutopay({ ...valid, [field]: value }), (error) => error.status === 400);
+  }
+  assert.equal(queries.length, 0, "invalid requests cannot write preferences");
+  await assert.rejects(api.updateFinanceCreditCardAutopay(valid), (error) => error.status === 404);
+});
+
 test("removing an account persists the sync exclusion and retains financial history", async (t) => {
   bankEnvironment(t);
   const { api, queries } = backend((sql) =>
@@ -521,16 +556,28 @@ test("merging re-linked cards preserves the newest statement cache on the canoni
   bankEnvironment(t);
   const rows = [identityAccount(2, 1, {account_type: "credit", credit_card_due_json: JSON.stringify({
     statementBalance: 100, dueDate: "2026-10-25", syncedAt: "2026-10-01T12:00:00Z",
-  }), credit_card_due_status: "current"}), identityAccount(30, 3, {account_type: "credit",
+  }), credit_card_due_status: "current", credit_card_autopay_enabled: 1, credit_card_autopay_days_before_due: 7}), identityAccount(30, 3, {account_type: "credit",
     credit_card_due_json: JSON.stringify({statementBalance: 350, dueDate: "2026-11-25", syncedAt: "2026-11-01T12:00:00Z"}),
-    credit_card_due_status: "current"})];
+    credit_card_due_status: "current", credit_card_autopay_enabled: 0, credit_card_autopay_days_before_due: 3})];
   const {api, queries} = backend((sql) => sql.startsWith("SELECT a.*, c.institution_id") ? rows : []);
   await api.repairDuplicateFinanceAccounts({preview: false});
   const update = queries.find(({sql}) => sql.includes("SET connection_id = ?"));
   assert.equal(JSON.parse(update.params[6]).statementBalance, 350);
   assert.equal(JSON.parse(update.params[6]).dueDate, "2026-11-25");
   assert.equal(update.params[7], "current");
+  assert.equal(update.params[8], 1, "canonical autopay is independent of newer bank statement metadata");
+  assert.equal(update.params[9], 7);
   assert.equal(update.params.at(-1), 2);
+});
+
+test("duplicate card repair retains an enabled autopay preference from the re-linked card", async (t) => {
+  bankEnvironment(t);
+  const rows = [identityAccount(2, 1, { account_type: "credit" }),
+    identityAccount(30, 3, { account_type: "credit", credit_card_autopay_enabled: 1, credit_card_autopay_days_before_due: 10 })];
+  const { api, queries } = backend((sql) => sql.startsWith("SELECT a.*, c.institution_id") ? rows : []);
+  await api.repairDuplicateFinanceAccounts({ preview: false });
+  const update = queries.find(({ sql }) => sql.includes("SET connection_id = ?"));
+  assert.deepEqual(update.params.slice(8, 10), [1, 10]);
 });
 
 function bankSyncResponse(url, transactions) {
@@ -601,6 +648,8 @@ test("credit sync imports the full statement and due date separately from curren
     syncedAt: JSON.parse(updates[0].params[0]).syncedAt,
   });
   assert.doesNotMatch(updates[0].params[0], /not-stored|unrelated-card/);
+  for (const { sql } of queries.filter(({ sql }) => /^UPDATE personal_finance_accounts/.test(sql)))
+    assert.doesNotMatch(sql, /credit_card_autopay_(?:enabled|days_before_due)\s*=/, "bank sync cannot reset local autopay preferences");
   assert.ok(updates[0].inTransaction);
 });
 
@@ -1074,7 +1123,7 @@ test("plans with no connected bank accounts skip providers and return a cacheabl
   assert.equal(queries.length, count);
 });
 
-test("the private finance API exposes plan bank refresh and accepts only a boolean force flag", async () => {
+test("the private finance API protects bank refresh and credit card autopay settings", async () => {
   const { code: routeCode } = transformSync(
     await readFile(
       new URL("../app/api/finance/route.js", import.meta.url),
@@ -1086,6 +1135,7 @@ test("the private finance API exposes plan bank refresh and accepts only a boole
     },
   );
   const calls = [];
+  const autopayCalls = [];
   let authorized = true;
   let allowedOrigin = true;
   const module = { exports: {} };
@@ -1104,6 +1154,10 @@ test("the private finance API exposes plan bank refresh and accepts only a boole
         return { isAllowedOrigin: () => allowedOrigin };
       if (specifier === "../../lib/financeStore")
         return {
+          updateFinanceCreditCardAutopay: async (data) => {
+            autopayCalls.push(data);
+            return data;
+          },
           refreshFinancePlanBankData: async (options) => {
             calls.push(options);
             return {
@@ -1132,12 +1186,22 @@ test("the private finance API exposes plan bank refresh and accepts only a boole
   );
   await module.exports.POST(request("true"));
   assert.deepEqual(calls, [{ force: true }, { force: false }]);
+  const autopayRequest = {
+    headers: new Headers(),
+    text: async () => JSON.stringify({ action: "updateCreditCardAutopay", data: { accountId: 7, enabled: true, daysBeforeDue: 7 } }),
+  };
+  const autopayResult = await module.exports.POST(autopayRequest);
+  assert.equal(autopayResult.value.ok, true);
+  assert.deepEqual(autopayResult.value.result, { accountId: 7, enabled: true, daysBeforeDue: 7 });
   authorized = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 401);
+  assert.equal((await module.exports.POST(autopayRequest)).options.status, 401);
   authorized = true;
   allowedOrigin = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 403);
+  assert.equal((await module.exports.POST(autopayRequest)).options.status, 403);
   assert.equal(calls.length, 2);
+  assert.equal(autopayCalls.length, 1);
 });
 
 const planPaymentRecord = (id, date, overrides = {}) => ({

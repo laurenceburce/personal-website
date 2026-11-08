@@ -12,6 +12,7 @@ import {
   getAnnualBillFunding,
   getAnnualReserveOpening,
   getCreditCardObligations,
+  getCreditCardPaymentDate,
   getPlanOpening,
   getSummary as summarize,
   localDate,
@@ -3085,6 +3086,89 @@ function cardStatementFixture() {
     ],
   };
 }
+
+test("credit card autopay uses calendar days with a seven-day default and keeps the bank due date", () => {
+  const card = { creditCardAutopayEnabled: true, creditCardDue: { dueDate: "2026-11-20" } };
+  assert.equal(getCreditCardPaymentDate(card), "2026-11-13");
+  assert.equal(getCreditCardPaymentDate({ ...card, creditCardAutopayEnabled: false }), "2026-11-20");
+  assert.equal(getCreditCardPaymentDate({ ...card, creditCardAutopayDaysBeforeDue: 0 }), "2026-11-20");
+  assert.equal(getCreditCardPaymentDate(card, "2026-01-03"), "2025-12-27");
+  assert.equal(getCreditCardPaymentDate(card, "2028-03-03"), "2028-02-25");
+  assert.equal(getCreditCardPaymentDate({ ...card, creditCardAutopayDaysBeforeDue: 31 }, "2026-03-03"), "2026-01-31");
+  for (const value of [-1, 32, 1.5, "7", null])
+    assert.equal(getCreditCardPaymentDate({ ...card, creditCardAutopayDaysBeforeDue: value }), "2026-11-13");
+  assert.equal(getCreditCardPaymentDate(card, "2026-11-31"), "");
+  assert.equal(card.creditCardDue.dueDate, "2026-11-20");
+});
+
+test("autopay shifts statement and estimated cash flow while preserving statement identity and amounts", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  const before = JSON.stringify(accounts);
+  const baseline = getCreditCardObligations(accounts, { today: "2026-11-05" });
+  const linked = [accounts[0], { ...accounts[1], isLinked: true, creditCardAutopayEnabled: true,
+    creditCardAutopayDaysBeforeDue: 7 }];
+  const rows = buildPlanRows(plan, document, 63, { accounts: linked, today: "2026-11-05" });
+  assert.deepEqual(rows.map((row) => [row.id, row.date, row.dueDate, row.amount, Boolean(row.estimated)]), [
+    ["creditCardDue:2:2026-11-20", "2026-11-13", "2026-11-20", 200, false],
+    ["creditCardDue:2:2026-12-20", "2026-12-13", "2026-12-20", 300, true],
+  ]);
+  assert.equal(rows[0].id, baseline[0].id);
+  assert.equal(rows[0].autopayEnabled, true);
+  assert.equal(rows[0].autopayDaysBeforeDue, 7);
+  assert.equal(rows[0].balanceUsd, 800);
+  assert.equal(rows[1].balanceUsd, 500);
+  const early = buildPlanRows({ ...plan, endDate: "2026-11-13" }, document, 63, { accounts: linked, today: "2026-11-05" });
+  assert.equal(early.length, 1);
+  assert.equal(early[0].date, "2026-11-13");
+  assert.deepEqual(buildPlanRows({ ...plan, endDate: "2026-11-12" }, document, 63,
+    { accounts: linked, today: "2026-11-05" }), []);
+  assert.equal(JSON.stringify(accounts), before);
+});
+
+test("early posted autopay is recognized without a statement close and leaves only the unpaid remainder", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], nativeCurrentBalance: 0, creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 200, dueDate: "2026-11-20" } };
+  const transactions = [
+    { id: 1, date: "2026-11-13", kind: "expense", accountId: 1, currency: "USD", amount: 200, merchant: "Travel Card autopay 1234", category: "Transfer Out" },
+    { id: 2, date: "2026-11-13", kind: "income", accountId: 2, currency: "USD", amount: 200, merchant: "Automatic payment", category: "Transfer In" },
+  ];
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions, today: "2026-11-14" });
+  const due = rows.find((row) => row.source === "creditCardDue");
+  assert.equal(due.amount, 0);
+  assert.equal(due.paidAmount, 200);
+  assert.equal(due.completed, true);
+  assert.equal(rows.at(-1).balanceUsd, 800);
+  const pending = getCreditCardObligations(accounts, { transactions: transactions.map((row) => ({ ...row, pending: true })), today: "2026-11-14" });
+  assert.equal(pending[0].amount, 200);
+});
+
+test("autopay defaults do not apply a second early payment to an unissued estimate", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], isLinked: true, nativeCurrentBalance: 300,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 0, dueDate: "2026-12-20" } };
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-05" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].estimated, true);
+  assert.equal(rows[0].date, "2026-12-13");
+  assert.equal(rows[0].dueDate, "2026-12-20");
+  assert.equal(rows[0].amount, 300);
+});
+
+test("known next-cycle estimates roll forward after their autopay date passes", () => {
+  const { accounts } = cardStatementFixture();
+  const card = { ...accounts[1], isLinked: true, creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 200, dueDate: "2026-10-20", lastStatementDate: "2026-09-25" } };
+  const estimate = getCreditCardObligations([card], { today: "2026-11-15" }).find((row) => row.estimated);
+  assert.equal(estimate.date, "2026-12-13");
+  assert.equal(estimate.dueDate, "2026-12-20");
+  const shortMonth = { ...card, creditCardAutopayDaysBeforeDue: 31,
+    creditCardDue: { statementBalance: 200, dueDate: "2026-01-01", lastStatementDate: "2025-12-05" } };
+  const next = getCreditCardObligations([shortMonth], { today: "2026-01-31" }).find((row) => row.estimated);
+  assert.equal(next.date, "2026-03-01");
+  assert.equal(next.dueDate, "2026-04-01");
+});
 
 test("a linked Venture X balance with no issued statement appears once on its reported future due date", () => {
   const { plan, document, accounts } = cardStatementFixture();

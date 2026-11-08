@@ -213,8 +213,16 @@ The finance workspace separates recorded activity from your plans:
   keep the last known data with an explicit notice.
   Linked credit card statement balances and payment dates are included
   automatically when the bank supplies them through Plaid Liabilities. Reported
-  statements use the full statement balance, reduced by known payments. Linked
-  cards also show an **Estimated** next payment for their currently unbilled
+  statements use the full statement balance, reduced by known payments. Credit
+  cards have **Automatic payment settings** under **Bank accounts**. Enable the
+  option and choose **Days before due date** (default seven; zero means the due
+  date). Budget plans deduct the payment on that earlier calendar date, including
+  when it falls in the previous month or brings the payment inside the plan's
+  date range. The original bank due date stays visible. Unbilled estimates use
+  the same schedule, and posted payments reduce the remaining forecast once.
+  These settings describe autopay already arranged with the bank; they do not
+  enroll the card or send payments. Cards without autopay keep their due dates.
+  Linked cards also show an **Estimated** next payment for their currently unbilled
   balance, using the current balance less the remaining reported statement.
   The bank's next payment date is used when no issued statement is available;
   otherwise the following monthly due date is estimated. Purchases, payments,

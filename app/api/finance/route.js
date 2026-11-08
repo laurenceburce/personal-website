@@ -21,6 +21,7 @@ import {
   refreshFinancePlanBankData,
   toggleFinanceBillPaid,
   updateFinanceAccount,
+  updateFinanceCreditCardAutopay,
   updateFinanceDisplayCurrency,
   updateFinancePlan,
   updateFinanceTransaction,
@@ -160,6 +161,8 @@ export async function POST(request) {
           ok: true,
           result: await updateFinanceAccount(data.id, data),
         });
+      case "updateCreditCardAutopay":
+        return json({ ok: true, result: await updateFinanceCreditCardAutopay(data) });
       case "archiveAccount":
       case "removeAccount":
         return json({ ok: true, result: await archiveFinanceAccount(data.id) });

@@ -5,6 +5,7 @@ import FinanceNumberInput from "./FinanceNumberInput";
 import {
   convert,
   formatDate,
+  getCreditCardPaymentDate,
   localDate,
   money,
 } from "../lib/financePlanner.mjs";
@@ -134,6 +135,7 @@ function CreditCardDue({ account }) {
     due?.statementBalance !== undefined &&
     Number.isFinite(Number(due.statementBalance));
   const dueDate = formatDate(due?.dueDate, { year: "numeric" });
+  const autopayDate = formatDate(getCreditCardPaymentDate(account, due?.dueDate), { year: "numeric" });
   const complete = statementAvailable && dueDate !== "—";
   return (
     <div className="fa-credit-card-due">
@@ -151,6 +153,12 @@ function CreditCardDue({ account }) {
           <dt>Payment due</dt>
           <dd>{dueDate === "—" ? "Unavailable" : dueDate}</dd>
         </div>
+        {account.creditCardAutopayEnabled && (
+          <div>
+            <dt>Automatic payment</dt>
+            <dd>{autopayDate === "—" ? "Unavailable" : autopayDate}</dd>
+          </div>
+        )}
       </dl>
       {account.creditCardDueStatus === "stale" && (
         <p>
@@ -160,12 +168,61 @@ function CreditCardDue({ account }) {
       )}
       <small>
         {complete
-          ? "Statement dues appear automatically in Budget Plans for the due date."
+          ? account.creditCardAutopayEnabled
+            ? "Budget Plans use the automatic payment date. The bank’s due date stays unchanged."
+            : "Statement dues appear automatically in Budget Plans for the due date."
           : account.isLinked
             ? "This bank connection has not supplied complete statement details for Budget Plans."
             : "Statement details are imported for linked credit cards."}
       </small>
     </div>
+  );
+}
+
+export function CreditCardAutopayForm({ account, disabled = false, saving = false, onSave }) {
+  const [enabled, setEnabled] = useState(Boolean(account.creditCardAutopayEnabled));
+  const [daysBeforeDue, setDaysBeforeDue] = useState(String(account.creditCardAutopayDaysBeforeDue ?? 7));
+  const [error, setError] = useState("");
+  const validDays = String(daysBeforeDue).trim() !== "" && Number.isInteger(Number(daysBeforeDue)) && Number(daysBeforeDue) >= 0 && Number(daysBeforeDue) <= 31;
+  const paymentDate = formatDate(validDays ? getCreditCardPaymentDate({
+    ...account,
+    creditCardAutopayEnabled: enabled,
+    creditCardAutopayDaysBeforeDue: Number(daysBeforeDue),
+  }, account.creditCardDue?.dueDate) : "", { year: "numeric" });
+  return (
+    <details className="fa-card-autopay">
+      <summary>Automatic payment settings</summary>
+      <form aria-label={`${account.name || "Credit card"} automatic payment settings`} onSubmit={(event) => {
+        event.preventDefault();
+        if (disabled || saving) return;
+        const days = Number(daysBeforeDue);
+        const valid = String(daysBeforeDue).trim() !== "" && Number.isInteger(days) && days >= 0 && days <= 31;
+        if (enabled && !valid) return setError("Enter a whole number of days from 0 to 31.");
+        setError("");
+        return onSave({ enabled, daysBeforeDue: valid ? days : account.creditCardAutopayDaysBeforeDue ?? 7 });
+      }}>
+        <fieldset disabled={disabled || saving}>
+          <label className="fa-autopay-toggle">
+            <input type="checkbox" checked={enabled} onChange={(event) => { setEnabled(event.target.checked); setError(""); }} />
+            Automatic payment
+          </label>
+          {enabled && <label className="fa-field fa-autopay-days">
+            <span>Days before due date</span>
+            <FinanceNumberInput required min="0" max="31" step="1" value={daysBeforeDue}
+              onChange={(event) => { setDaysBeforeDue(event.target.value); setError(""); }} />
+            <small>7 days means one week early. Use 0 for the due date.</small>
+          </label>}
+          {enabled && validDays && <p className="fa-autopay-preview">
+            {paymentDate === "—" ? "A bank due date is needed to calculate the payment date." : `Planned payment: ${paymentDate}.`}
+          </p>}
+          <p>This forecasts the autopay you have set up with your bank. It does not enroll the card in bank autopay or send a payment.</p>
+          {error && <p className="fa-form-error" role="alert">{error}</p>}
+          <button type="submit" className="fa-button" disabled={disabled || saving}>
+            {saving ? "Saving…" : "Save automatic payment"}
+          </button>
+        </fieldset>
+      </form>
+    </details>
   );
 }
 
@@ -1242,6 +1299,17 @@ export function BankAccountsPanel({
     });
   }
 
+  async function saveCreditCardAutopay(account, settings) {
+    await runAction(`autopay:${account.id}`, async () => {
+      await callbacks.current.onAction("updateCreditCardAutopay", {
+        accountId: account.id,
+        ...settings,
+      });
+      await callbacks.current.onRefresh?.();
+      callbacks.current.onNotice?.(`${account.name || "Credit card"} automatic payment settings saved. Budget Plans have been updated.`);
+    });
+  }
+
   async function linkBrankas() {
     await runAction("brankas", async () => {
       const result = await callbacks.current.onAction("createBrankasLink", {});
@@ -1792,7 +1860,16 @@ export function BankAccountsPanel({
                                 )}
                             </div>
                             {account.type === "credit" && (
-                              <CreditCardDue account={account} />
+                              <>
+                                <CreditCardDue account={account} />
+                                <CreditCardAutopayForm
+                                  key={`${account.id}:${Boolean(account.creditCardAutopayEnabled)}:${account.creditCardAutopayDaysBeforeDue ?? 7}`}
+                                  account={account}
+                                  disabled={working || unavailable}
+                                  saving={pending === `autopay:${account.id}`}
+                                  onSave={(settings) => saveCreditCardAutopay(account, settings)}
+                                />
+                              </>
                             )}
                             {allocation &&
                               (allocation.roles?.length > 0 ||
