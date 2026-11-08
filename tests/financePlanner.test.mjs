@@ -621,6 +621,38 @@ test("live plan openings add flat amounts to current native account percentages"
   assert.equal(getPlanOpening(plan, accounts).usd, 265);
 });
 
+test("saved account openings stay fixed through refreshes and replay posted expenses once", () => {
+  for (const currency of ["USD", "PHP"]) {
+    const plan = {
+      startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+      startingAccounts: [{ accountId: 1, percentage: 100 }],
+      accountOpeningBalances: [{ accountId: 1, balance: 200 }],
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [],
+    };
+    const document = { salary: {}, bills: [], allocations: [] };
+    const transactions = [{ id: 1, accountId: 1, currency, kind: "expense", amount: 50,
+      description: "Groceries", date: "2026-11-02" }];
+    for (const nativeCurrentBalance of [200, 150, 90, null]) {
+      const accounts = [{ id: 1, name: "Checking", type: "checking", currency, nativeCurrentBalance }];
+      const opening = getPlanOpening(plan, accounts, document);
+      assert.equal(opening[currency.toLowerCase()], 200);
+      assert.equal(opening.contributions[0].isSnapshot, true);
+      const rows = buildPlanRows(plan, document, 63, { accounts, transactions, today: "2026-11-08" });
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0][currency === "USD" ? "balanceUsd" : "balancePhp"], 150);
+      assert.equal(rows[0][currency === "USD" ? "balanceAppliedUsd" : "balanceAppliedPhp"], -50);
+    }
+  }
+});
+
+test("saved opening percentages and zero amounts remain stable even when an account is archived", () => {
+  const plan = { openingUsd: 25, startingAccounts: [{ accountId: 1, percentage: 80 }, { accountId: 2, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 200 }, { accountId: 2, balance: 0 }] };
+  const accounts = [1, 2].map((id) => ({ id, currency: "USD", type: "checking", nativeCurrentBalance: 9000, isArchived: true }));
+  assert.equal(getPlanOpening(plan, accounts).usd, 185);
+  assert.equal(getPlanOpening(plan, accounts).warnings.length, 0);
+});
+
 test("unavailable native starting balances are excluded with a reason, never NaN or an available-balance fallback", () => {
   const accounts = [
     { id: 1, currency: "USD", nativeCurrentBalance: null, currentBalance: 50, availableBalance: 60 },

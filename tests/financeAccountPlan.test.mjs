@@ -62,7 +62,7 @@ for (const liveOpening of [false, true]) {
       openingUsd: liveOpening ? 0 : 160.72, openingPhp: 0,
       includeIncome: true, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
       entries: [],
-      accountOpeningBalances: [{ accountId: 1, balance: 160.72 }],
+      accountOpeningBalances: liveOpening ? [] : [{ accountId: 1, balance: 160.72 }],
       startingAccounts: liveOpening ? [{ accountId: 1, percentage: 100 }] : [],
       rowOverrides: [{ rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 }],
     };
@@ -444,19 +444,80 @@ test("posted transfers and historical live activity do not add a savings deposit
   assert.equal(projection.rows.at(-1).savingsUsd, 1000);
 });
 
-test("live selected percentages override old account snapshots and follow refreshed balances", () => {
+test("saved percentage openings retain the full native account balance after a bank refresh", () => {
   const current = { ...plan, startingAccounts: [{ accountId: 1, percentage: 80 }], includeIncome: false, includeAnnualReserve: false, includeAllocations: false };
   const doc = { salary, bills: [], allocations: [] };
   const refreshed = structuredClone(accounts);
   let result = project(current, doc, { accounts: refreshed });
-  assert.equal(result.openingSource, "live");
-  assert.equal(byId(result, 1).openingBalance, 600);
-  assert.equal(byId(result, 1).endingBalance, 600);
+  assert.equal(result.openingSource, "plan");
+  assert.equal(result.openingBalances.usd, 1350);
+  assert.equal(byId(result, 1).openingBalance, 750);
+  assert.equal(byId(result, 1).endingBalance, 750);
   refreshed[0].nativeCurrentBalance = 1000;
   result = project(current, doc, { accounts: refreshed });
-  assert.equal(byId(result, 1).openingBalance, 800);
-  assert.equal(byId(result, 1).endingBalance, 800);
+  assert.equal(result.openingBalances.usd, 1350);
+  assert.equal(byId(result, 1).openingBalance, 750);
+  assert.equal(byId(result, 1).endingBalance, 750);
   assert.equal(current.accountOpeningBalances[0].balance, 750);
+});
+
+for (const currency of ["USD", "PHP"]) for (const linked of [false, true]) {
+  test(`saved ${currency} ${linked ? "linked column" : "percentage"} openings replay posted expenses once across bank refreshes`, () => {
+    const percentage = linked ? 100 : 80;
+    const planner = {
+      startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+      includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false,
+      entries: [], startingAccounts: [{ accountId: 1, percentage }],
+      accountOpeningBalances: [{ accountId: 1, balance: 200 }],
+      ...(linked ? { accountLinks: { [currency === "USD" ? "availableUsdAccountId" : "availablePhpAccountId"]: 1 } } : {}),
+    };
+    const doc = { salary: {}, bills: [], allocations: [] };
+    const firstExpense = { id: 91, accountId: 1, currency, date: "2026-11-02", kind: "expense", amount: 50, merchant: "Groceries" };
+    for (const currentBalance of [150, 90]) {
+      const bank = [{ id: 1, name: "Checking", type: "checking", currency, nativeCurrentBalance: currentBalance }];
+      const result = buildAccountPlan(planner, doc, 63, { accounts: bank, transactions: [firstExpense], today: "2026-11-08" });
+      const suffix = currency === "USD" ? "Usd" : "Php";
+      assert.equal(result.openingBalances[currency.toLowerCase()], percentage === 100 ? 200 : 160);
+      assert.equal(result.rows[0][`balance${suffix}`], percentage === 100 ? 150 : 110);
+      assert.equal(result.rows[0].accountMovements.length, 1);
+      assert.equal(byId(result, 1).openingBalance, 200);
+      assert.equal(byId(result, 1).endingBalance, 150);
+      const later = buildAccountPlan(planner, doc, 63, { accounts: bank, today: "2026-11-08",
+        transactions: [firstExpense, { ...firstExpense, id: 92, date: "2026-11-08", amount: 60 }] });
+      assert.equal(later.openingBalances[currency.toLowerCase()], percentage === 100 ? 200 : 160);
+      assert.equal(byId(later, 1).endingBalance, 90);
+      assert.equal(later.rows.at(-1)[`balance${suffix}`], percentage === 100 ? 90 : 50);
+    }
+  });
+}
+
+test("saved linked available, reserve and savings columns retain separate USD and PHP openings", () => {
+  const fields = ["availableUsdAccountId", "availablePhpAccountId", "annualReserveUsdAccountId", "annualReservePhpAccountId", "savingsUsdAccountId", "savingsPhpAccountId"];
+  const bank = fields.map((field, index) => ({ id: index + 1, name: field, type: "checking", currency: field.includes("Usd") ? "USD" : "PHP", nativeCurrentBalance: 9999 }));
+  const planner = {
+    startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+    includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false,
+    entries: [], accountLinks: Object.fromEntries(fields.map((field, index) => [field, index + 1])),
+    accountOpeningBalances: bank.map((account) => ({ accountId: account.id, balance: account.id * 100 })),
+  };
+  const result = buildAccountPlan(planner, { salary: {}, bills: [], allocations: [] }, 63, { accounts: bank, today: "2026-11-08" });
+  assert.deepEqual(result.openingBalances, { usd: 100, php: 200 });
+  assert.equal(result.openingReserve.usd, 300);
+  assert.equal(result.openingReserve.php, 400);
+  assert.equal(result.openingSavings.usd, 500);
+  assert.equal(result.openingSavings.php, 600);
+  assert.ok(result.accounts.every((account) => account.openingSource === "plan" && account.openingBalance === account.accountId * 100));
+});
+
+test("an archived linked account retains its saved opening balance", () => {
+  const bank = [{ id: 1, name: "Old checking", type: "checking", currency: "USD", nativeCurrentBalance: 0, isArchived: true }];
+  const planner = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [],
+    accountLinks: { availableUsdAccountId: 1 }, accountOpeningBalances: [{ accountId: 1, balance: 200 }] };
+  const result = buildAccountPlan(planner, { salary: {}, bills: [], allocations: [] }, 63, { accounts: bank, today: "2026-11-08" });
+  assert.equal(result.openingBalances.usd, 200);
+  assert.equal(byId(result, 1).openingBalance, 200);
+  assert.equal(result.openingSource, "plan");
 });
 
 test("one grouped annual bank transfer completes several bill earmarks and moves each account only once", () => {

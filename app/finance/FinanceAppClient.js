@@ -1967,7 +1967,9 @@ export default function FinanceAppClient({
                       </summary>
                       <p className="fp-inline-note">
                         Balances{" "}
-                        {plan.accountLinks
+                        {plan.accountOpeningBalances?.length
+                          ? "start from the amounts saved with this plan, before its first day’s flows. Bank refreshes update transactions without changing these starting balances. Edit the plan to correct a starting amount."
+                          : plan.accountLinks
                           ? "follow the accounts named in each column. Posted bank movements already included in their current balances are not counted again."
                           : plan.startingAccounts?.length
                           ? "use current live account contributions. Already-posted flows reflected in those balances are not counted again."

@@ -190,12 +190,17 @@ The finance workspace separates recorded activity from your plans:
   Saved amounts entered on annual bills are included automatically in the
   starting reserve. The plan's total starting reserve can increase that amount
   with unassigned funds; it does not add the same item savings a second time.
-  Select starting bank accounts and a percentage of each current actual balance,
-  then add flat USD/PHP amounts. These links stay live rather than saving bank
-  balance snapshots. Already-earmarked annual savings are excluded from available
-  starting cash once and remain in the reserve pocket. Posted and historical
-  flows already reflected in selected live balances stay visible without being
-  applied to those balances again.
+  Select starting bank accounts and a percentage, then add flat USD/PHP amounts.
+  Account starting balances are saved with the plan and stay fixed when bank
+  data refreshes. Linked Available, Annual reserve, and Savings columns also use
+  their saved openings. New openings are calculated before the plan's first
+  day by removing known posted movements since that date from the current balance;
+  later transactions are applied once. Existing plans capture missing openings
+  on their next load. Earlier original amounts that were never saved cannot be
+  recovered without transaction history; correct them in the plan editor's
+  **Starting balance** fields. Editing a name, date, or percentage preserves
+  saved account amounts. Already-earmarked annual savings are excluded from
+  available starting cash once and remain in the reserve pocket.
   Rows can be marked done or reopened manually. Posted transactions automatically
   complete conservative account/currency/amount/date/name matches; pending and
   future entries do not. Automatic completion remains available when recorded

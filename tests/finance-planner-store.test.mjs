@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import mysql from "mysql2/promise";
 import {
   createDefaultFinancePlanner,
   validateFinancePlanner,
   validateFinancePlannerAccounts,
+  captureFinancePlannerOpenings,
+  getFinancePlanner,
+  saveFinancePlanner,
 } from "../app/lib/financePlannerStore.js";
+import { capturePlanAccountOpenings } from "../app/lib/financePlanOpening.mjs";
 
 const document = () => ({
   salary: {
@@ -56,6 +61,175 @@ const document = () => ({
       ],
     },
   ],
+});
+
+test("dated bank openings reverse posted native movements through today, including after a plan ends", async () => {
+  const planner = document();
+  Object.assign(planner.plans[0], {
+    endDate: "2026-11-03",
+    startingAccounts: [{ accountId: 1, percentage: 80 }],
+    entries: [],
+  });
+  const queries = [];
+  const connection = { query: async (sql, parameters) => {
+    queries.push({ sql, parameters });
+    if (sql.includes("SELECT a.*")) return [[{
+      id: 1, name: "Checking", currency: "USD", account_type: "checking",
+      external_provider: "plaid", external_account_id: "bank-1", current_balance: "270.00",
+    }]];
+    return [[
+      { account_id: 1, currency: "USD", kind: "income", amount: "100.00", transaction_date: "2026-11-02" },
+      { account_id: 1, currency: "USD", kind: "expense", amount: "30.00", transaction_date: "2026-11-07" },
+    ]];
+  } };
+  const before = structuredClone(planner);
+  const frozen = await captureFinancePlannerOpenings(connection, planner, {}, "2026-11-08");
+  assert.deepEqual(frozen.plans[0].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
+  assert.deepEqual(planner, before);
+  assert.equal(frozen.plans[0].startingAccounts[0].percentage, 80);
+  assert.deepEqual(queries[1].parameters, [[1], "2026-11-01", "2026-11-08"]);
+  for (const { sql } of queries) {
+    assert.match(sql, /pending = 0/);
+    assert.match(sql, /duplicate_of_id IS NULL/);
+    assert.match(sql, /is_provider_removed = 0/);
+  }
+  const unchanged = await captureFinancePlannerOpenings({ query: () => {
+    throw new Error("A saved opening must never read live balances again");
+  } }, frozen, {}, "2026-11-09");
+  assert.deepEqual(unchanged, frozen);
+});
+
+test("manual account snapshots use native opening plus all posted movement before reversing the plan window", async () => {
+  const planner = document();
+  planner.plans[0].startingAccounts = [{ accountId: 2, percentage: 100 }];
+  const connection = { query: async (sql) => sql.includes("SELECT a.*") ? [[{
+    id: 2, name: "PHP wallet", currency: "PHP", account_type: "cash",
+    opening_balance: "500.00", native_movement: "125.00", current_balance: null,
+  }]] : [[{
+    account_id: 2, currency: "PHP", kind: "income", amount: "75.00", transaction_date: "2026-11-02",
+  }]] };
+  const frozen = await captureFinancePlannerOpenings(connection, planner, {}, "2026-11-08");
+  assert.deepEqual(frozen.plans[0].accountOpeningBalances, [{ accountId: 2, balance: 550 }]);
+});
+
+test("column, reserve and savings account openings stay fixed while unrelated edits and old clients preserve them", async () => {
+  const planner = document();
+  planner.allocations[0].accountId = 3;
+  planner.bills[0].reserveAccountId = 2;
+  planner.plans[0].accountLinks = { availableUsdAccountId: 1 };
+  const accounts = [1, 2, 3].map((id) => ({ id, currency: "USD", type: "checking", nativeCurrentBalance: id * 200 }));
+  const frozenPlan = capturePlanAccountOpenings(planner.plans[0], planner, accounts, [], "2026-11-08");
+  assert.deepEqual(frozenPlan.accountOpeningBalances, [
+    { accountId: 1, balance: 200 }, { accountId: 2, balance: 400 }, { accountId: 3, balance: 600 },
+  ]);
+  const previous = { ...planner, plans: [frozenPlan] };
+  planner.plans[0].name = "Renamed";
+  const result = await captureFinancePlannerOpenings({ query: () => {
+    throw new Error("Unrelated edits must preserve previously saved openings");
+  } }, planner, previous, "2026-11-09");
+  assert.deepEqual(result.plans[0].accountOpeningBalances, frozenPlan.accountOpeningBalances);
+  assert.equal(result.plans[0].name, "Renamed");
+});
+
+test("capturing a new selected account preserves explicit zero and negative balances without guessing unavailable bank funds", () => {
+  const plan = { startDate: "2026-11-01", startingAccounts: [1, 2, 3, 4, 5].map((accountId) => ({ accountId, percentage: 100 })),
+    accountOpeningBalances: [{ accountId: 1, balance: 0 }, { accountId: 2, balance: -20 }] };
+  const accounts = [
+    { id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 999 },
+    { id: 2, type: "checking", currency: "USD", nativeCurrentBalance: 999 },
+    { id: 3, type: "checking", currency: "USD", nativeCurrentBalance: null },
+    { id: 4, type: "checking", currency: "USD", nativeCurrentBalance: -12.34 },
+    { id: 5, type: "checking", currency: "USD", nativeCurrentBalance: 200, isArchived: true },
+  ];
+  const result = capturePlanAccountOpenings(plan, {}, accounts, [
+    { accountId: 4, currency: "USD", amount: 50, kind: "income", date: "2026-11-02", pending: true },
+    { accountId: 4, currency: "USD", amount: 50, kind: "income", date: "2026-11-09" },
+  ], "2026-11-08");
+  assert.deepEqual(result.accountOpeningBalances, [
+    { accountId: 1, balance: 0 }, { accountId: 2, balance: -20 }, { accountId: 4, balance: -12.34 },
+  ]);
+});
+
+test("legacy migration retries a revision race in a consistent transaction and subsequent saves keep the opening", async (t) => {
+  const original = document();
+  original.plans[0].startingAccounts = [{ accountId: 1, percentage: 100 }];
+  const stored = {
+    document: JSON.stringify(original), revision: 1,
+    exchange_rate: JSON.stringify({ rate: 58, fetchedAt: "2000-01-01T00:00:00.000Z" }),
+  };
+  const lifecycle = [];
+  let conflict = true;
+  const account = { id: 1, name: "Checking", currency: "USD", account_type: "checking",
+    external_provider: "plaid", external_account_id: "bank-1", current_balance: "150.00" };
+  const connection = {
+    beginTransaction: async () => lifecycle.push("begin"),
+    rollback: async () => lifecycle.push("rollback"),
+    commit: async () => lifecycle.push("commit"),
+    release: () => lifecycle.push("release"),
+    query: async (sql) => {
+      if (sql.includes("SELECT document, revision")) return [[{ ...stored }]];
+      if (sql.includes("SELECT a.*")) return [[account]];
+      if (sql.includes("SELECT id, currency")) return [[account]];
+      if (sql.includes("FROM personal_finance_transactions")) return [[{
+        account_id: 1, currency: "USD", kind: "expense", amount: "50.00", transaction_date: "2026-11-02",
+      }]];
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    execute: async (sql, parameters) => {
+      if (sql.includes("AND revision = ?") && conflict) {
+        conflict = false;
+        const concurrent = JSON.parse(stored.document);
+        concurrent.plans[0].name = "Saved on another device";
+        stored.document = JSON.stringify(concurrent);
+        stored.revision++;
+        return [{ affectedRows: 0 }];
+      }
+      assert.match(sql, /UPDATE personal_finance_planner SET document/);
+      stored.document = parameters[0];
+      stored.revision++;
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const pool = {
+    query: async (sql) => {
+      if (sql.startsWith("CREATE TABLE")) return [{}];
+      if (sql.includes("SELECT id FROM")) return [[{ id: 1 }]];
+      throw new Error(`Unexpected pool query: ${sql}`);
+    },
+    execute: async (sql) => {
+      assert.match(sql, /SET exchange_rate/);
+      assert.equal(lifecycle.at(-2), "release", "Release the read connection before the rate fetch needs the pool");
+      return [{ affectedRows: 1 }];
+    },
+    getConnection: async () => connection,
+  };
+  t.mock.method(mysql, "createPool", () => pool);
+  t.mock.method(globalThis, "fetch", async () => {
+    lifecycle.push("rate");
+    return { ok: true, json: async () => ({ base: "USD", quote: "PHP", rate: 58, date: "2026-11-08" }) };
+  });
+  const previousUrl = process.env.FINANCE_DATABASE_URL;
+  process.env.FINANCE_DATABASE_URL = "mysql://test:unused@localhost/test";
+  t.after(() => {
+    if (previousUrl === undefined) delete process.env.FINANCE_DATABASE_URL;
+    else process.env.FINANCE_DATABASE_URL = previousUrl;
+  });
+  const migrated = await getFinancePlanner();
+  assert.equal(migrated.configured, true);
+  assert.equal(migrated.revision, 3);
+  assert.equal(migrated.document.plans[0].name, "Saved on another device");
+  assert.deepEqual(migrated.document.plans[0].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
+  assert.deepEqual(lifecycle, ["begin", "rollback", "begin", "commit", "release", "rate"]);
+
+  // An older browser tab omits snapshots while changing an unrelated field.
+  const edited = structuredClone(migrated.document);
+  edited.plans[0].accountOpeningBalances = [];
+  edited.plans[0].name = "Renamed";
+  account.current_balance = "999.00";
+  const saved = await saveFinancePlanner(edited, migrated.revision);
+  assert.equal(saved.revision, 4);
+  assert.deepEqual(saved.document.plans[0].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
+  assert.deepEqual(lifecycle.slice(-3), ["begin", "commit", "release"]);
 });
 
 test("default is an empty personal planner with a USD salary and real local date", () => {
@@ -268,6 +442,18 @@ test("account opening balances reject duplicate IDs and invalid native values", 
       /opening balance|opening balances/,
     );
   }
+});
+
+test("dated openings accommodate distinct selected, linked, annual and savings accounts", () => {
+  const planner = document();
+  planner.plans[0].accountOpeningBalances = Array.from({ length: 906 }, (_, index) => ({
+    accountId: index + 1, balance: 200,
+  }));
+  assert.equal(validateFinancePlanner(planner).plans[0].accountOpeningBalances.length, 906);
+  planner.plans[0].accountOpeningBalances = Array.from({ length: 1001 }, (_, index) => ({
+    accountId: index + 1, balance: 200,
+  }));
+  assert.throws(() => validateFinancePlanner(planner), /at most 1000 account opening balances/);
 });
 
 test("live starting account selections persist bounded percentages and validate active asset accounts", () => {

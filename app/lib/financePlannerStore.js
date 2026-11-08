@@ -1,5 +1,7 @@
 import mysql from "mysql2/promise";
 import { entryOccurrences } from "./financePlanner.mjs";
+import { mapFinanceActivityAccount } from "./financeActivity.mjs";
+import { capturePlanAccountOpenings, planOpeningAccountIds } from "./financePlanOpening.mjs";
 
 const MAX_BYTES = 1_000_000;
 const RATE_CACHE_MS = 60 * 60 * 1000;
@@ -144,8 +146,8 @@ function accountId(value, label = "Account") {
 
 function openingAccounts(value) {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 300)
-    throw plannerError("Choose at most 300 account opening balances.");
+  if (!Array.isArray(value) || value.length > 1000)
+    throw plannerError("Choose at most 1000 account opening balances.");
   const seen = new Set();
   return value.map((row) => {
     object(row, "Account opening balance");
@@ -535,7 +537,7 @@ export function validateFinancePlannerAccounts(
           `plan:${plan.id}:starting:${selected.accountId}`,
           selected.accountId,
           null,
-          "Live starting balance account",
+          "Starting balance account",
           true,
         );
       for (const opening of plan.accountOpeningBalances || [])
@@ -646,6 +648,51 @@ async function optionalQuery(connection, sql, params = []) {
     if (error?.errno === 1146) return [];
     throw error;
   }
+}
+
+/** Persist opening funds once, independently of later account synchronizations. */
+export async function captureFinancePlannerOpenings(connection, document, previous = {}, currentDate = today()) {
+  const oldPlans = new Map((previous.plans || []).map((plan) => [plan.id, plan]));
+  const preserved = {
+    ...document,
+    plans: document.plans.map((plan) => capturePlanAccountOpenings(
+      plan, document, [], [], currentDate, oldPlans.get(plan.id),
+    )),
+  };
+  const pending = preserved.plans.filter((plan) => {
+    const known = new Set(plan.accountOpeningBalances.map((row) => Number(row.accountId)));
+    return planOpeningAccountIds(plan, preserved).some((id) => !known.has(id));
+  });
+  if (!pending.length) return preserved;
+  const ids = [...new Set(pending.flatMap((plan) => planOpeningAccountIds(plan, preserved)))];
+  const earliestDate = pending.map((plan) => plan.startDate).sort()[0];
+  const accountRows = await optionalQuery(connection, `
+    SELECT a.*,
+      (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
+       FROM personal_finance_transactions t
+       WHERE t.account_id = a.id AND t.currency = a.currency AND t.pending = 0
+         AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+         AND t.transaction_date <= ?) AS native_movement
+    FROM personal_finance_accounts a WHERE a.id IN (?)
+  `, [currentDate, ids]);
+  const transactionRows = await optionalQuery(connection, `
+    SELECT account_id, currency, kind, amount,
+      DATE_FORMAT(transaction_date, '%Y-%m-%d') AS transaction_date
+    FROM personal_finance_transactions
+    WHERE account_id IN (?) AND pending = 0 AND duplicate_of_id IS NULL
+      AND is_provider_removed = 0 AND transaction_date >= ? AND transaction_date <= ?
+  `, [ids, earliestDate, currentDate]);
+  const accounts = accountRows.map(mapFinanceActivityAccount).filter(Boolean);
+  const transactions = transactionRows.map((row) => ({
+    accountId: Number(row.account_id), date: row.transaction_date,
+    kind: row.kind, amount: row.amount, currency: row.currency,
+  }));
+  return {
+    ...preserved,
+    plans: preserved.plans.map((plan) => capturePlanAccountOpenings(
+      plan, preserved, accounts, transactions, currentDate,
+    )),
+  };
 }
 
 function legacyRate(settings) {
@@ -860,9 +907,10 @@ async function latestRate(connection = null, storedRate = null, force = false) {
 }
 
 export async function getFinancePlanner() {
+  let connection;
   try {
-    const connection = await ensureSchema();
-    if (!connection)
+    const database = await ensureSchema();
+    if (!database)
       return {
         configured: false,
         document: createDefaultFinancePlanner(),
@@ -871,17 +919,46 @@ export async function getFinancePlanner() {
         warning:
           "Connect MySQL to save your finance data and sync it across devices.",
       };
-    const [rows] = await connection.query(
-      "SELECT document, revision, exchange_rate FROM personal_finance_planner WHERE id = 1",
-    );
-    if (!rows.length) throw new Error("Planner row unavailable");
-    return {
-      configured: true,
-      document: validateFinancePlanner(JSON.parse(rows[0].document)),
-      revision: Number(rows[0].revision),
-      exchangeRate: await latestRate(connection, rows[0].exchange_rate),
-    };
+    connection = await database.getConnection();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // One repeatable-read view keeps balances and posted movements consistent
+      // if a bank sync commits while historical openings are being captured.
+      await connection.beginTransaction();
+      const [rows] = await connection.query(
+        "SELECT document, revision, exchange_rate FROM personal_finance_planner WHERE id = 1",
+      );
+      if (!rows.length) throw new Error("Planner row unavailable");
+      const stored = typeof rows[0].document === "string"
+        ? JSON.parse(rows[0].document) : rows[0].document;
+      const original = validateFinancePlanner(stored);
+      const document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, original));
+      let revision = Number(rows[0].revision);
+      if (JSON.stringify(document) !== JSON.stringify(original)) {
+        const [result] = await connection.execute(
+          "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1 AND revision = ?",
+          [JSON.stringify(document), revision],
+        );
+        // Another editor or migration won the race. Read its latest document
+        // rather than overwriting changes or returning a stale revision.
+        if (!result.affectedRows) {
+          await connection.rollback();
+          continue;
+        }
+        revision++;
+      }
+      await connection.commit();
+      connection.release();
+      connection = null;
+      return {
+        configured: true,
+        document,
+        revision,
+        exchangeRate: await latestRate(database, rows[0].exchange_rate),
+      };
+    }
+    throw new Error("Planner changed while opening balances were saved");
   } catch {
+    if (connection) await connection.rollback().catch(() => {});
     return {
       configured: false,
       document: createDefaultFinancePlanner(),
@@ -890,11 +967,13 @@ export async function getFinancePlanner() {
       warning:
         "Your finance database is temporarily unavailable. Your saved data has not been changed. Reconnect MySQL and reload to continue.",
     };
+  } finally {
+    connection?.release();
   }
 }
 
 export async function saveFinancePlanner(value, revision) {
-  const document = validateFinancePlanner(value);
+  let document = validateFinancePlanner(value);
   if (!Number.isInteger(revision) || revision < 1 || revision > 4_294_967_294)
     throw plannerError("Reload the planner before saving.", 409);
   let database;
@@ -923,23 +1002,24 @@ export async function saveFinancePlanner(value, revision) {
         "This planner changed on another device. Reload to get the latest data before saving.",
         409,
       );
+    const previous = typeof rows[0].document === "string"
+      ? JSON.parse(rows[0].document) : rows[0].document;
     const ids = referencedAccountIds(document);
     if (ids.length) {
       const [accounts] = await connection.query(
         "SELECT id, currency, account_type, is_archived, merged_into_account_id FROM personal_finance_accounts WHERE id IN (?)",
         [ids],
       );
-      const previous =
-        typeof rows[0].document === "string"
-          ? JSON.parse(rows[0].document)
-          : rows[0].document;
       validateFinancePlannerAccounts(document, accounts, previous);
     }
+    document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, document, previous));
     await connection.execute(
       "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1",
       [JSON.stringify(document)],
     );
     await connection.commit();
+    connection.release();
+    connection = null;
     return {
       configured: true,
       document,

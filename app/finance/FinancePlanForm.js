@@ -79,6 +79,7 @@ export default function FinancePlanForm({
     entries: [],
     completedRows: [],
     rowOverrides: [],
+    accountOpeningBalances: [],
     ...plan,
     startingAccounts: (plan?.startingAccounts || []).map((row) => ({
       ...row,
@@ -88,12 +89,45 @@ export default function FinancePlanForm({
   const set = (field, value) =>
     setDraft((current) => ({ ...current, [field]: value }));
   const updateAccount = (rowKey, changes) =>
+    setDraft((current) => {
+      const previous = current.startingAccounts.find((row) => row._key === rowKey);
+      return {
+        ...current,
+        startingAccounts: current.startingAccounts.map((row) =>
+          row._key === rowKey ? { ...row, ...changes } : row,
+        ),
+        accountOpeningBalances: changes.accountId !== undefined && Number(changes.accountId) !== Number(previous?.accountId)
+          ? current.accountOpeningBalances.filter((row) => Number(row.accountId) !== Number(previous?.accountId))
+          : current.accountOpeningBalances,
+      };
+    });
+  const setOpeningBalance = (accountId, balance) =>
     setDraft((current) => ({
       ...current,
-      startingAccounts: current.startingAccounts.map((row) =>
-        row._key === rowKey ? { ...row, ...changes } : row,
-      ),
+      accountOpeningBalances: [
+        ...current.accountOpeningBalances.filter((row) => Number(row.accountId) !== Number(accountId)),
+        ...(balance === "" ? [] : [{ accountId: Number(accountId), balance }]),
+      ],
     }));
+  const startingBalanceField = (accountId, currency, label = "Starting balance") => {
+    if (!accountId) return null;
+    const saved = draft.accountOpeningBalances.find((row) => Number(row.accountId) === Number(accountId));
+    const captured = plan?.accountOpeningBalances?.some((row) => Number(row.accountId) === Number(accountId));
+    return (
+      <Field label={label} hint={`Balance before the plan’s first day (${currency}). ${captured ? "Change this amount to correct the plan’s opening funds." : "Leave blank to calculate it from bank records when saved."}`}>
+        <FinanceNumberInput
+          aria-label={`${label} for account ${accountId}`}
+          required={Boolean(captured)}
+          min="-999999999"
+          max="999999999"
+          step="0.01"
+          value={saved?.balance ?? ""}
+          placeholder="Calculated when saved"
+          onChange={(event) => setOpeningBalance(accountId, event.target.value)}
+        />
+      </Field>
+    );
+  };
   const opening = getPlanOpening(draft, accounts, document);
   const reserve = getAnnualReserveOpening(draft, document);
   const assetAccounts = accounts.filter(
@@ -125,7 +159,10 @@ export default function FinancePlanForm({
             accountId: Number(row.accountId),
             percentage: Number(row.percentage),
           })),
-          accountOpeningBalances: [],
+          accountOpeningBalances: draft.accountOpeningBalances.map((row) => ({
+            accountId: Number(row.accountId),
+            balance: Number(row.balance),
+          })),
         });
       }}
     >
@@ -172,7 +209,7 @@ export default function FinancePlanForm({
           <div className="fp-plan-live-heading">
             <div>
               <h3>Column accounts</h3>
-              <p>Each column starts with its account’s current balance. Posted bank movements are included once; future entries project changes to that account.</p>
+              <p>Each column uses a saved starting balance. Posted bank movements are included once; future entries project changes to that account.</p>
             </div>
             {onRefreshAccounts && (
               <button type="button" className="fp-button fp-text" disabled={refreshingAccounts || busy} onClick={onRefreshAccounts}>
@@ -188,16 +225,24 @@ export default function FinancePlanForm({
               const value = selected && (Object.hasOwn(selected, "nativeCurrentBalance") ? selected.nativeCurrentBalance : selected.currentBalance);
               const known = value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
               return (
-                <Field key={field} label={label} hint={selected ? known ? `Current balance: ${money(Number(value), currency)}` : "Current balance unavailable." : "No account linked to this column."}>
-                  <FinanceAccountSelect
-                    aria-label={`${label} account`}
-                    accounts={assetAccounts.filter((account) => Number(account.id) === Number(accountId) || !Object.values(draft.accountLinks).includes(Number(account.id)))}
-                    currency={currency}
-                    value={accountId}
-                    onChange={(value) => set("accountLinks", { ...draft.accountLinks, [field]: value })}
-                    emptyLabel="No linked account"
-                  />
-                </Field>
+                <div key={field} className="fp-form">
+                  <Field label={label} hint={selected ? known ? `Current balance: ${money(Number(value), currency)}` : "Current balance unavailable." : "No account linked to this column."}>
+                    <FinanceAccountSelect
+                      aria-label={`${label} account`}
+                      accounts={assetAccounts.filter((account) => Number(account.id) === Number(accountId) || !Object.values(draft.accountLinks).includes(Number(account.id)))}
+                      currency={currency}
+                      value={accountId}
+                      onChange={(value) => setDraft((current) => ({
+                        ...current,
+                        accountLinks: { ...current.accountLinks, [field]: value },
+                        accountOpeningBalances: Number(value) === Number(accountId) ? current.accountOpeningBalances
+                          : current.accountOpeningBalances.filter((row) => Number(row.accountId) !== Number(accountId)),
+                      }))}
+                      emptyLabel="No linked account"
+                    />
+                  </Field>
+                  {startingBalanceField(accountId, currency, `${label} starting balance`)}
+                </div>
               );
             })}
           </div>
@@ -207,13 +252,13 @@ export default function FinancePlanForm({
       {!draft.accountLinks && <>
       <section
         className="fp-plan-live-start"
-        aria-label="Live starting balance accounts"
+        aria-label="Starting balance accounts"
       >
         <div className="fp-plan-live-heading">
           <div>
-            <h3>Live bank balances</h3>
+            <h3>Account starting balances</h3>
             <p>
-              Include a percentage of each account’s current actual balance,
+              Include a percentage of each account’s saved starting balance,
               plus the flat amounts below.
             </p>
           </div>
@@ -237,9 +282,12 @@ export default function FinancePlanForm({
           const contribution = opening.contributions.find(
             (item) => item.accountId === Number(row.accountId),
           );
+          const selected = accounts.find((account) => Number(account.id) === Number(row.accountId));
+          const currentValue = selected && (Object.hasOwn(selected, "nativeCurrentBalance") ? selected.nativeCurrentBalance : selected.currentBalance);
+          const currentKnown = currentValue !== null && currentValue !== undefined && currentValue !== "" && Number.isFinite(Number(currentValue));
           return (
             <div className="fp-plan-live-account" key={row._key}>
-              <Field label="Include account">
+              <Field label="Include account" hint={selected ? currentKnown ? `Current balance: ${money(Number(currentValue), selected.currency)}` : "Current balance unavailable." : undefined}>
                 <FinanceAccountSelect
                   accounts={assetAccounts.filter(
                     (account) =>
@@ -279,21 +327,20 @@ export default function FinancePlanForm({
                 className="fp-button fp-text"
                 disabled={busy}
                 aria-label={`Remove starting account ${row.accountId ? financeAccountLabel(accounts.find((account) => Number(account.id) === Number(row.accountId))) : "selection"}`}
-                onClick={() =>
-                  set(
-                    "startingAccounts",
-                    draft.startingAccounts.filter(
-                      (item) => item._key !== row._key,
-                    ),
-                  )
-                }
+                onClick={() => setDraft((current) => ({
+                  ...current,
+                  startingAccounts: current.startingAccounts.filter((item) => item._key !== row._key),
+                  accountOpeningBalances: current.accountOpeningBalances.filter((item) => Number(item.accountId) !== Number(row.accountId)),
+                }))}
               >
                 Remove
               </button>
+              {row.accountId && <div className="fp-live-account-preview">
+                {startingBalanceField(row.accountId, selected?.currency || contribution?.currency || "USD")}
+              </div>}
               {contribution && (
                 <p className="fp-inline-note fp-live-account-preview">
-                  {money(contribution.balance, contribution.currency)} current
-                  balance × {contribution.percentage}% ={" "}
+                  {money(contribution.balance, contribution.currency)} {contribution.isSnapshot ? "saved starting balance" : "current balance preview"} × {contribution.percentage}% ={" "}
                   <strong>
                     {money(contribution.amount, contribution.currency)}
                   </strong>
@@ -327,7 +374,7 @@ export default function FinancePlanForm({
       <div className="fp-form-grid">
         <Field
           label="Flat starting amount · USD"
-          hint="Extra funds added to the selected live bank balances."
+          hint="Extra funds added to the selected account starting balances."
         >
           <FinanceNumberInput
             required
@@ -356,7 +403,7 @@ export default function FinancePlanForm({
           {money(opening.flatPhp, "PHP")}
         </span>
         <span>
-          Selected live balances: {money(opening.accountUsd)} ·{" "}
+          Selected account balances: {money(opening.accountUsd)} ·{" "}
           {money(opening.accountPhp, "PHP")}
         </span>
         {(opening.reserveExcludedUsd > 0 || opening.reserveExcludedPhp > 0) && (
@@ -374,8 +421,7 @@ export default function FinancePlanForm({
           </b>
         </span>
         <small>
-          Account amounts are recalculated from the latest actual balances
-          whenever the plan loads or bank data refreshes.
+          Starting balances are saved with the plan. Bank refreshes do not change them.
         </small>
         {opening.warnings.map((warning, index) => (
           <small key={index} className="fp-negative" role="status">
@@ -412,6 +458,7 @@ export default function FinancePlanForm({
         balances.
       </p>
       </>}
+      {draft.accountLinks && <p className="fp-inline-note">Starting balances are saved with the plan. Bank refreshes do not change them.</p>}
       {[
         ["includeIncome", "Include scheduled salary payments"],
         [

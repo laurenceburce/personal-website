@@ -319,7 +319,7 @@ test("live percentage account forecasts explain their current balance source and
       includeAllocations: false,
       includeAnnualReserve: false,
       startingAccounts: [{ accountId: 1, percentage: 80 }],
-      accountOpeningBalances: [{ accountId: 1, balance: 9999 }],
+      accountOpeningBalances: [],
     },
     { salary: {}, bills: [], allocations: [] },
     63,

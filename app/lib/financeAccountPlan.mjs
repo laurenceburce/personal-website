@@ -200,11 +200,9 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     ]),
   );
   const liveOpening = getPlanOpening(plan, accounts, document);
-  const live = new Map(liveOpening.contributions.map((contribution) => [contribution.accountId, contribution.amount]));
-  // Explicit column links can also review a dated account opening. The legacy
-  // percentage-based starting amounts continue to use current bank balances.
-  for (const accountId of live.keys())
-    if (!linkedIds.has(accountId)) opening.delete(accountId);
+  const live = new Map(liveOpening.contributions
+    .filter((contribution) => !opening.has(contribution.accountId))
+    .map((contribution) => [contribution.accountId, contribution.amount]));
   const warnings = new Set(liveOpening.warnings);
   const balances = new Map();
   const annualReserved = new Map();
@@ -214,8 +212,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     const current = accountBalance(account);
     balances.set(
       accountId,
-      linkedIds.has(accountId) ? opening.has(accountId) ? opening.get(accountId) : current
-        : live.has(accountId) ? live.get(accountId) : opening.has(accountId) ? opening.get(accountId) : current,
+      opening.has(accountId) ? opening.get(accountId)
+        : linkedIds.has(accountId) ? current : live.has(accountId) ? live.get(accountId) : current,
     );
     annualReserved.set(
       accountId,
@@ -229,7 +227,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     if (!selected) return plan.accountLinks ? 0 : fallback;
     const account = accountById.get(selected);
     const label = kind === "available" ? "Available funds" : kind === "annualReserve" ? "Annual reserves" : "Savings";
-    if (!account || archived(account) || liability(account) || account.currency !== currency) {
+    if (!account || (archived(account) && !opening.has(selected)) || liability(account) || account.currency !== currency) {
       warnings.add(`${label}: its linked ${currency} account is unavailable; choose an active account in ${currency}.`);
       return null;
     }
@@ -288,7 +286,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   if (plan.accountLinks)
     openingSavings.accountIds = [...new Set(["USD", "PHP"]
       .map((currency) => linkedId("savings", currency)).filter(Boolean))];
-  const openingSource = live.size ? "live" : opening.size ? "plan" : "bank";
+  const openingSource = opening.size ? "plan" : live.size ? "live" : "bank";
   if (!opening.size && plan.startDate < today)
     warnings.add(
       live.size
@@ -753,10 +751,9 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     rows,
     accounts: associations.map((account) => {
       const source = accountById.get(account.accountId);
-      const openingBalance = linkedIds.has(account.accountId)
-        ? opening.has(account.accountId) ? opening.get(account.accountId) : accountBalance(source)
-        : live.has(account.accountId) ? live.get(account.accountId)
-          : opening.has(account.accountId) ? opening.get(account.accountId) : accountBalance(source);
+      const openingBalance = opening.has(account.accountId) ? opening.get(account.accountId)
+        : linkedIds.has(account.accountId) ? accountBalance(source)
+          : live.has(account.accountId) ? live.get(account.accountId) : accountBalance(source);
       const endingBalance = balances.get(account.accountId);
       const endingAnnualReserved = annualReserved.get(account.accountId) || 0;
       return {
@@ -765,8 +762,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         endingBalance,
         endingAnnualReserved,
         savingsAllocated: savingsAllocated.get(account.accountId) || 0,
-        openingSource: linkedIds.has(account.accountId) ? opening.has(account.accountId) ? "plan" : "live"
-          : live.has(account.accountId) ? "live" : opening.has(account.accountId) ? "plan" : "bank",
+        openingSource: opening.has(account.accountId) ? "plan"
+          : linkedIds.has(account.accountId) || live.has(account.accountId) ? "live" : "bank",
         availableAfterAnnualReserve:
           endingBalance === null || liability(source)
             ? null

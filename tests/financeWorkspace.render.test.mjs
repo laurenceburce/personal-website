@@ -737,6 +737,22 @@ test("live percentages and flat starting amounts reach the ledger and summary af
   }
 });
 
+test("saved starting funds reach the ledger and summary unchanged after bank balances refresh", () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const overrides = { bills: [], plans: [{ ...base, openingUsd: 0,
+    startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 200 }],
+  }] };
+  for (const nativeCurrentBalance of [200, 150, 90]) {
+    const html = plain(render("plans", 0, overrides, { accounts: [{
+      id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance,
+    }] }));
+    assert.ok(html.includes("Available funds · USD$200.00"));
+    assert.ok(html.includes("Saved starting balance $200.00"));
+    assert.ok(html.includes("Bank refreshes update transactions without changing these starting balances."));
+  }
+});
+
 test("manual row completion persists its stable key without changing any forecast money", async () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const props = fixture("plans", 0, {

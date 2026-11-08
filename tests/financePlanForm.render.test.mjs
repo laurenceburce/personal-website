@@ -86,7 +86,7 @@ function find(node, predicate) {
     return predicate(node) ? node : find(node.props?.children, predicate);
 }
 
-test("plan editor previews percentage of current actual bank funds plus flat amounts", () => {
+test("unsaved account openings preview current bank funds before the server captures them", () => {
   for (const [balance, expected] of [
     [1000, "$900.00"],
     [1250, "$1,100.00"],
@@ -105,6 +105,76 @@ test("plan editor previews percentage of current actual bank funds plus flat amo
     assert.ok(!html.includes('type="number"'));
     assert.ok(!html.includes("Use current account balances"));
   }
+});
+
+test("saved plan openings stay fixed while the editor shows refreshed bank balances separately", () => {
+  for (const balance of [150, 90, null]) {
+    const html = renderToStaticMarkup(createElement(PlanForm, {
+      plan: { ...plan, accountOpeningBalances: [{ accountId: 1, balance: 200 }] },
+      document,
+      accounts: [{ ...account, nativeCurrentBalance: balance }],
+      onSave() {},
+    }));
+    assert.ok(plain(html).includes("Available starting balance: $260.00"));
+    assert.ok(plain(html).includes("$200.00 saved starting balance × 80%"));
+    assert.ok(plain(html).includes("Starting balances are saved with the plan. Bank refreshes do not change them."));
+    assert.ok(html.includes('value="200"'));
+    assert.ok(plain(html).includes(balance === null ? "Current balance unavailable." : `Current balance: ${planner.money(balance)}`));
+  }
+});
+
+function editableForm(initialPlan, initialAccounts = [account]) {
+  let state, saved;
+  const Component = load(filename, {
+    ...require("react"),
+    useState(initial) {
+      state ??= typeof initial === "function" ? initial() : initial;
+      return [state, (next) => { state = typeof next === "function" ? next(state) : next; }];
+    },
+  }).default;
+  return {
+    render(accounts = initialAccounts) {
+      return Component({ plan: initialPlan, document, accounts, onSave(value) { saved = value; } });
+    },
+    get saved() { return saved; },
+  };
+}
+
+test("saving a renamed plan or changing its percentage preserves every saved account opening", () => {
+  const snapshots = [{ accountId: 1, balance: 200 }, { accountId: 2, balance: 400 }];
+  const editor = editableForm({ ...plan, accountOpeningBalances: snapshots });
+  let tree = editor.render();
+  find(tree, (node) => node.props?.label === "Plan name").props.children.props.onChange({ target: { value: "Renamed" } });
+  tree = editor.render([{ ...account, nativeCurrentBalance: 150 }]);
+  find(tree, (node) => node.props?.label === "Percentage").props.children.props.children[0].props.onChange({ target: { value: "50" } });
+  tree = editor.render([{ ...account, nativeCurrentBalance: 90 }]);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(editor.saved.name, "Renamed");
+  assert.deepEqual(editor.saved.startingAccounts, [{ accountId: 1, percentage: 50 }]);
+  assert.deepEqual(editor.saved.accountOpeningBalances, snapshots);
+  assert.deepEqual(snapshots, [{ accountId: 1, balance: 200 }, { accountId: 2, balance: 400 }]);
+});
+
+test("an explicit starting balance correction is saved without changing other account openings", () => {
+  const editor = editableForm({ ...plan, accountOpeningBalances: [{ accountId: 1, balance: 350 }, { accountId: 2, balance: 400 }] });
+  let tree = editor.render();
+  find(tree, (node) => node.props?.label === "Starting balance").props.children.props.onChange({ target: { value: "200.25" } });
+  tree = editor.render([{ ...account, nativeCurrentBalance: 150 }]);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(editor.saved.accountOpeningBalances.find((row) => row.accountId === 1).balance, 200.25);
+  assert.equal(editor.saved.accountOpeningBalances.find((row) => row.accountId === 2).balance, 400);
+  assert.ok(plain(renderToStaticMarkup(tree)).includes("Available starting balance: $260.20"));
+});
+
+test("replacing a starting account leaves the new opening to the server and preserves unrelated snapshots", () => {
+  const editor = editableForm({ ...plan, accountOpeningBalances: [{ accountId: 1, balance: 200 }, { accountId: 2, balance: 400 }] },
+    [account, { ...account, id: 3, name: "New checking" }]);
+  let tree = editor.render();
+  find(tree, (node) => node.props?.label === "Include account").props.children.props.onChange(3);
+  tree = editor.render();
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(editor.saved.startingAccounts, [{ accountId: 3, percentage: 80 }]);
+  assert.deepEqual(editor.saved.accountOpeningBalances, [{ accountId: 2, balance: 400 }]);
 });
 
 test("bank refresh preserves partially typed percentages and flat amounts until explicit save", () => {
@@ -252,4 +322,23 @@ test("enabling column links suggests the configured salary, annual reserve and s
   assert.equal(state.accountLinks.annualReserveUsdAccountId, 2);
   assert.equal(state.accountLinks.savingsUsdAccountId, 28);
   assert.ok(renderToStaticMarkup(tree).includes("Column accounts"));
+});
+
+test("linked columns preserve their saved balances and allow a correction to one column", () => {
+  const links = { availableUsdAccountId: 1, availablePhpAccountId: null, annualReserveUsdAccountId: 2,
+    annualReservePhpAccountId: null, savingsUsdAccountId: 28, savingsPhpAccountId: null };
+  const snapshots = [{ accountId: 1, balance: 200 }, { accountId: 2, balance: 300 }, { accountId: 28, balance: 400 }];
+  const editor = editableForm({ ...plan, accountLinks: links, accountOpeningBalances: snapshots }, [
+    { ...account, nativeCurrentBalance: 150 },
+    { ...account, id: 2, type: "savings", nativeCurrentBalance: 250 },
+    { ...account, id: 28, type: "savings", nativeCurrentBalance: 500 },
+  ]);
+  let tree = editor.render();
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(editor.saved.accountOpeningBalances, snapshots);
+  find(tree, (node) => node.props?.label === "Annual reserve · USD starting balance").props.children.props.onChange({ target: { value: "320.50" } });
+  tree = editor.render();
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(editor.saved.accountOpeningBalances, [snapshots[0], snapshots[2], { accountId: 2, balance: 320.5 }]);
+  assert.deepEqual(editor.saved.accountLinks, links);
 });

@@ -625,13 +625,14 @@ export function getAnnualReserveOpening(plan, document) {
   };
 }
 
-/** Resolve the selected share of current native balances each time a plan is read. */
+/** Saved native openings belong to the plan; current balances only preview uncaptured accounts. */
 export function getPlanOpening(plan, accounts = [], document = {}) {
   const flatUsd = roundMoney(plan?.openingUsd);
   const flatPhp = roundMoney(plan?.openingPhp);
   const contributions = [];
   const warnings = [];
   const byId = new Map(accounts.map((account) => [Number(account.id), account]));
+  const saved = new Map((plan?.accountOpeningBalances || []).map((row) => [Number(row.accountId), row.balance]));
   const seen = new Set();
   let accountUsd = 0;
   let accountPhp = 0;
@@ -654,8 +655,8 @@ export function getPlanOpening(plan, accounts = [], document = {}) {
     const account = byId.get(accountId);
     const name = account?.name || `Account ${accountId}`;
     if (
-      !account || account.isArchived || account.is_archived ||
-      account.mergedIntoAccountId || account.merged_into_account_id
+      !account || (!saved.has(accountId) && (account.isArchived || account.is_archived ||
+      account.mergedIntoAccountId || account.merged_into_account_id))
     ) {
       warnings.push(`${name}: its live starting balance account is unavailable or removed.`);
       continue;
@@ -671,7 +672,7 @@ export function getPlanOpening(plan, accounts = [], document = {}) {
       warnings.push(`${name}: its starting balance percentage must be between 0 and 100.`);
       continue;
     }
-    const value = Object.hasOwn(account, "nativeCurrentBalance")
+    const value = saved.has(accountId) ? saved.get(accountId) : Object.hasOwn(account, "nativeCurrentBalance")
       ? account.nativeCurrentBalance : account.currentBalance;
     if (!["number", "string"].includes(typeof value) ||
         (typeof value === "string" && !value.trim()) || !Number.isFinite(Number(value))) {
@@ -686,6 +687,7 @@ export function getPlanOpening(plan, accounts = [], document = {}) {
     contributions.push({
       accountId, currency: account.currency, percentage: normalizedPercentage,
       balance, amount, availableAmount, reserveExcluded, name, mask: account.mask || "",
+      ...(saved.has(accountId) ? { isSnapshot: true } : {}),
     });
     if (account.currency === "USD") {
       accountUsd = roundMoney(accountUsd + amount);
@@ -1581,7 +1583,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       first.id.localeCompare(second.id),
   );
   const opening = getPlanOpening(plan, options.accounts || [], document);
-  const liveAccounts = new Set(opening.contributions.filter((contribution) => contribution.percentage > 0).map((contribution) => contribution.accountId));
+  const liveAccounts = new Set(opening.contributions.filter((contribution) => contribution.percentage > 0 && !contribution.isSnapshot).map((contribution) => contribution.accountId));
+  const savedAccountOpenings = new Map((plan.accountOpeningBalances || []).map((row) => [Number(row.accountId), roundMoney(row.balance)]));
   let balanceUsd = opening.usd;
   let balancePhp = opening.php;
   const openingReserve = getAnnualReserveOpening(plan, document);
@@ -1705,7 +1708,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     }
     for (const [accountId, saved] of savedByAccount) {
       const account = cardAccountsById.get(accountId);
-      const value = account && (Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance);
+      const value = savedAccountOpenings.has(accountId) ? savedAccountOpenings.get(accountId)
+        : account && (Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance);
       if (value != null && Number.isFinite(Number(value)))
         linkedReserveUnassigned.set(accountId, Math.max(0, roundMoney(Number(value) - saved)));
     }
@@ -1831,7 +1835,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
             !matchedReserveReceipts.has(String(transaction.transactionId)) && transferTransaction(transaction) &&
             transaction.kind === "income" && Number(transaction.accountId) === leg.accountId && transaction.currency === leg.currency &&
             Math.abs(transaction.amount - leg.amount) < 0.005 && Math.abs(dateTime(transaction.date) - dateTime(row.date)) <= 3 * DAY_MS);
-          if (receipt) {
+          if (receipt && !savedAccountOpenings.has(leg.accountId)) {
             matchedReserveReceipts.add(String(receipt.transactionId));
             recordedReserveAccounts.add(leg.accountId);
           }
@@ -1993,10 +1997,6 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const selectedAvailable = new Map(opening.contributions.map((contribution) =>
     [`${contribution.accountId}:${contribution.currency}`, contribution.availableAmount]));
   const datedSavingsOpening = new Map((plan.accountOpeningBalances || [])
-    .filter((selected) => {
-      const key = `${Number(selected.accountId)}:${accountsById.get(Number(selected.accountId))?.currency}`;
-      return !selectedAvailable.has(key);
-    })
     .map((selected) => [`${Number(selected.accountId)}:${accountsById.get(Number(selected.accountId))?.currency}`, roundMoney(selected.balance)]));
   const outsideSavings = new Map();
   for (const key of savingsAccounts) {

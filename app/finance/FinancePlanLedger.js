@@ -363,7 +363,7 @@ function OpeningDetails({ openingBalances }) {
   return (
     <>
       <details className="fpl-opening-details">
-        <summary>Live starting balance breakdown</summary>
+        <summary>{contributions.some((account) => account.isSnapshot) ? "Saved starting balance breakdown" : "Starting balance breakdown"}</summary>
         <ul>
           <li>
             Flat starting balance: {money(openingBalances.flatUsd ?? 0)} ·{" "}
@@ -375,7 +375,7 @@ function OpeningDetails({ openingBalances }) {
               {account.mask ? ` · ••${account.mask}` : ""}:{" "}
               {money(account.amount, account.currency)}
               <small>
-                Current balance {money(account.balance, account.currency)}
+                {account.isSnapshot ? "Saved starting balance" : "Current balance"} {money(account.balance, account.currency)}
               </small>
               {account.reserveExcluded > 0 && (
                 <small>
