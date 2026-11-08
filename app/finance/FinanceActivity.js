@@ -168,14 +168,90 @@ function CreditCardDue({ account }) {
       )}
       <small>
         {complete
-          ? account.creditCardAutopayEnabled
+          ? !account.isLinked
+            ? "Manually entered statement details. Update them when a new statement arrives. Budget Plans use the full statement balance and your payment schedule."
+            : account.creditCardAutopayEnabled
             ? "Budget Plans use the automatic payment date. The bank’s due date stays unchanged."
             : "Statement dues appear automatically in Budget Plans for the due date."
           : account.isLinked
             ? "This bank connection has not supplied complete statement details for Budget Plans."
-            : "Statement details are imported for linked credit cards."}
+            : "Enter payment details below to include this card in Budget Plans."}
       </small>
     </div>
+  );
+}
+
+export function ManualCreditCardDetailsForm({ account, disabled = false, saving = false, onSave }) {
+  const [draft, setDraft] = useState(() => ({
+    statementBalance: account.creditCardDue?.statementBalance ?? "",
+    dueDate: account.creditCardDue?.dueDate || "",
+    minimumPayment: account.creditCardDue?.minimumPayment ?? "",
+    lastStatementDate: account.creditCardDue?.lastStatementDate || "",
+  }));
+  const [error, setError] = useState("");
+  const set = (field, value) => {
+    setDraft((current) => ({ ...current, [field]: value }));
+    setError("");
+  };
+  const validAmount = (value) => String(value).trim() !== "" && Number.isFinite(Number(value)) &&
+    Number(value) >= 0 && Number(value) <= 999999999 &&
+    Math.abs(Number(value) * 100 - Math.round(Number(value) * 100)) <= 0.00001;
+  const validDate = (value) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value < "1900-01-01" || value > "2200-12-31") return false;
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === value;
+  };
+  const incomplete = account.creditCardDue?.statementBalance == null || !account.creditCardDue?.dueDate;
+  return (
+    <details className="fa-card-autopay fa-card-payment-details" open={incomplete || undefined}>
+      <summary>Payment details</summary>
+      <form aria-label={`${account.name || "Credit card"} payment details`} onSubmit={(event) => {
+        event.preventDefault();
+        if (disabled || saving || account.isLinked) return;
+        if (!validAmount(draft.statementBalance)) return setError("Enter a non-negative statement balance below one billion with up to two decimal places.");
+        if (!validDate(draft.dueDate)) return setError("Enter a valid payment due date between 1900 and 2200.");
+        const minimumPayment = String(draft.minimumPayment).trim() === "" ? null : Number(draft.minimumPayment);
+        if (minimumPayment !== null && (!validAmount(draft.minimumPayment) || minimumPayment > Number(draft.statementBalance)))
+          return setError("Minimum payment must be a valid amount no greater than the statement balance.");
+        const lastStatementDate = draft.lastStatementDate || null;
+        if (lastStatementDate && (!validDate(lastStatementDate) || lastStatementDate > draft.dueDate))
+          return setError("Enter a valid statement date on or before the payment due date.");
+        setError("");
+        return onSave({ statementBalance: Number(draft.statementBalance), dueDate: draft.dueDate, minimumPayment, lastStatementDate });
+      }}>
+        <fieldset disabled={disabled || saving}>
+          <div className="fa-card-payment-fields">
+            <label className="fa-field">
+              <span>Statement balance · {account.currency}</span>
+              <FinanceNumberInput required min="0" max="999999999" step="0.01" value={draft.statementBalance}
+                onChange={(event) => set("statementBalance", event.target.value)} />
+              <small>Use the statement amount, which may differ from the current balance owed.</small>
+            </label>
+            <label className="fa-field">
+              <span>Payment due</span>
+              <input type="date" required min="1900-01-01" max="2200-12-31" value={draft.dueDate}
+                onChange={(event) => set("dueDate", event.target.value)} />
+            </label>
+            <label className="fa-field">
+              <span>Minimum payment · {account.currency} (optional)</span>
+              <FinanceNumberInput min="0" max={draft.statementBalance || "999999999"} step="0.01" value={draft.minimumPayment}
+                onChange={(event) => set("minimumPayment", event.target.value)} />
+            </label>
+            <label className="fa-field">
+              <span>Statement date (optional)</span>
+              <input type="date" min="1900-01-01" max={draft.dueDate || "2200-12-31"} value={draft.lastStatementDate}
+                onChange={(event) => set("lastStatementDate", event.target.value)} />
+              <small>The closing date helps match payments made earlier in the statement cycle.</small>
+            </label>
+          </div>
+          <p>Budget Plans use the full statement balance and your automatic payment schedule when enabled. Update these details when a new statement arrives; record actual payments as transactions.</p>
+          {error && <p className="fa-form-error" role="alert">{error}</p>}
+          <button type="submit" className="fa-button" disabled={disabled || saving}>
+            {saving ? "Saving…" : "Save payment details"}
+          </button>
+        </fieldset>
+      </form>
+    </details>
   );
 }
 
@@ -213,7 +289,7 @@ export function CreditCardAutopayForm({ account, disabled = false, saving = fals
             <small>7 days means one week early. Use 0 for the due date.</small>
           </label>}
           {enabled && validDays && <p className="fa-autopay-preview">
-            {paymentDate === "—" ? "A bank due date is needed to calculate the payment date." : `Planned payment: ${paymentDate}.`}
+            {paymentDate === "—" ? account.isLinked ? "A bank due date is needed to calculate the payment date." : "Enter a payment due date in Payment details to calculate the automatic payment date." : `Planned payment: ${paymentDate}.`}
           </p>}
           <p>This forecasts the autopay you have set up with your bank. It does not enroll the card in bank autopay or send a payment.</p>
           {error && <p className="fa-form-error" role="alert">{error}</p>}
@@ -1310,6 +1386,17 @@ export function BankAccountsPanel({
     });
   }
 
+  async function saveManualCreditCardDetails(account, details) {
+    await runAction(`card-details:${account.id}`, async () => {
+      await callbacks.current.onAction("updateManualCreditCardDetails", {
+        accountId: account.id,
+        ...details,
+      });
+      await callbacks.current.onRefresh?.();
+      callbacks.current.onNotice?.(`${account.name || "Credit card"} payment details saved. Budget Plans have been updated.`);
+    });
+  }
+
   async function linkBrankas() {
     await runAction("brankas", async () => {
       const result = await callbacks.current.onAction("createBrankasLink", {});
@@ -1862,6 +1949,15 @@ export function BankAccountsPanel({
                             {account.type === "credit" && (
                               <>
                                 <CreditCardDue account={account} />
+                                {!account.isLinked && (
+                                  <ManualCreditCardDetailsForm
+                                    key={`${account.id}:${account.creditCardDue?.statementBalance ?? ""}:${account.creditCardDue?.dueDate || ""}:${account.creditCardDue?.minimumPayment ?? ""}:${account.creditCardDue?.lastStatementDate || ""}`}
+                                    account={account}
+                                    disabled={working || unavailable}
+                                    saving={pending === `card-details:${account.id}`}
+                                    onSave={(details) => saveManualCreditCardDetails(account, details)}
+                                  />
+                                )}
                                 <CreditCardAutopayForm
                                   key={`${account.id}:${Boolean(account.creditCardAutopayEnabled)}:${account.creditCardAutopayDaysBeforeDue ?? 7}`}
                                   account={account}

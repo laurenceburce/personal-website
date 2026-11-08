@@ -1513,6 +1513,16 @@
 .fa-card-autopay .fa-form-error {
   color: #984c3d;
 }
+.fa-card-payment-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 600px) {
+  .fa-card-payment-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .fa-account-allocations {
   padding: 12px 0;
   border-top: 1px solid #e8eee6;

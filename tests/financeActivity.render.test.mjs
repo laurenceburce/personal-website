@@ -82,7 +82,7 @@ function loadComponents(reactOverride) {
   );
   return componentModule.exports;
 }
-const { QuickTransactionForm, TransactionsPanel, BankAccountsPanel, CreditCardAutopayForm } =
+const { QuickTransactionForm, TransactionsPanel, BankAccountsPanel, CreditCardAutopayForm, ManualCreditCardDetailsForm } =
   loadComponents();
 const account = {
   id: 1,
@@ -469,6 +469,121 @@ function autopayHarness(props = {}) {
   } };
 }
 
+function manualDetailsHarness(props = {}) {
+  const slots = [];
+  let cursor = 0;
+  const saved = [];
+  const components = loadComponents({ ...require("react"), useState(initial) {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+    return [slots[index], (next) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }];
+  } });
+  const harness = { saved, render() {
+    cursor = 0;
+    return components.ManualCreditCardDetailsForm({ account: { id: 10, name: "Manual PHP card", type: "credit", currency: "PHP", isLinked: false },
+      onSave: (details) => saved.push(details), ...props });
+  }, set(field, value) {
+    const amount = ["statementBalance", "minimumPayment"].includes(field);
+    const required = ["statementBalance", "dueDate"].includes(field);
+    const input = findElement(harness.render(), (node) => Boolean(node.props?.required) === required &&
+      (amount ? node.type === numberModule.exports.default : node.type === "input" && node.props.type === "date"));
+    input.props.onChange({ target: { value } });
+  }, submit() {
+    return findElement(harness.render(), (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+  } };
+  return harness;
+}
+
+test("manual credit cards offer an open payment details editor without inferring statement debt from their current balance", () => {
+  const card = { ...account, id: 41, name: "RCBC Gold JCB", type: "credit", nativeCurrentBalance: 14930.79,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 };
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [card] }, rate: 63 });
+  assert.match(html, /fa-card-payment-details" open=""/);
+  assert.match(html, /Statement balance · PHP/);
+  assert.match(html, /Minimum payment · PHP \(optional\)/);
+  assert.match(html, /Statement date \(optional\)/);
+  assert.match(html, /Enter payment details below/);
+  assert.match(html, /Save payment details/);
+  assert.match(html, /Enter a payment due date in Payment details/);
+  assert.doesNotMatch(html, /value="14930\.79"|Statement details are imported|type="number"/);
+  const linked = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [{ ...card, isLinked: true, provider: "plaid" }] }, rate: 63 });
+  assert.doesNotMatch(linked, /Save payment details|fa-card-payment-details/);
+});
+
+test("manual card details save native statement values and optional dates without touching autopay or current debt", () => {
+  const card = { ...account, id: 41, name: "RCBC Gold JCB", type: "credit", nativeCurrentBalance: 14930.79,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 };
+  const before = structuredClone(card);
+  const harness = manualDetailsHarness({ account: card });
+  harness.set("statementBalance", "4723.50");
+  harness.set("dueDate", "2026-11-20");
+  harness.set("minimumPayment", "250.00");
+  harness.set("lastStatementDate", "2026-10-25");
+  assert.equal(harness.saved.length, 0);
+  harness.submit();
+  assert.deepEqual(harness.saved, [{ statementBalance: 4723.5, dueDate: "2026-11-20", minimumPayment: 250, lastStatementDate: "2026-10-25" }]);
+  assert.deepEqual(card, before);
+  const savedCard = { ...card, creditCardDueStatus: "manual", creditCardDue: harness.saved[0] };
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [savedCard] }, rate: 63 });
+  assert.match(html, /Statement balance[\s\S]*₱4,723\.50/);
+  assert.match(html, /Automatic payment<\/dt><dd>Nov 13, 2026/);
+  assert.match(html, /Manually entered statement details/);
+  assert.match(html, /Update them when a new statement arrives/);
+  assert.match(html, /value="4723\.5"/);
+  assert.doesNotMatch(html, /Last known statement details/);
+});
+
+test("manual card details reject incomplete money and invalid dates while retaining zero and blank optional fields", () => {
+  const harness = manualDetailsHarness();
+  for (const amount of ["", "-1", "0.001", "1000000000", "NaN"]) {
+    harness.set("statementBalance", amount);
+    harness.set("dueDate", "2026-11-20");
+    harness.submit();
+    assert.equal(harness.saved.length, 0);
+    assert.match(renderToStaticMarkup(harness.render()), /non-negative statement balance/);
+  }
+  harness.set("statementBalance", "200");
+  for (const date of ["", "2026-02-29", "2026-11-31", "1899-12-31", "2201-01-01"]) {
+    harness.set("dueDate", date);
+    harness.submit();
+    assert.equal(harness.saved.length, 0);
+    assert.match(renderToStaticMarkup(harness.render()), /valid payment due date/);
+  }
+  harness.set("dueDate", "2026-11-20");
+  for (const amount of ["201", "-1", "0.001"]) {
+    harness.set("minimumPayment", amount);
+    harness.submit();
+    assert.equal(harness.saved.length, 0);
+    assert.match(renderToStaticMarkup(harness.render()), /Minimum payment must/);
+  }
+  harness.set("minimumPayment", "");
+  for (const date of ["2026-11-21", "2026-02-29", "1899-12-31"]) {
+    harness.set("lastStatementDate", date);
+    harness.submit();
+    assert.equal(harness.saved.length, 0);
+    assert.match(renderToStaticMarkup(harness.render()), /valid statement date on or before/);
+  }
+  harness.set("lastStatementDate", "");
+  harness.set("statementBalance", "0");
+  assert.doesNotMatch(renderToStaticMarkup(harness.render()), /role="alert"/);
+  harness.submit();
+  assert.deepEqual(harness.saved, [{ statementBalance: 0, dueDate: "2026-11-20", minimumPayment: null, lastStatementDate: null }]);
+});
+
+test("manual card payment details stay disabled while saving or the workspace is unavailable", () => {
+  for (const props of [{ disabled: true }, { saving: true }]) {
+    const harness = manualDetailsHarness(props);
+    harness.set("statementBalance", "200");
+    harness.set("dueDate", "2026-11-20");
+    assert.equal(findElement(harness.render(), (node) => node.type === "fieldset").props.disabled, true);
+    harness.submit();
+    assert.equal(harness.saved.length, 0);
+  }
+  const harness = bankHarness({ props: { activity: { ...bankActivity, configured: false,
+    accounts: [{ ...account, type: "credit" }] } } });
+  assert.equal(findElement(harness.render(), (node) => node.type?.name === "ManualCreditCardDetailsForm").props.disabled, true);
+});
+
 test("automatic payment settings default to one week early and save only after explicit submission", () => {
   const harness = autopayHarness();
   let tree = harness.render();
@@ -638,6 +753,29 @@ test("automatic payment save failures display the action error without claiming 
   const form = findElement(harness.render(), (node) => node.type?.name === "CreditCardAutopayForm");
   await form.props.onSave({ enabled: true, daysBeforeDue: 7 });
   assert.deepEqual(errors, ["The settings could not be saved."]);
+  assert.equal(harness.refreshes(), 0);
+});
+
+test("manual payment details send only entered statement data and refresh the workspace after saving", async () => {
+  const card = { ...account, id: 41, name: "RCBC Gold JCB", type: "credit", nativeCurrentBalance: 14930.79,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 };
+  const before = structuredClone(card);
+  const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [card] } } });
+  const details = { statementBalance: 4723.5, dueDate: "2026-11-20", minimumPayment: null, lastStatementDate: "2026-10-25" };
+  const form = findElement(harness.render(), (node) => node.type?.name === "ManualCreditCardDetailsForm");
+  await form.props.onSave(details);
+  assert.deepEqual(harness.actions, [{ action: "updateManualCreditCardDetails", data: { accountId: 41, ...details } }]);
+  assert.equal(harness.refreshes(), 1);
+  assert.deepEqual(card, before);
+});
+
+test("manual payment detail failures display the action error and preserve entered details for retry", async () => {
+  const errors = [];
+  const harness = bankHarness({ result() { throw new Error("Payment details could not be saved."); },
+    props: { activity: { ...bankActivity, accounts: [{ ...account, type: "credit" }] }, onError: (message) => errors.push(message) } });
+  const form = findElement(harness.render(), (node) => node.type?.name === "ManualCreditCardDetailsForm");
+  await form.props.onSave({ statementBalance: 200, dueDate: "2026-11-20", minimumPayment: null, lastStatementDate: null });
+  assert.deepEqual(errors, ["Payment details could not be saved."]);
   assert.equal(harness.refreshes(), 0);
 });
 

@@ -1287,11 +1287,14 @@ async function getFinanceCreditCardPaymentActivity(database, range) {
     const [cards] = await database.query(`SELECT a.id, a.credit_card_due_json
       FROM personal_finance_accounts a
       LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
-      WHERE a.account_type = 'credit' AND a.external_provider IS NOT NULL
-        AND a.external_provider <> '' AND a.external_account_id IS NOT NULL
-        AND a.external_account_id <> '' AND a.currency IN ('USD', 'PHP') AND a.credit_card_due_json IS NOT NULL
+      WHERE a.account_type = 'credit' AND a.currency IN ('USD', 'PHP') AND a.credit_card_due_json IS NOT NULL
         AND a.is_archived = 0 AND a.is_sync_excluded = 0 AND a.merged_into_account_id IS NULL
-        AND (c.status IS NULL OR c.status NOT IN ('disconnected', 'superseded'))`);
+        AND ((a.external_provider IS NOT NULL AND a.external_provider <> ''
+          AND a.external_account_id IS NOT NULL AND a.external_account_id <> ''
+          AND (c.status IS NULL OR c.status NOT IN ('disconnected', 'superseded')))
+          OR ((a.external_provider IS NULL OR a.external_provider = '')
+            AND (a.external_account_id IS NULL OR a.external_account_id = '')
+            AND a.credit_card_due_status = 'manual'))`);
     const day = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
     const starts = [];
     let historyClamped = false;
@@ -1428,6 +1431,8 @@ export async function getFinanceDashboard({ month } = {}) {
         a.currency,
         a.current_balance,
         a.available_balance,
+        a.credit_card_due_json,
+        a.credit_card_due_status,
         a.credit_card_autopay_enabled,
         a.credit_card_autopay_days_before_due,
         a.external_provider,
@@ -1465,6 +1470,8 @@ export async function getFinanceDashboard({ month } = {}) {
         a.currency,
         a.current_balance,
         a.available_balance,
+        a.credit_card_due_json,
+        a.credit_card_due_status,
         a.credit_card_autopay_enabled,
         a.credit_card_autopay_days_before_due,
         a.external_provider,
@@ -1668,6 +1675,7 @@ export async function getFinanceDashboard({ month } = {}) {
     const currentBalance = isLiability
       ? toMoney(-Math.abs(rawCurrentBalance))
       : toMoney(rawCurrentBalance);
+    const statementDetails = mapFinanceActivityAccount(row);
     return {
       id: Number(row.id),
       name: row.name,
@@ -1687,6 +1695,8 @@ export async function getFinanceDashboard({ month } = {}) {
       connectionId: row.connection_id ? Number(row.connection_id) : null,
       institutionName: row.institution_name || "",
       isLinked: Boolean(row.external_provider && row.external_account_id),
+      creditCardDue: statementDetails?.creditCardDue || null,
+      creditCardDueStatus: statementDetails?.creditCardDueStatus || "unavailable",
       creditCardAutopayEnabled: row.account_type === "credit" && Number(row.credit_card_autopay_enabled) === 1,
       creditCardAutopayDaysBeforeDue: row.credit_card_autopay_days_before_due != null &&
         Number.isInteger(Number(row.credit_card_autopay_days_before_due)) && Number(row.credit_card_autopay_days_before_due) >= 0 &&
@@ -2245,6 +2255,54 @@ export async function updateFinanceCreditCardAutopay(data) {
   );
   if (!result.affectedRows) throw appError("An active credit card account was not found.", 404);
   return { accountId, enabled: data.enabled, daysBeforeDue: data.daysBeforeDue };
+}
+
+/** Save a manually tracked card's statement without changing its balance or recording a payment. */
+export async function updateFinanceManualCreditCardDetails(data) {
+  const accountValue = data?.accountId;
+  if (!["number", "string"].includes(typeof accountValue) ||
+      (typeof accountValue === "string" && !/^\d+$/.test(accountValue)) ||
+      !Number.isSafeInteger(Number(accountValue)) || Number(accountValue) < 1)
+    throw appError("Choose a valid manual credit card account.");
+  const statementAmount = (value, label) => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 999999999 ||
+        Math.abs(value * 100 - Math.round(value * 100)) > 0.00001)
+      throw appError(`${label} must be a non-negative amount below one billion with up to two decimal places.`);
+    return Math.round(value * 100) / 100;
+  };
+  const statementDate = (value, label) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || value < "1900-01-01" || value > "2200-12-31")
+      throw appError(`${label} must be a valid date between 1900 and 2200.`);
+    const parsed = Date.parse(`${value}T00:00:00Z`);
+    if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== value)
+      throw appError(`${label} must be a valid date between 1900 and 2200.`);
+    return value;
+  };
+  const statementBalance = statementAmount(data?.statementBalance, "Statement balance");
+  const dueDate = statementDate(data?.dueDate, "Payment due date");
+  const minimumPayment = data?.minimumPayment == null ? null : statementAmount(data.minimumPayment, "Minimum payment");
+  if (minimumPayment !== null && minimumPayment > statementBalance)
+    throw appError("Minimum payment cannot exceed the statement balance.");
+  const lastStatementDate = data?.lastStatementDate == null ? null : statementDate(data.lastStatementDate, "Statement closing date");
+  if (lastStatementDate !== null && lastStatementDate > dueDate)
+    throw appError("Statement closing date cannot be after the payment due date.");
+  const details = {
+    statementBalance, minimumPayment, dueDate, lastStatementDate,
+    lastPaymentDate: null, lastPaymentAmount: null, syncedAt: null,
+  };
+  const accountId = Number(accountValue);
+  const pool = requirePool(await ensureFinanceSchema());
+  const [result] = await pool.query(
+    `UPDATE personal_finance_accounts
+     SET credit_card_due_json = ?, credit_card_due_status = 'manual', updated_at = ?
+     WHERE id = ? AND account_type = 'credit' AND is_archived = 0 AND merged_into_account_id IS NULL
+       AND is_sync_excluded = 0
+       AND (external_provider IS NULL OR external_provider = '')
+       AND (external_account_id IS NULL OR external_account_id = '')`,
+    [JSON.stringify(details), new Date(), accountId],
+  );
+  if (!result.affectedRows) throw appError("An active manual credit card account was not found.", 404);
+  return { accountId, creditCardDue: details, creditCardDueStatus: "manual" };
 }
 
 export async function upsertFinanceBudget(data) {

@@ -127,7 +127,7 @@ export function financeProviderStatus(env = process.env) {
   };
 }
 
-// Provider statements are separate from the current revolving balance. Unknown
+// Statement details are separate from the current revolving balance. Unknown
 // fields stay unknown, including a missing due date or a missing statement.
 export function normalizeFinanceCreditCardDue(value) {
   if (typeof value === "string") {
@@ -167,7 +167,8 @@ export function mapFinanceActivityAccount(row) {
   const liability = ["credit", "loan"].includes(row.account_type);
   const opening = Number(row.opening_balance || 0);
   const movement = Number(row.native_movement || 0);
-  const creditCardDue = isLinked && row.account_type === "credit"
+  const creditCardDue = row.account_type === "credit" &&
+    (isLinked || (!row.external_provider && !row.external_account_id))
     ? normalizeFinanceCreditCardDue(row.credit_card_due_json) : null;
   return {
     id: Number(row.id),
@@ -197,7 +198,7 @@ export function mapFinanceActivityAccount(row) {
       row.credit_card_autopay_days_before_due != null && Number(row.credit_card_autopay_days_before_due) >= 0 &&
       Number(row.credit_card_autopay_days_before_due) <= 31 ? Number(row.credit_card_autopay_days_before_due) : 7,
     creditCardDueStatus: creditCardDue
-      ? row.credit_card_due_status === "current" ? "current" : "stale"
+      ? !isLinked ? "manual" : row.credit_card_due_status === "current" ? "current" : "stale"
       : "unavailable",
   };
 }

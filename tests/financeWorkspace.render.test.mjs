@@ -162,6 +162,29 @@ test("budget plans include saved autopay dates before the original bank due date
   }
 });
 
+test("manual PHP card details flow into budget plans with full statements and entered provenance", () => {
+  const props = fixture("plans", 0, { bills: [] }, { accounts: [{
+    id: 7, name: "RCBC Gold JCB", type: "credit", isLinked: false, currency: "PHP", nativeCurrentBalance: 14930.79,
+    creditCardDueStatus: "manual", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 14930.79, minimumPayment: 750, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" },
+  }] });
+  Object.assign(props.snapshot.document.plans[0], { openingUsd: 0, openingPhp: 20000 });
+  const text = plain(renderToStaticMarkup(createElement(Workspace, props)));
+  assert.match(text, /Manual credit card statementStatement balance ₱14,930\.79/);
+  assert.match(text, /Automatic payment Nov 13, 2026 · Due Nov 20, 2026/);
+  assert.match(text, /Available funds · PHP₱5,069\.21/);
+  assert.doesNotMatch(text, /until the bank reports a statement|Statement balance ₱750\.00/);
+});
+
+test("missing manual card details direct users to their editor without claiming bank data is missing", () => {
+  const text = plain(render("plans", 0, { bills: [] }, { accounts: [{
+    id: 7, name: "RCBC Gold JCB", type: "credit", isLinked: false, currency: "PHP", nativeCurrentBalance: 14930.79,
+    creditCardDueStatus: "unavailable", creditCardDue: null,
+  }] }));
+  assert.match(text, /Enter a statement balance and payment due date for RCBC Gold JCB.*under Bank accounts → Payment details/);
+  assert.doesNotMatch(text, /until the bank reports a statement|Refresh bank data to check/);
+});
+
 test("unpaid autopay before the plan start warns about starting balances without rescheduling the bank cycle", () => {
   for (const statementBalance of [null, 200]) {
     const props = fixture("plans", 0, { bills: [] }, { accounts: [{

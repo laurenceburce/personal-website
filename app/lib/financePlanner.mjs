@@ -720,7 +720,7 @@ const transferTransaction = (row) =>
     String(row.category || "").trim(),
   );
 
-// Issued statements remain bank-reported obligations. Unbilled balances are
+// Issued statements use reported or manually entered obligations. Unbilled balances are
 // projected separately so the same debt is never charged in both cycles.
 function creditCardStatements(accounts) {
   const statements = new Map();
@@ -821,6 +821,7 @@ function creditCardObligations(accounts, options = {}) {
     const accountId = Number(account.id);
     const statement = statements.get(accountId);
     const due = account.creditCardDue;
+    const manualStatement = account.isLinked !== true && account.creditCardDueStatus === "manual";
     const currentBalance = knownCardBalance(Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance);
     const payment = payments.get(accountId);
     const row = (dueDate, amount, metadata) => ({
@@ -829,13 +830,14 @@ function creditCardObligations(accounts, options = {}) {
       id: `creditCardDue:${accountId}:${dueDate}`,
       date: getCreditCardPaymentDate(account, dueDate),
       dueDate,
+      ...(manualStatement ? { manualStatement: true } : {}),
       ...(account.creditCardAutopayEnabled === true ? {
         autopayEnabled: true,
         autopayDaysBeforeDue: Number.isInteger(account.creditCardAutopayDaysBeforeDue) &&
           account.creditCardAutopayDaysBeforeDue >= 0 && account.creditCardAutopayDaysBeforeDue <= 31
           ? account.creditCardAutopayDaysBeforeDue : 7,
       } : {}),
-      description: `${account.name || "Credit card"} · ${metadata.estimated ? "estimated next statement" : account.creditCardAutopayEnabled === true ? "automatic payment" : "statement due"}`,
+      description: `${account.name || "Credit card"} · ${metadata.estimated ? "estimated next statement" : account.creditCardAutopayEnabled === true ? "automatic payment" : manualStatement ? "manual statement" : "statement due"}`,
       kind: "expense", source: "creditCardDue", accountId: null, creditAccountId: accountId,
       accountName: account.name || "Credit card", lastStatementDate: due?.lastStatementDate || null,
       currentBalance, plannedPaymentAmount: 0, editable: false,
@@ -844,7 +846,7 @@ function creditCardObligations(accounts, options = {}) {
     const remainingStatement = statement ? roundMoney(statement.statementBalance - payment.paidAmount) : 0;
     if (statement?.statementBalance > 0)
       obligations.push(row(due.dueDate, remainingStatement, { statementBalance: statement.statementBalance, ...payment }));
-    if (account.isLinked !== true || (account.type || account.account_type) !== "credit" ||
+    if ((!manualStatement && account.isLinked !== true) || (account.type || account.account_type) !== "credit" ||
         account.isArchived || account.is_archived || account.mergedIntoAccountId || account.merged_into_account_id ||
         !["USD", "PHP"].includes(account.currency) || !Number.isSafeInteger(accountId) || accountId <= 0 ||
         !Number.isFinite(dateTime(due?.dueDate)) || currentBalance === null || currentBalance <= 0) continue;
@@ -853,7 +855,7 @@ function creditCardObligations(accounts, options = {}) {
     const unbilled = roundMoney(Math.max(0, currentBalance - remainingStatement));
     if (unbilled <= 0) continue;
     const issued = Number.isFinite(dateTime(due.lastStatementDate)) && due.lastStatementDate <= due.dueDate && due.lastStatementDate <= today;
-    const knownCycle = Boolean(statement && (statement.statementBalance > 0 || issued));
+    const knownCycle = Boolean(statement && (manualStatement || statement.statementBalance > 0 || issued));
     let estimateDate = due.dueDate;
     if (knownCycle) {
       const anchor = new Date(dateTime(due.dueDate));
@@ -870,7 +872,7 @@ function creditCardObligations(accounts, options = {}) {
       estimated: true, estimatedBalance: unbilled, estimateDateIsReported: !knownCycle,
       statementBalance: null, paidAmount: 0, paymentTransactionIds: [],
     }));
-    // A linked card with only a dated estimate still changes debt rather than
+    // A card with only a dated estimate still changes debt rather than
     // charging cash for each purchase as well as its projected payment.
     if (!statements.has(accountId)) statements.set(accountId, { account, due, statementBalance: null });
   }
@@ -889,7 +891,7 @@ function creditCardObligations(accounts, options = {}) {
   return { statements, payments, recordedPayments, obligations };
 }
 
-/** Current bank-reported dues and one estimate of each card's unbilled debt. */
+/** Current reported or manually entered dues and one estimate of each card's unbilled debt. */
 export function getCreditCardObligations(accounts, options = {}) {
   return creditCardObligations(accounts || [], options).obligations;
 }

@@ -102,6 +102,8 @@ function SourceLabel({ row }) {
           : "Plan entry"
       : row.source === "creditCardDue" && row.estimated
         ? "Estimated next card payment"
+        : row.source === "creditCardDue" && row.manualStatement
+          ? "Manual credit card statement"
         : labels[row.source] || "Plan flow";
   const matched = row.scheduledSource || row.matchedForecast?.source;
   const matchedLabel =
@@ -186,10 +188,10 @@ function SourceLabel({ row }) {
           <small className="fpl-reconciliation-note">
             {row.autopayEnabled
               ? row.estimateDateIsReported
-                ? "Automatic payment follows the saved schedule for the bank’s next due date."
+                ? row.manualStatement ? "Automatic payment follows the saved schedule for the entered due date." : "Automatic payment follows the saved schedule for the bank’s next due date."
                 : "Automatic payment is based on the estimated monthly billing cycle."
               : row.estimateDateIsReported
-                ? "Uses the bank’s next payment date."
+                ? row.manualStatement ? "Uses the entered payment due date." : "Uses the bank’s next payment date."
                 : "Payment date estimated from the monthly billing cycle."}
             {" "}The amount can change with purchases, payments, refunds, and interest.
           </small>
@@ -327,13 +329,13 @@ function SourceLabel({ row }) {
 function CompletionStatus({ row, onToggleComplete, busy }) {
   const completed = Boolean(row.completed);
   const automatic = completed && row.completionSource === "transaction";
-  const bankReportedPayment = automatic && row.source === "creditCardDue" && !row.estimated && !row.matchedTransactionIds?.length;
+  const reportedPayment = automatic && row.source === "creditCardDue" && !row.estimated && !row.matchedTransactionIds?.length;
   const matched =
     row.source !== "transaction" ||
     Boolean(row.matchedForecast || row.scheduledSource);
   const label = automatic
-    ? bankReportedPayment
-      ? "Done · bank payment reported"
+    ? reportedPayment
+      ? row.manualStatement ? "Done · recorded payment" : "Done · bank payment reported"
       : matched
       ? "Done · matched transaction"
       : "Done · recorded transaction"

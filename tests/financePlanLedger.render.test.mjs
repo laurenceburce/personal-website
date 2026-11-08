@@ -301,6 +301,26 @@ test("same-day autopay clearly identifies an unchanged due date", () => {
   assert.match(plain(html), /Automatic payment Nov 20, 2026 · Due Nov 20, 2026 · On the due date/);
 });
 
+test("manual card statements show entered provenance and use their saved due date for autopay", () => {
+  const html = render([row({ source: "creditCardDue", manualStatement: true, description: "RCBC Gold JCB · automatic payment",
+    date: "2026-11-13", dueDate: "2026-11-20", autopayEnabled: true, autopayDaysBeforeDue: 7,
+    currency: "PHP", amount: 14930.79, statementBalance: 14930.79, php: -14930.79 })]);
+  assert.match(plain(html), /Manual credit card statementStatement balance ₱14,930\.79/);
+  assert.match(plain(html), /Automatic payment Nov 13, 2026 · Due Nov 20, 2026/);
+  assert.doesNotMatch(plain(html), /bank.payment.reported|Bank-reported/);
+  const estimate = plain(render([row({ source: "creditCardDue", manualStatement: true, estimated: true,
+    estimateDateIsReported: true, date: "2026-11-20", dueDate: "2026-11-20", currency: "PHP", amount: 200 })]));
+  assert.match(estimate, /Uses the entered payment due date/);
+  assert.doesNotMatch(estimate, /bank’s next payment date/);
+});
+
+test("manual payment completion never claims a bank-reported payment without bank evidence", () => {
+  const html = render([row({ source: "creditCardDue", manualStatement: true, currency: "PHP", statementBalance: 200,
+    paidAmount: 200, amount: 0, completed: true, completionSource: "transaction", matchedTransactionIds: [] })]);
+  assert.match(plain(html), /Done · recorded payment/);
+  assert.doesNotMatch(plain(html), /bank payment reported/);
+});
+
 test("estimated dues explain the share already covered by planned payments", () => {
   const html = render([row({ source: "creditCardDue", estimated: true, currency: "USD",
     estimatedBalance: 500, plannedPaymentAmount: 125, amount: 375, usd: -375 })]);

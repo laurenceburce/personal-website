@@ -169,6 +169,32 @@ test("credit statement dues preserve unknown fields and never use the revolving 
   assert.equal(mapFinanceActivityAccount({...row, account_type: "checking"}).creditCardDue, null);
 });
 
+test("manual PHP credit card statements round trip without replacing the tracked balance", () => {
+  const row = {
+    id: 9, name: "RCBC Gold JCB", account_type: "credit", currency: "PHP", opening_balance: "14930.79",
+    current_balance: null, native_movement: "1500.00", external_provider: null, external_account_id: null,
+    credit_card_due_status: "manual", credit_card_autopay_enabled: 1, credit_card_autopay_days_before_due: 7,
+    credit_card_due_json: JSON.stringify({ statementBalance: 14300.25, minimumPayment: 500,
+      dueDate: "2026-11-25", lastStatementDate: "2026-10-31", syncedAt: null,
+      lastPaymentDate: null, lastPaymentAmount: null }),
+  };
+  const before = structuredClone(row);
+  const account = mapFinanceActivityAccount(row);
+  assert.equal(account.isLinked, false);
+  assert.equal(account.creditCardDueStatus, "manual");
+  assert.equal(account.creditCardDue.statementBalance, 14300.25);
+  assert.equal(account.creditCardDue.minimumPayment, 500);
+  assert.equal(account.creditCardDue.dueDate, "2026-11-25");
+  assert.equal(account.creditCardDue.lastStatementDate, "2026-10-31");
+  assert.equal(account.creditCardDue.syncedAt, null);
+  assert.equal(account.nativeCurrentBalance, 13430.79);
+  assert.equal(account.creditCardAutopayEnabled, true);
+  assert.deepEqual(row, before);
+  assert.equal(mapFinanceActivityAccount({ ...row, credit_card_due_json: null }).creditCardDueStatus, "unavailable");
+  assert.equal(mapFinanceActivityAccount({ ...row, account_type: "checking" }).creditCardDue, null);
+  assert.equal(mapFinanceActivityAccount({ ...row, external_provider: "plaid", external_account_id: null }).creditCardDue, null);
+});
+
 test("credit card autopay preferences expose safe defaults independently of bank statement details", () => {
   const card = { id: 7, account_type: "credit", currency: "USD", current_balance: 250 };
   const defaults = mapFinanceActivityAccount(card);

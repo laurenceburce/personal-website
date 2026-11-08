@@ -161,6 +161,55 @@ test("credit card autopay rejects malformed preferences and unavailable accounts
   await assert.rejects(api.updateFinanceCreditCardAutopay(valid), (error) => error.status === 404);
 });
 
+test("manual card payment details save native statement data without moving funds or changing autopay", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend(() => ({ affectedRows: 1 }));
+  const details = { accountId: "9", statementBalance: 14930.79, minimumPayment: 500,
+    dueDate: "2026-11-25", lastStatementDate: "2026-10-31", lastPaymentAmount: 999, admin: true };
+  const result = await api.updateFinanceManualCreditCardDetails(details);
+  const update = queries.find(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts"));
+  assert.equal(update.params.at(-1), 9);
+  assert.match(update.sql, /account_type = 'credit' AND is_archived = 0 AND merged_into_account_id IS NULL/);
+  assert.match(update.sql, /is_sync_excluded = 0/);
+  assert.match(update.sql, /external_provider IS NULL OR external_provider = ''/);
+  assert.match(update.sql, /external_account_id IS NULL OR external_account_id = ''/);
+  assert.doesNotMatch(update.sql, /current_balance|available_balance|opening_balance|credit_card_autopay/);
+  const stored = JSON.parse(update.params[0]);
+  assert.deepEqual(stored, { statementBalance: 14930.79, minimumPayment: 500, dueDate: "2026-11-25",
+    lastStatementDate: "2026-10-31", lastPaymentDate: null, lastPaymentAmount: null, syncedAt: null });
+  assert.deepEqual(result, { accountId: 9, creditCardDue: stored, creditCardDueStatus: "manual" });
+  const mapped = activity.mapFinanceActivityAccount({ id: 9, account_type: "credit", currency: "PHP",
+    opening_balance: 14930.79, credit_card_due_json: update.params[0], credit_card_due_status: "manual" });
+  assert.equal(mapped.nativeCurrentBalance, 14930.79);
+  assert.deepEqual(mapped.creditCardDue, stored);
+  assert.equal(mapped.creditCardDueStatus, "manual");
+  assert.ok(!queries.some(({ sql }) => /^(INSERT INTO|UPDATE|DELETE FROM) personal_finance_transactions/.test(sql)));
+
+  await api.updateFinanceManualCreditCardDetails({ accountId: 9, statementBalance: 0, dueDate: "2028-02-29" });
+  const zero = JSON.parse(queries.filter(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts")).at(-1).params[0]);
+  assert.equal(zero.statementBalance, 0);
+  assert.equal(zero.minimumPayment, null);
+  assert.equal(zero.lastStatementDate, null);
+});
+
+test("manual card details reject invalid dates, money and provider-managed or unavailable cards", async (t) => {
+  bankEnvironment(t);
+  const valid = { accountId: 9, statementBalance: 200, dueDate: "2026-11-25", minimumPayment: null, lastStatementDate: null };
+  const { api, queries } = backend(() => ({ affectedRows: 0 }));
+  for (const [field, values] of [
+    ["accountId", [null, true, 0, -1, 2.5, Number.MAX_SAFE_INTEGER + 1, "9e0"]],
+    ["statementBalance", [null, undefined, "200", -1, 1.001, Infinity, NaN, 1_000_000_000]],
+    ["dueDate", [null, undefined, "", "2026-02-29", "2026-11-31", "2026-1-1", "1899-12-31", "2201-01-01"]],
+    ["minimumPayment", [-1, "25", Infinity, 0.001, 201]],
+    ["lastStatementDate", ["", "bad", "2026-02-30", "2026-11-26", "2201-01-01"]],
+  ]) for (const value of values) {
+    await assert.rejects(api.updateFinanceManualCreditCardDetails({ ...valid, [field]: value }), (error) => error.status === 400,
+      `${field}: ${String(value)}`);
+  }
+  assert.equal(queries.length, 0, "invalid details cannot reach the database");
+  await assert.rejects(api.updateFinanceManualCreditCardDetails(valid), (error) => error.status === 404);
+});
+
 test("removing an account persists the sync exclusion and retains financial history", async (t) => {
   bankEnvironment(t);
   const { api, queries } = backend((sql) =>
@@ -1123,7 +1172,7 @@ test("plans with no connected bank accounts skip providers and return a cacheabl
   assert.equal(queries.length, count);
 });
 
-test("the private finance API protects bank refresh and credit card autopay settings", async () => {
+test("the private finance API protects bank refresh and credit card payment settings", async () => {
   const { code: routeCode } = transformSync(
     await readFile(
       new URL("../app/api/finance/route.js", import.meta.url),
@@ -1136,6 +1185,7 @@ test("the private finance API protects bank refresh and credit card autopay sett
   );
   const calls = [];
   const autopayCalls = [];
+  const manualCalls = [];
   let authorized = true;
   let allowedOrigin = true;
   const module = { exports: {} };
@@ -1156,6 +1206,10 @@ test("the private finance API protects bank refresh and credit card autopay sett
         return {
           updateFinanceCreditCardAutopay: async (data) => {
             autopayCalls.push(data);
+            return data;
+          },
+          updateFinanceManualCreditCardDetails: async (data) => {
+            manualCalls.push(data);
             return data;
           },
           refreshFinancePlanBankData: async (options) => {
@@ -1193,15 +1247,23 @@ test("the private finance API protects bank refresh and credit card autopay sett
   const autopayResult = await module.exports.POST(autopayRequest);
   assert.equal(autopayResult.value.ok, true);
   assert.deepEqual(autopayResult.value.result, { accountId: 7, enabled: true, daysBeforeDue: 7 });
+  const manualData = { accountId: 9, statementBalance: 14930.79, dueDate: "2026-11-25", minimumPayment: null, lastStatementDate: null };
+  const manualRequest = { headers: new Headers(), text: async () => JSON.stringify({ action: "updateManualCreditCardDetails", data: manualData }) };
+  const manualResult = await module.exports.POST(manualRequest);
+  assert.equal(manualResult.value.ok, true);
+  assert.deepEqual(manualResult.value.result, manualData);
   authorized = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 401);
   assert.equal((await module.exports.POST(autopayRequest)).options.status, 401);
+  assert.equal((await module.exports.POST(manualRequest)).options.status, 401);
   authorized = true;
   allowedOrigin = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 403);
   assert.equal((await module.exports.POST(autopayRequest)).options.status, 403);
+  assert.equal((await module.exports.POST(manualRequest)).options.status, 403);
   assert.equal(calls.length, 2);
   assert.equal(autopayCalls.length, 1);
+  assert.equal(manualCalls.length, 1);
 });
 
 const planPaymentRecord = (id, date, overrides = {}) => ({
@@ -1237,6 +1299,27 @@ test("plans return earlier partial card payments as separate evidence without ex
   assert.ok(history.params[1] >= "2026-11-30");
   assert.match(history.sql, /duplicate_of_id IS NULL AND t.is_provider_removed = 0/);
   assert.match(history.sql, /currency IN \('USD', 'PHP'\)/);
+});
+
+test("manual card statements include earlier payment evidence without requiring a bank connection", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend((sql) => {
+    if (sql.startsWith("SELECT a.id, a.credit_card_due_json")) return [{
+      ...planCardCache(), credit_card_due_status: "manual", external_provider: null, external_account_id: null,
+    }];
+    if (sql.startsWith("SELECT t.*")) return sql.includes("t.pending = 0")
+      ? [planPaymentRecord(15, "2026-11-07", { external_provider: null })] : [];
+    return [];
+  });
+  const result = await api.getFinancePlanActivity({ startDate: "2026-11-15", endDate: "2026-11-30" });
+  assert.deepEqual(result.transactions, []);
+  assert.deepEqual(result.creditCardPaymentTransactions.map(({ id }) => id), [15]);
+  assert.equal(result.creditCardPaymentWarning, "");
+  const cards = queries.find(({ sql }) => sql.startsWith("SELECT a.id, a.credit_card_due_json"));
+  assert.match(cards.sql, /OR \(\(a.external_provider IS NULL OR a.external_provider = ''\)/);
+  assert.match(cards.sql, /a.credit_card_due_status = 'manual'/);
+  assert.match(cards.sql, /a.is_archived = 0 AND a.is_sync_excluded = 0 AND a.merged_into_account_id IS NULL/);
+  assert.match(cards.sql, /c.status NOT IN \('disconnected', 'superseded'\)/);
 });
 
 test("payment evidence without statement dates also covers the plan boundary for posted transfer matching", async (t) => {

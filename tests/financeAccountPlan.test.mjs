@@ -628,6 +628,83 @@ test("linked account forecasts pay cards on their autopay date even when the ban
   }
 });
 
+test("manually entered card statements fund the full native amount on the saved autopay date", () => {
+  for (const currency of ["USD", "PHP"]) {
+    const accounts = [
+      { id: 1, name: "Checking", type: "checking", currency, nativeCurrentBalance: 20000 },
+      { id: 2, name: "RCBC Gold JCB", type: "credit", currency, isLinked: false, nativeCurrentBalance: 14930.79,
+        creditCardDueStatus: "manual", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+        creditCardDue: { statementBalance: 14930.79, minimumPayment: 750, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+    ];
+    const plan = { startDate: "2026-11-01", endDate: "2026-11-15", openingUsd: 0, openingPhp: 0,
+      accountLinks: { [currency === "USD" ? "availableUsdAccountId" : "availablePhpAccountId"]: 1 },
+      startingAccounts: [{ accountId: 1, percentage: 100 }],
+      accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 14930.79 }],
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+    const before = JSON.stringify({ accounts, plan });
+    const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63,
+      { accounts, today: "2026-11-01" });
+    assert.equal(result.rows.length, 1);
+    const payment = result.rows[0];
+    assert.equal(payment.manualStatement, true);
+    assert.equal(payment.date, "2026-11-13");
+    assert.equal(payment.dueDate, "2026-11-20");
+    assert.equal(payment.amount, 14930.79);
+    assert.equal(payment[currency === "USD" ? "balanceUsd" : "balancePhp"], 5069.21);
+    assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 5069.21);
+    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+    assert.equal(JSON.stringify({ accounts, plan }), before);
+  }
+});
+
+test("posted manual card payments reduce their remaining statement once in cash and card forecasts", () => {
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "PHP", nativeCurrentBalance: 17000 },
+    { id: 2, name: "RCBC Gold JCB", type: "credit", currency: "PHP", isLinked: false, nativeCurrentBalance: 11930.79,
+      creditCardDueStatus: "manual", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDue: { statementBalance: 14930.79, minimumPayment: 750, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const plan = { startDate: "2026-11-01", endDate: "2026-11-20", openingUsd: 0, openingPhp: 0,
+    accountLinks: { availablePhpAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 14930.79 }],
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, includeTransactions: true, entries: [] };
+  const transactions = [
+    { id: 1, date: "2026-11-13", amount: 3000, currency: "PHP", kind: "income", accountId: 2, category: "Transfer In", merchant: "Automatic payment" },
+    { id: 2, date: "2026-11-13", amount: 3000, currency: "PHP", kind: "expense", accountId: 1, category: "Transfer Out", merchant: "RCBC Gold JCB payment" },
+  ];
+  const options = { accounts, transactions, today: "2026-11-14" };
+  const document = { salary: {}, bills: [], allocations: [] };
+  const rows = buildPlanRows(plan, document, 63, options);
+  const result = buildAccountPlan(plan, document, 63, { ...options, rows });
+  const payment = result.rows.find((row) => row.source === "creditCardDue");
+  assert.equal(payment.manualStatement, true);
+  assert.equal(payment.amount, 11930.79);
+  assert.equal(payment.paidAmount, 3000);
+  assert.equal(result.rows.at(-1).balancePhp, 5069.21);
+  assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 5069.21);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+});
+
+test("manual card cycle details forecast unbilled balances separately without requiring a bank connection", () => {
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "PHP", nativeCurrentBalance: 20000 },
+    { id: 2, name: "RCBC Gold JCB", type: "credit", currency: "PHP", isLinked: false, nativeCurrentBalance: 20000,
+      creditCardDueStatus: "manual", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDue: { statementBalance: 14930.79, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
+  ];
+  const plan = { startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: 0, openingPhp: 0,
+    accountLinks: { availablePhpAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 20000 }],
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63,
+    { accounts, today: "2026-11-01" });
+  assert.deepEqual(result.rows.map((row) => [row.date, row.amount, Boolean(row.estimated), row.manualStatement]), [
+    ["2026-11-13", 14930.79, false, true], ["2026-12-13", 5069.21, true, true],
+  ]);
+  assert.equal(result.rows.at(-1).balancePhp, 0);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+});
+
 test("posted autopay bank legs replace the card forecast once for linked dated openings", () => {
   const document = { salary: {}, bills: [], allocations: [] };
   const accounts = [

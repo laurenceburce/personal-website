@@ -3087,6 +3087,63 @@ function cardStatementFixture() {
   };
 }
 
+test("entered manual card statements use the full native balance and saved autopay date", () => {
+  for (const currency of ["USD", "PHP"]) {
+    const { plan, document, accounts } = cardStatementFixture();
+    const card = { ...accounts[1], currency, isLinked: false, creditCardDueStatus: "manual", nativeCurrentBalance: 14930.79,
+      creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDue: { statementBalance: 14930.79, minimumPayment: 500, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } };
+    const before = JSON.stringify(card);
+    const rows = buildPlanRows({ ...plan, openingUsd: 20000, openingPhp: 20000 }, document, 63, { accounts: [card], today: "2026-11-08" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].manualStatement, true);
+    assert.equal(rows[0].date, "2026-11-13");
+    assert.equal(rows[0].dueDate, "2026-11-20");
+    assert.equal(rows[0].amount, 14930.79);
+    assert.equal(rows[0][currency === "USD" ? "balanceUsd" : "balancePhp"], 5069.21);
+    assert.equal(rows[0].completed, false);
+    assert.equal(JSON.stringify(card), before);
+  }
+});
+
+test("manual cards only estimate unbilled funds when entered statement details identify a cycle", () => {
+  const { accounts } = cardStatementFixture();
+  const card = { ...accounts[1], isLinked: false, creditCardDueStatus: "manual", nativeCurrentBalance: 350,
+    creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } };
+  const rows = getCreditCardObligations([card], { today: "2026-11-08" });
+  assert.deepEqual(rows.map((row) => [row.date, row.amount, Boolean(row.estimated), row.manualStatement]), [
+    ["2026-11-20", 200, false, true], ["2026-12-20", 150, true, true],
+  ]);
+  assert.deepEqual(getCreditCardObligations([{ ...card, creditCardDue: null }], { today: "2026-11-08" }), []);
+  const zero = getCreditCardObligations([{ ...card, nativeCurrentBalance: 0,
+    creditCardDue: { ...card.creditCardDue, statementBalance: 0 } }], { today: "2026-11-08" });
+  assert.deepEqual(zero, []);
+  const zeroStatementWithNewPurchases = getCreditCardObligations([{ ...card, nativeCurrentBalance: 150,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 0, dueDate: "2026-11-20", lastStatementDate: null } }], { today: "2026-11-08" });
+  assert.deepEqual(zeroStatementWithNewPurchases.map((row) => [row.date, row.dueDate, row.amount, row.estimated]), [
+    ["2026-12-13", "2026-12-20", 150, true],
+  ]);
+});
+
+test("posted manual card payments reduce the entered statement once even before the visible plan", () => {
+  const { plan, document, accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], isLinked: false, creditCardDueStatus: "manual", nativeCurrentBalance: 150,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 };
+  const transactions = [
+    { id: 1, date: "2026-11-03", kind: "expense", accountId: 1, amount: 50, currency: "USD", merchant: "Travel Card payment 1234", category: "Transfer Out" },
+    { id: 2, date: "2026-11-03", kind: "income", accountId: 2, amount: 50, currency: "USD", merchant: "Card payment", category: "Transfer In" },
+  ];
+  const rows = buildPlanRows({ ...plan, startDate: "2026-11-08" }, document, 63,
+    { accounts, transactions: [], creditCardPaymentTransactions: transactions, today: "2026-11-08" });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].amount, 150);
+  assert.equal(rows[0].paidAmount, 50);
+  assert.equal(rows[0].balanceUsd, 850);
+  assert.equal(rows[0].manualStatement, true);
+  assert.equal(rows[0].date, "2026-11-13");
+});
+
 test("credit card autopay uses calendar days with a seven-day default and keeps the bank due date", () => {
   const card = { creditCardAutopayEnabled: true, creditCardDue: { dueDate: "2026-11-20" } };
   assert.equal(getCreditCardPaymentDate(card), "2026-11-13");

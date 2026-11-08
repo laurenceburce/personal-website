@@ -222,6 +222,15 @@ The finance workspace separates recorded activity from your plans:
   the same schedule, and posted payments reduce the remaining forecast once.
   These settings describe autopay already arranged with the bank; they do not
   enroll the card or send payments. Cards without autopay keep their due dates.
+  Manually created credit cards have a **Payment details** editor on their
+  account card. Enter the statement balance in the card's currency and its
+  payment due date; the minimum payment and statement date are optional.
+  Budget plans use the full entered statement balance, apply the saved autopay
+  schedule, and subtract recorded payments once. A remaining unbilled balance
+  uses the entered monthly cycle for a separately labeled estimate. Saving
+  statement details leaves the tracked card balance unchanged and records no
+  payment. Update these fields when a new statement arrives. Linked cards keep
+  their bank-supplied statement details.
   Linked cards also show an **Estimated** next payment for their currently unbilled
   balance, using the current balance less the remaining reported statement.
   The bank's next payment date is used when no issued statement is available;

@@ -22,6 +22,7 @@ import {
   toggleFinanceBillPaid,
   updateFinanceAccount,
   updateFinanceCreditCardAutopay,
+  updateFinanceManualCreditCardDetails,
   updateFinanceDisplayCurrency,
   updateFinancePlan,
   updateFinanceTransaction,
@@ -163,6 +164,8 @@ export async function POST(request) {
         });
       case "updateCreditCardAutopay":
         return json({ ok: true, result: await updateFinanceCreditCardAutopay(data) });
+      case "updateManualCreditCardDetails":
+        return json({ ok: true, result: await updateFinanceManualCreditCardDetails(data) });
       case "archiveAccount":
       case "removeAccount":
         return json({ ok: true, result: await archiveFinanceAccount(data.id) });

@@ -2188,7 +2188,7 @@ export default function FinanceAppClient({
                       </details>
                     )}
                     <p className="fp-plan-flow-note">
-                      This plan includes dated bills, reported credit card dues,
+                      This plan includes dated bills, credit card statements,
                       and your plan entries
                       {plan.includeIncome ? ", scheduled salary" : ""}
                       {plan.includeAllocations !== false

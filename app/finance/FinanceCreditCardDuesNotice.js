@@ -10,7 +10,7 @@ export default function FinanceCreditCardDuesNotice({
   paymentHistoryWarning,
 }) {
   const cards = accounts.filter(
-    (account) => account.isLinked && account.type === "credit" &&
+    (account) => account.type === "credit" &&
       !account.isArchived && !account.mergedIntoAccountId,
   );
   if (!cards.length) return null;
@@ -21,9 +21,11 @@ export default function FinanceCreditCardDuesNotice({
     return due?.statementBalance == null || !Number.isFinite(Number(due.statementBalance)) ||
       formatDate(due.dueDate) === "—";
   });
-  const missingWithEstimate = missing.filter((account) => estimatedAccountIds.has(String(account.id)));
-  const missingWithoutEstimate = missing.filter((account) => !estimatedAccountIds.has(String(account.id)));
+  const missingWithEstimate = missing.filter((account) => account.isLinked && estimatedAccountIds.has(String(account.id)));
+  const missingWithoutEstimate = missing.filter((account) => account.isLinked && !estimatedAccountIds.has(String(account.id)));
+  const manualMissing = missing.filter((account) => !account.isLinked);
   const unplannedBalances = cards.filter((account) => {
+    if (!account.isLinked && missing.includes(account)) return false;
     const balance = Object.hasOwn(account, "nativeCurrentBalance")
       ? account.nativeCurrentBalance : account.currentBalance;
     return Number.isFinite(Number(balance)) && Number(balance) > 0 &&
@@ -37,14 +39,14 @@ export default function FinanceCreditCardDuesNotice({
     ? obligations.filter((row) => row.autopayEnabled && row.amount > 0 && row.date < plan.startDate)
     : [];
   const stale = cards.filter(
-    (account) => account.creditCardDueStatus === "stale" &&
+    (account) => account.isLinked && account.creditCardDueStatus === "stale" &&
       (!missing.includes(account) || estimatedAccountIds.has(String(account.id))),
   );
   const names = (items) => items.map(financeAccountLabel).join(", ");
   return (
     <div className="fp-credit-card-dues-notice">
       <p className="fp-plan-flow-note">
-        Reported credit card statements use their due dates or saved autopay schedule. Unbilled
+        Entered and bank-reported credit card statements use their due dates or saved autopay schedule. Unbilled
         balances use the next available payment date and are labeled as estimates.
         Future purchases, payments, and statement updates can change these estimates.
       </p>
@@ -76,7 +78,7 @@ export default function FinanceCreditCardDuesNotice({
                 <strong>{row.accountName || "Credit card"}</strong>: {money(row.amount, row.currency)} estimated for {formatDate(row.date, { year: "numeric" })}.
                 {" "}{row.autopayEnabled
                   ? <>Automatic payment · {row.estimateDateIsReported ? "Due" : "Estimated due"} {formatDate(row.dueDate, { year: "numeric" })}.</>
-                  : row.estimateDateIsReported ? "Bank-reported payment date." : "Estimated payment date."}
+                  : row.estimateDateIsReported ? row.manualStatement ? "Entered payment due date." : "Bank-reported payment date." : "Estimated payment date."}
               </li>
             ))}
           </ul>
@@ -97,6 +99,12 @@ export default function FinanceCreditCardDuesNotice({
           Statement balances or due dates are unavailable for {names(missingWithoutEstimate)}.
           {" "}These cards need statement or cycle details before dues can appear in this plan.
           {onReviewAccounts && <>{" "}<button onClick={onReviewAccounts}>Review Bank accounts</button></>}
+        </p>
+      )}
+      {manualMissing.length > 0 && (
+        <p className="fp-plan-warning" role="status">
+          Enter a statement balance and payment due date for {names(manualMissing)} under Bank accounts → Payment details to include the card payment in this plan.
+          {onReviewAccounts && <>{" "}<button onClick={onReviewAccounts}>Enter payment details</button></>}
         </p>
       )}
       {unplannedBalances.length > 0 && (
