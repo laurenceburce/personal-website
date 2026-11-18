@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 import { getPlanRowCategory } from "../lib/financePlanPresentation.mjs";
 import { SourceLabel } from "./FinancePlanLedger";
@@ -15,6 +15,49 @@ const signed = (amount, currency) => `${amount > 0 ? "+" : ""}${money(amount, cu
 const balance = (value, currency) => Number.isFinite(value) ? money(value, currency) : "Unavailable";
 const accountName = (account) => account
   ? `${account.name || "Account"}${account.mask ? ` · ••${account.mask}` : ""}` : "Choose an account";
+
+/** Keep chronological rows intact while locating the most relevant activity. */
+export function selectCurrentPlannerRow(rows = [], today = localDate()) {
+  const dated = rows.filter((row) => typeof row.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.date));
+  const current = dated.filter((row) => row.date === today);
+  if (current.length) return current.at(-1);
+  const pastDate = dated.filter((row) => row.date < today).map((row) => row.date).sort().at(-1);
+  if (pastDate) return dated.filter((row) => row.date === pastDate).at(-1);
+  const nextDate = dated.map((row) => row.date).sort()[0];
+  return dated.find((row) => row.date === nextDate) || null;
+}
+
+/** Scroll only the table's own viewport, leaving the surrounding page in place. */
+function positionCurrentRow(scroller, row, behavior = "auto") {
+  if (!scroller || !row) return false;
+  const headerHeight = scroller.querySelector("thead")?.getBoundingClientRect().height || 0;
+  const top = scroller.scrollTop + row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - headerHeight - 16;
+  scroller.scrollTo({ top: Math.max(0, top), behavior });
+  return true;
+}
+
+function AccountBalances({ row, panelId }) {
+  const kind = row.accountBalanceSnapshotKind || "unavailable";
+  const title = kind === "projected" ? "Projected account balances after this transaction"
+    : kind === "recorded" ? "Recorded account balances after this transaction"
+      : kind === "current" ? "Current account balances" : "Account balances unavailable for this transaction";
+  const accounts = Array.isArray(row.accountBalanceSnapshot) ? row.accountBalanceSnapshot : [];
+  return <div className="fpt-balance-panel" id={panelId} role="region" aria-labelledby={`${panelId}-title`}>
+    <header><strong id={`${panelId}-title`}>{title}</strong>
+      {(row.accountBalanceSnapshotNote || kind === "current") && <p>{row.accountBalanceSnapshotNote || "These are live balances, not a historical snapshot."}</p>}
+    </header>
+    {accounts.length ? <div className="fpt-balance-grid">{accounts.map((account) => {
+      const debt = account.isDebt || ["credit", "loan"].includes(account.type);
+      const credit = debt && Number.isFinite(account.balance) && account.balance < 0;
+      const label = debt ? credit ? "Credit balance" : "Balance owed" : "Account balance";
+      return <article className={`fpt-balance-card${debt ? " fpt-balance-card-debt" : ""}`} key={account.accountId}>
+        <div><strong>{accountName(account)}</strong><small>{label} · {account.currency}</small></div>
+        <span className={!debt && account.balance < 0 ? "fpt-negative" : ""}>{balance(credit ? Math.abs(account.balance) : account.balance, account.currency)}</span>
+        {Number.isFinite(account.change) && account.change !== 0 && <small className="fpt-balance-change">{signed(account.change, account.currency)} from this transaction</small>}
+      </article>;
+    })}</div> : !row.accountBalanceSnapshotNote && <p className="fpt-balance-empty">A complete account history is needed to calculate this row’s balances.</p>}
+  </div>;
+}
 
 function rowAccounts(row, accounts, plan) {
   const byId = (id) => accounts.find((account) => Number(account.id) === Number(id));
@@ -63,10 +106,21 @@ function Status({ row, today }) {
 /** Display filters never alter stored entries, row order, or projected balances. */
 export default function FinancePlannerTable({
   plan, rows = [], accounts = [], today = localDate(), busy = false, loading = false,
+  viewKey,
   onEdit, onDelete, onEditOccurrence, onResetOccurrence, onToggleComplete, onRecord,
 }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [expandedBalances, setExpandedBalances] = useState(() => new Set());
+  const [jumpRequest, setJumpRequest] = useState(0);
+  const scrollerRef = useRef(null);
+  const rowRefs = useRef(new Map());
+  const positionedView = useRef(null);
+  const handledJump = useRef(0);
+  const current = selectCurrentPlannerRow(rows, today);
+  const currentId = current == null ? null : String(current.id);
+  const tableId = `planner-transactions-${encodeURIComponent(String(plan.id || "live"))}`;
+  const windowKey = `${viewKey ?? `${plan.id}:${plan.startDate}:${plan.endDate}`}:${today}`;
   const query = search.trim().toLowerCase();
   const visible = rows.filter((row) => {
     const done = recorded(row, today);
@@ -79,6 +133,20 @@ export default function FinancePlannerTable({
   });
   const filtered = query || status !== "all";
   const clear = () => { setSearch(""); setStatus("all"); };
+  useEffect(() => {
+    if (loading || currentId == null || positionedView.current === windowKey) return;
+    if (positionCurrentRow(scrollerRef.current, rowRefs.current.get(currentId))) positionedView.current = windowKey;
+  }, [windowKey, currentId, loading, rows.length]);
+  useEffect(() => {
+    if (!jumpRequest || handledJump.current === jumpRequest || loading || currentId == null) return;
+    if (positionCurrentRow(scrollerRef.current, rowRefs.current.get(currentId))) handledJump.current = jumpRequest;
+  }, [jumpRequest, loading, currentId, query, status]);
+  const jumpToCurrent = () => { clear(); setJumpRequest((request) => request + 1); };
+  const toggleBalances = (id) => setExpandedBalances((previous) => {
+    const next = new Set(previous);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
   return <section className="fpt-planner-table" aria-label="Planner transactions" aria-busy={loading}>
     <div className="fpt-toolbar">
       <label className="fpt-search"><span className="fp-sr-only">Search transactions</span>
@@ -90,13 +158,16 @@ export default function FinancePlannerTable({
         {[["all", "All"], ["upcoming", "Upcoming"], ["recorded", "Recorded"], ["overdue", "Overdue"]].map(([value, label]) =>
           <button key={value} type="button" aria-pressed={status === value} disabled={loading} onClick={() => setStatus(value)}>{label}</button>)}
       </div>
+      <button type="button" className="fpt-jump-current" disabled={loading || currentId == null}
+        aria-controls={tableId} onClick={jumpToCurrent}>Jump to current</button>
       <span className="fpt-count" aria-live="polite">{visible.length}{filtered ? ` of ${rows.length}` : ""} {visible.length === 1 ? "transaction" : "transactions"}</span>
     </div>
     {!visible.length ? <div className="fpt-empty" role="status">
       <strong>{loading ? "Loading transactions…" : filtered ? "No transactions match your filters" : "No transactions in this date range"}</strong>
       <p>{filtered ? "Try another search or show all statuses." : "Change the dates above or add a transaction to your planner."}</p>
       {filtered && <button type="button" className="fp-button fp-secondary" onClick={clear}>Clear filters</button>}
-    </div> : <div className="fpt-table-wrap">
+    </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
+      aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
       <table className="fpt-table">
         <caption className="fp-sr-only">Recorded and planned transactions in date order. Projected balance shows account funds after each upcoming transaction, with card debt separate in the summary.</caption>
         <thead><tr><th scope="col">Date</th><th scope="col">Transaction</th><th scope="col">Account</th><th scope="col">Amount</th><th scope="col">Projected balance</th><th scope="col">Status</th></tr></thead>
@@ -111,8 +182,17 @@ export default function FinancePlannerTable({
           const canEdit = manualEntry || editableOccurrence;
           const actions = canEdit || canToggle || (row.isOverride && onResetOccurrence);
           const inCurrentBalance = plan.balanceMode !== "snapshot" && accountRecorded(row, today) && row.date <= today;
-          return <tr key={row.id} className={`fpt-row fpt-category-${category.key}${recorded(row, today) ? " fpt-row-recorded" : ""}`}>
-            <td className="fpt-date"><time dateTime={row.date}>{formatDate(row.date, { year: "numeric" })}</time></td>
+          const currentRow = String(row.id) === currentId;
+          const isToday = row.date === today;
+          const expanded = expandedBalances.has(String(row.id));
+          const panelId = `${tableId}-balances-${encodeURIComponent(String(row.id))}`;
+          return <Fragment key={row.id}><tr ref={(node) => {
+            if (node) rowRefs.current.set(String(row.id), node); else rowRefs.current.delete(String(row.id));
+          }} aria-current={currentRow ? "true" : undefined} data-row-id={row.id}
+            className={`fpt-row fpt-category-${category.key}${recorded(row, today) ? " fpt-row-recorded" : ""}${isToday ? " fpt-row-today" : ""}${currentRow ? " fpt-row-current" : ""}`}>
+            <td className="fpt-date"><time dateTime={row.date}>{formatDate(row.date, { year: "numeric" })}</time>
+              {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
+            </td>
             <td className="fpt-transaction">
               <strong>{row.description}</strong>
               <div className="fpt-row-meta"><span className="fpt-category">{category.label}</span>{row.estimated && <span>Estimated</span>}
@@ -127,6 +207,10 @@ export default function FinancePlannerTable({
                   </div>
                 </details>
               </div>
+              <button type="button" className="fpt-balance-toggle" aria-expanded={expanded} aria-controls={panelId}
+                aria-label={`Account balances for ${row.description}`} onClick={() => toggleBalances(String(row.id))}>
+                {expanded ? "Hide account balances" : "Account balances"}
+              </button>
             </td>
             <td className="fpt-account" data-label="Account">{assigned.from || assigned.to ?
               <span className="fpt-account-pair"><span>{assigned.from}</span><small>to {assigned.to}</small></span> :
@@ -154,10 +238,10 @@ export default function FinancePlannerTable({
                 </div></details>}
               </div>
             </td>
-          </tr>;
+          </tr>{expanded && <tr className="fpt-balances-row"><td colSpan={6}><AccountBalances row={row} panelId={panelId}/></td></tr>}</Fragment>;
         })}</tbody>
       </table>
     </div>}
-    <p className="fpt-footnote">Recorded activity is included in current balances. Upcoming unpaid transactions change the projection; table filters do not change it.</p>
+    <p className="fpt-footnote" id={`${tableId}-hint`}>Scroll the table to browse dates. Recorded activity is included in current balances. Upcoming unpaid transactions change the projection; table filters do not change it.</p>
   </section>;
 }

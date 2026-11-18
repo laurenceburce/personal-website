@@ -1,48 +1,48 @@
 .fp-app .fpla-analytics { display: grid; gap: 16px; margin: 0 0 26px; }
 .fp-app .fpla-balance-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-.fp-app .fpla-balance-card { min-width: 0; padding: 23px 24px 18px; background: #fff; border: 1px solid #dce7df; border-radius: 14px; box-shadow: 0 3px 12px #254f3903; }
-.fp-app .fpla-balance-card header { display: flex; align-items: center; gap: 10px; color: #667b6d; font-size: 12px; }
+.fp-app .fpla-balance-card { min-width: 0; padding: 23px 24px 18px; background: #fff; border: 1px solid #c5d3ca; border-radius: 14px; box-shadow: 0 3px 12px #254f3903; }
+.fp-app .fpla-balance-card header { display: flex; align-items: center; gap: 10px; color: #435e4d; font-size: 12px; }
 .fp-app .fpla-currency { display: inline-flex; padding: 5px 9px; border-radius: 6px; color: #17674f; background: #edf5ef; font-size: 11px; font-weight: 800; letter-spacing: .4px; }
 .fp-app .fpla-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin: 22px 0 20px; }
 .fp-app .fpla-comparison > div { min-width: 0; }
-.fp-app .fpla-comparison dt { color: #6f8075; font-size: 11px; margin-bottom: 7px; }
+.fp-app .fpla-comparison dt { color: #4e6358; font-size: 11px; margin-bottom: 7px; }
 .fp-app .fpla-comparison dd { margin: 0; color: #173f30; font-size: clamp(20px, 2.1vw, 30px); line-height: 1.25; font-weight: 800; letter-spacing: -.8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.fp-app .fpla-comparison small { display: block; margin-top: 7px; color: #8a978e; font-size: 10px; line-height: 1.5; }
-.fp-app .fpla-comparison .fpla-negative { color: #a55043; }
-.fp-app .fpla-change { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; color: #3c7b5b; font-size: 11px; }
-.fp-app .fpla-change > span { color: #728278; }
+.fp-app .fpla-comparison small { display: block; margin-top: 7px; color: #52675b; font-size: 10px; line-height: 1.5; }
+.fp-app .fpla-comparison .fpla-negative { color: #a33426; }
+.fp-app .fpla-change { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; color: #166543; font-size: 11px; }
+.fp-app .fpla-change > span { color: #4e6358; }
 .fp-app .fpla-change strong { font-size: 12px; font-variant-numeric: tabular-nums; }
-.fp-app .fpla-change-down { color: #a36c3b; }
-.fp-app .fpla-trend { color: #2b936c; margin-top: 1px; }
-.fp-app .fpla-trend-down { color: #c09255; }
+.fp-app .fpla-change-down { color: #97500d; }
+.fp-app .fpla-trend { color: #16724e; margin-top: 1px; }
+.fp-app .fpla-trend-down { color: #a66310; }
 .fp-app .fpla-trend svg { display: block; width: 100%; height: 82px; overflow: visible; }
 .fp-app .fpla-trend-line { fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linejoin: round; }
 .fp-app .fpla-trend-area { fill: currentColor; opacity: .07; }
 .fp-app .fpla-trend circle { fill: currentColor; stroke: white; stroke-width: 2; }
-.fp-app .fpla-trend > div { display: flex; justify-content: space-between; color: #94a096; font-size: 9px; }
-.fp-app .fpla-debt { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; padding-top: 15px; margin-top: 17px; border-top: 1px solid #edf0ea; font-size: 10px; color: #718277; }
-.fp-app .fpla-debt strong { color: #58685d; font-size: 11px; font-variant-numeric: tabular-nums; }
-.fp-app .fpla-debt strong > span { padding: 0 5px; color: #9baa9f; }
-.fp-app .fpla-debt small { grid-column: 1/-1; text-align: right; font-size: 9px; color: #93a096; }
-.fp-app .fpla-range-summary { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: center; padding: 18px 22px; background: #f0f5ef; border-radius: 10px; border: 1px solid #e4ece1; }
+.fp-app .fpla-trend > div { display: flex; justify-content: space-between; color: #52675b; font-size: 9px; }
+.fp-app .fpla-debt { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; padding-top: 15px; margin-top: 17px; border-top: 1px solid #edf0ea; font-size: 10px; color: #4e6358; }
+.fp-app .fpla-debt strong { color: #3d5647; font-size: 11px; font-variant-numeric: tabular-nums; }
+.fp-app .fpla-debt strong > span { padding: 0 5px; color: #52675b; }
+.fp-app .fpla-debt small { grid-column: 1/-1; text-align: right; font-size: 9px; color: #52675b; }
+.fp-app .fpla-range-summary { display: flex; flex-wrap: wrap; gap: 18px 28px; align-items: center; padding: 18px 22px; background: #f0f5ef; border-radius: 10px; border: 1px solid #ccd9cc; }
 .fp-app .fpla-range-summary > div { display: grid; gap: 5px; margin-right: auto; }
-.fp-app .fpla-range-summary > div > span { font-size: 10px; color: #7c8e7f; }
+.fp-app .fpla-range-summary > div > span { font-size: 10px; color: #4e6358; }
 .fp-app .fpla-range-summary > div > strong { font-size: 14px; color: #315e42; }
 .fp-app .fpla-range-summary dl { display: flex; gap: 24px; margin: 0; }
 .fp-app .fpla-range-summary dl > div { display: grid; gap: 6px; }
-.fp-app .fpla-range-summary dt { font-size: 10px; color: #7d8c7f; }
+.fp-app .fpla-range-summary dt { font-size: 10px; color: #4e6358; }
 .fp-app .fpla-range-summary dd { margin: 0; font-size: 12px; font-weight: 700; color: #3e6249; font-variant-numeric: tabular-nums; }
-.fp-app .fpla-note { margin: -3px 0 0; color: #7c887b; font-size: 11px !important; line-height: 1.65 !important; }
-.fp-app .fpla-account-details { border: 1px solid #e2e9df; border-radius: 10px; background: #fff; }
+.fp-app .fpla-note { margin: -3px 0 0; color: #4e6358; font-size: 11px !important; line-height: 1.65 !important; }
+.fp-app .fpla-account-details { border: 1px solid #c5d3ca; border-radius: 10px; background: #fff; }
 .fp-app .fpla-account-details > summary { cursor: pointer; padding: 15px 20px; color: #57705e; font-size: 11px; font-weight: 700; }
-.fp-app .fpla-account-details > summary > span { margin-left: 7px; color: #91a08f; font-size: 10px; font-weight: 500; }
+.fp-app .fpla-account-details > summary > span { margin-left: 7px; color: #52675b; font-size: 10px; font-weight: 500; }
 .fp-app .fpla-account-list { padding: 0 20px; }
 .fp-app .fpla-account-list > article { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 0; border-top: 1px solid #edf1e9; }
 .fp-app .fpla-account-list > article > div { display: grid; gap: 4px; min-width: 0; }
 .fp-app .fpla-account-list strong { color: #48614f; font-size: 12px; overflow-wrap: anywhere; }
-.fp-app .fpla-account-list small { color: #99a294; font-size: 10px; }
+.fp-app .fpla-account-list small { color: #52675b; font-size: 10px; }
 .fp-app .fpla-account-list dl { display: flex; gap: 28px; margin: 0; flex-shrink: 0; text-align: right; }
-.fp-app .fpla-account-list dt { color: #94a08f; font-size: 9px; margin-bottom: 4px; }
+.fp-app .fpla-account-list dt { color: #52675b; font-size: 9px; margin-bottom: 4px; }
 .fp-app .fpla-account-list dd { color: #4d6654; margin: 0; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
 @media (max-width: 1100px) {
   .fp-app .fpla-balance-card { padding: 20px; }

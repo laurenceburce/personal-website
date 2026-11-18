@@ -1222,6 +1222,7 @@ export async function getFinanceActivity({ month } = {}) {
 // recorded flow in that bounded range without contacting or synchronizing banks.
 export async function getFinancePlanActivity({ startDate, endDate } = {}) {
   const range = financePlanActivityRange({ startDate, endDate });
+  const currentDate = financeActivityWindow().today;
   const empty = {
     configured: false,
     ...range,
@@ -1229,6 +1230,11 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
     creditCardPaymentTransactions: [],
     creditCardPaymentLimitHit: false,
     creditCardPaymentWarning: "",
+    balanceTransactions: [],
+    balanceHistoryFrom: range.from,
+    balanceHistoryThrough: currentDate,
+    balanceHistoryComplete: false,
+    balanceHistoryWarning: "Account balance history is unavailable. Historical balances cannot be reconstructed.",
     limitHit: false,
   };
   try {
@@ -1239,7 +1245,7 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
         warning:
           "Connect your finance database to include recorded transactions in this plan.",
       };
-    await refreshFinancePlanPostings(database, financeActivityWindow().today);
+    await refreshFinancePlanPostings(database, currentDate);
     const [rows] = await database.query(
       `
       SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
@@ -1267,12 +1273,20 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
         "Only the first 10,000 recorded transactions in this range are included. Plan balances may be incomplete.",
       );
     const creditCardPayments = await getFinanceCreditCardPaymentActivity(database, range);
+    // A visible statement may settle through receipts before the selected
+    // window. Include those known receipt dates in the reconstruction floor.
+    const balanceFrom = [range.from, ...creditCardPayments.creditCardPaymentTransactions
+      .filter((row) => !row.pending && typeof row.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.date) &&
+        row.date >= "1900-01-01" && row.date <= currentDate)
+      .map((row) => row.date)].sort()[0];
+    const balanceHistory = await getFinanceBalanceHistory(database, { ...range, from: balanceFrom }, currentDate);
     return {
       ...empty,
       configured: true,
       transactions,
       limitHit,
       ...creditCardPayments,
+      ...balanceHistory,
       ...(warnings.length ? { warning: warnings.join(" ") } : {}),
     };
   } catch {
@@ -1280,6 +1294,55 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
       ...empty,
       warning:
         "Recorded transactions could not be loaded. Your saved records have not been changed; retry to include them in this plan.",
+    };
+  }
+}
+
+// A historical row needs every later posted movement through today's live
+// balance, not just transactions inside the visible date range. Keep that
+// evidence separate so it never becomes extra visible or forecast cash flow.
+async function getFinanceBalanceHistory(database, range, currentDate) {
+  const empty = {
+    balanceTransactions: [],
+    balanceHistoryFrom: range.from,
+    balanceHistoryThrough: currentDate,
+    balanceHistoryComplete: true,
+    balanceHistoryWarning: "",
+  };
+  if (range.from > currentDate) return empty;
+  try {
+    const [rows] = await database.query(`
+      SELECT t.id, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+        t.kind, t.account_id, t.amount, t.currency,
+        t.source_plan_id, t.source_plan_row_id, t.source_plan_leg,
+        t.plan_generated, t.plan_provisional, t.plan_record_json
+      FROM personal_finance_transactions t
+      WHERE t.account_id IS NOT NULL AND t.currency IN ('USD', 'PHP')
+        AND t.kind IN ('income', 'expense') AND t.pending = 0
+        AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+        AND t.transaction_date >= ? AND t.transaction_date <= ?
+      ORDER BY t.transaction_date ASC, t.id ASC LIMIT 10001`, [range.from, currentDate]);
+    const complete = rows.length <= 10000;
+    return {
+      ...empty,
+      balanceTransactions: rows.slice(0, 10000).map((row) => ({
+        ...financePlanTransactionMetadata(row),
+        id: Number(row.id),
+        date: formatDateOnly(row.transaction_date),
+        kind: row.kind,
+        accountId: Number(row.account_id),
+        amount: toMoney(row.amount),
+        currency: row.currency,
+        pending: false,
+      })),
+      balanceHistoryComplete: complete,
+      balanceHistoryWarning: complete ? "" : "Account balance history exceeds 10,000 posted transactions. Historical balances are unavailable until the full history can be loaded.",
+    };
+  } catch {
+    return {
+      ...empty,
+      balanceHistoryComplete: false,
+      balanceHistoryWarning: "Account balance history could not be loaded. Historical balances are unavailable; refresh to retry.",
     };
   }
 }

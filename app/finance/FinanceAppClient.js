@@ -33,7 +33,7 @@ import Ledger from "./FinancePlannerTable";
 import FinancePlannerRange from "./FinancePlannerRange";
 import FinancePlannerAnalytics from "./FinancePlannerAnalytics";
 import { ensurePrimaryFinancePlanner } from "../lib/financePrimaryPlanner.mjs";
-import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, withLivePlannerBalances } from "../lib/financeLivePlanner.mjs";
+import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../lib/financeLivePlanner.mjs";
 import { BillForm, BillsTable } from "./FinanceBills";
 import {
   QuickTransactionForm,
@@ -778,9 +778,14 @@ export default function FinanceAppClient({
   }), [futurePlan, document, rate, today, accounts, planActivity, projectionPlan]);
   const futureAccountPlan = useMemo(() => buildAccountPlan(futurePlan, document, rate, { accounts, rows: futurePlanRows, today }),
     [futurePlan, document, rate, accounts, futurePlanRows, today]);
-  const displayedPlanRows = withLivePlannerBalances({ accounts, today,
+  const rowsWithBalances = withLivePlannerBalances({ accounts, today,
     rows: [...(accountPlan?.rows || planRows).filter((row) => row.date < today), ...futureAccountPlan.rows]
       .filter((row) => row.source !== "salary" || Number(row.amount) > 0) });
+  const balanceHistoryMatches = planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate;
+  const displayedPlanRows = withLivePlannerAccountSnapshots({ accounts, rows: rowsWithBalances, today,
+    historyTransactions: balanceHistoryMatches ? planActivity.balanceTransactions || [] : [],
+    historyFrom: planActivity?.balanceHistoryFrom, historyThrough: planActivity?.balanceHistoryThrough,
+    historyComplete: Boolean(balanceHistoryMatches && planActivity?.balanceHistoryComplete) });
   const visiblePlanRows = filterLivePlannerRows(displayedPlanRows, plannerRange);
   const plannerAnalytics = getLivePlannerAnalytics({ accounts, rows: displayedPlanRows, range: plannerRange, today });
   const planRecordsMatch = Boolean(
@@ -1940,6 +1945,7 @@ export default function FinanceAppClient({
                 </div>
                 {planWaitingForRecords ? <div className="fp-loading-state" role="status">Loading transactions for these dates…</div> : (
                   <Ledger today={today} plan={plan} accounts={accounts} rows={visiblePlanRows}
+                    viewKey={`${plannerRange.startDate}:${plannerRange.endDate}`}
                     busy={busy} onToggleComplete={togglePlanCompletion} onRecord={recordScheduledRow}
                     onEditOccurrence={(row) => open({ type: "occurrence", row, planId: plan.id })}
                     onResetOccurrence={resetPlanOccurrence}

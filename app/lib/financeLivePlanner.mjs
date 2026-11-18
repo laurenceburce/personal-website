@@ -48,6 +48,20 @@ const sumBalances = (accounts, balances, currency, debt) => {
   if (selected.some((account) => balances.get(Number(account.id)) == null)) return null;
   return roundMoney(selected.reduce((sum, account) => sum + balances.get(Number(account.id)), 0));
 };
+const projectedAccountMoves = (row, byId, today) => {
+  const validMoves = (row.accountMovements || []).filter((move) => {
+    const account = byId.get(Number(move.accountId));
+    return account && account.currency === move.currency && (!move.recordedDate || move.recordedDate > today);
+  });
+  const unfundedCardPayment = row.source === "creditCardDue" && Number(row.amount) > 0 &&
+    !validMoves.some((move) => !isDebt(byId.get(Number(move.accountId))) && Number(move.balanceDelta ?? move.amount) < 0);
+  const moves = unfundedCardPayment ? validMoves.filter((move) => {
+    const account = byId.get(Number(move.accountId));
+    return !(isDebt(account) && Number(move.balanceDelta ?? -Number(move.amount)) < 0 &&
+      (row.creditAccountId == null || Number(row.creditAccountId) === Number(move.accountId)));
+  }) : validMoves;
+  return { moves, unfundedCardPayment };
+};
 
 /** Table totals use the same native account funds as the summary. */
 export function withLivePlannerBalances({ accounts = [], rows = [], today = localDate() } = {}) {
@@ -58,7 +72,7 @@ export function withLivePlannerBalances({ accounts = [], rows = [], today = loca
   )]));
   return rows.map((row) => {
     if (row.date >= today && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
-      for (const move of row.accountMovements || []) {
+      for (const move of projectedAccountMoves(row, byId, today).moves) {
         const account = byId.get(Number(move.accountId));
         if (!account || account.currency !== move.currency || (move.recordedDate && move.recordedDate <= today)) continue;
         const value = balances.get(Number(move.accountId));
@@ -67,6 +81,84 @@ export function withLivePlannerBalances({ accounts = [], rows = [], today = loca
       }
     return { ...row, projectedBalanceUsd: sumBalances(selected, balances, "USD", false),
       projectedBalancePhp: sumBalances(selected, balances, "PHP", false) };
+  });
+}
+
+const transactionKey = (value) => {
+  const key = String(value ?? "").replace(/^transaction:/, "");
+  return /^\d+$/.test(key) && BigInt(key) > 0n ? BigInt(key).toString() : null;
+};
+const compareRecorded = (first, second) => first.date.localeCompare(second.date) ||
+  (BigInt(first.key) < BigInt(second.key) ? -1 : BigInt(first.key) > BigInt(second.key) ? 1 : 0);
+
+/** Preserve a full native account snapshot for each logical transaction row. */
+export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], today = localDate(),
+  historyTransactions = [], historyFrom, historyThrough, historyComplete = false } = {}) {
+  const selected = accounts.filter((account) => active(account) && CURRENCIES.includes(account.currency));
+  const byId = new Map(selected.map((account) => [Number(account.id), account]));
+  const current = new Map(selected.map((account) => [Number(account.id), nativeMoney(
+    Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance,
+  )]));
+  const snapshot = (balances) => selected.map((account) => ({ accountId: Number(account.id), name: account.name || "Account",
+    mask: account.mask || "", type: account.type || account.account_type, currency: account.currency,
+    balance: balances.get(Number(account.id)) ?? null, isDebt: isDebt(account) }));
+  const seen = new Set();
+  const history = historyTransactions.flatMap((transaction) => {
+    const key = transactionKey(transaction.id);
+    if (!key || seen.has(key) || transaction.pending || !Number.isFinite(dateTime(transaction.date)) ||
+        transaction.date > today || !["income", "expense"].includes(transaction.kind) ||
+        !Number.isFinite(Number(transaction.amount)) || Number(transaction.amount) <= 0) return [];
+    seen.add(key);
+    return [{ ...transaction, key }];
+  }).sort(compareRecorded);
+  const historyById = new Map(history.map((transaction) => [transaction.key, transaction]));
+  const recordedRows = [];
+  const prepared = rows.map((row, index) => {
+    const isRecorded = Boolean(row.recordedInAccounts || ["plan", "transaction"].includes(row.completionSource) ||
+      (row.source === "transaction" && row.date <= today && !row.scheduled));
+    if (!isRecorded) return { row, index };
+    const ids = [...new Set([row.transactionId, ...(row.matchedTransactionIds || []),
+      ...(row.recordedTransactions || []).map((transaction) => transaction.transactionId ?? transaction.id),
+      ...(row.source === "transaction" ? [row.id] : [])].map(transactionKey).filter(Boolean))];
+    const records = ids.map((id) => historyById.get(id));
+    const cutoff = records.filter(Boolean).sort(compareRecorded).at(-1);
+    const complete = historyComplete && historyThrough >= today && cutoff && historyFrom <= cutoff.date &&
+      records.length > 0 && records.every(Boolean);
+    if (complete) recordedRows.push({ index, cutoff });
+    return { row, index, isRecorded, complete, cutoff };
+  });
+  const historical = new Map();
+  const reversed = new Map(current);
+  let cursor = history.length - 1;
+  for (const { index, cutoff } of recordedRows.sort((first, second) => compareRecorded(second.cutoff, first.cutoff))) {
+    while (cursor >= 0 && compareRecorded(history[cursor], cutoff) > 0) {
+      const transaction = history[cursor--];
+      const account = byId.get(Number(transaction.accountId));
+      const value = reversed.get(Number(transaction.accountId));
+      if (!account || account.currency !== transaction.currency || value == null) continue;
+      const delta = (transaction.kind === "income" ? 1 : -1) * (isDebt(account) ? -1 : 1) * Number(transaction.amount);
+      reversed.set(Number(transaction.accountId), roundMoney(value - delta));
+    }
+    historical.set(index, snapshot(reversed));
+  }
+  const projected = new Map(current);
+  return prepared.map(({ row, index, isRecorded, complete, cutoff }) => {
+    if (row.date >= today && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
+      for (const move of projectedAccountMoves(row, byId, today).moves) {
+        const account = byId.get(Number(move.accountId));
+        const value = projected.get(Number(move.accountId));
+        if (!account || account.currency !== move.currency || value == null || (move.recordedDate && move.recordedDate <= today)) continue;
+        const delta = nativeMoney(move.balanceDelta ?? (isDebt(account) ? -Number(move.amount) : Number(move.amount)));
+        if (delta != null) projected.set(Number(move.accountId), roundMoney(value + delta));
+      }
+    if (isRecorded) return { ...row, accountBalanceSnapshot: complete ? historical.get(index) : snapshot(new Map()),
+      accountBalanceSnapshotKind: complete ? "recorded" : "unavailable",
+      accountBalanceSnapshotNote: complete ? `After recorded activity on ${cutoff.date}. Reconstructed from current balances and later recorded movements; same-day records follow saved order.`
+        : "Recorded balance history is incomplete for this row. Current balances are available in the summary above." };
+    if (row.date >= today && !row.completed) return { ...row, accountBalanceSnapshot: snapshot(projected),
+      accountBalanceSnapshotKind: "projected", accountBalanceSnapshotNote: "Projected account balances after this transaction. Card and loan balances show the amount owed." };
+    return { ...row, accountBalanceSnapshot: snapshot(new Map()), accountBalanceSnapshotKind: "unavailable",
+      accountBalanceSnapshotNote: "This past row has no linked recorded transaction. Record or reschedule it to update account balances." };
   });
 }
 
@@ -94,19 +186,7 @@ export function getLivePlannerAnalytics({ accounts = [], rows = [], range, today
         (row.source === "transaction" && row.date <= today)) continue;
     if (row.id != null && seen.has(String(row.id))) continue;
     if (row.id != null) seen.add(String(row.id));
-    const validMoves = (row.accountMovements || []).filter((move) => {
-      const account = byId.get(Number(move.accountId));
-      return account && account.currency === move.currency && (!move.recordedDate || move.recordedDate > today);
-    });
-    const unfundedCardPayment = row.source === "creditCardDue" && Number(row.amount) > 0 &&
-      !validMoves.some((move) => !isDebt(byId.get(Number(move.accountId))) && Number(move.balanceDelta ?? move.amount) < 0);
-    // A receiving card leg alone cannot pay debt. Keep the obligation visible
-    // until a valid funding account supplies its corresponding cash movement.
-    const moves = unfundedCardPayment ? validMoves.filter((move) => {
-      const account = byId.get(Number(move.accountId));
-      return !(isDebt(account) && Number(move.balanceDelta ?? -Number(move.amount)) < 0 &&
-        (row.creditAccountId == null || Number(row.creditAccountId) === Number(move.accountId)));
-    }) : validMoves;
+    const { moves, unfundedCardPayment } = projectedAccountMoves(row, byId, today);
     const inWindow = row.date >= visibleStart;
     if (inWindow) {
       upcomingCount++;

@@ -169,6 +169,14 @@ The finance workspace separates recorded activity from your plans:
   Overdue** without changing calculated balances. Expand **Details** for statement,
   reserve, conversion, and bank matching evidence. Secondary actions stay in each
   row's menu; the primary payment/receipt action stays visible.
+  The table scrolls within a fixed-height viewport and initially positions the
+  highlighted latest row for today (or the nearest activity). **Jump to current**
+  returns there without moving the page; refreshes preserve your browsing position.
+  Expand **Account balances** on any row for every active account's native balance.
+  Future rows show projections; recorded rows reconstruct tracked balances from
+  current values and later posted activity, using saved order within a day.
+  Incomplete history stays unavailable. Text, status chips, and amount colors use
+  stronger contrast, with labels as well as color to distinguish states.
   Add a one-time row as **Planned** or **Recorded · already happened**. Recording
   creates account transactions; completing a custom row records its assigned accounts
   too. Transfers create both native account legs. Manual balances update immediately.
