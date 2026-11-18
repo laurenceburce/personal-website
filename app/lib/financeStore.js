@@ -2193,29 +2193,53 @@ export async function createFinanceAccount(data) {
 }
 
 export async function updateFinanceAccount(id, data) {
+  if (!["number", "string"].includes(typeof id) ||
+      (typeof id === "string" && !/^\d+$/.test(id)) ||
+      !Number.isSafeInteger(Number(id)) || Number(id) < 1)
+    throw appError("Choose a valid manual account.");
+  const accountId = Number(id);
+  const name = typeof data?.name === "string" ? data.name.trim().replace(/\s+/g, " ") : "";
+  if (!name || name.length > 80)
+    throw appError("Enter an account name of up to 80 characters.");
+  const accountType = typeof data?.type === "string" ? data.type.toLowerCase() : "";
+  if (!ACCOUNT_TYPE_SET.has(accountType)) throw appError("Choose a valid account type.");
+  const balance = data?.currentBalance;
+  if (typeof balance !== "number" || !Number.isFinite(balance) || Math.abs(balance) > 999999999 ||
+      Math.abs(balance * 100 - Math.round(balance * 100)) > 0.00001)
+    throw appError("Current balance must be a valid amount below one billion with up to two decimal places.");
+  const color = data?.color === undefined ? null : data.color;
+  if (color !== null && (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)))
+    throw appError("Choose a valid account color.");
+  const currency = data?.currency === undefined ? null : data.currency;
+  if (currency !== null && !CURRENCY_SET.has(currency))
+    throw appError("Choose USD or PHP for this account.");
+
   const pool = requirePool(await ensureFinanceSchema());
-  const accountId = cleanId(id, "Account");
-  const name = cleanText(data?.name, 80);
-  if (!name) throw appError("Account name is required.");
-
-  const accountType = cleanAccountType(data?.type);
-  const openingBalance = cleanSignedAmount(
-    data?.openingBalance || 0,
-    "Opening balance",
-  );
-  const color = cleanColor(data?.color);
-
-  await pool.query(
-    `UPDATE personal_finance_accounts
+  // Keep recorded activity intact: adjust its opening baseline so the displayed
+  // native balance is exactly the amount entered, including for liabilities.
+  const movementOperator = ["credit", "loan"].includes(accountType) ? "+" : "-";
+  const [result] = await pool.query(
+    `UPDATE personal_finance_accounts a
      SET name = ?,
          account_type = ?,
-         opening_balance = ?,
-         color = ?,
+         opening_balance = ? ${movementOperator} (
+           SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
+           FROM personal_finance_transactions t
+           WHERE t.account_id = a.id AND t.currency = a.currency
+             AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+             AND t.transaction_date <= ?
+         ),
+         color = COALESCE(?, color),
          updated_at = ?
-     WHERE id = ?`,
-    [name, accountType, openingBalance, color, new Date(), accountId],
+     WHERE a.id = ? AND a.is_archived = 0 AND a.is_sync_excluded = 0
+       AND a.merged_into_account_id IS NULL AND a.connection_id IS NULL
+       AND (a.external_provider IS NULL OR a.external_provider = '')
+       AND (a.external_account_id IS NULL OR a.external_account_id = '')
+       AND a.currency IN ('USD', 'PHP') AND (? IS NULL OR a.currency = ?)`,
+    [name, accountType, Math.round(balance * 100) / 100, financeActivityWindow().today,
+      color, new Date(), accountId, currency, currency],
   );
-
+  if (!result.affectedRows) throw appError("An active manual account with this currency was not found.", 404);
   return { id: accountId };
 }
 

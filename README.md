@@ -291,6 +291,9 @@ The finance workspace separates recorded activity from your plans:
   unlinking a connection revokes access and retains its historical transactions.
   Add a manual USD/PHP account for cash or a bank without a connected provider;
   its native opening balance and recorded movements are tracked in the app.
+  Use **Edit account** on a manual account or card to change its name, type,
+  or current native balance. Balance corrections retain transaction history;
+  card statement details and automatic payment settings stay separate.
 - **Salary & settings:** monthly salary with instant USD/PHP conversion and
   the first payday used by forecasts.
   Choose the account receiving salary. Each bill can select a payment account;

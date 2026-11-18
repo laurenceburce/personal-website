@@ -1006,6 +1006,173 @@ test("the transaction account filter distinguishes same-named savings accounts b
   assert.match(html, /Savings · ••3456/);
 });
 
+function manualAccountEditHarness(props = {}) {
+  const slots = [];
+  let cursor = 0;
+  const saved = [];
+  let cancelled = 0;
+  const components = loadComponents({
+    ...require("react"),
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+      return [slots[index], (next) => {
+        slots[index] = typeof next === "function" ? next(slots[index]) : next;
+      }];
+    },
+  });
+  const currentProps = {
+    account: { ...account, name: "PHP savings", type: "savings", nativeCurrentBalance: 1234.56 },
+    onSave: (details) => saved.push(details),
+    onCancel: () => cancelled++,
+    ...props,
+  };
+  const harness = {
+    saved,
+    cancelled: () => cancelled,
+    props: currentProps,
+    render() {
+      cursor = 0;
+      return components.ManualAccountEditForm(currentProps);
+    },
+    field(name) {
+      return findElement(harness.render(), (node) => node.props?.name === name);
+    },
+    set(name, value) {
+      harness.field(name).props.onChange({ target: { value } });
+    },
+    submit() {
+      return findElement(harness.render(), (node) => node.type === "form").props.onSubmit({ preventDefault() {} });
+    },
+  };
+  return harness;
+}
+
+test("manual account editing starts from the native current balance and preserves decimal drafts until saved", () => {
+  const manual = { ...account, name: "PHP savings", type: "savings", nativeCurrentBalance: 1234.56 };
+  const before = structuredClone(manual);
+  const harness = manualAccountEditHarness({ account: manual });
+  assert.equal(harness.field("name").props.value, "PHP savings");
+  assert.equal(Number(harness.field("currentBalance").props.value), 1234.56);
+  assert.match(renderToStaticMarkup(harness.render()), /PHP/);
+  assert.equal(findElement(harness.render(), (node) => node.type === "select" && node.props.name === "currency"), null);
+  harness.set("name", "  RCBC savings  ");
+  harness.set("currentBalance", "2500.");
+  harness.props.account = { ...manual, nativeCurrentBalance: 9999 };
+  assert.equal(harness.field("currentBalance").props.value, "2500.");
+  harness.set("currentBalance", "2500.50");
+  assert.equal(harness.saved.length, 0);
+  harness.submit();
+  assert.deepEqual(harness.saved, [{ name: "RCBC savings", type: "savings", currentBalance: 2500.5 }]);
+  assert.deepEqual(manual, before);
+});
+
+test("manual account balance editing allows zero, overdrafts and card credits without changing statement details", () => {
+  const card = { ...account, name: "PHP card", type: "credit", nativeCurrentBalance: 14930.79,
+    creditCardDue: { statementBalance: 4000, dueDate: "2026-11-25" }, creditCardAutopayEnabled: true };
+  const before = structuredClone(card);
+  const harness = manualAccountEditHarness({ account: card });
+  for (const value of ["0", "-53.27", "16000.01"]) {
+    harness.set("currentBalance", value);
+    harness.submit();
+  }
+  assert.deepEqual(harness.saved, [0, -53.27, 16000.01].map((currentBalance) => ({
+    name: "PHP card", type: "credit", currentBalance,
+  })));
+  assert.deepEqual(card, before);
+});
+
+test("manual account edits reject blank or imprecise balances and invalid account details", () => {
+  const harness = manualAccountEditHarness();
+  for (const value of ["", " ", "0.001", "1000000000", "-1000000000", "Infinity", "NaN"]) {
+    harness.set("currentBalance", value);
+    harness.submit();
+    assert.equal(harness.saved.length, 0, `invalid balance: ${value}`);
+    assert.ok(findElement(harness.render(), (node) => node.props?.role === "alert"));
+  }
+  harness.set("currentBalance", "0");
+  for (const value of ["", " ", "a".repeat(81)]) {
+    harness.set("name", value);
+    harness.submit();
+    assert.equal(harness.saved.length, 0, `invalid name: ${value}`);
+  }
+  harness.set("name", "PHP savings");
+  harness.set("type", "invalid");
+  harness.submit();
+  assert.equal(harness.saved.length, 0);
+  harness.set("type", "checking");
+  harness.submit();
+  assert.deepEqual(harness.saved, [{ name: "PHP savings", type: "checking", currentBalance: 0 }]);
+});
+
+test("cancel and disabled manual account editors cannot save changes", () => {
+  const harness = manualAccountEditHarness();
+  harness.set("currentBalance", "999");
+  actionButton(harness.render(), "Cancel").props.onClick();
+  assert.equal(harness.cancelled(), 1);
+  assert.equal(harness.saved.length, 0);
+  for (const props of [{ disabled: true }, { saving: true }]) {
+    const blocked = manualAccountEditHarness(props);
+    assert.equal(findElement(blocked.render(), (node) => node.type === "fieldset").props.disabled, true);
+    blocked.submit();
+    assert.equal(blocked.saved.length, 0);
+  }
+});
+
+test("only active manual accounts and cards expose account editing", () => {
+  for (const type of ["checking", "savings", "cash", "credit", "other"]) {
+    const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [{ ...account, type }] } } });
+    assert.ok(actionButton(harness.render(), "Edit account"), type);
+  }
+  for (const flags of [
+    { isLinked: true }, { provider: "plaid" }, { connectionId: 4 },
+    { isArchived: true }, { isSyncExcluded: true }, { mergedIntoAccountId: 2 },
+  ]) {
+    const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [{ ...account, ...flags }] } } });
+    assert.equal(actionButton(harness.render(), "Edit account"), null, JSON.stringify(flags));
+  }
+});
+
+test("manual account edits save the entered current balance once and refresh the workspace", async () => {
+  const notices = [];
+  const manual = { ...account, name: "PHP savings", type: "savings" };
+  const before = structuredClone(manual);
+  const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [manual] },
+    onNotice: (message) => notices.push(message) } });
+  assert.equal(findElement(harness.render(), (node) => node.type?.name === "ManualAccountEditForm"), null);
+  actionButton(harness.render(), "Edit account").props.onClick();
+  const editor = findElement(harness.render(), (node) => node.type?.name === "ManualAccountEditForm");
+  assert.equal(editor.props.account, manual);
+  assert.equal(editor.props.disabled, false);
+  await editor.props.onSave({ name: "RCBC savings", type: "savings", currentBalance: 2500.5 });
+  assert.deepEqual(harness.actions, [{ action: "updateAccount", data: {
+    id: manual.id, name: "RCBC savings", type: "savings", currentBalance: 2500.5,
+  } }]);
+  assert.equal(harness.refreshes(), 1);
+  assert.equal(notices.length, 1);
+  assert.equal(findElement(harness.render(), (node) => node.type?.name === "ManualAccountEditForm"), null);
+  assert.deepEqual(manual, before);
+});
+
+test("failed manual account edits retain the editor for retry and cancel sends no update", async () => {
+  const errors = [];
+  const notices = [];
+  const harness = bankHarness({ result() { throw new Error("Account could not be saved."); },
+    props: { activity: { ...bankActivity, accounts: [account] },
+      onError: (message) => errors.push(message), onNotice: (message) => notices.push(message) } });
+  actionButton(harness.render(), "Edit account").props.onClick();
+  let editor = findElement(harness.render(), (node) => node.type?.name === "ManualAccountEditForm");
+  await editor.props.onSave({ name: "Wallet", type: "cash", currentBalance: 0 });
+  assert.deepEqual(errors, ["Account could not be saved."]);
+  assert.deepEqual(notices, []);
+  assert.equal(harness.refreshes(), 0);
+  editor = findElement(harness.render(), (node) => node.type?.name === "ManualAccountEditForm");
+  assert.ok(editor);
+  editor.props.onCancel();
+  assert.equal(findElement(harness.render(), (node) => node.type?.name === "ManualAccountEditForm"), null);
+  assert.equal(harness.actions.length, 1);
+});
+
 test("manual PHP accounts preserve their native opening balance and refresh available assignments", async () => {
   const harness = bankHarness();
   actionButton(harness.render(), "Add manual account").props.onClick();

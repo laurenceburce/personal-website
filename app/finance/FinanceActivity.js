@@ -27,6 +27,13 @@ const ACCOUNT_GROUPS = [
 ];
 const accountGroup = (account) =>
   ["checking", "savings", "credit"].includes(account.type) ? account.type : "other";
+const canEditManualAccount = (account) =>
+  !account.isLinked && !account.provider && !account.connectionId &&
+  !account.isArchived && !account.isSyncExcluded && !account.mergedIntoAccountId;
+const MANUAL_ACCOUNT_TYPES = [
+  ["cash", "Cash"], ["checking", "Checking"], ["savings", "Savings"],
+  ["credit", "Credit card"], ["investment", "Investment"], ["loan", "Loan"], ["other", "Other"],
+];
 let plaidScriptPromise;
 
 function ActivityIcon({ name, size = 19 }) {
@@ -178,6 +185,77 @@ function CreditCardDue({ account }) {
             : "Enter payment details below to include this card in Budget Plans."}
       </small>
     </div>
+  );
+}
+
+export function ManualAccountEditForm({ account, disabled = false, saving = false, onSave, onCancel }) {
+  const [draft, setDraft] = useState(() => ({
+    name: account.name || "",
+    type: account.type || "cash",
+    currentBalance: account.nativeCurrentBalance ?? "",
+  }));
+  const [error, setError] = useState("");
+  const set = (field, value) => {
+    setDraft((current) => ({ ...current, [field]: value }));
+    setError("");
+  };
+  const liability = ["credit", "loan"].includes(draft.type);
+  return (
+    <form className="fa-manual-account-form fa-account-edit-form"
+      aria-label={`${account.name || "Account"} account details`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (disabled || saving || !canEditManualAccount(account)) return;
+        const name = draft.name.trim();
+        if (!name || name.length > 80) return setError("Enter an account name of up to 80 characters.");
+        if (!MANUAL_ACCOUNT_TYPES.some(([type]) => type === draft.type)) return setError("Choose a valid account type.");
+        const currentBalance = Number(draft.currentBalance);
+        if (String(draft.currentBalance).trim() === "" || !Number.isFinite(currentBalance) ||
+            Math.abs(currentBalance) > 999999999 ||
+            Math.abs(currentBalance * 100 - Math.round(currentBalance * 100)) > 0.00001)
+          return setError("Enter a valid current balance below one billion with up to two decimal places.");
+        setError("");
+        return onSave({ name, type: draft.type, currentBalance });
+      }}>
+      <h3>Edit account</h3>
+      <fieldset disabled={disabled || saving}>
+        <legend className="fa-sr-only">Manual account details</legend>
+        <div className="fa-details-grid">
+          <label className="fa-field fa-wide">
+            <span>Account name</span>
+            <input name="name" required maxLength={80} autoFocus value={draft.name}
+              onChange={(event) => set("name", event.target.value)} />
+          </label>
+          <label className="fa-field">
+            <span>Account type</span>
+            <select name="type" value={draft.type} onChange={(event) => set("type", event.target.value)}>
+              {MANUAL_ACCOUNT_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <div className="fa-field">
+            <span>Account currency</span>
+            <strong>{account.currency}</strong>
+          </div>
+          <label className="fa-field fa-wide">
+            <span>{liability ? "Current balance owed" : "Current balance"} · {account.currency}</span>
+            <FinanceNumberInput name="currentBalance" required step="0.01" min="-999999999" max="999999999"
+              inputMode="decimal" value={draft.currentBalance}
+              onChange={(event) => set("currentBalance", event.target.value)} />
+            <small>{liability
+              ? "Use a positive amount for money owed or a negative amount for a credit balance."
+              : "Enter the account’s current balance in its original currency."}</small>
+          </label>
+        </div>
+        <p>Saving updates the tracked balance and keeps your transaction history. Future transactions continue to adjust this balance.</p>
+        {error && <p className="fa-form-error fa-negative" role="alert">{error}</p>}
+        <div className="fa-button-row">
+          <button type="submit" className="fa-button fa-primary" disabled={disabled || saving}>
+            {saving ? "Saving…" : "Save account"}
+          </button>
+          <ActionButton disabled={disabled || saving} onClick={onCancel}>Cancel</ActionButton>
+        </div>
+      </fieldset>
+    </form>
   );
 }
 
@@ -1183,6 +1261,7 @@ export function BankAccountsPanel({
     openingBalance: "0",
   });
   const [manualAccountError, setManualAccountError] = useState("");
+  const [editingAccountId, setEditingAccountId] = useState(null);
   const handlerRef = useRef(null);
   const lockRef = useRef(false);
   const mountedRef = useRef(true);
@@ -1394,6 +1473,15 @@ export function BankAccountsPanel({
       });
       await callbacks.current.onRefresh?.();
       callbacks.current.onNotice?.(`${account.name || "Credit card"} payment details saved. Budget Plans have been updated.`);
+    });
+  }
+
+  async function saveManualAccount(account, details) {
+    await runAction(`edit-account:${account.id}`, async () => {
+      await callbacks.current.onAction("updateAccount", { id: account.id, ...details });
+      await callbacks.current.onRefresh?.();
+      setEditingAccountId(null);
+      callbacks.current.onNotice?.(`${details.name} account details and balance saved.`);
     });
   }
 
@@ -2066,17 +2154,45 @@ export function BankAccountsPanel({
                                 )}
                             </footer>
                             <div className="fa-account-controls">
+                              {canEditManualAccount(account) && (
+                                <ActionButton
+                                  icon="edit"
+                                  disabled={working || unavailable}
+                                  aria-label={`Edit ${financeAccountLabel(account)}`}
+                                  aria-expanded={editingAccountId === account.id}
+                                  aria-controls={`fa-account-edit-${account.id}`}
+                                  onClick={() => {
+                                    setEditingAccountId((current) => current === account.id ? null : account.id);
+                                    setConfirmation(null);
+                                  }}
+                                >
+                                  Edit account
+                                </ActionButton>
+                              )}
                               <ActionButton
                                 icon="trash"
                                 disabled={working || unavailable}
-                                onClick={() =>
-                                  setConfirmation({ kind: "account", id: account.id })
-                                }
+                                onClick={() => {
+                                  setEditingAccountId(null);
+                                  setConfirmation({ kind: "account", id: account.id });
+                                }}
                                 aria-label={`Remove ${financeAccountLabel(account)}`}
                               >
                                 Remove
                               </ActionButton>
                             </div>
+                            {canEditManualAccount(account) && editingAccountId === account.id && (
+                              <div id={`fa-account-edit-${account.id}`}>
+                                <ManualAccountEditForm
+                                  key={account.id}
+                                  account={account}
+                                  disabled={working || unavailable}
+                                  saving={pending === `edit-account:${account.id}`}
+                                  onSave={(details) => saveManualAccount(account, details)}
+                                  onCancel={() => setEditingAccountId(null)}
+                                />
+                              </div>
+                            )}
                             {removalConfirmation("account", account.id)}
                           </article>
                         );

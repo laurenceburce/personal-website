@@ -1466,7 +1466,22 @@
 .fa-account-controls {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 12px;
+}
+.fa-account-edit-form {
+  border-top: 1px solid #e8eee6;
+  padding-top: 16px;
+  margin-top: 16px;
+}
+.fa-account-edit-form p {
+  font-size: 11px !important;
+  line-height: 1.7 !important;
+  color: #65766a;
+}
+.fa-account-edit-form .fa-form-error {
+  color: #984c3d;
 }
 .fa-card-autopay {
   margin-top: 12px;

@@ -210,6 +210,80 @@ test("manual card details reject invalid dates, money and provider-managed or un
   await assert.rejects(api.updateFinanceManualCreditCardDetails(valid), (error) => error.status === 404);
 });
 
+test("manual account edits reconcile native balances against recorded movement for assets and liabilities", async (t) => {
+  bankEnvironment(t);
+  for (const entry of [
+    { type: "checking", currency: "PHP", movement: -1500, balance: 6300, opening: 7800, operator: "-" },
+    { type: "credit", currency: "PHP", movement: -1500, balance: 9000, opening: 7500, operator: "+" },
+    { type: "loan", currency: "USD", movement: 200, balance: -50, opening: 150, operator: "+" },
+    { type: "savings", currency: "USD", movement: -50, balance: -250.25, opening: -200.25, operator: "-" },
+    { type: "credit", currency: "USD", movement: -20, balance: 0, opening: -20, operator: "+" },
+  ]) {
+    let storedOpening;
+    const { api, queries } = backend((sql, params) => {
+      if (!sql.startsWith("UPDATE personal_finance_accounts a")) return;
+      // Apply the emitted SQL expression to a row with existing posted activity.
+      const operator = sql.match(/opening_balance = \? ([+-]) \(/)?.[1];
+      assert.equal(operator, entry.operator);
+      storedOpening = params[2] + (operator === "+" ? entry.movement : -entry.movement);
+      return { affectedRows: 1 };
+    });
+    assert.deepEqual(await api.updateFinanceAccount("9", {
+      name: "  Manual   account  ", type: entry.type, currentBalance: entry.balance, currency: entry.currency,
+    }), { id: 9 });
+    const update = queries.find(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts a"));
+    assert.equal(storedOpening, entry.opening);
+    assert.equal(activity.mapFinanceActivityAccount({ id: 9, account_type: entry.type, currency: entry.currency,
+      opening_balance: storedOpening, native_movement: entry.movement }).nativeCurrentBalance, entry.balance);
+    assert.deepEqual(update.params.slice(0, 3), ["Manual account", entry.type, entry.balance]);
+    assert.equal(update.params[3], activity.financeActivityWindow().today);
+    assert.equal(update.params[4], null, "omitted color retains the saved color");
+    assert.equal(update.params[6], 9);
+    assert.deepEqual(update.params.slice(7), [entry.currency, entry.currency]);
+    assert.match(update.sql, /t\.account_id = a\.id AND t\.currency = a\.currency/);
+    assert.match(update.sql, /t\.pending = 0 AND t\.duplicate_of_id IS NULL AND t\.is_provider_removed = 0/);
+    assert.match(update.sql, /t\.transaction_date <= \?/);
+    assert.match(update.sql, /CASE WHEN t\.kind = 'income' THEN t\.amount ELSE -t\.amount END/);
+    assert.match(update.sql, /color = COALESCE\(\?, color\)/);
+    const setClause = update.sql.split(" WHERE a.id =")[0];
+    assert.doesNotMatch(setClause, /(?:^|,)\s*(?:currency|current_balance|available_balance|credit_card_[a-z_]+)\s*=/);
+    assert.ok(!queries.some(({ sql }) => /^(INSERT INTO|UPDATE|DELETE FROM) personal_finance_transactions/.test(sql)));
+  }
+});
+
+test("manual account edits reject malformed values before database access", async (t) => {
+  bankEnvironment(t);
+  const valid = { name: "Cash", type: "cash", currentBalance: 125.50 };
+  const { api, queries } = backend(() => ({ affectedRows: 1 }));
+  for (const id of [null, undefined, true, 0, -1, 2.5, Number.MAX_SAFE_INTEGER + 1, "9e0", "9x", ""])
+    await assert.rejects(api.updateFinanceAccount(id, valid), (error) => error.status === 400);
+  for (const [field, values] of [
+    ["name", [null, undefined, true, "", "  ", "x".repeat(81)]],
+    ["type", [null, undefined, true, "", "debit", "credit card"]],
+    ["currentBalance", [null, undefined, true, "125.50", "", NaN, Infinity, 1.001, 1_000_000_000, -1_000_000_000]],
+    ["color", [true, "red", "#fff"]],
+    ["currency", [true, "EUR", "php", ""]],
+  ]) for (const value of values)
+    await assert.rejects(api.updateFinanceAccount(9, { ...valid, [field]: value }), (error) => error.status === 400,
+      `${field}: ${String(value)}`);
+  assert.equal(queries.length, 0, "invalid edits cannot reach the database");
+});
+
+test("account edit SQL only matches active manual accounts and keeps the stored currency", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend(() => ({ affectedRows: 0 }));
+  await assert.rejects(api.updateFinanceAccount(9, { name: "Manual card", type: "credit", currentBalance: 50,
+    currency: "PHP", color: "#548564" }), (error) => error.status === 404);
+  const update = queries.find(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts a"));
+  assert.match(update.sql, /a\.is_archived = 0 AND a\.is_sync_excluded = 0/);
+  assert.match(update.sql, /a\.merged_into_account_id IS NULL AND a\.connection_id IS NULL/);
+  assert.match(update.sql, /a\.external_provider IS NULL OR a\.external_provider = ''/);
+  assert.match(update.sql, /a\.external_account_id IS NULL OR a\.external_account_id = ''/);
+  assert.match(update.sql, /a\.currency IN \('USD', 'PHP'\) AND \(\? IS NULL OR a\.currency = \?\)/);
+  assert.equal(update.params[4], "#548564");
+  assert.deepEqual(update.params.slice(-2), ["PHP", "PHP"]);
+});
+
 test("removing an account persists the sync exclusion and retains financial history", async (t) => {
   bankEnvironment(t);
   const { api, queries } = backend((sql) =>
