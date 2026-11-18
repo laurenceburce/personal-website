@@ -70,19 +70,66 @@ function harness(props) {
 const button = (tree, text) => find(tree, (node) => node.type === "button" && node.props.children === text);
 const accountColumns = (html) => [...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]);
 const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
+const renderExpanded = (rows, extra = {}) => {
+  const get = harness({ rows, ...extra });
+  button(get(), "Expand accounts").props.onClick();
+  return renderToStaticMarkup(get());
+};
 
-test("planner table gives each account its own balance column with native account identities", () => {
+test("planner table defaults to its compact summary and expands the balance column into account columns", () => {
   const html = render([row()]);
-  assert.equal((html.match(/<th\b/g) || []).length, 5 + accounts.length);
-  for (const label of ["Date", "Transaction", "Account", "Amount", "Status", "Balance owed"]) assert.ok(html.includes(label));
-  assert.deepEqual(accountColumns(html), ["1", "34", "37"]);
-  assert.match(html, /Daily checking · ••1234/);
-  assert.match(html, /-\$25\.00/);
-  assert.match(accountCell(html, 1), /\$175\.00/);
-  assert.match(accountCell(html, 34), /₱2,000\.00/);
-  assert.match(accountCell(html, 37), /₱600\.00/);
-  assert.match(html, /aria-label="Details for Internet"/);
-  assert.doesNotMatch(html, /Starting balances|Show columns|fpt-balances-row|Account balances for Internet/);
+  assert.equal((html.match(/<th\b/g) || []).length, 6);
+  assert.deepEqual(accountColumns(html), []);
+  assert.match(html, /Projected balance/);
+  assert.match(html, /Expand accounts/);
+  assert.match(html, /\$175\.00/);
+  assert.match(html, /₱2,000\.00/);
+  assert.doesNotMatch(html, /fpt-accounts-expanded|fpt-balances-row|Account balances for Internet/);
+  const get = harness({ rows: [row()] });
+  const expand = button(get(), "Expand accounts");
+  assert.equal(expand.props["aria-expanded"], false);
+  expand.props.onClick();
+  const expanded = renderToStaticMarkup(get());
+  assert.equal((expanded.match(/<th\b/g) || []).length, 6 + accounts.length);
+  assert.match(expanded, /fpt-accounts-expanded/);
+  assert.match(expanded, /colSpan="3"/);
+  assert.match(expanded, /rowSpan="2"/);
+  for (const label of ["Date", "Transaction", "Account", "Amount", "Status", "Balance owed"]) assert.ok(expanded.includes(label));
+  assert.deepEqual(accountColumns(expanded), ["1", "34", "37"]);
+  assert.match(expanded, /Daily checking · ••1234/);
+  assert.match(expanded, /-\$25\.00/);
+  assert.match(accountCell(expanded, 1), /\$175\.00/);
+  assert.match(accountCell(expanded, 34), /₱2,000\.00/);
+  assert.match(accountCell(expanded, 37), /₱600\.00/);
+  assert.match(expanded, /aria-label="Details for Internet"/);
+  assert.doesNotMatch(expanded, /Starting balances|Show columns|fpt-balances-row|Account balances for Internet/);
+  const collapse = button(get(), "Collapse accounts");
+  assert.equal(collapse.props["aria-expanded"], true);
+  collapse.props.onClick();
+  const restored = renderToStaticMarkup(get());
+  assert.deepEqual(accountColumns(restored), []);
+  assert.equal((restored.match(/<th\b/g) || []).length, 6);
+  assert.match(restored, /Projected balance/);
+  assert.match(restored, /\$175\.00/);
+});
+
+test("planner keeps the compact balance summary when no supported active accounts can expand", () => {
+  for (const inactive of [[], [
+    { id: 90, name: "Archived", currency: "USD", type: "checking", isArchived: true },
+    { id: 91, name: "Merged", currency: "PHP", type: "savings", mergedIntoAccountId: 34 },
+    { id: 92, name: "Other currency", currency: "EUR", type: "checking" },
+  ]]) {
+    const get = harness({ accounts: inactive, rows: [row()] });
+    const expand = button(get(), "Expand accounts");
+    assert.equal(expand.props.disabled, true);
+    assert.equal(expand.props["aria-expanded"], false);
+    const html = renderToStaticMarkup(get());
+    assert.equal((html.match(/<th\b/g) || []).length, 6);
+    assert.deepEqual(accountColumns(html), []);
+    assert.match(html, /Projected balance/);
+    assert.match(html, /\$175\.00/);
+    assert.doesNotMatch(html, /colSpan="0"|Collapse accounts/);
+  }
 });
 
 test("transfer rows show source and card destination rather than a misleading zero cash amount", () => {
@@ -94,7 +141,7 @@ test("transfer rows show source and card destination rather than a misleading ze
 });
 
 test("recorded history displays its per-account balances and retains financial details", () => {
-  const html = render([row({ date: today, source: "transaction", completed: true, completionSource: "plan", planGenerated: true,
+  const html = renderExpanded([row({ date: today, source: "transaction", completed: true, completionSource: "plan", planGenerated: true,
     entryId: "coffee", recordedInAccounts: true, awaitingBankSync: true, reserveUsd: 75, savingsPhp: 300,
     accountBalanceSnapshotKind: "recorded", accountBalanceSnapshotNote: "Reconstructed after recorded payment.",
     cardCreditActivity: true, recordedTransactions: [{ id: 3, date: today, kind: "expense", amount: 25,
@@ -177,7 +224,7 @@ test("empty date ranges and loading states remain useful without an oversized em
 });
 
 test("account columns use row snapshots instead of aggregate totals or current account fallbacks", () => {
-  const html = render([row({ balanceUsd: 9999, projectedBalanceUsd: 8888, projectedBalancePhp: 7777,
+  const html = renderExpanded([row({ balanceUsd: 9999, projectedBalanceUsd: 8888, projectedBalancePhp: 7777,
     accountBalanceSnapshot: [{ accountId: 37, balance: 600 }, { accountId: "1", balance: 0 }, { accountId: 34, balance: 42000 }] })],
     { plan: { ...plan, continuous: true } });
   assert.match(accountCell(html, 1), /\$0\.00/);
@@ -201,7 +248,7 @@ test("current row is the last transaction today, then nearest past or first upco
   assert.match(html, /role="region" aria-label="Scrollable transaction table"/);
 });
 
-test("account columns show zero, card credits and unavailable values without expansion", () => {
+test("expanded account columns show zero, card credits and unavailable values without row panels", () => {
   const snapshot = [
     { accountId: 1, name: "Daily checking", mask: "1234", type: "checking", currency: "USD", balance: 0 },
     { accountId: 34, name: "Peso savings", type: "savings", currency: "PHP", balance: 12000 },
@@ -210,7 +257,7 @@ test("account columns show zero, card credits and unavailable values without exp
   ];
   const rows = [row({ accountBalanceSnapshot: snapshot, accountBalanceSnapshotKind: "projected" })];
   const before = structuredClone(rows);
-  const html = render(rows, { accounts: [...accounts, { id: 50, name: "Unreported account", type: "checking", currency: "USD", nativeCurrentBalance: 99999 }] });
+  const html = renderExpanded(rows, { accounts: [...accounts, { id: 50, name: "Unreported account", type: "checking", currency: "USD", nativeCurrentBalance: 99999 }] });
   assert.deepEqual(accountColumns(html), ["1", "34", "37", "50"]);
   for (const label of ["Daily checking · ••1234", "Peso savings", "RCBC JCB", "Unreported account"]) assert.ok(html.includes(label));
   assert.match(accountCell(html, 1), /\$0\.00/);
@@ -218,13 +265,13 @@ test("account columns show zero, card credits and unavailable values without exp
   assert.match(accountCell(html, 37), /-₱125\.00/);
   assert.match(accountCell(html, 37), /Credit/);
   assert.match(accountCell(html, 50), /—/);
-  assert.doesNotMatch(html, /\$99,999\.00|colSpan=|Hide account balances|fpt-balances-row/);
+  assert.doesNotMatch(html, /\$99,999\.00|Hide account balances|fpt-balances-row/);
   assert.deepEqual(rows, before);
 });
 
 test("historical balance columns distinguish recorded snapshots from unavailable coverage", () => {
   for (const kind of ["recorded", "unavailable"]) {
-    const html = render([row({ date: "2026-11-17", accountBalanceSnapshotKind: kind,
+    const html = renderExpanded([row({ date: "2026-11-17", accountBalanceSnapshotKind: kind,
       accountBalanceSnapshotNote: kind === "unavailable" ? "Later transaction history is incomplete." : "Balances after the recorded transaction.",
       accountBalanceSnapshot: kind === "recorded" ? [{ accountId: 1, name: "Checking", type: "checking", currency: "USD", balance: 175 }] : [],
     })], { accounts: accounts.map((account) => ({ ...account, nativeCurrentBalance: 99999 })) });
@@ -244,6 +291,7 @@ test("account header order is stable through filters and excludes inactive or un
     { id: 92, name: "Other currency", currency: "EUR", type: "checking" },
   ];
   const get = harness({ accounts: [...accounts, ...extra], rows: [row({ id: "paid", date: today, completed: true, recordedInAccounts: true }), row()] });
+  button(get(), "Expand accounts").props.onClick();
   const before = accountColumns(renderToStaticMarkup(get()));
   assert.deepEqual(before, ["1", "34", "37"]);
   button(get(), "Upcoming").props.onClick();
@@ -252,12 +300,13 @@ test("account header order is stable through filters and excludes inactive or un
   assert.deepEqual(accountColumns(renderToStaticMarkup(get())), before);
 });
 
-function effectHarness(initialProps) {
+function effectHarness(initialProps, geometry = {}) {
   const slots = [];
   let cursor = 0;
   let effects = [];
   let previousRows = [];
   let props = initialProps;
+  let expanded = false;
   const useState = (initial) => {
     const index = cursor++;
     if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
@@ -272,10 +321,10 @@ function effectHarness(initialProps) {
     },
   }).default;
   const calls = [];
-  const scroller = { scrollTop: 0,
-    querySelector() { return { getBoundingClientRect: () => ({ height: 40 }) }; },
+  const scroller = { scrollTop: 0, scrollLeft: 0,
+    querySelector() { return { getBoundingClientRect: () => ({ height: geometry.headerHeight?.(expanded) ?? 40 }) }; },
     getBoundingClientRect() { return { top: 100 }; },
-    scrollTo(value) { calls.push(value); this.scrollTop = value.top; },
+    scrollTo(value) { calls.push(value); this.scrollTop = value.top; if (value.left != null) this.scrollLeft = value.left; },
   };
   const all = (node, predicate) => Array.isArray(node) ? node.flatMap((child) => all(child, predicate))
     : node && typeof node === "object" ? [...(predicate(node) ? [node] : []), ...all(node.props?.children, predicate)] : [];
@@ -284,13 +333,15 @@ function effectHarness(initialProps) {
     render(next = {}) {
       props = { ...props, ...next }; cursor = 0; effects = [];
       const tree = Component({ plan, accounts, today, ...props });
+      expanded = tree.props.className.includes("fpt-accounts-expanded");
       for (const previous of previousRows) previous.props.ref(null);
       previousRows = all(tree, (node) => node.type === "tr" && node.props["data-row-id"]);
       const viewport = find(tree, (node) => node.props?.className === "fpt-table-wrap");
       if (viewport) viewport.props.ref.current = scroller;
       previousRows.forEach((node) => {
         const index = props.rows.findIndex((entry) => entry.id === node.props["data-row-id"]);
-        node.props.ref({ getBoundingClientRect: () => ({ top: 100 + index * 200 - scroller.scrollTop }) });
+        node.props.ref({ getBoundingClientRect: () => geometry.rowRect?.({ index, expanded, scrollTop: scroller.scrollTop })
+          ?? { top: 100 + index * 200 - scroller.scrollTop, bottom: 300 + index * 200 - scroller.scrollTop } });
       });
       for (const effect of effects) effect();
       return tree;
@@ -298,7 +349,7 @@ function effectHarness(initialProps) {
   };
 }
 
-test("table scrolls its own viewport once per range and preserves manual position during refresh and filters", () => {
+test("table scrolls its own viewport once per range and preserves manual position through column expansion and filters", () => {
   const rows = [row({ id: "old", date: "2026-11-17" }), row({ id: "today-one", date: today }),
     row({ id: "today-two", date: today }), row({ id: "future", date: "2026-11-20" })];
   const get = effectHarness({ rows, viewKey: "november" });
@@ -307,17 +358,55 @@ test("table scrolls its own viewport once per range and preserves manual positio
   get.scroller.scrollTop = 50;
   tree = get.render({ rows: rows.map((entry) => ({ ...entry })) });
   assert.equal(get.calls.length, 1, "refresh cannot override the user's scroll");
+  button(tree, "Expand accounts").props.onClick();
+  tree = get.render();
+  assert.equal(get.calls.length, 2);
+  assert.equal(get.calls.at(-1).top, 50, "expanding columns preserves the visible row rather than jumping to current");
+  assert.equal(get.scroller.scrollTop, 50);
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["1", "34", "37"]);
+  tree = get.render({ rows: rows.map((entry) => ({ ...entry })) });
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["1", "34", "37"], "refresh keeps expanded columns open");
   button(tree, "Upcoming").props.onClick();
   tree = get.render();
   assert.equal(get.scroller.scrollTop, 50);
-  assert.equal(get.calls.length, 1, "filtering account columns cannot re-anchor the table");
+  assert.equal(get.calls.length, 2, "filtering account columns cannot re-anchor the table");
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["1", "34", "37"]);
+  button(tree, "Collapse accounts").props.onClick();
+  tree = get.render();
+  assert.equal(get.calls.length, 3);
+  assert.equal(get.calls.at(-1).top, 50, "collapsing columns preserves the visible row rather than jumping to current");
+  assert.equal(get.scroller.scrollTop, 50);
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), []);
   button(tree, "Jump to current").props.onClick();
   tree = get.render();
-  assert.equal(get.calls.length, 2);
+  assert.equal(get.calls.length, 4);
   assert.equal(get.calls.at(-1).top, 344);
   assert.match(renderToStaticMarkup(tree), /4 transactions/);
   get.scroller.scrollTop = 25;
   get.render({ viewKey: "new-window" });
-  assert.equal(get.calls.length, 3, "a new date window positions current activity again");
+  assert.equal(get.calls.length, 5, "a new date window positions current activity again");
   assert.equal(get.calls.at(-1).top, 344);
+});
+
+test("changing column layouts preserves the first fully visible row rather than the clipped row above it", () => {
+  const rows = [row({ id: "partly-visible", date: "2026-11-17" }), row({ id: "fully-visible", date: today })];
+  const get = effectHarness({ rows }, {
+    headerHeight: (expanded) => expanded ? 80 : 40,
+    rowRect: ({ index, expanded, scrollTop }) => {
+      const height = expanded ? 60 : 100;
+      const top = 100 + (expanded ? 80 : 40) + index * height - scrollTop;
+      return { top, bottom: top + height };
+    },
+  });
+  let tree = get.render();
+  get.scroller.scrollTop = 50;
+  tree = get.render();
+  button(tree, "Expand accounts").props.onClick();
+  tree = get.render();
+  assert.equal(get.scroller.scrollTop, 10,
+    "the second row remains 50px below the expanded header; anchoring the clipped first row would leave scrollTop at 50");
+  assert.deepEqual(get.calls.at(-1), { top: 10, left: 0 });
+  button(tree, "Collapse accounts").props.onClick();
+  get.render();
+  assert.equal(get.scroller.scrollTop, 50, "collapsing restores that same fully visible row's offset");
 });
