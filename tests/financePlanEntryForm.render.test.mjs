@@ -58,7 +58,7 @@ function harness(initialProps = {}) {
   return {
     render(props = {}) {
       cursor = 0;
-      return Component({ plan, salary, onSave(value) { saved = value; }, ...initialProps, ...props });
+      return Component({ plan, salary, today: plan.startDate, onSave(value) { saved = value; }, ...initialProps, ...props });
     },
     saved: () => saved,
   };
@@ -186,4 +186,129 @@ test("recurring transfers and conversions retain their account and currency cont
   assert.equal(form.saved().currency, "PHP");
   assert.equal(form.saved().fromAccountId, null);
   assert.equal(form.saved().toAccountId, null);
+});
+
+const accountSelect = (tree, label) => find(field(tree, label), (node) => node.type?.name === "FinanceAccountSelect");
+const amountInput = (tree) => find(tree, (node) => node.type?.name === "FinanceNumberInput");
+const cardAccounts = [
+  { id: 34, name: "PHP savings", type: "savings", currency: "PHP", nativeCurrentBalance: 20000 },
+  { id: 37, name: "PHP card", type: "credit", currency: "PHP", nativeCurrentBalance: 14930.79 },
+  { id: 38, name: "Loan", type: "loan", currency: "PHP", nativeCurrentBalance: 1000 },
+];
+
+test("new one-time entries start today within plan bounds and stay planned until recorded", () => {
+  for (const [today, expected] of [["2026-10-31", "2026-11-01"], ["2026-11-18", "2026-11-18"], ["2026-12-01", "2026-11-30"]]) {
+    const form = harness({ today });
+    const tree = form.render();
+    assert.equal(input(tree, "Date", "input").props.value, expected);
+    assert.equal(input(tree, "Status", "select").props.value, "planned");
+    tree.props.onSubmit({ preventDefault() {} });
+    assert.equal(form.saved().recordNow, false);
+    assert.ok(!Object.hasOwn(form.saved(), "completedAt"));
+  }
+});
+
+test("recording a one-time row requires its actual account and a date no later than today", () => {
+  const entry = { id: "fill", date: "2026-11-18", description: "Fill", kind: "expense", amount: 50,
+    currency: "PHP", recurrence: "once", accountId: null };
+  const form = harness({ entry, today: "2026-11-18", accounts: cardAccounts });
+  let tree = form.render();
+  input(tree, "Status", "select").props.onChange({ target: { value: "recorded" } });
+  tree = form.render();
+  assert.equal(accountSelect(tree, "Pay from account").props.required, true);
+  assert.equal(accountSelect(tree, "Pay from account").props.allowNone, false);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved(), undefined);
+  assert.ok(plain(renderToStaticMarkup(form.render())).includes("Choose the account for this recorded transaction"));
+  accountSelect(tree, "Pay from account").props.onChange(37);
+  tree = form.render();
+  input(tree, "Date", "input").props.onChange({ target: { value: "2026-11-19" } });
+  tree = form.render();
+  assert.equal(find(input(tree, "Status", "select"), (node) => node.type === "option" && node.props.value === "recorded").props.disabled, true);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved(), undefined);
+  assert.ok(plain(renderToStaticMarkup(form.render())).includes("Future payments stay planned"));
+  input(tree, "Date", "input").props.onChange({ target: { value: "2026-11-18" } });
+  tree = form.render();
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.deepEqual(form.saved(), { ...entry, accountId: 37, repeatUntil: null, recordNow: true });
+});
+
+test("recorded transfers require both accounts and an existing completed row can be reopened explicitly", () => {
+  const entry = { id: "move", date: "2026-11-18", description: "Move savings", kind: "transfer", amount: 50,
+    currency: "PHP", recurrence: "once", fromAccountId: 34, toAccountId: null };
+  const form = harness({ entry, completed: true, today: "2026-11-18", accounts: cardAccounts });
+  let tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "recorded");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved(), undefined);
+  assert.ok(plain(renderToStaticMarkup(form.render())).includes("Choose the account for this recorded transaction"));
+  input(tree, "Status", "select").props.onChange({ target: { value: "planned" } });
+  tree = form.render();
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().recordNow, false);
+});
+
+test("card payment schedules follow the selected native debt across account refreshes and accept a paid-off zero", () => {
+  const form = harness({ today: "2026-11-18", accounts: cardAccounts });
+  let tree = form.render();
+  input(tree, "Entry type", "select").props.onChange({ target: { value: "cardPayment" } });
+  tree = form.render();
+  input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+  tree = form.render();
+  accountSelect(tree, "From account").props.onChange(34);
+  accountSelect(tree, "Credit card").props.onChange(37);
+  input(tree, "Description", "input").props.onChange({ target: { value: "  RCBC JCB  " } });
+  tree = form.render();
+  assert.ok(accountSelect(tree, "From account").props.accounts.every((account) => !["credit", "loan"].includes(account.type)));
+  assert.ok(accountSelect(tree, "Credit card").props.accounts.every((account) => account.type === "credit"));
+  assert.equal(accountSelect(tree, "Credit card").props.currency, "PHP");
+  assert.equal(input(tree, "Payment amount", "select").props.value, "cardBalance");
+  assert.equal(amountInput(tree).props.readOnly, true);
+  assert.equal(amountInput(tree).props.value, 14930.79);
+  tree = form.render({ accounts: cardAccounts.map((account) => account.id === 37 ? { ...account, nativeCurrentBalance: 9000.25 } : account) });
+  assert.equal(amountInput(tree).props.value, 9000.25);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().kind, "transfer");
+  assert.equal(form.saved().amountMode, "cardBalance");
+  assert.equal(form.saved().amount, 9000.25);
+  assert.equal(form.saved().currency, "PHP");
+  assert.equal(form.saved().description, "RCBC JCB");
+  assert.equal(form.saved().fromAccountId, 34);
+  assert.equal(form.saved().toAccountId, 37);
+  assert.equal(form.saved().recordNow, false);
+  tree = form.render({ accounts: cardAccounts.map((account) => account.id === 37 ? { ...account, nativeCurrentBalance: 0 } : account) });
+  assert.equal(amountInput(tree).props.value, 0);
+  assert.equal(amountInput(tree).props.min, "0");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().amount, 0);
+});
+
+test("actual card payments save the entered fixed amount rather than a refreshed card balance", () => {
+  const entry = { id: "paid-card", date: "2026-11-18", description: "Early payment", kind: "transfer", amount: 500,
+    amountMode: "cardBalance", currency: "PHP", recurrence: "once", fromAccountId: 34, toAccountId: 37 };
+  const form = harness({ entry, completed: true, today: "2026-11-18", accounts: cardAccounts });
+  let tree = form.render();
+  assert.equal(input(tree, "Entry type", "select").props.value, "cardPayment");
+  assert.equal(input(tree, "Status", "select").props.value, "recorded");
+  assert.equal(field(tree, "Payment amount"), undefined);
+  assert.equal(amountInput(tree).props.readOnly, false);
+  amountInput(tree).props.onChange({ target: { value: "1250.75" } });
+  tree = form.render({ accounts: cardAccounts.map((account) => account.id === 37 ? { ...account, nativeCurrentBalance: 5000 } : account) });
+  assert.equal(amountInput(tree).props.value, "1250.75");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().amount, 1250.75);
+  assert.equal(form.saved().amountMode, "fixed");
+  assert.equal(form.saved().recordNow, true);
+});
+
+test("a live card payment cannot infer a missing card balance", () => {
+  const form = harness({ today: "2026-11-18", accounts: cardAccounts.map((account) => ({ ...account, nativeCurrentBalance: null })),
+    entry: { id: "card", date: "2026-11-20", description: "Card", kind: "transfer", amount: 500, amountMode: "cardBalance",
+      currency: "PHP", recurrence: "once", fromAccountId: 34, toAccountId: 37 } });
+  const tree = form.render();
+  assert.equal(amountInput(tree).props.value, "");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved(), undefined);
+  assert.ok(plain(renderToStaticMarkup(form.render())).includes("Refresh the card balance or enter a fixed payment amount"));
 });

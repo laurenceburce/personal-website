@@ -149,6 +149,10 @@ function SourceLabel({ row }) {
         {label}
         {row.source === "transaction" && row.scheduled ? " · future date" : ""}
       </small>
+      {row.recordedInAccounts && <small className="fpl-match-note">
+        {row.awaitingBankSync ? "Recorded in accounts · awaiting bank match" : "Recorded in accounts"}
+      </small>}
+      {row.amountMode === "cardBalance" && <small className="fpl-credit-card-due-detail">Uses the card’s live remaining balance</small>}
       {row.isOverride && (
         <small className="fpl-override-note">Edited for this plan</small>
       )}
@@ -362,7 +366,7 @@ function CompletionStatus({ row, onToggleComplete, busy }) {
       />
       <span>
         {label}
-        {completed && !automatic && <small>Marked manually</small>}
+        {completed && !automatic && <small>{row.recordedInAccounts ? row.awaitingBankSync ? "Awaiting bank match" : "Recorded in accounts" : "Marked manually"}</small>}
       </span>
     </label>
   );
@@ -426,6 +430,7 @@ export default function Ledger({
   onEditOccurrence,
   onResetOccurrence,
   onToggleComplete,
+  onRecord,
   busy = false,
   today = localDate(),
 }) {
@@ -553,8 +558,8 @@ export default function Ledger({
             Money flows between{" "}
             {formatDate(plan.startDate, { year: "numeric" })} and{" "}
             {formatDate(plan.endDate, { year: "numeric" })}. Available funds and
-            annual reserves and savings are separate balances. Completion tracks
-            progress without changing money flows.
+            annual reserves and savings are separate balances. Record payments to
+            update accounts and match them to bank activity.
           </caption>
           <thead>
             <tr>
@@ -637,7 +642,7 @@ export default function Ledger({
               {group.rows.map(({ row, rowIndex }, indexInGroup) => {
                 const category = getPlanRowCategory(row);
                 const manualEntry =
-                  row.source === "manual"
+                  row.source === "manual" || row.planGenerated
                     ? plan.entries.find((entry) => entry.id === row.entryId)
                     : null;
                 const editableOccurrence =
@@ -711,6 +716,14 @@ export default function Ledger({
                       />
                     </td>
                     <td data-column="actions" className="fpl-actions-cell">
+                      {onRecord && !row.completed && (["salary", "bill", "creditCardDue"].includes(row.source) ||
+                        (row.source === "manual" && row.kind === "transfer" && row.amountMode === "cardBalance")) && (
+                        <button type="button" className="fp-button fp-secondary" disabled={busy}
+                          aria-label={`Record ${row.kind === "income" ? "receipt" : "payment"}: ${row.description}`}
+                          onClick={() => !busy && onRecord(row)}>
+                          {row.kind === "income" ? "Record receipt" : "Record payment"}
+                        </button>
+                      )}
                       {(manualEntry || editableOccurrence) && (
                         <div className="fp-row-actions">
                           <button
@@ -786,9 +799,10 @@ export default function Ledger({
         <p>
         Annual payments show only additional available funds needed; remaining
         payment is covered by reserves. Saved amounts are earmarked for each
-        annual bill. Marking a row done tracks progress; it does not create a
-        transaction or change its planned amount. Posted transaction matches are
-        marked done automatically. Savings balances reflect linked savings
+        annual bill. Recording an account entry creates its transaction; marking
+        a custom row done records it in its assigned accounts. Matching bank imports
+        replace those records automatically. Future rows stay planned until paid.
+        Live card payments follow the remaining card balance. Savings balances reflect linked savings
         accounts and planned movements, excluding annual reserves. Unassigned
         savings accumulate separately. Editing a scheduled row changes only that
         date in this plan; Reset restores the recurring value.

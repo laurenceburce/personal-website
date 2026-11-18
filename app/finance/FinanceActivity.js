@@ -708,6 +708,7 @@ export function TransactionsPanel({
   onAdd,
   onEdit,
   onDelete,
+  onReviewPlan,
 }) {
   const [search, setSearch] = useState("");
   const [kind, setKind] = useState("all");
@@ -1014,8 +1015,9 @@ export function TransactionsPanel({
                             </small>
                             <div className="fa-tags">
                               <span>
-                                {row.provider ? "Bank import" : "One-time"}
+                                {row.provider ? "Bank import" : row.planDetached ? "Recorded transaction" : row.planId ? "Budget Plan" : "One-time"}
                               </span>
+                              {row.awaitingBankSync && <span className="fa-tag-pending">Awaiting bank match</span>}
                               {row.pending ? (
                                 <span className="fa-tag-pending">Pending</span>
                               ) : row.date > today ? (
@@ -1062,7 +1064,11 @@ export function TransactionsPanel({
                       </td>
                       <td data-label="Actions">
                         <div className="fa-row-actions">
-                          {!row.provider ? (
+                          {row.planId && !row.planDetached && !row.provider ? (
+                            <ActionButton disabled={!onReviewPlan} onClick={() => onReviewPlan?.(row.planId)}>
+                              View plan
+                            </ActionButton>
+                          ) : !row.provider ? (
                             <>
                               <ActionButton
                                 icon="edit"
@@ -2034,6 +2040,9 @@ export function BankAccountsPanel({
                                   </small>
                                 )}
                             </div>
+                            {account.awaitingBankSync && <p className="fa-provider-setup">
+                              Includes recorded plan transactions awaiting a bank match.
+                            </p>}
                             {account.type === "credit" && (
                               <>
                                 <CreditCardDue account={account} />

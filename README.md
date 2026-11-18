@@ -155,6 +155,21 @@ The finance workspace separates recorded activity from your plans:
   and separately entered annual reserves. Include salary, bills, payday savings
   and expense allocations, annual-bill set-asides, custom entries/conversions,
   and recorded transactions across the entire date range (including transfers).
+  Plans use live account balances by default, including older plans with saved
+  openings. Choose **Historical · saved starting balances** to keep a dated snapshot.
+  Add a one-time row as **Planned** or **Recorded · already happened**. Recording
+  creates account transactions; completing a custom row records its assigned
+  accounts too. Transfers create both native account legs. Manual account balances
+  update immediately. Linked accounts include recorded amounts while awaiting a
+  bank match; a unique posted bank transaction with the same account, currency,
+  direction, amount and nearby date replaces the generated record once.
+  Use **Record payment** or **Record receipt** on scheduled rows to enter an actual
+  date and amount, including early or partial payments. A **Credit card payment**
+  can follow the **Live remaining card balance**, so earlier payments and new
+  purchases update the scheduled amount. Recorded payments remain fixed.
+  Removing a recorded custom row reverses its generated manual transactions;
+  deleting an entire plan retains account history as standalone transactions.
+  Imported bank records are always retained.
   Pending bank entries are excluded until posted. A matching posted salary or
   bill replaces its scheduled row; conservative matching uses amount, currency,
   date and description, including bank descriptions such as electronic deposits
@@ -191,12 +206,12 @@ The finance workspace separates recorded activity from your plans:
   starting reserve. The plan's total starting reserve can increase that amount
   with unassigned funds; it does not add the same item savings a second time.
   Select starting bank accounts and a percentage, then add flat USD/PHP amounts.
-  Account starting balances are saved with the plan and stay fixed when bank
+  In historical mode, account starting balances are saved with the plan and stay fixed when bank
   data refreshes. Linked Available, Annual reserve, and Savings columns also use
   their saved openings. New openings are calculated before the plan's first
   day by removing known posted movements since that date from the current balance;
   later transactions are applied once. Existing plans capture missing openings
-  on their next load. Earlier original amounts that were never saved cannot be
+  on their next load in historical mode. Earlier original amounts that were never saved cannot be
   recovered without transaction history; correct them in the plan editor's
   **Starting balance** fields. Editing a name, date, or percentage preserves
   saved account amounts. Already-earmarked annual savings are excluded from
@@ -205,8 +220,8 @@ The finance workspace separates recorded activity from your plans:
   complete conservative account/currency/amount/date/name matches; pending and
   future entries do not. Automatic completion remains available when recorded
   cash-flow rows are hidden. Transfers need both assigned native legs, including
-  grouped annual-reserve contributions. Checkmarks record progress and do not
-  create bank payments or change forecast amounts.
+  grouped annual-reserve contributions. Scheduled checkmarks track progress;
+  **Record payment** creates actual account activity. No action sends a bank payment.
   Bank balances and transaction matches refresh when Budget plans opens, regains
   focus, and every five minutes while visible. Automatic provider refresh attempts
   share a 60-second cooldown; **Refresh bank data** forces a fresh request. Failures

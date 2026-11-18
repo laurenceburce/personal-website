@@ -167,6 +167,8 @@ export function mapFinanceActivityAccount(row) {
   const liability = ["credit", "loan"].includes(row.account_type);
   const opening = Number(row.opening_balance || 0);
   const movement = Number(row.native_movement || 0);
+  const pendingMovement = Number(row.plan_pending_movement || 0);
+  const bankBalance = money(row.current_balance);
   const creditCardDue = row.account_type === "credit" &&
     (isLinked || (!row.external_provider && !row.external_account_id))
     ? normalizeFinanceCreditCardDue(row.credit_card_due_json) : null;
@@ -176,8 +178,10 @@ export function mapFinanceActivityAccount(row) {
     type: row.account_type,
     currency,
     nativeCurrentBalance: isLinked
-      ? money(row.current_balance)
+      ? bankBalance === null ? null : money(bankBalance + (liability ? -pendingMovement : pendingMovement))
       : money(opening + (liability ? -movement : movement)),
+    ...(isLinked && pendingMovement ? { bankReportedBalance: bankBalance, planPendingMovement: pendingMovement,
+      awaitingBankSync: true } : {}),
     nativeAvailableBalance: isLinked ? money(row.available_balance) : null,
     provider: row.external_provider || "",
     institutionName: row.institution_name || "",

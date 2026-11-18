@@ -1,4 +1,6 @@
 import mysql from "mysql2/promise";
+import { ensureFinanceSchema } from "./financeStore.js";
+import { financePlanPendingMovementSql, synchronizeFinancePlanPostings } from "./financePlanPostings.mjs";
 import { entryOccurrences } from "./financePlanner.mjs";
 import { mapFinanceActivityAccount } from "./financeActivity.mjs";
 import { capturePlanAccountOpenings, planOpeningAccountIds } from "./financePlanOpening.mjs";
@@ -210,6 +212,15 @@ function planEntries(value, startDate, endDate, salary) {
       ["income", "expense", "conversion", "transfer"],
       "Entry kind",
     );
+    const amountMode = oneOf(entry.amountMode ?? "fixed", ["fixed", "cardBalance"], "Entry amount mode");
+    if (amountMode === "cardBalance" && kind !== "transfer")
+      throw plannerError("A live card balance must be a credit card payment transfer.");
+    const scheduledRowId = entry.scheduledRowId == null ? null : text(entry.scheduledRowId, "Scheduled payment row", 240);
+    if (scheduledRowId !== null) {
+      const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|(?:bill|allocation):[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|creditCardDue:[1-9]\d{0,15}:(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}(?::(\d{4}-\d{2}-\d{2}))?)$/.exec(scheduledRowId);
+      if (!match) throw plannerError("Choose a valid scheduled payment row.");
+      for (const day of match.slice(1).filter(Boolean)) date(day, "Scheduled payment date");
+    }
     const fromAccountId = ["conversion", "transfer"].includes(kind)
       ? accountId(entry.fromAccountId, "From account")
       : null;
@@ -226,6 +237,8 @@ function planEntries(value, startDate, endDate, salary) {
       date: entryDate,
       description: text(entry.description, "Entry description", 160),
       kind,
+      ...(entry.amountMode === undefined ? {} : { amountMode }),
+      ...(scheduledRowId === null ? {} : { scheduledRowId }),
       recurrence,
       repeatUntil,
       accountId: ["income", "expense"].includes(kind)
@@ -435,6 +448,7 @@ export function validateFinancePlanner(value) {
       }
       return {
         name: text(plan.name, "Plan name", 120),
+        balanceMode: oneOf(plan.balanceMode ?? "live", ["live", "snapshot"], "Plan balance mode"),
         startDate,
         endDate,
         openingUsd: amount(plan.openingUsd, "Opening USD balance", true),
@@ -613,6 +627,13 @@ export function validateFinancePlannerAccounts(
         `${ref.label} must hold funds, rather than a credit or loan balance.`,
       );
   }
+  for (const plan of document.plans || []) for (const entry of plan.entries || []) {
+    if (entry.amountMode !== "cardBalance") continue;
+    const target = byId.get(Number(entry.toAccountId));
+    if (!target || target.is_archived || target.isArchived || target.merged_into_account_id || target.mergedIntoAccountId ||
+        (target.account_type || target.type) !== "credit")
+      throw plannerError("A live card balance payment must target an active credit card account.");
+  }
   return [...new Set(refs.map((ref) => ref.id))];
 }
 
@@ -655,11 +676,12 @@ export async function captureFinancePlannerOpenings(connection, document, previo
   const oldPlans = new Map((previous.plans || []).map((plan) => [plan.id, plan]));
   const preserved = {
     ...document,
-    plans: document.plans.map((plan) => capturePlanAccountOpenings(
+    plans: document.plans.map((plan) => plan.balanceMode !== "snapshot" ? plan : capturePlanAccountOpenings(
       plan, document, [], [], currentDate, oldPlans.get(plan.id),
     )),
   };
   const pending = preserved.plans.filter((plan) => {
+    if (plan.balanceMode !== "snapshot") return false;
     const known = new Set(plan.accountOpeningBalances.map((row) => Number(row.accountId)));
     return planOpeningAccountIds(plan, preserved).some((id) => !known.has(id));
   });
@@ -668,6 +690,7 @@ export async function captureFinancePlannerOpenings(connection, document, previo
   const earliestDate = pending.map((plan) => plan.startDate).sort()[0];
   const accountRows = await optionalQuery(connection, `
     SELECT a.*,
+      ${financePlanPendingMovementSql("a", currentDate)} AS plan_pending_movement,
       (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
        FROM personal_finance_transactions t
        WHERE t.account_id = a.id AND t.currency = a.currency AND t.pending = 0
@@ -689,7 +712,7 @@ export async function captureFinancePlannerOpenings(connection, document, previo
   }));
   return {
     ...preserved,
-    plans: preserved.plans.map((plan) => capturePlanAccountOpenings(
+    plans: preserved.plans.map((plan) => plan.balanceMode !== "snapshot" ? plan : capturePlanAccountOpenings(
       plan, preserved, accounts, transactions, currentDate,
     )),
   };
@@ -771,6 +794,7 @@ async function ensureSchema() {
     });
   if (!schemaPromise) {
     schemaPromise = (async () => {
+      await ensureFinanceSchema();
       await pool.query(`CREATE TABLE IF NOT EXISTS personal_finance_planner (
         id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
         document LONGTEXT NOT NULL,
@@ -925,13 +949,14 @@ export async function getFinancePlanner() {
       // if a bank sync commits while historical openings are being captured.
       await connection.beginTransaction();
       const [rows] = await connection.query(
-        "SELECT document, revision, exchange_rate FROM personal_finance_planner WHERE id = 1",
+        "SELECT document, revision, exchange_rate FROM personal_finance_planner WHERE id = 1 FOR UPDATE",
       );
       if (!rows.length) throw new Error("Planner row unavailable");
       const stored = typeof rows[0].document === "string"
         ? JSON.parse(rows[0].document) : rows[0].document;
       const original = validateFinancePlanner(stored);
       const document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, original));
+      await synchronizeFinancePlanPostings(connection, document, { today: today(), rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
       let revision = Number(rows[0].revision);
       if (JSON.stringify(document) !== JSON.stringify(original)) {
         const [result] = await connection.execute(
@@ -1013,6 +1038,7 @@ export async function saveFinancePlanner(value, revision) {
       validateFinancePlannerAccounts(document, accounts, previous);
     }
     document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, document, previous));
+    await synchronizeFinancePlanPostings(connection, document, { today: today(), rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
     await connection.execute(
       "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1",
       [JSON.stringify(document)],

@@ -62,7 +62,7 @@ for (const liveOpening of [false, true]) {
       openingUsd: liveOpening ? 0 : 160.72, openingPhp: 0,
       includeIncome: true, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
       entries: [],
-      accountOpeningBalances: liveOpening ? [] : [{ accountId: 1, balance: 160.72 }],
+      balanceMode: "snapshot", accountOpeningBalances: liveOpening ? [] : [{ accountId: 1, balance: 160.72 }],
       startingAccounts: liveOpening ? [{ accountId: 1, percentage: 100 }] : [],
       rowOverrides: [{ rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 }],
     };
@@ -97,7 +97,7 @@ test("recurring transfers preserve native assets and posted legs replace only on
   ];
   const transferPlan = {
     startDate: "2026-11-01", endDate: "2026-11-03", openingUsd: 1000, openingPhp: 0,
-    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 0 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 0 }],
     includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
     entries: [{ id: "daily-transfer", date: "2026-11-01", kind: "transfer", description: "Move funds", amount: 25, currency: "USD",
       recurrence: "daily", repeatUntil: null, fromAccountId: 1, toAccountId: 2 }],
@@ -123,7 +123,7 @@ test("recurring currency conversions and a single amount override project exact 
   ];
   const conversionPlan = {
     startDate: "2026-11-01", endDate: "2026-11-03", openingUsd: 1000, openingPhp: 0,
-    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 0 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 0 }],
     includeIncome: false, includeAnnualReserve: false, includeAllocations: false,
     entries: [{ id: "convert", date: "2026-11-01", kind: "conversion", description: "Convert funds", amount: 10, currency: "USD",
       recurrence: "daily", fromAccountId: 1, toAccountId: 2 }],
@@ -192,7 +192,7 @@ const plan = {
   includeAllocations: true,
   includeAnnualReserve: true,
   entries: [],
-  accountOpeningBalances: accounts.map((a) => ({
+  balanceMode: "snapshot", accountOpeningBalances: accounts.map((a) => ({
     accountId: a.id,
     balance: a.nativeCurrentBalance,
   })),
@@ -223,7 +223,7 @@ function linkedPocketFixture(dated = false) {
     includeIncome: true, includeTransactions: true, includeAnnualReserve: true, includeAllocations: true, entries: [],
     accountLinks: { availableUsdAccountId: 1, annualReserveUsdAccountId: 2, savingsUsdAccountId: 28 },
     startingAccounts: [{ accountId: 1, percentage: 0 }],
-    accountOpeningBalances: dated ? [{ accountId: 1, balance: 160.72 }, { accountId: 2, balance: 503.70 }, { accountId: 28, balance: 246.73 }] : [],
+    balanceMode: "snapshot", accountOpeningBalances: dated ? [{ accountId: 1, balance: 160.72 }, { accountId: 2, balance: 503.70 }, { accountId: 28, balance: 246.73 }] : [],
     rowOverrides: [
       { rowId: "salary:2026-11-06", date: "2026-11-06", description: "Salary", amount: 969.67 },
       { rowId: "reserve:USD:2026-11-06", date: "2026-11-06", description: "Set aside for annual bills", amount: 22.89 },
@@ -379,7 +379,7 @@ test("running savings starts with the linked bank balance and only a single edit
   const currentAccounts = structuredClone(accounts);
   currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = 246.73;
   const doc = { ...document, bills: [], salary: { ...salary, payFrequency: "biweekly" } };
-  const current = { ...plan, accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false,
+  const current = { ...plan, balanceMode: "snapshot", accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false,
     rowOverrides: [{ rowId: "allocation:save:2026-11-06", date: "2026-11-07", description: "One-off savings", amount: 275 }] };
   const projection = project(current, doc, { accounts: currentAccounts });
   assert.equal(projection.openingSavings.usd, 246.73);
@@ -402,7 +402,7 @@ test("savings totals count distinct native destinations and keep annual funds se
     { id: "two", name: "Two", kind: "savings", amount: 20, currency: "USD", accountId: 2 },
     { id: "pesos", name: "Pesos", kind: "savings", amount: 100, currency: "PHP", accountId: 5, sourceAccountId: 5 },
   ] };
-  const current = { ...plan, endDate: "2026-11-06", accountOpeningBalances: [], includeIncome: false };
+  const current = { ...plan, endDate: "2026-11-06", balanceMode: "snapshot", accountOpeningBalances: [], includeIncome: false };
   const projection = project(current, doc, { accounts: currentAccounts });
   assert.equal(projection.openingSavings.usd, 50);
   assert.equal(projection.openingSavings.php, 10000);
@@ -419,7 +419,7 @@ test("unassigned savings accumulate from zero while unavailable assigned balance
   ] };
   const currentAccounts = structuredClone(accounts);
   currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = null;
-  const projection = project({ ...plan, accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false }, doc, { accounts: currentAccounts });
+  const projection = project({ ...plan, balanceMode: "snapshot", accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false }, doc, { accounts: currentAccounts });
   assert.equal(projection.openingSavings.usd, null);
   assert.equal(projection.openingSavings.php, 0);
   assert.equal(projection.rows.at(-1).savingsUsd, null);
@@ -431,7 +431,7 @@ test("posted transfers and historical live activity do not add a savings deposit
   const currentAccounts = structuredClone(accounts);
   currentAccounts.find((account) => account.id === 3).nativeCurrentBalance = 500;
   const doc = { ...document, salary: { ...salary, amount: 0 }, bills: [] };
-  const current = { ...plan, accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false,
+  const current = { ...plan, balanceMode: "snapshot", accountOpeningBalances: [], includeIncome: false, includeAnnualReserve: false,
     rowOverrides: [{ rowId: "allocation:save:2026-11-06", date: "2026-11-07", description: "Savings this payday", amount: 275 }] };
   const transactions = [
     { id: 101, date: "2026-11-07", accountId: 1, kind: "expense", currency: "USD", amount: 275, category: "Transfer" },
@@ -468,7 +468,7 @@ for (const currency of ["USD", "PHP"]) for (const linked of [false, true]) {
       startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
       includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false,
       entries: [], startingAccounts: [{ accountId: 1, percentage }],
-      accountOpeningBalances: [{ accountId: 1, balance: 200 }],
+      balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 200 }],
       ...(linked ? { accountLinks: { [currency === "USD" ? "availableUsdAccountId" : "availablePhpAccountId"]: 1 } } : {}),
     };
     const doc = { salary: {}, bills: [], allocations: [] };
@@ -498,7 +498,7 @@ test("saved linked available, reserve and savings columns retain separate USD an
     startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
     includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false,
     entries: [], accountLinks: Object.fromEntries(fields.map((field, index) => [field, index + 1])),
-    accountOpeningBalances: bank.map((account) => ({ accountId: account.id, balance: account.id * 100 })),
+    balanceMode: "snapshot", accountOpeningBalances: bank.map((account) => ({ accountId: account.id, balance: account.id * 100 })),
   };
   const result = buildAccountPlan(planner, { salary: {}, bills: [], allocations: [] }, 63, { accounts: bank, today: "2026-11-08" });
   assert.deepEqual(result.openingBalances, { usd: 100, php: 200 });
@@ -513,7 +513,7 @@ test("an archived linked account retains its saved opening balance", () => {
   const bank = [{ id: 1, name: "Old checking", type: "checking", currency: "USD", nativeCurrentBalance: 0, isArchived: true }];
   const planner = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [],
-    accountLinks: { availableUsdAccountId: 1 }, accountOpeningBalances: [{ accountId: 1, balance: 200 }] };
+    accountLinks: { availableUsdAccountId: 1 }, balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 200 }] };
   const result = buildAccountPlan(planner, { salary: {}, bills: [], allocations: [] }, 63, { accounts: bank, today: "2026-11-08" });
   assert.equal(result.openingBalances.usd, 200);
   assert.equal(byId(result, 1).openingBalance, 200);
@@ -611,7 +611,7 @@ test("linked account forecasts pay cards on their autopay date even when the ban
     const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-15", openingUsd: 0, openingPhp: 0,
       accountLinks: { [`available${suffix}AccountId`]: 1 },
       startingAccounts: [{ accountId: 1, percentage: 100 }],
-      accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+      balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
       includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
     const result = buildAccountPlan(cardPlan, document, 63, { accounts: cardAccounts, today: "2026-11-01" });
     const payment = result.rows.find((row) => row.source === "creditCardDue");
@@ -639,7 +639,7 @@ test("manually entered card statements fund the full native amount on the saved 
     const plan = { startDate: "2026-11-01", endDate: "2026-11-15", openingUsd: 0, openingPhp: 0,
       accountLinks: { [currency === "USD" ? "availableUsdAccountId" : "availablePhpAccountId"]: 1 },
       startingAccounts: [{ accountId: 1, percentage: 100 }],
-      accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 14930.79 }],
+      balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 14930.79 }],
       includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
     const before = JSON.stringify({ accounts, plan });
     const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63,
@@ -666,7 +666,7 @@ test("posted manual card payments reduce their remaining statement once in cash 
   ];
   const plan = { startDate: "2026-11-01", endDate: "2026-11-20", openingUsd: 0, openingPhp: 0,
     accountLinks: { availablePhpAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
-    accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 14930.79 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 14930.79 }],
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, includeTransactions: true, entries: [] };
   const transactions = [
     { id: 1, date: "2026-11-13", amount: 3000, currency: "PHP", kind: "income", accountId: 2, category: "Transfer In", merchant: "Automatic payment" },
@@ -694,7 +694,7 @@ test("manual card cycle details forecast unbilled balances separately without re
   ];
   const plan = { startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: 0, openingPhp: 0,
     accountLinks: { availablePhpAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
-    accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 20000 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 20000 }, { accountId: 2, balance: 20000 }],
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
   const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63,
     { accounts, today: "2026-11-01" });
@@ -715,7 +715,7 @@ test("posted autopay bank legs replace the card forecast once for linked dated o
   ];
   const plan = { startDate: "2026-11-01", endDate: "2026-11-15", openingUsd: 0, openingPhp: 0,
     accountLinks: { availableUsdAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
-    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, includeTransactions: true, entries: [] };
   const transactions = [
     { id: 1, date: "2026-11-13", amount: 200, currency: "USD", kind: "income", accountId: 2, category: "Debt", merchant: "Automatic payment" },
@@ -742,7 +742,7 @@ test("estimated unbilled card payments shift before the cycle due date without m
   ];
   const plan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
     accountLinks: { availableUsdAccountId: 1 }, startingAccounts: [{ accountId: 1, percentage: 100 }],
-    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
   const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63, { accounts, today: "2026-11-01" });
   const payment = result.rows.find((row) => row.source === "creditCardDue");
@@ -797,7 +797,7 @@ test("same-day reflected payments do not shrink an estimate or replay native tra
     ];
     const cardPlan = { startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: live ? 0 : 1000,
       ...(live ? { startingAccounts: [{ accountId: 1, percentage: 100 }] }
-        : { accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 1300 }] }),
+        : { balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 1300 }] }),
       includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [
         { id: "paid", date: "2026-11-05", description: "Pay card", kind: "transfer", amount: 300, currency: "USD", fromAccountId: 1, toAccountId: 2 },
       ] };
@@ -820,7 +820,7 @@ test("card purchases and posted partial payments change owed balances once along
       creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
   ];
   const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000,
-    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 300 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 300 }],
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
   const rows = buildPlanRows(cardPlan, { salary: {}, bills: [], allocations: [] }, 63, { accounts: cardAccounts, today: "2026-11-04", transactions: [
     { id: 10, date: "2026-11-02", amount: 40, currency: "USD", kind: "expense", accountId: 2, merchant: "Market" },
@@ -978,7 +978,7 @@ test("an in-range annual card charge changes dated debt once and keeps its reser
   const fee = { id: 2506, date: "2026-11-01", kind: "expense", accountId: 32, amount: 395, currency: "USD",
     merchant: "CAPITAL ONE MEMBER FEE", category: "Bank Fees" };
   const result = buildAccountPlan({ ...plan, startDate: "2026-10-31",
-    accountOpeningBalances: accounts.map((account) => ({ accountId: account.id, balance: account.id === 32 ? 1263.16 : account.nativeCurrentBalance })),
+    balanceMode: "snapshot", accountOpeningBalances: accounts.map((account) => ({ accountId: account.id, balance: account.id === 32 ? 1263.16 : account.nativeCurrentBalance })),
   }, document, 63, { accounts, transactions: [fee], creditCardPaymentTransactions: [fee], today: "2026-11-06" });
   const charge = result.rows.find((row) => row.transactionId === 2506);
   assert.equal(charge.deferReserveToCardDue, true);
@@ -1144,7 +1144,7 @@ test("explicit card transfers and statement dues project each native movement on
       creditCardDue: { statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" } },
   ];
   const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000,
-    accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }],
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
     entries: [{ id: "pay-card", date: "2026-11-18", description: "Pay card", kind: "transfer", amount: 200, currency: "USD", fromAccountId: 1, toAccountId: 2 }] };
   const cardDocument = { salary: {}, bills: [], allocations: [] };
@@ -1171,7 +1171,7 @@ test("recognized Debt card payments suppress duplicate explicit native transfer 
     ];
     const cardPlan = { startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: live ? 0 : 1000,
       ...(live ? { startingAccounts: [{ accountId: 1, percentage: 100 }] }
-        : { accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }] }),
+        : { balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 1000 }, { accountId: 2, balance: 200 }] }),
       includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
       entries: [{ id: "pay-card", date: "2026-11-18", description: "Pay card", kind: "transfer", amount: 200, currency: "USD", fromAccountId: 1, toAccountId: 2 }] };
     const rows = buildPlanRows(cardPlan, cardDocument, 63, { accounts: cardAccounts, today: "2026-11-18", transactions: [
@@ -1263,7 +1263,7 @@ test("a transfer between linked payday savings and checking shifts available mon
       startDate: "2026-11-27",
       endDate: "2026-11-27",
       openingUsd: 921.4,
-      accountOpeningBalances: [],
+      balanceMode: "snapshot", accountOpeningBalances: [],
       includeIncome: false,
       includeAllocations: false,
       includeAnnualReserve: false,
@@ -1291,7 +1291,7 @@ test("moving money between two linked savings accounts leaves available and tota
   ] };
   const result = project({
     ...plan,
-    accountOpeningBalances: [],
+    balanceMode: "snapshot", accountOpeningBalances: [],
     includeIncome: false,
     includeAllocations: false,
     includeAnnualReserve: false,
@@ -1318,7 +1318,7 @@ test("a posted savings withdrawal is reflected once in current live checking and
     startDate: "2026-11-27",
     endDate: "2026-11-27",
     openingUsd: 0,
-    accountOpeningBalances: [],
+    balanceMode: "snapshot", accountOpeningBalances: [],
     startingAccounts: [{ accountId: 1, percentage: 100 }],
     includeIncome: false,
     includeAllocations: false,
@@ -1347,7 +1347,7 @@ test("completed transfers still move explicitly dated account openings when post
     startDate: "2026-11-27",
     endDate: "2026-11-27",
     openingUsd: 921.4,
-    accountOpeningBalances: [{ accountId: 1, balance: 921.4 }, { accountId: 3, balance: 246.73 }],
+    balanceMode: "snapshot", accountOpeningBalances: [{ accountId: 1, balance: 921.4 }, { accountId: 3, balance: 246.73 }],
     includeIncome: false,
     includeTransactions: false,
     includeAllocations: false,
@@ -1376,7 +1376,7 @@ test("one posted transfer leg is not replayed while its missing counterpart stay
         startDate: "2026-11-25",
         endDate: "2026-11-27",
         openingUsd: 0,
-        accountOpeningBalances: [],
+        balanceMode: "snapshot", accountOpeningBalances: [],
         startingAccounts: [{ accountId: 1, percentage: 100 }],
         includeIncome: false,
         includeTransactions,
@@ -1434,6 +1434,38 @@ test("explicit currency conversions debit and credit their native accounts", () 
     ],
   );
 });
+
+for (const balanceMode of ["live", "snapshot"]) for (const includeTransactions of [true, false]) {
+  test(`recorded conversions retain their actual native receipt amounts with ${balanceMode} balances and ${includeTransactions ? "visible" : "hidden"} records`, () => {
+    const accounts = [
+      { id: 1, name: "USD funds", type: "checking", currency: "USD", nativeCurrentBalance: 90 },
+      { id: 2, name: "PHP funds", type: "checking", currency: "PHP", nativeCurrentBalance: 630 },
+    ];
+    const planner = {
+      id: "conversion-plan", startDate: "2026-11-18", endDate: "2026-11-20", balanceMode,
+      openingUsd: 0, openingPhp: 0, includeIncome: false, includeAllocations: false,
+      includeAnnualReserve: false, includeTransactions,
+      accountLinks: { availableUsdAccountId: 1, availablePhpAccountId: 2 },
+      accountOpeningBalances: [{ accountId: 1, balance: 100 }, { accountId: 2, balance: 0 }],
+      entries: [{ id: "convert", date: "2026-11-18", description: "Recorded exchange", kind: "conversion",
+        amount: 10, currency: "USD", fromAccountId: 1, toAccountId: 2 }],
+      completedRows: [{ rowId: "entry:convert", completedAt: "2026-11-18T12:00:00.000Z" }],
+    };
+    const transactions = [
+      { id: 9001, date: "2026-11-18", kind: "expense", accountId: 1, amount: 10, currency: "USD" },
+      { id: 9002, date: "2026-11-18", kind: "income", accountId: 2, amount: 630, currency: "PHP" },
+    ].map((transaction) => ({ ...transaction, merchant: "Recorded exchange", category: "Transfer",
+      planId: planner.id, planRowId: "entry:convert", planGenerated: true, recordedFromPlan: true }));
+    const result = buildAccountPlan(planner, { salary: {}, bills: [], allocations: [] }, 70,
+      { accounts, transactions, today: "2026-11-18" });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.rows[0].completed, true);
+    assert.equal(byId(result, 1).endingBalance, 90);
+    assert.equal(byId(result, 2).endingBalance, 630, "the frozen PHP receipt is replayed once, without a new-rate forecast credit");
+    assert.deepEqual(result.rows[0].accountMovements.map((move) => [move.accountId, move.amount]),
+      balanceMode === "snapshot" ? [[1, -10], [2, 630]] : []);
+  });
+}
 
 test("recorded transfer legs replace forecast bank movements once while savings stays allocated", () => {
   const doc = { ...document, bills: [], allocations: document.allocations };
@@ -1571,7 +1603,7 @@ test("recorded annual charges and reserve repayments move their bank accounts on
       ...plan,
       includeIncome: false,
       includeAnnualReserve: false,
-      accountOpeningBalances: [
+      balanceMode: "snapshot", accountOpeningBalances: [
         { accountId: 2, balance: 395 },
         { accountId: 4, balance: 0 },
       ],
@@ -1633,13 +1665,13 @@ test("forecast reconciliation respects the assigned salary and bill account", ()
   assert.equal(matching.find((row) => row.transactionId === 2).accountId, 4);
 });
 
-test("bank-snapshot openings exclude already posted activity and historical forecasts", () => {
+test("current bank openings retain overdue commitments without replaying posted activity", () => {
   const bank = [{ ...accounts[0], nativeCurrentBalance: 100 }];
   const doc = { salary: { ...salary, amount: 0 }, bills: [], allocations: [] };
   const planner = {
     ...plan,
     includeIncome: false,
-    accountOpeningBalances: [],
+    balanceMode: "snapshot", accountOpeningBalances: [],
     entries: [
       {
         id: "old",
@@ -1678,7 +1710,7 @@ test("bank-snapshot openings exclude already posted activity and historical fore
     today: "2026-11-02",
   });
   assert.equal(byId(result, 1).openingBalance, 100);
-  assert.equal(byId(result, 1).endingBalance, 70);
+  assert.equal(byId(result, 1).endingBalance, 30);
   assert.equal(result.openingSource, "bank");
   assert.ok(
     result.warnings.some((message) => message.includes("historical plan")),
@@ -1688,6 +1720,54 @@ test("bank-snapshot openings exclude already posted activity and historical fore
     0,
   );
 });
+
+for (const balanceMode of [undefined, "live"]) {
+  test(`${balanceMode || "default"} balance mode refreshes native accounts despite old automatic snapshots`, () => {
+    const bank = [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 820 },
+      { id: 2, name: "PHP savings", type: "savings", currency: "PHP", nativeCurrentBalance: 4000 },
+      { id: 3, name: "Savings", type: "savings", currency: "USD", nativeCurrentBalance: 250 },
+      { id: 4, name: "PHP card", type: "credit", currency: "PHP", nativeCurrentBalance: 2000 },
+    ];
+    const planner = {
+      startDate: "2026-11-01", endDate: "2026-12-31", openingUsd: 0, openingPhp: 0,
+      includeIncome: false, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+      ...(balanceMode ? { balanceMode } : {}),
+      accountLinks: { availableUsdAccountId: 1, availablePhpAccountId: 2, savingsUsdAccountId: 3 },
+      accountOpeningBalances: [
+        { accountId: 1, balance: 1000 }, { accountId: 2, balance: 9000 },
+        { accountId: 3, balance: 100 }, { accountId: 4, balance: 500 },
+      ],
+      entries: [
+        { id: "overdue", date: "2026-11-10", description: "Still unpaid", kind: "expense", amount: 50, currency: "USD", accountId: 1 },
+        { id: "paid", date: "2026-11-18", description: "Already paid", kind: "expense", amount: 80, currency: "USD", accountId: 1 },
+        { id: "future", date: "2026-12-01", description: "Future payment", kind: "expense", amount: 100, currency: "USD", accountId: 1 },
+        { id: "card-charge", date: "2026-11-20", description: "Card purchase", kind: "expense", amount: 1000, currency: "PHP", accountId: 4 },
+        { id: "card-payment", date: "2026-12-01", description: "Card payment", kind: "transfer", amount: 500, currency: "PHP", fromAccountId: 2, toAccountId: 4 },
+      ],
+    };
+    const doc = { salary: {}, bills: [], allocations: [] };
+    const transactions = [{ id: 90, date: "2026-11-18", kind: "expense", amount: 80, currency: "USD", accountId: 1,
+      merchant: "Already paid", category: "Shopping" }];
+    const before = JSON.stringify(planner);
+    const options = { accounts: bank, transactions, today: "2026-11-18" };
+    const result = buildAccountPlan(planner, doc, 63, options);
+    assert.equal(byId(result, 1).openingBalance, 820);
+    assert.equal(byId(result, 1).endingBalance, 670, "overdue and future unpaid commitments remain, while posted expenses are included once");
+    assert.equal(byId(result, 2).endingBalance, 3500);
+    assert.equal(byId(result, 3).endingBalance, 250);
+    assert.equal(byId(result, 4).endingBalance, 2500, "card purchases increase debt and payment transfers reduce it once");
+    assert.equal(result.openingBalances.usd, 820);
+    assert.equal(result.openingBalances.php, 4000);
+    assert.equal(result.openingSavings.usd, 250);
+    assert.notEqual(result.openingSource, "plan");
+    const refreshed = buildAccountPlan(planner, doc, 63, { ...options,
+      accounts: bank.map((account) => ({ ...account, nativeCurrentBalance: account.nativeCurrentBalance + (account.id === 1 ? 80 : account.id === 2 ? 200 : 0) })) });
+    assert.equal(byId(refreshed, 1).endingBalance, 750);
+    assert.equal(byId(refreshed, 2).endingBalance, 3700);
+    assert.equal(JSON.stringify(planner), before, "live calculations do not overwrite historical snapshots");
+  });
+}
 
 test("unavailable and different-currency assignments produce warnings instead of imaginary conversions", () => {
   const doc = {

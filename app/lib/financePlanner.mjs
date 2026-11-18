@@ -531,7 +531,19 @@ function normalizedDescription(value) {
   ).join(" ");
 }
 
+function exactPlanTransaction(forecast, transaction) {
+  return forecast.source === "manual" && forecast.planId != null && transaction.planId != null &&
+    transaction.planRowId != null && String(forecast.planId) === String(transaction.planId) &&
+    String(forecast.id) === String(transaction.planRowId);
+}
+
+function scheduledPlanTransaction(forecast, transaction) {
+  return forecast.planId != null && transaction.planId != null && transaction.planScheduledRowId != null &&
+    String(forecast.planId) === String(transaction.planId) && String(forecast.id) === String(transaction.planScheduledRowId);
+}
+
 function forecastMatchesTransaction(forecast, transaction) {
+  if (forecast.partialPayment && scheduledPlanTransaction(forecast, transaction)) return false;
   if (
     ["conversion", "transfer"].includes(forecast.kind) ||
     forecast.kind !== transaction.kind ||
@@ -543,6 +555,8 @@ function forecastMatchesTransaction(forecast, transaction) {
     Number(forecast.accountId) !== Number(transaction.accountId)
   )
     return false;
+  if (forecast.source === "manual" && transaction.planRowId != null)
+    return exactPlanTransaction(forecast, transaction);
   if (Math.abs(forecast.amount - transaction.amount) > 0.0100001) return false;
   const distance =
     Math.abs(dateTime(forecast.date) - dateTime(transaction.date)) / DAY_MS;
@@ -634,14 +648,15 @@ export function getAnnualReserveOpening(plan, document) {
   };
 }
 
-/** Saved native openings belong to the plan; current balances only preview uncaptured accounts. */
+/** Live trackers follow current balances; dated snapshots remain available for historical plans. */
 export function getPlanOpening(plan, accounts = [], document = {}) {
   const flatUsd = roundMoney(plan?.openingUsd);
   const flatPhp = roundMoney(plan?.openingPhp);
   const contributions = [];
   const warnings = [];
   const byId = new Map(accounts.map((account) => [Number(account.id), account]));
-  const saved = new Map((plan?.accountOpeningBalances || []).map((row) => [Number(row.accountId), row.balance]));
+  const saved = new Map((plan?.balanceMode === "snapshot" ? plan.accountOpeningBalances || [] : [])
+    .map((row) => [Number(row.accountId), row.balance]));
   const seen = new Set();
   let accountUsd = 0;
   let accountPhp = 0;
@@ -720,6 +735,15 @@ const transferTransaction = (row) =>
     String(row.category || "").trim(),
   );
 
+function matchesTransferLeg(row, transaction, leg) {
+  const exact = exactPlanTransaction(row, transaction);
+  return (exact || transferTransaction(transaction) || Number(transaction.creditCardPaymentFor) === Number(row.toAccountId)) &&
+    Number(transaction.accountId) === Number(leg.accountId) && transaction.currency === leg.currency &&
+    (transaction.kind === "income" ? 1 : -1) === Math.sign(leg.amount) &&
+    (exact || (Math.abs(Number(transaction.amount) - Math.abs(leg.amount)) < 0.005 &&
+      Math.abs(dateTime(transaction.date) - dateTime(row.date)) <= 3 * DAY_MS));
+}
+
 // Issued statements use reported or manually entered obligations. Unbilled balances are
 // projected separately so the same debt is never charged in both cycles.
 function creditCardStatements(accounts) {
@@ -742,27 +766,34 @@ function creditCardPayments(statement, transactions, today, consumedDebits, stat
   const { account, due, statementBalance } = statement;
   const statementDate = Number.isFinite(dateTime(due.lastStatementDate)) && due.lastStatementDate <= due.dueDate
     ? due.lastStatementDate : null;
-  const inStatement = (date) => Number.isFinite(dateTime(date)) && date <= today &&
-    (statementDate ? date > statementDate : date >= addDays(getCreditCardPaymentDate(account, due.dueDate), -3));
+  const inStatement = (date, transaction) => {
+    if (!Number.isFinite(dateTime(date)) || date > today) return false;
+    if (Number(transaction?.creditCardPaymentFor) === Number(account.id) &&
+        Number.isFinite(dateTime(transaction?.creditCardPaymentDueDate)))
+      return transaction.creditCardPaymentDueDate === due.dueDate;
+    return statementDate ? date > statementDate : date >= addDays(getCreditCardPaymentDate(account, due.dueDate), -3);
+  };
   const seen = new Set();
   const posted = transactions.filter((transaction) => {
     if (transaction.id != null) {
       if (seen.has(String(transaction.id))) return false;
       seen.add(String(transaction.id));
     }
-    return !transaction.pending && inStatement(transaction.date) && transaction.currency === account.currency &&
+    return !transaction.pending && inStatement(transaction.date, transaction) && transaction.currency === account.currency &&
       Number.isFinite(Number(transaction.amount)) && Number(transaction.amount) > 0;
   });
   const paymentDescription = (row) => /\b(payment|payments|autopay|autopayment)\b/.test(normalizedDescription(
     [row.merchant, row.category, row.note].filter(Boolean).join(" "),
   ));
   const credits = posted.filter((transaction) => Number(transaction.accountId) === Number(account.id) &&
-    transaction.kind === "income" && (transferTransaction(transaction) || paymentDescription(transaction)));
+    transaction.kind === "income" && (Number(transaction.creditCardPaymentFor) === Number(account.id) ||
+      transferTransaction(transaction) || paymentDescription(transaction)));
   const evidence = [...credits];
   // Bank debits only reduce this particular card's due when the receiving leg
   // identifies it, or the debit explicitly names the card. An equal amount alone
   // cannot identify which card was paid.
   const explicitlyNamesCard = (row) => {
+    if (row.creditCardPaymentFor != null) return Number(row.creditCardPaymentFor) === Number(account.id);
     const words = new Set(normalizedDescription([row.merchant, row.note].filter(Boolean).join(" ")).split(" "));
     const named = [...statements.values()].filter(({ account: candidate }) => {
       if (candidate.mask && words.has(String(candidate.mask))) return true;
@@ -777,7 +808,7 @@ function creditCardPayments(statement, transactions, today, consumedDebits, stat
   const debits = posted.filter((transaction) => transaction.kind === "expense" &&
     Number(transaction.accountId) !== Number(account.id) && !consumedDebits.has(String(transaction.id)) &&
     !["credit", "loan"].includes(accountsById.get(Number(transaction.accountId))?.type || transaction.accountType) &&
-    (transferTransaction(transaction) || paymentDescription(transaction)));
+    (Number(transaction.creditCardPaymentFor) === Number(account.id) || transferTransaction(transaction) || paymentDescription(transaction)));
   for (const credit of credits) {
     const candidates = debits.filter((debit) => !consumedDebits.has(String(debit.id)) &&
       Math.abs(Number(debit.amount) - Number(credit.amount)) < 0.005 &&
@@ -1026,14 +1057,7 @@ function planCompletion(rows, plan, actual, document, rate, today) {
         const selected = new Set();
         const candidates = legs.map((leg) => {
           const match = posted.find((transaction) =>
-            !consumed.has(transaction.id) && !selected.has(transaction.id) &&
-            (transferTransaction(transaction) || Number(transaction.creditCardPaymentFor) === Number(row.toAccountId)) &&
-            Number(transaction.accountId) === leg.accountId &&
-            transaction.currency === leg.currency &&
-            (transaction.kind === "income" ? 1 : -1) === Math.sign(leg.amount) &&
-            Math.abs(transaction.amount - Math.abs(leg.amount)) < 0.005 &&
-            Math.abs(dateTime(transaction.date) - dateTime(row.date)) <= 3 * DAY_MS,
-          );
+            !consumed.has(transaction.id) && !selected.has(transaction.id) && matchesTransferLeg(row, transaction, leg));
           if (match) selected.add(match.id);
           return match;
         });
@@ -1053,6 +1077,7 @@ function planCompletion(rows, plan, actual, document, rate, today) {
     if (row.source !== "transaction")
       for (const match of matches) consumed.add(match.id);
     const automatic = matches.length > 0;
+    const recordedByPlan = automatic && matches.every((match) => match.planGenerated);
     const statementPaid = row.source === "creditCardDue" && !row.estimated && row.statementBalance > 0 && row.amount === 0 && row.paidAmount >= row.statementBalance;
     const completedAt = automatic
       ? `${matches.map((match) => match.date).sort().at(-1)}T00:00:00.000Z`
@@ -1060,8 +1085,10 @@ function planCompletion(rows, plan, actual, document, rate, today) {
     return {
       ...row, completionKey,
       completed: automatic || statementPaid || Boolean(completedAt),
-      completionSource: automatic || statementPaid ? "transaction" : completedAt ? "manual" : null,
+      completionSource: automatic ? recordedByPlan ? "plan" : "transaction" : statementPaid ? "transaction" : completedAt ? "manual" : null,
       ...(completedAt ? { completedAt } : {}),
+      ...(recordedByPlan ? { planGenerated: true, recordedInAccounts: true,
+        awaitingBankSync: matches.some((match) => match.awaitingBankSync) } : {}),
       matchedTransactionIds: row.source === "creditCardDue" ? row.paymentTransactionIds || [] : matches.map((match) => match.transactionId).filter((id) => id != null),
     };
   });
@@ -1112,22 +1139,20 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
     .map((row) => String(row.transactionId)));
   const coalescedIds = new Set();
   const byId = new Map(posted.map((row) => [String(row.transactionId), row]));
+  const appliedById = new Map(rows.filter((row) => row.source === "transaction")
+    .map((row) => [String(row.transactionId), row]));
   const logical = new Map();
   for (const row of rows) {
     if (row.source === "transaction" || row.source === "creditCardDue") continue;
     const legs = planTransferLegs(row, rate);
     const expenseAllocation = row.source === "allocation" && row.allocationKind === "expense";
-    const matchedPayment = ["salary", "bill", "manual"].includes(row.source) && row.completionSource === "transaction";
+    const matchedPayment = ["salary", "bill", "manual"].includes(row.source) && ["transaction", "plan"].includes(row.completionSource);
     if (!legs.length && !expenseAllocation && !matchedPayment) continue;
     const selected = new Set();
     const candidates = legs.length ? legs.map((leg) => {
       const match = posted.find((transaction) =>
         !consumed.has(String(transaction.transactionId)) && !selected.has(String(transaction.transactionId)) &&
-        (transferTransaction(transaction) || Number(transaction.creditCardPaymentFor) === Number(row.toAccountId)) &&
-        Number(transaction.accountId) === leg.accountId && transaction.currency === leg.currency &&
-        (transaction.kind === "income" ? 1 : -1) === Math.sign(leg.amount) &&
-        Math.abs(transaction.amount - Math.abs(leg.amount)) < 0.005 &&
-        Math.abs(dateTime(transaction.date) - dateTime(row.date)) <= 3 * DAY_MS);
+        matchesTransferLeg(row, transaction, leg));
       if (match) selected.add(String(match.transactionId));
       return match;
     }) : (row.matchedTransactionIds || []).map((id) => byId.get(String(id)))
@@ -1139,21 +1164,43 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
       coalescedIds.add(String(transaction.transactionId));
     }
     const complete = legs.length ? candidates.every(Boolean) : true;
+    const recordedByPlan = complete && evidence.every((transaction) => transaction.planGenerated);
     const recordedDate = evidence.map((transaction) => transaction.date).sort().at(-1);
+    const conversion = complete && row.kind === "conversion" &&
+      (plan.includeTransactions !== false || evidence.every((transaction) => exactPlanTransaction(row, transaction)));
+    const receipt = conversion ? evidence.find((transaction) => transaction.kind === "income" &&
+      Number(transaction.accountId) === Number(row.toAccountId)) : null;
+    const debit = conversion ? evidence.find((transaction) => transaction.kind === "expense" &&
+      Number(transaction.accountId) === Number(row.fromAccountId)) : null;
+    const recordedFlows = ["USD", "PHP"].map((currency) => roundMoney(evidence.reduce((total, transaction) => total +
+      (transaction.currency === currency ? (transaction.kind === "income" ? 1 : -1) * transaction.amount : 0), 0)));
+    const applied = Object.fromEntries(["Usd", "Php"].map((suffix, index) => [`balanceApplied${suffix}`,
+      plan.includeTransactions === false
+        ? conversion && row[`balanceApplied${suffix}`] ? recordedFlows[index] : row[`balanceApplied${suffix}`]
+        : roundMoney((row[`balanceApplied${suffix}`] || 0) + evidence.reduce((total, transaction) =>
+          total + (appliedById.get(String(transaction.transactionId))?.[`balanceApplied${suffix}`] || 0), 0))]));
     logical.set(row.id, {
       ...row,
+      ...applied,
+      ...(conversion ? {
+        usd: recordedFlows[0], php: recordedFlows[1],
+        ...(debit ? { amount: debit.amount } : {}),
+        ...(receipt ? { recordedConversionAmount: receipt.amount, recordedConversionCurrency: receipt.currency } : {}),
+      } : {}),
       ...(complete && plan.includeTransactions !== false ? { date: recordedDate, scheduledDate: row.date } : {}),
       recordedTransactions: evidence.map((transaction) => ({ ...transaction })),
       recordedTransactionsIncluded: plan.includeTransactions !== false,
       matchedTransactionIds: evidence.map((transaction) => transaction.transactionId),
       postedTransferAccountIds: [...new Set(evidence.map((transaction) => Number(transaction.accountId)))],
-      ...(complete ? { completed: true, completionSource: "transaction", completedAt: `${recordedDate}T00:00:00.000Z` } : {}),
+      ...(recordedByPlan ? { planGenerated: true, recordedInAccounts: true,
+        awaitingBankSync: evidence.some((transaction) => transaction.awaitingBankSync) } : {}),
+      ...(complete ? { completed: true, completionSource: recordedByPlan ? "plan" : "transaction", completedAt: `${recordedDate}T00:00:00.000Z` } : {}),
     });
   }
   const visible = rows.filter((row) => row.source !== "transaction" || !coalescedIds.has(String(row.transactionId)))
     .map((row) => logical.get(row.id) || row);
   if (plan.includeTransactions !== false) {
-    const linkedIds = new Set(Object.values(plan.accountLinks).filter((id) => id != null).map(Number));
+    const linkedIds = new Set(Object.values(plan.accountLinks || {}).filter((id) => id != null).map(Number));
     const byAccount = new Map(accounts.map((account) => [Number(account.id), account]));
     const unclaimed = posted.filter((transaction) => !consumed.has(String(transaction.transactionId)) &&
       !transaction.creditCardPaymentFor && transferTransaction(transaction) && linkedIds.has(Number(transaction.accountId)) &&
@@ -1190,8 +1237,15 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
     }
   }
   const priority = (row) => row.kind === "income" ? 0 : row.kind === "conversion" ? 1 : row.source === "reserve" ? 2 : row.source === "allocation" ? 3 : 4;
-  return visible.sort((first, second) => first.date.localeCompare(second.date) || priority(first) - priority(second) ||
+  visible.sort((first, second) => first.date.localeCompare(second.date) || priority(first) - priority(second) ||
     String(first.currency).localeCompare(String(second.currency)) || first.id.localeCompare(second.id));
+  let usd = rows.length ? roundMoney(rows[0].balanceUsd - (rows[0].balanceAppliedUsd || 0)) : 0;
+  let php = rows.length ? roundMoney(rows[0].balancePhp - (rows[0].balanceAppliedPhp || 0)) : 0;
+  return visible.map((row) => {
+    usd = roundMoney(usd + (row.balanceAppliedUsd || 0));
+    php = roundMoney(php + (row.balanceAppliedPhp || 0));
+    return { ...row, balanceUsd: usd, balancePhp: php };
+  });
 }
 
 /** Available money and the annual-bill reserve are tracked as separate pockets. */
@@ -1204,6 +1258,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       ? plan.accountLinks[`${pocket}${currency === "PHP" ? "Php" : "Usd"}AccountId`] ?? null
       : fallback ?? null;
   const cardAccountsById = new Map((options.accounts || []).map((account) => [Number(account.id), account]));
+  const creditAccountIds = new Set((options.accounts || []).filter((account) =>
+    (account.type || account.account_type) === "credit").map((account) => Number(account.id)));
   const cardPaymentTransactions = [...(options.transactions || []), ...(options.creditCardPaymentTransactions || [])];
   const today = Number.isFinite(dateTime(options.today)) ? options.today : localDate();
   const cardObligations = creditCardObligations(options.accounts || [], { transactions: cardPaymentTransactions, today });
@@ -1311,6 +1367,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     for (const occurrence of occurrences) {
       let row = {
         id: recurring ? `entry:${entry.id}:${occurrence.date}` : `entry:${entry.id}`,
+        planId: plan.id,
         entryId: entry.id,
         date: occurrence.date,
         description: entry.description,
@@ -1319,11 +1376,86 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         accountId: entry.accountId ?? null,
         fromAccountId: entry.fromAccountId ?? null,
         toAccountId: entry.toAccountId ?? null,
+        ...(entry.amountMode === "cardBalance" ? { amountMode: "cardBalance" } : {}),
+        ...(entry.scheduledRowId ? { scheduledRowId: entry.scheduledRowId } : {}),
         ...(recurring ? { recurring: true, recurrence: entry.recurrence } : {}),
         ...entryFlow(entry),
       };
       if (recurring) row = applyOverride(row);
+      if (row.kind === "transfer" && row.amountMode === "cardBalance") {
+        const card = cardAccountsById.get(Number(row.toAccountId));
+        const balance = card && (card.type || card.account_type) === "credit" && card.currency === row.currency
+          ? knownCardBalance(Object.hasOwn(card, "nativeCurrentBalance") ? card.nativeCurrentBalance : card.currentBalance) : null;
+        const recorded = cardPaymentTransactions.find((transaction) => exactPlanTransaction(row, transaction) &&
+          !transaction.pending && transaction.date <= today && transaction.currency === row.currency && Number(transaction.amount) > 0 &&
+          ((transaction.kind === "expense" && Number(transaction.accountId) === Number(row.fromAccountId)) ||
+            (transaction.kind === "income" && Number(transaction.accountId) === Number(row.toAccountId))));
+        row.amount = recorded ? roundMoney(recorded.amount) : balance == null ? row.amount : Math.max(0, balance);
+        row.liveCardBalance = !recorded && balance != null;
+      }
       forecasts.push({ ...row, ...entryFlow(row) });
+    }
+  }
+  for (const row of forecasts) row.planId = plan.id;
+  // Project each card from its live debt through unpaid purchases, refunds and
+  // payments. Recorded movements are already in that debt and cannot replay.
+  const paymentEntries = forecasts.filter((row) => row.source === "manual" && row.kind === "transfer" &&
+    (cardAccountsById.get(Number(row.toAccountId))?.type || cardAccountsById.get(Number(row.toAccountId))?.account_type) === "credit")
+    .sort((first, second) => first.date.localeCompare(second.date) || first.id.localeCompare(second.id));
+  const postedIds = new Set();
+  const postedCardActivity = cardPaymentTransactions.filter((transaction, index) => {
+    const key = transaction.id == null ? `index:${index}` : String(transaction.id);
+    if (postedIds.has(key)) return false;
+    postedIds.add(key);
+    return !transaction.pending && transaction.date <= today;
+  });
+  const completedForecasts = new Set((plan.completedRows || []).map((row) => row.rowId));
+  const claimedCardRecords = new Set();
+  const pendingLeg = (row, leg) => {
+    if (completedForecasts.has(row.id)) return 0;
+    const sameLeg = (transaction) => Number(transaction.accountId) === Number(leg.accountId) &&
+      transaction.currency === leg.currency && transaction.kind === (leg.amount > 0 ? "income" : "expense");
+    const exact = postedCardActivity.filter((transaction) => sameLeg(transaction) &&
+      (exactPlanTransaction(row, transaction) || scheduledPlanTransaction(row, transaction) ||
+        (row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.id))));
+    if (exact.length) return Math.max(0, roundMoney(Math.abs(leg.amount) - exact.reduce((sum, transaction) => sum + Number(transaction.amount), 0)));
+    const candidates = postedCardActivity.filter((transaction) => sameLeg(transaction) && !claimedCardRecords.has(String(transaction.id)) &&
+      (["transfer", "conversion"].includes(row.kind) ? matchesTransferLeg(row, transaction, leg) : forecastMatchesTransaction(row, transaction)));
+    if (candidates.length === 1) {
+      claimedCardRecords.add(String(candidates[0].id));
+      return Math.max(0, roundMoney(Math.abs(leg.amount) - Number(candidates[0].amount)));
+    }
+    return Math.abs(leg.amount);
+  };
+  const projectedDebt = new Map((options.accounts || []).filter((account) => creditAccountIds.has(Number(account.id)))
+    .map((account) => [Number(account.id), knownCardBalance(Object.hasOwn(account, "nativeCurrentBalance")
+      ? account.nativeCurrentBalance : account.currentBalance)]));
+  const projectedPaymentPool = new Map();
+  const projectedEvents = [...forecasts, ...cardObligations.obligations.map((row) => ({ ...row, autoCardPayment: true }))]
+    .filter((row) => row.date >= plan.startDate && row.date <= plan.endDate);
+  const debtPriority = (row) => row.autoCardPayment ? 3 : row.liveCardBalance ? 2 : row.kind === "transfer" || row.kind === "conversion" ? 1 : 0;
+  projectedEvents.sort((first, second) => first.date.localeCompare(second.date) || debtPriority(first) - debtPriority(second) || first.id.localeCompare(second.id));
+  for (const row of projectedEvents) {
+    if (row.autoCardPayment) {
+      const cardId = Number(row.creditAccountId);
+      const reserved = Math.min(row.amount, projectedPaymentPool.get(cardId) || 0);
+      projectedPaymentPool.set(cardId, roundMoney((projectedPaymentPool.get(cardId) || 0) - reserved));
+      if (projectedDebt.get(cardId) != null)
+        projectedDebt.set(cardId, roundMoney(projectedDebt.get(cardId) - (row.amount - reserved)));
+      continue;
+    }
+    if (row.liveCardBalance && projectedDebt.get(Number(row.toAccountId)) != null)
+      Object.assign(row, entryFlow({ ...row, amount: Math.max(0, projectedDebt.get(Number(row.toAccountId))) }));
+    const legs = ["transfer", "conversion"].includes(row.kind) ? planTransferLegs(row, rate)
+      : ["income", "expense"].includes(row.kind) && row.accountId != null
+        ? [{ accountId: row.accountId, currency: row.currency, amount: row.kind === "income" ? row.amount : -row.amount }] : [];
+    for (const leg of legs) {
+      const accountId = Number(leg.accountId);
+      if (!creditAccountIds.has(accountId) || projectedDebt.get(accountId) == null) continue;
+      const pending = pendingLeg(row, leg);
+      projectedDebt.set(accountId, roundMoney(projectedDebt.get(accountId) - Math.sign(leg.amount) * pending));
+      if (leg.amount > 0 && row.kind === "transfer")
+        projectedPaymentPool.set(accountId, roundMoney((projectedPaymentPool.get(accountId) || 0) + pending));
     }
   }
 
@@ -1340,10 +1472,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const matches = cardPaymentTransactions.filter((transaction) => {
       if (transaction.id == null || seen.has(String(transaction.id))) return false;
       seen.add(String(transaction.id));
-      return !transaction.pending && transaction.date <= today && transferTransaction(transaction) &&
+      return !transaction.pending && transaction.date <= today &&
+        (exactPlanTransaction(entry, transaction) || transferTransaction(transaction)) &&
         ((transaction.kind === "expense" && Number(transaction.accountId) === Number(entry.fromAccountId)) ||
           (transaction.kind === "income" && Number(transaction.accountId) === Number(entry.toAccountId))) && transaction.currency === entry.currency &&
-        Math.abs(Number(transaction.amount) - entry.amount) < 0.005 && Math.abs(dateTime(transaction.date) - dateTime(entry.date)) <= 3 * DAY_MS;
+        (exactPlanTransaction(entry, transaction) || (Math.abs(Number(transaction.amount) - entry.amount) < 0.005 &&
+          Math.abs(dateTime(transaction.date) - dateTime(entry.date)) <= 3 * DAY_MS));
     });
     const debits = matches.filter((transaction) => transaction.kind === "expense");
     const credits = matches.filter((transaction) => transaction.kind === "income");
@@ -1363,8 +1497,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           !(Number(entry.amount) > 0)) continue;
       const evidence = cardPaymentTransactions.filter((transaction) =>
         payment?.paymentTransactionIds.some((value) => String(value) === String(transaction.id)) &&
-        !consumedEvidence.has(String(transaction.id)) && Math.abs(Number(transaction.amount) - Number(entry.amount)) < 0.005 &&
-        Math.abs(dateTime(transaction.date) - dateTime(entry.date)) <= 3 * DAY_MS &&
+        !consumedEvidence.has(String(transaction.id)) &&
+        (exactPlanTransaction(entry, transaction) || (Math.abs(Number(transaction.amount) - Number(entry.amount)) < 0.005 &&
+          Math.abs(dateTime(transaction.date) - dateTime(entry.date)) <= 3 * DAY_MS)) &&
         ((transaction.kind === "income" && Number(transaction.accountId) === accountId) ||
           (transaction.kind === "expense" && Number(transaction.accountId) === Number(entry.fromAccountId))));
       if (evidence.length) {
@@ -1391,7 +1526,11 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       amount: roundMoney(link.transaction.amount), reserveUsed: 0,
       reserveAccountId: linkedAccount("annualReserve", obligation.currency, link.bill.reserveAccountId),
     }));
-    forecasts.push({ ...obligation, plannedPaymentAmount: roundMoney(obligation.amount - remaining),
+    // An explicit live-balance payment already covers this statement projection.
+    if (remaining === 0 && obligation.amount > 0 && paymentEntries.some((entry) =>
+      entry.amountMode === "cardBalance" && Number(entry.toAccountId) === Number(obligation.creditAccountId) &&
+      entry.date <= obligation.date)) continue;
+    forecasts.push({ ...obligation, planId: plan.id, plannedPaymentAmount: roundMoney(obligation.amount - remaining),
       ...(annualBillCoverage.length ? { annualBillCoverage } : {}),
       ...nativeFlow(remaining, obligation.currency, "expense") });
   }
@@ -1432,6 +1571,17 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         accountName: transaction.accountName || "",
         accountType: transaction.accountType || "",
         accountId: transaction.accountId ?? null,
+        ...(transaction.planId != null ? { planId: transaction.planId } : {}),
+        ...(transaction.planRowId != null ? {
+          planRowId: transaction.planRowId,
+          planGenerated: transaction.planGenerated ?? !transaction.provider,
+          recordedInAccounts: true,
+          awaitingBankSync: Boolean(transaction.awaitingBankSync),
+        } : {}),
+        ...(transaction.planScheduledRowId != null ? { planScheduledRowId: transaction.planScheduledRowId } : {}),
+        ...(transaction.transferAccountId != null ? { transferAccountId: transaction.transferAccountId } : {}),
+        ...(transaction.creditCardPaymentFor != null ? { creditCardPaymentFor: transaction.creditCardPaymentFor } : {}),
+        ...(transaction.creditCardPaymentDueDate ? { creditCardPaymentDueDate: transaction.creditCardPaymentDueDate } : {}),
         kind: transaction.kind,
         source: "transaction",
         scheduled: transaction.date > today,
@@ -1462,7 +1612,23 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   // excluded from this hypothetical ledger by the plan's display setting.
   const completionActual = actual;
   const visibleActual = plan.includeTransactions === false ? [] : actual;
-  const usedForecasts = new Set();
+  const explicitlyPaidForecasts = new Set();
+  const linkedSchedules = new Map();
+  for (const forecast of forecasts.filter((row) => row.source !== "creditCardDue" && ["income", "expense"].includes(row.kind))) {
+    const payments = actual.filter((transaction) => !transaction.scheduled && scheduledPlanTransaction(forecast, transaction) &&
+      transaction.kind === forecast.kind && transaction.currency === forecast.currency &&
+      (forecast.accountId == null || Number(forecast.accountId) === Number(transaction.accountId)));
+    if (!payments.length) continue;
+    const paid = roundMoney(payments.reduce((total, transaction) => total + transaction.amount, 0));
+    const remaining = Math.max(0, roundMoney(forecast.amount - paid));
+    for (const transaction of payments) linkedSchedules.set(transaction.id, { ...forecast });
+    if (remaining === 0) explicitlyPaidForecasts.add(forecast.id);
+    else Object.assign(forecast, nativeFlow(remaining, forecast.currency, forecast.kind), {
+      scheduledAmount: forecast.amount, paidAmount: paid, partialPayment: true,
+      paymentTransactionIds: payments.map((transaction) => transaction.transactionId),
+    });
+  }
+  const usedForecasts = new Set(explicitlyPaidForecasts);
   const actualPayDates = new Map();
   const forecastPriority = (row) =>
     row.source === "bill" ? 0 : row.source === "salary" ? 1 : 2;
@@ -1481,6 +1647,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     );
     candidates.sort(
       (first, second) =>
+        Number(exactPlanTransaction(second, transaction)) - Number(exactPlanTransaction(first, transaction)) ||
         Math.abs(dateTime(first.date) - dateTime(transaction.date)) -
           Math.abs(dateTime(second.date) - dateTime(transaction.date)) ||
         forecastPriority(first) - forecastPriority(second) ||
@@ -1522,6 +1689,19 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     }
     if (matched.source === "salary")
       actualPayDates.set(matched.paydayDate || matched.originalDate || matched.date, transaction.date);
+  }
+  for (const transaction of actual) {
+    const scheduled = linkedSchedules.get(transaction.id);
+    if (!scheduled) continue;
+    transaction.scheduledSource = scheduled.source;
+    transaction.scheduledDate = scheduled.date;
+    if (scheduled.billId != null) transaction.billId = scheduled.billId;
+    if (scheduled.source === "salary")
+      actualPayDates.set(scheduled.paydayDate || scheduled.originalDate || scheduled.date, transaction.date);
+    if (!explicitlyPaidForecasts.has(scheduled.id)) continue;
+    for (const field of ["annualPayment", "reserveAccountId", "sourceAccountId", "deferReserveToCardDue",
+      "annualChargeTransactionId", "annualCardDueId", "annualChargeDate"])
+      if (scheduled[field] !== undefined) transaction[field] = scheduled[field];
   }
   const rows = [
     ...forecasts.filter(
@@ -1604,7 +1784,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   );
   const opening = getPlanOpening(plan, options.accounts || [], document);
   const liveAccounts = new Set(opening.contributions.filter((contribution) => contribution.percentage > 0 && !contribution.isSnapshot).map((contribution) => contribution.accountId));
-  const savedAccountOpenings = new Map((plan.accountOpeningBalances || []).map((row) => [Number(row.accountId), roundMoney(row.balance)]));
+  const savedAccountOpenings = new Map((plan.balanceMode === "snapshot" ? plan.accountOpeningBalances || [] : [])
+    .map((row) => [Number(row.accountId), roundMoney(row.balance)]));
   let balanceUsd = opening.usd;
   let balancePhp = opening.php;
   const openingReserve = getAnnualReserveOpening(plan, document);
@@ -1739,11 +1920,13 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     }
   }
   const result = [];
+  const manuallyCompleted = new Set((plan.completedRows || []).map((row) => row.rowId));
   const isBankReflected = (row, accountId) => liveAccounts.has(Number(accountId)) &&
-    (row.date < today || (row.source === "transaction" && row.date <= today && !row.scheduled));
+    ((row.source === "transaction" && row.date <= today && !row.scheduled) ||
+      (plan.balanceMode === "snapshot" ? row.date < today : manuallyCompleted.has(row.id)));
   function append(row) {
     if (!row.annualPayment && ["income", "expense"].includes(row.kind) &&
-        row.source !== "creditCardDue" && statements.has(Number(row.accountId)))
+        row.source !== "creditCardDue" && creditAccountIds.has(Number(row.accountId)))
       row = { ...row, usd: 0, php: 0, cardCreditActivity: true };
     if (plan.accountLinks && row.source === "transaction" &&
         Number(row.accountId) !== Number(plan.accountLinks[row.currency === "PHP" ? "availablePhpAccountId" : "availableUsdAccountId"]))
@@ -1985,9 +2168,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         grossAmount,
         reserveUsed,
         reserveShortfall,
-        usd: row.currency === "USD" ? statements.has(Number(row.accountId)) ? reserveUsed : reserveShortfall > 0 ? -reserveShortfall : 0 : 0,
-        php: row.currency === "PHP" ? statements.has(Number(row.accountId)) ? reserveUsed : reserveShortfall > 0 ? -reserveShortfall : 0 : 0,
-        ...(statements.has(Number(row.accountId)) ? { cardCreditActivity: true } : {}),
+        usd: row.currency === "USD" ? creditAccountIds.has(Number(row.accountId)) ? reserveUsed : reserveShortfall > 0 ? -reserveShortfall : 0 : 0,
+        php: row.currency === "PHP" ? creditAccountIds.has(Number(row.accountId)) ? reserveUsed : reserveShortfall > 0 ? -reserveShortfall : 0 : 0,
+        ...(creditAccountIds.has(Number(row.accountId)) ? { cardCreditActivity: true } : {}),
         reserveDeltaUsd:
           row.currency === "USD" && reserveUsed > 0 ? -reserveUsed : 0,
         reserveDeltaPhp:
@@ -2047,7 +2230,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const usedTransferActuals = new Set(completed.filter((row) => row.source !== "transaction" && row.source !== "creditCardDue")
     .flatMap((row) => row.matchedTransactionIds).map(String));
   for (const row of completed) {
-    const future = row.date >= today && row.completionSource !== "transaction";
+    const future = plan.balanceMode !== "snapshot" ? !row.completed
+      : row.date >= today && !["transaction", "plan"].includes(row.completionSource);
     if (row.source === "allocation" && row.allocationKind === "savings") {
       const key = `${Number(row.accountId)}:${row.currency}`;
       if (savingsAccounts.has(key) && (future || datedSavingsOpening.has(key)))
@@ -2058,14 +2242,13 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const to = `${Number(row.toAccountId)}:${row.currency}`;
     const fromSavings = savingsAccounts.has(from);
     const toSavings = savingsAccounts.has(to);
-    const matchedLegs = row.completionSource === "transaction"
+    const matchedLegs = ["transaction", "plan"].includes(row.completionSource)
       ? transferActuals.filter((actual) => row.matchedTransactionIds.some((transactionId) => String(transactionId) === String(actual.transactionId)))
       : [];
     for (const [accountId, kind] of [[row.fromAccountId, "expense"], [row.toAccountId, "income"]]) {
       if (matchedLegs.some((actual) => Number(actual.accountId) === Number(accountId) && actual.kind === kind)) continue;
       const match = transferActuals.find((actual) => !usedTransferActuals.has(String(actual.transactionId)) &&
-        Number(actual.accountId) === Number(accountId) && actual.kind === kind && actual.currency === row.currency &&
-        Math.abs(actual.amount - row.amount) < 0.005 && Math.abs(dateTime(actual.date) - dateTime(row.date)) <= 3 * DAY_MS);
+        matchesTransferLeg(row, actual, { accountId, currency: row.currency, amount: kind === "income" ? row.amount : -row.amount }));
       if (match) {
         matchedLegs.push(match);
         usedTransferActuals.add(String(match.transactionId));
@@ -2079,7 +2262,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     let delta = 0;
     let availableAccountId = null;
     if (Number(row.fromAccountId) !== Number(row.toAccountId) &&
-        statements.has(Number(row.toAccountId)) && holdsFunds(row.fromAccountId, row.currency)) {
+        creditAccountIds.has(Number(row.toAccountId)) && holdsFunds(row.fromAccountId, row.currency)) {
       const released = fromSavings ? releaseSavings(from, row.amount, fromPosted) : 0;
       delta = roundMoney(released - row.amount);
       availableAccountId = Number(row.fromAccountId);
@@ -2106,7 +2289,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const availablePosted = matchedLegs.some((actual) => Number(actual.accountId) === availableAccountId);
     transferFlows.set(row.id, { delta, availableAccountId, availablePosted,
       postedAccountIds: [...new Set(matchedLegs.map((actual) => Number(actual.accountId)))],
-      creditCardPaymentFor: statements.has(Number(row.toAccountId)) && holdsFunds(row.fromAccountId, row.currency) ? Number(row.toAccountId) : null,
+      creditCardPaymentFor: creditAccountIds.has(Number(row.toAccountId)) && holdsFunds(row.fromAccountId, row.currency) ? Number(row.toAccountId) : null,
     });
     if (plan.includeTransactions !== false) {
       for (const transaction of matchedLegs) {
@@ -2125,7 +2308,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const nativeTransfer = transfer?.delta ?? (postedTransfer ? postedTransferFlows.get(String(row.transactionId)) : null);
     const usd = nativeTransfer === null ? row.usd : row.currency === "USD" ? nativeTransfer : 0;
     const php = nativeTransfer === null ? row.php : row.currency === "PHP" ? nativeTransfer : 0;
-    const recordedFlow = plan.includeTransactions !== false && ((row.completionSource === "transaction" && row.source !== "transaction" &&
+    const recordedFlow = plan.includeTransactions !== false && ((["transaction", "plan"].includes(row.completionSource) && row.source !== "transaction" &&
       (row.kind === "conversion" || row.kind === "transfer" || (row.source === "allocation" && row.allocationKind === "expense"))) || transfer?.availablePosted);
     const availableAccountId = transfer?.availableAccountId ?? row.accountId;
     const bankReflected = nativeTransfer !== null && (isBankReflected(row, availableAccountId) ||
@@ -2143,7 +2326,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       balanceUsd: reconciledUsd, balancePhp: reconciledPhp,
     };
   });
-  return plan.accountLinks
+  return plan.accountLinks || completionActual.some((transaction) => transaction.planRowId != null &&
+    String(transaction.planId) === String(plan.id))
     ? linkedPlanTransactions(reconciled, plan, completionActual, options.accounts || [], rate, today)
     : reconciled;
 }

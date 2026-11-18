@@ -22,6 +22,7 @@ export default function FinancePlanOccurrenceForm({
   onReset,
   busy,
   disabled,
+  recording = false,
 }) {
   const [draft, setDraft] = useState(() => ({
     date: row.date,
@@ -41,11 +42,12 @@ export default function FinancePlanOccurrenceForm({
           date: draft.date,
           description: draft.description.trim(),
           amount: Number(draft.amount),
+          ...(recording ? { recordNow: true } : {}),
         });
       }}
     >
       <p className="fp-inline-note">
-        Changes apply only to this occurrence in {plan.name}. Your recurring
+        {recording ? "Recording creates the account transactions for this occurrence. " : ""}Changes apply only to this occurrence in {plan.name}. Your recurring
         {row.recurring
           ? " entry and its other dates stay the same."
           : " salary, bills, and savings settings stay the same."}
@@ -101,7 +103,7 @@ export default function FinancePlanOccurrenceForm({
           className="fp-button fp-primary"
           disabled={busy || disabled}
         >
-          {busy ? "Saving…" : "Save this occurrence"}
+          {busy ? "Saving…" : recording ? "Record this occurrence" : "Save this occurrence"}
         </button>
         {row.isOverride && onReset && (
           <button

@@ -79,6 +79,7 @@ export default function FinancePlanForm({
     entries: [],
     completedRows: [],
     rowOverrides: [],
+    balanceMode: "live",
     accountOpeningBalances: [],
     ...plan,
     startingAccounts: (plan?.startingAccounts || []).map((row) => ({
@@ -110,7 +111,7 @@ export default function FinancePlanForm({
       ],
     }));
   const startingBalanceField = (accountId, currency, label = "Starting balance") => {
-    if (!accountId) return null;
+    if (!accountId || draft.balanceMode !== "snapshot") return null;
     const saved = draft.accountOpeningBalances.find((row) => Number(row.accountId) === Number(accountId));
     const captured = plan?.accountOpeningBalances?.some((row) => Number(row.accountId) === Number(accountId));
     return (
@@ -196,6 +197,12 @@ export default function FinancePlanForm({
           />
         </Field>
       </div>
+      <Field label="Account balances" hint="Live balances keep future payments in step with your accounts and recorded transactions.">
+        <select value={draft.balanceMode || "live"} onChange={(event) => set("balanceMode", event.target.value)}>
+          <option value="live">Live · keep account balances updated</option>
+          <option value="snapshot">Historical · saved starting balances</option>
+        </select>
+      </Field>
       <label className="fp-checkbox">
         <input
           type="checkbox"
@@ -209,7 +216,8 @@ export default function FinancePlanForm({
           <div className="fp-plan-live-heading">
             <div>
               <h3>Column accounts</h3>
-              <p>Each column uses a saved starting balance. Posted bank movements are included once; future entries project changes to that account.</p>
+              <p>{draft.balanceMode === "snapshot" ? "Each column uses a saved starting balance."
+                : "Each column follows its account’s live balance."} Recorded movements are included once; unpaid entries project upcoming changes.</p>
             </div>
             {onRefreshAccounts && (
               <button type="button" className="fp-button fp-text" disabled={refreshingAccounts || busy} onClick={onRefreshAccounts}>
@@ -258,7 +266,7 @@ export default function FinancePlanForm({
           <div>
             <h3>Account starting balances</h3>
             <p>
-              Include a percentage of each account’s saved starting balance,
+              Include a percentage of each account’s {draft.balanceMode === "snapshot" ? "saved starting" : "live"} balance,
               plus the flat amounts below.
             </p>
           </div>
@@ -421,7 +429,8 @@ export default function FinancePlanForm({
           </b>
         </span>
         <small>
-          Starting balances are saved with the plan. Bank refreshes do not change them.
+          {draft.balanceMode === "snapshot" ? "Starting balances are saved with the plan. Bank refreshes do not change them."
+            : "Account balances update as transactions are recorded or synced. Future payments use the latest balances."}
         </small>
         {opening.warnings.map((warning, index) => (
           <small key={index} className="fp-negative" role="status">
@@ -458,7 +467,9 @@ export default function FinancePlanForm({
         balances.
       </p>
       </>}
-      {draft.accountLinks && <p className="fp-inline-note">Starting balances are saved with the plan. Bank refreshes do not change them.</p>}
+      {draft.accountLinks && <p className="fp-inline-note">{draft.balanceMode === "snapshot"
+        ? "Starting balances are saved with the plan. Bank refreshes do not change them."
+        : "Linked columns follow live account balances. Recorded transactions are included once."}</p>}
       {[
         ["includeIncome", "Include scheduled salary payments"],
         [
@@ -485,8 +496,9 @@ export default function FinancePlanForm({
       ))}
       <p className="fp-inline-note">
         Bills and payday allocations fill in automatically. Matching posted
-        transactions mark rows done. You can also mark rows done manually; this
-        records progress without creating a payment or moving bank funds.
+        transactions mark rows done. Record a payment or receipt to update your
+        accounts. Marking a custom entry done records its assigned account transactions.
+        No bank payment is initiated.
       </p>
       <button
         type="submit"

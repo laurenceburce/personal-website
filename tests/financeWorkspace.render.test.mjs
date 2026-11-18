@@ -815,7 +815,7 @@ test("live percentages and flat starting amounts reach the ledger and summary af
 
 test("saved starting funds reach the ledger and summary unchanged after bank balances refresh", () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
-  const overrides = { bills: [], plans: [{ ...base, openingUsd: 0,
+  const overrides = { bills: [], plans: [{ ...base, balanceMode: "snapshot", openingUsd: 0,
     startingAccounts: [{ accountId: 1, percentage: 100 }],
     accountOpeningBalances: [{ accountId: 1, balance: 200 }],
   }] };
@@ -1277,4 +1277,86 @@ test("a historical Venture X annual fee is funded once inside the December card 
     assert.match(html, /\$395\.00 covered by its annual reserve/);
     assert.match(plain(html), /Available funds · USD\$736\.84/);
   }
+});
+
+test("recording an early scheduled payment opens an actual transaction and refreshes accounts after saving", async () => {
+  const props = fixture("plans", 0, { bills: [{ id: "bill", name: "Internet", cadence: "monthly", amount: 25,
+    currency: "USD", dueDay: 20, accountId: 1 }] }, { accounts: [{ id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 100 }] });
+  const renderWorkspace = workspaceHarness(props);
+  const ledger = findElement(renderWorkspace(), (node) => node.type?.name === "Ledger");
+  const scheduled = ledger.props.rows.find((row) => row.billId === "bill");
+  ledger.props.onRecord(scheduled);
+  const form = findElement(renderWorkspace(), (node) => node.type?.name === "FinancePlanEntryForm");
+  assert.equal(form.props.completed, true);
+  assert.equal(form.props.entry.date, props.today);
+  assert.equal(form.props.entry.accountId, 1);
+  assert.equal(form.props.entry.scheduledRowId, "bill:bill:2026-11-20");
+  const calls = [];
+  let saved;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push(url);
+    if (options?.method === "PUT") {
+      saved = JSON.parse(options.body).document;
+      return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) };
+    }
+    if (url.startsWith("/api/finance/activity")) return { ok: true, json: async () => ({ ...props.initialActivity,
+      accounts: [{ ...props.initialActivity.accounts[0], nativeCurrentBalance: 75 }] }) };
+    return { ok: true, json: async () => ({ configured: true, from: "2026-11-01", to: "2026-11-30", transactions: [] }) };
+  };
+  try { await form.props.onSave({ ...form.props.entry, recordNow: true }); }
+  finally { globalThis.fetch = originalFetch; }
+  const entry = saved.plans[0].entries[0];
+  assert.equal(Object.hasOwn(entry, "recordNow"), false);
+  assert.equal(entry.scheduledRowId, scheduled.id);
+  assert.deepEqual(saved.plans[0].completedRows.map((row) => row.rowId), [`entry:${entry.id}`]);
+  assert.ok(calls.some((url) => url.startsWith("/api/finance/activity")));
+  assert.ok(calls.some((url) => url.startsWith("/api/finance/plan-activity")));
+});
+
+test("workspace live projections follow refreshed accounts despite legacy captured openings", () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const overrides = { bills: [], plans: [{ ...base, openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountOpeningBalances: [{ accountId: 1, balance: 999 }] }] };
+  for (const balance of [200, 175]) {
+    const html = plain(render("plans", 0, overrides, { accounts: [{ id: 1, name: "Checking", type: "checking",
+      currency: "USD", nativeCurrentBalance: balance }] }));
+    assert.ok(html.includes(`Available funds · USD${planner.money(balance)}`));
+    assert.ok(!html.includes("$999.00"));
+  }
+});
+
+test("recording part of a live card payment retains the future balance target", async () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const scheduled = { id: "card-target", date: "2026-11-20", description: "Card payoff", kind: "transfer",
+    fromAccountId: 34, toAccountId: 37, currency: "PHP", amount: 300, amountMode: "cardBalance", recurrence: "once" };
+  const props = fixture("plans", 0, { bills: [], plans: [{ ...base, entries: [scheduled] }] }, { accounts: [
+    { id: 34, name: "Savings", type: "savings", currency: "PHP", nativeCurrentBalance: 1000 },
+    { id: 37, name: "Card", type: "credit", currency: "PHP", nativeCurrentBalance: 300 },
+  ] });
+  const renderWorkspace = workspaceHarness(props);
+  const ledger = findElement(renderWorkspace(), (node) => node.type?.name === "Ledger");
+  const target = ledger.props.rows.find((row) => row.entryId === "card-target");
+  ledger.props.onRecord(target);
+  const form = findElement(renderWorkspace(), (node) => node.type?.name === "FinancePlanEntryForm");
+  assert.notEqual(form.props.entry.id, scheduled.id);
+  assert.equal(form.props.entry.scheduledRowId, "entry:card-target");
+  assert.equal(form.props.entry.fromAccountId, 34);
+  assert.equal(form.props.entry.toAccountId, 37);
+  assert.equal(form.props.entry.amountMode, "fixed");
+  assert.equal(form.props.completed, true);
+  const originalFetch = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    if (options?.method === "PUT") { saved = JSON.parse(options.body).document;
+      return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) }; }
+    return { ok: true, json: async () => url.startsWith("/api/finance/activity") ? props.initialActivity
+      : { configured: true, from: base.startDate, to: base.endDate, transactions: [] } };
+  };
+  try { await form.props.onSave({ ...form.props.entry, amount: 100, recordNow: true }); }
+  finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual(saved.plans[0].entries[0], scheduled);
+  assert.equal(saved.plans[0].entries[1].amount, 100);
+  assert.equal(saved.plans[0].completedRows.length, 1);
+  assert.equal(saved.plans[0].completedRows[0].rowId, `entry:${form.props.entry.id}`);
 });

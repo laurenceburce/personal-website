@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
+import { financePlanPendingMovementSql, financePlanTransactionMetadata, refreshFinancePlanPostings } from "./financePlanPostings.mjs";
 import {
   financeActivityWindow,
   financeProviderStatus,
@@ -228,7 +229,7 @@ const runMigration = async (pool, sql) => {
   }
 };
 
-const ensureFinanceSchema = async () => {
+export const ensureFinanceSchema = async () => {
   const pool = await getPool();
   if (!pool) return null;
 
@@ -473,6 +474,11 @@ const ensureFinanceSchema = async () => {
         pool,
         "ALTER TABLE personal_finance_transactions ADD COLUMN is_provider_removed TINYINT(1) NOT NULL DEFAULT 0",
       );
+      for (const column of [
+        "source_plan_id VARCHAR(100) NULL", "source_plan_row_id VARCHAR(240) NULL", "source_plan_leg VARCHAR(8) NULL",
+        "plan_generated TINYINT(1) NOT NULL DEFAULT 0", "plan_provisional TINYINT(1) NOT NULL DEFAULT 0", "plan_record_json LONGTEXT NULL",
+      ]) await runMigration(pool, `ALTER TABLE personal_finance_transactions ADD COLUMN ${column}`);
+      await runMigration(pool, "ALTER TABLE personal_finance_transactions ADD UNIQUE KEY personal_finance_transactions_plan_idx (source_plan_id, source_plan_row_id, source_plan_leg)");
       await runMigration(
         pool,
         "ALTER TABLE personal_finance_transactions ADD UNIQUE KEY personal_finance_transactions_external_idx (external_provider, external_transaction_id)",
@@ -1055,6 +1061,7 @@ function attachRecurringBillMatches(
 
 function mapTransaction(row) {
   return {
+    ...financePlanTransactionMetadata(row),
     id: Number(row.id),
     date: formatDateOnly(row.transaction_date),
     kind: row.kind,
@@ -1129,11 +1136,13 @@ export async function getFinanceActivity({ month } = {}) {
         warning:
           "Connect your finance database to record transactions and connect bank accounts.",
       };
+    await refreshFinancePlanPostings(database, window.today);
     const [accountResult, connectionResult, transactionResult] =
       await Promise.all([
         database.query(
           `
         SELECT a.*, c.institution_name, c.status AS connection_status,
+          ${financePlanPendingMovementSql()} AS plan_pending_movement,
           (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
            FROM personal_finance_transactions t
            WHERE t.account_id = a.id AND t.currency = a.currency
@@ -1230,6 +1239,7 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
         warning:
           "Connect your finance database to include recorded transactions in this plan.",
       };
+    await refreshFinancePlanPostings(database, financeActivityWindow().today);
     const [rows] = await database.query(
       `
       SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
@@ -2060,10 +2070,14 @@ async function requireManualTransaction(pool, transactionId) {
   if (transactionId === null)
     throw appError("Choose a valid transaction.", 400);
   const [rows] = await pool.query(
-    "SELECT id, external_provider, external_transaction_id FROM personal_finance_transactions WHERE id = ? LIMIT 1",
+    "SELECT id, external_provider, external_transaction_id, source_plan_id, plan_generated, plan_record_json FROM personal_finance_transactions WHERE id = ? LIMIT 1",
     [transactionId],
   );
   if (!rows.length) throw appError("Transaction was not found.", 404);
+  let detached = false;
+  try { detached = Boolean((typeof rows[0].plan_record_json === "string" ? JSON.parse(rows[0].plan_record_json) : rows[0].plan_record_json)?.detached); } catch { /* Keep malformed receipts protected. */ }
+  if (rows[0].source_plan_id && !(rows[0].plan_generated && detached))
+    throw appError("Edit this recorded payment in Budget Plans so its account activity stays connected.", 409);
   if (rows[0].external_provider || rows[0].external_transaction_id)
     throw appError(
       "Bank-imported transactions are read-only. Correct the source record through your bank and sync again.",
@@ -2926,6 +2940,7 @@ async function syncPlaidConnection(
     );
     if (accountSync.creditAccountIds?.length)
       await syncPlaidCreditCardDues(pool, connectionId, accessToken, accountSync.creditAccountIds);
+    await refreshFinancePlanPostings(pool, financeActivityWindow().today);
     await pool.query(
       "UPDATE personal_finance_connections SET status = 'active', last_synced_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('disconnected', 'superseded')",
       [new Date(), new Date(), connectionId],

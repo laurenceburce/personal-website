@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireFinanceAccess } from "../../../lib/financeAuth";
+import { isAllowedOrigin } from "../../utils/origin";
 import { getFinancePlanner, refreshPlannerExchangeRate, saveFinancePlanner } from "../../../lib/financePlannerStore";
 
 export const runtime = "nodejs";
@@ -31,6 +32,7 @@ export async function GET() {
 export async function PUT(request) {
   try {
     if (!await requireFinanceAccess()) return json({ error: "Unauthorized" }, 401);
+    if (!isAllowedOrigin(request)) return json({ error: "This request origin is not allowed." }, 403);
     const payload = await body(request);
     return json(await saveFinancePlanner(payload?.document, payload?.revision));
   } catch (error) { return errorResponse(error); }
@@ -39,6 +41,7 @@ export async function PUT(request) {
 export async function POST(request) {
   try {
     if (!await requireFinanceAccess()) return json({ error: "Unauthorized" }, 401);
+    if (!isAllowedOrigin(request)) return json({ error: "This request origin is not allowed." }, 403);
     const payload = await body(request);
     if (payload?.action !== "refreshRate") return json({ error: "Unknown planner action." }, 400);
     return json({ exchangeRate: await refreshPlannerExchangeRate() });

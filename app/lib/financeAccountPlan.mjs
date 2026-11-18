@@ -193,8 +193,10 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   const accountLinks = plan.accountLinks || {};
   const linkedIds = new Set(Object.values(accountLinks).map(id).filter(Boolean));
   const linkedId = (kind, currency) => id(accountLinks[`${kind}${currency === "USD" ? "Usd" : "Php"}AccountId`]);
+  // Plans track the latest account balances unless the user explicitly chooses
+  // a historical snapshot. Older auto-captured openings must not freeze them.
   const opening = new Map(
-    (plan.accountOpeningBalances || []).map((balance) => [
+    (plan.balanceMode === "snapshot" ? plan.accountOpeningBalances || [] : []).map((balance) => [
       id(balance.accountId),
       roundMoney(balance.balance),
     ]),
@@ -548,14 +550,14 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     // A reconciled task owns its bank records. Keep their actual movement on
     // that row so dated openings replay it once while live balances skip it.
     for (const transaction of embeddedTransactions.get(row.id) || []) {
-      // Scalar forecasts such as salary can retain their bank evidence when
-      // recorded rows are hidden. That evidence replaces, rather than adds to,
-      // the same predicted native payment.
+      // Owned receipts replace their forecast legs. A recorded conversion keeps
+      // its actual destination amount even after the reference rate changes.
       const duplicatePayment = direct.findIndex((move) =>
-        !["transfer", "conversion", "recorded"].includes(move.kind) &&
+        move.kind !== "recorded" &&
         move.accountId === Number(transaction.accountId) && move.currency === transaction.currency &&
         Math.sign(move.amount) === (transaction.kind === "income" ? 1 : -1) &&
-        Math.abs(Math.abs(move.amount) - transaction.amount) < 0.005 && distance(transaction.date, row.date) <= 3);
+        (move.kind === "conversion" || Math.abs(Math.abs(move.amount) - transaction.amount) < 0.005) &&
+        distance(transaction.date, row.date) <= 3);
       if (duplicatePayment >= 0) direct.splice(duplicatePayment, 1);
       const recorded = movement(transaction.accountId,
         transaction.kind === "income" ? transaction.amount : -transaction.amount,
@@ -581,8 +583,6 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
   let previousReserve = { usd: openingReserve.usd, php: openingReserve.php };
   const rows = rawRows.map((row) => {
     const currentReserveReceipts = new Set();
-    const partialTransfer = row.source === "manual" && row.kind === "transfer" && row.completionSource !== "transaction" &&
-      (embeddedTransactions.get(row.id) || []).some((transaction) => !transaction.pending && transaction.date <= today);
     const projected = row.accountMovements
       .filter((move) => {
         if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense" && !move.recordedDate)
@@ -624,8 +624,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         (move) =>
           opening.has(move.accountId) ||
           (move.recordedDate ? move.recordedDate > today :
-            ((row.date >= today || (partialTransfer && move.kind === "transfer")) &&
-              !(row.source === "transaction" && row.date <= today))),
+            row.source === "transaction" ? row.date > today : !row.completed),
       );
     for (const move of projected) {
       const account = accountById.get(move.accountId);
@@ -642,7 +641,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         if (
           selected &&
           (opening.has(selected) ||
-            (row.date >= today && !currentReserveReceipts.has(selected)))
+            (!row.completed && !currentReserveReceipts.has(selected)))
         )
           annualReserved.set(
             selected,
@@ -654,8 +653,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       const selected = Number(row.reserveAccountId);
       if (
         opening.has(selected) ||
-        (row.date >= today &&
-          !(row.source === "transaction" && row.date <= today))
+        (!row.completed && row.source !== "transaction")
       )
         annualReserved.set(
           selected,
@@ -669,7 +667,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     }
     if (row.source === "creditCardDue") {
       for (const consumption of cardReserveConsumptions.get(row.id) || [])
-        if (opening.has(consumption.accountId) || row.date >= today)
+        if (opening.has(consumption.accountId) || !row.completed)
           annualReserved.set(consumption.accountId, Math.max(0, roundMoney((annualReserved.get(consumption.accountId) || 0) - consumption.amount)));
     }
     if (
@@ -678,7 +676,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       row.accountId != null
     ) {
       const selected = Number(row.accountId);
-      if (opening.has(selected) || row.date >= today)
+      if (opening.has(selected) || !row.completed)
         savingsAllocated.set(
           selected,
           roundMoney((savingsAllocated.get(selected) || 0) + row.amount),

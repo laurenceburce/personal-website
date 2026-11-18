@@ -130,6 +130,7 @@ const document = {
   ],
 };
 const plan = {
+  balanceMode: "snapshot",
   startDate: "2026-11-02",
   endDate: "2026-11-30",
   openingUsd: 100,

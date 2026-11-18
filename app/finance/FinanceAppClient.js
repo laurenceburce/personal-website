@@ -1133,6 +1133,7 @@ export default function FinanceAppClient({
       setState(result);
       setNotice(message);
       setModal(null);
+      await Promise.all([loadActivity(), ...(plan ? [loadPlanActivity(result.document.plans.find((item) => item.id === plan.id) || plan)] : [])]);
       return true;
     } catch (err) {
       setError(err.message);
@@ -1168,6 +1169,27 @@ export default function FinanceAppClient({
   }
   async function togglePlanCompletion(row) {
     if (!plan || busy || row.completionSource === "transaction") return;
+    const entry = row.entryId && plan.entries.find((item) => item.id === row.entryId);
+    if (!row.completed && entry && (["transfer", "conversion"].includes(entry.kind)
+      ? !entry.fromAccountId || !entry.toAccountId : !entry.accountId)) {
+      if (!entry.recurrence || entry.recurrence === "once") open({ type: "entry", recording: true, entry });
+      else setError("Choose the accounts in this recurring entry before recording an occurrence.");
+      return;
+    }
+    if (!row.completed && row.amountMode === "cardBalance" && row.amount > 0) {
+      recordScheduledRow(row);
+      return;
+    }
+    if (!row.completed && row.entryId && row.date > today) {
+      if (entry && (!entry.recurrence || entry.recurrence === "once")) {
+        open({ type: "entry", recording: true, entry: { ...entry, date: today, amount: row.amount, amountMode: "fixed" } });
+        return;
+      }
+      if (entry) {
+        open({ type: "occurrence", planId: plan.id, recording: true, row: { ...row, date: today } });
+        return;
+      }
+    }
     const rowId = row.completionKey || row.id;
     const completedRows = (plan.completedRows || []).filter(
       (item) => item.rowId !== rowId,
@@ -1176,8 +1198,31 @@ export default function FinanceAppClient({
       completedRows.push({ rowId, completedAt: new Date().toISOString() });
     await savePlan({ ...plan, completedRows });
   }
-  const saveEntry = (row) =>
-    savePlan({ ...plan, entries: upsert(plan.entries, row) });
+  const saveEntry = (row) => {
+    const { recordNow, ...entry } = row;
+    const rowId = `entry:${entry.id}`;
+    const completedRows = (plan.completedRows || []).filter((item) => item.rowId !== rowId);
+    if (recordNow) completedRows.push({ rowId, completedAt: new Date().toISOString() });
+    return savePlan({ ...plan, entries: upsert(plan.entries, entry),
+      completedRows: entry.recurrence && entry.recurrence !== "once" ? plan.completedRows : completedRows });
+  };
+  function recordScheduledRow(row) {
+    const cardPayment = row.source === "creditCardDue" || (row.kind === "transfer" &&
+      accounts.some((account) => Number(account.id) === Number(row.toAccountId) && account.type === "credit"));
+    const suffix = row.currency === "PHP" ? "Php" : "Usd";
+    const fundingAccountId = row.fromAccountId || row.sourceAccountId || plan.accountLinks?.[`available${suffix}AccountId`] ||
+      (document.salary.currency === row.currency ? document.salary.accountId : null);
+    open({ type: "entry", recording: true, entry: {
+      id: uid(), date: today, description: row.description,
+      kind: cardPayment ? "transfer" : row.kind === "income" ? "income" : "expense",
+      amount: row.grossAmount ?? row.amount,
+      currency: row.currency, recurrence: "once", amountMode: "fixed",
+      accountId: cardPayment ? null : row.accountId,
+      fromAccountId: cardPayment ? fundingAccountId : null,
+      toAccountId: cardPayment ? row.creditAccountId || row.toAccountId : null,
+      scheduledRowId: row.id,
+    } });
+  }
   const removePlanEntry = (entry) => {
     const belongsToEntry = (row) =>
       row.rowId === `entry:${entry.id}` || row.rowId.startsWith(`entry:${entry.id}:`);
@@ -1192,17 +1237,18 @@ export default function FinanceAppClient({
   async function savePlanOccurrence(override) {
     const target = document.plans.find((item) => item.id === modal?.planId);
     if (!target) return;
+    const { recordNow, ...changes } = override;
     await savePlan({
       ...target,
       rowOverrides: [
         ...(target.rowOverrides || []).filter(
           (item) => item.rowId !== override.rowId,
         ),
-        override,
+        changes,
       ],
       completedRows: (target.completedRows || []).filter(
         (item) => item.rowId !== override.rowId,
-      ),
+      ).concat(recordNow ? [{ rowId: override.rowId, completedAt: new Date().toISOString() }] : []),
     });
   }
 
@@ -1546,6 +1592,7 @@ export default function FinanceAppClient({
                     open({ type: "transaction", transaction })
                   }
                   onDelete={(row) => open({ type: "deleteTransaction", row })}
+                  onReviewPlan={(planId) => { setSelectedPlanId(planId); navigate("plans"); }}
                 />
               )}
             </div>
@@ -1967,7 +2014,7 @@ export default function FinanceAppClient({
                       </summary>
                       <p className="fp-inline-note">
                         Balances{" "}
-                        {plan.accountOpeningBalances?.length
+                        {plan.balanceMode === "snapshot" && plan.accountOpeningBalances?.length
                           ? "start from the amounts saved with this plan, before its first day’s flows. Bank refreshes update transactions without changing these starting balances. Edit the plan to correct a starting amount."
                           : plan.accountLinks
                           ? "follow the accounts named in each column. Posted bank movements already included in their current balances are not counted again."
@@ -2167,6 +2214,7 @@ export default function FinanceAppClient({
                         openingBalances={planOpening}
                         openingSavings={accountPlan?.openingSavings}
                         onToggleComplete={togglePlanCompletion}
+                        onRecord={recordScheduledRow}
                         onEditOccurrence={(row) =>
                           open({ type: "occurrence", row, planId: plan.id })
                         }
@@ -2361,6 +2409,7 @@ export default function FinanceAppClient({
               busy={busy}
               disabled={!state.configured}
               rate={rate}
+              completed={Boolean(modal.recording || (modal.entry && plan.completedRows?.some((row) => row.rowId === `entry:${modal.entry.id}`)))}
             />
           )}
           {modal.type === "occurrence" && (
@@ -2371,6 +2420,7 @@ export default function FinanceAppClient({
               onReset={resetPlanOccurrence}
               busy={busy}
               disabled={!state.configured}
+              recording={Boolean(modal.recording)}
             />
           )}
           {(modal.type === "delete" || modal.type === "deleteEntry") && (
@@ -2380,8 +2430,12 @@ export default function FinanceAppClient({
                 <strong>{modal.row?.name || modal.row?.description}</strong>?{" "}
                 {modal.collection === "bills"
                   ? "It will also be removed from every budget forecast."
+                  : modal.collection === "plans"
+                    ? "Recorded account transactions remain in your history."
                   : modal.type === "deleteEntry" && modal.row?.recurrence && modal.row.recurrence !== "once"
-                    ? "All occurrences of this recurring entry will be removed from this plan."
+                    ? "All occurrences of this recurring entry will be removed from this plan, including their recorded manual transactions. Imported bank transactions stay in your history."
+                  : modal.type === "deleteEntry"
+                    ? "Its recorded manual transactions will be removed from accounts. Imported bank transactions stay in your history."
                   : "This cannot be undone."}
               </p>
               <div className="fp-button-row">

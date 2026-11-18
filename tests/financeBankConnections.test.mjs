@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import * as activity from "../app/lib/financeActivity.mjs";
 import * as planActivity from "../app/lib/financePlanActivity.mjs";
 import * as identity from "../app/lib/financeAccountIdentity.mjs";
+import * as postings from "../app/lib/financePlanPostings.mjs";
 
 const require = createRequire(import.meta.url);
 const { transformSync } = require("next/dist/build/swc");
@@ -111,6 +112,7 @@ function backend(handler) {
     if (specifier === "./financeActivity.mjs") return activity;
     if (specifier === "./financePlanActivity.mjs") return planActivity;
     if (specifier === "./financeAccountIdentity.mjs") return identity;
+    if (specifier === "./financePlanPostings.mjs") return postings;
     return require(specifier);
   };
   new Function("require", "module", "exports", code)(
@@ -248,6 +250,27 @@ test("manual account edits reconcile native balances against recorded movement f
     const setClause = update.sql.split(" WHERE a.id =")[0];
     assert.doesNotMatch(setClause, /(?:^|,)\s*(?:currency|current_balance|available_balance|credit_card_[a-z_]+)\s*=/);
     assert.ok(!queries.some(({ sql }) => /^(INSERT INTO|UPDATE|DELETE FROM) personal_finance_transactions/.test(sql)));
+  }
+});
+
+test("active plan receipts are edited through their plan while detached manual history can be corrected or deleted", async (t) => {
+  bankEnvironment(t);
+  const input = { date: "2026-11-18", kind: "expense", accountId: null, category: "Food", merchant: "Corrected receipt",
+    note: "", amount: 125, currency: "PHP" };
+  for (const [row, allowed] of [
+    [{ id: 9, source_plan_id: "plan", plan_generated: 1, plan_record_json: JSON.stringify({ detached: false }) }, false],
+    [{ id: 9, source_plan_id: "deleted-plan", plan_generated: 1, plan_record_json: JSON.stringify({ detached: true }) }, true],
+    [{ id: 9, source_plan_id: "deleted-plan", plan_generated: 0, external_provider: "plaid", external_transaction_id: "bank-9",
+      plan_record_json: JSON.stringify({ detached: true }) }, false],
+  ]) {
+    const { api } = backend((sql) => sql.startsWith("SELECT id, external_provider") ? [row] : { affectedRows: 1 });
+    if (allowed) {
+      assert.deepEqual(await api.updateFinanceTransaction(9, input), { id: 9 });
+      assert.deepEqual(await api.deleteFinanceTransaction(9), { id: 9 });
+    } else {
+      await assert.rejects(api.updateFinanceTransaction(9, input), (error) => error.status === 409);
+      await assert.rejects(api.deleteFinanceTransaction(9), (error) => error.status === 409);
+    }
   }
 });
 
@@ -943,6 +966,9 @@ test("each sync page deduplicates before committing and the final cursor is publ
     "begin",
     "commit",
     "release",
+    "begin",
+    "commit",
+    "release",
   ]);
   let chunk = [];
   let pageCommits = 0;
@@ -1121,7 +1147,7 @@ test("plan bank refresh updates all active links with balances and incremental t
   assert.equal(requests.length, 8);
   assert.ok(
     !queries.some(
-      ({ sql }) => /^DELETE/.test(sql) || /personal_finance_planner/.test(sql),
+      ({ sql }) => /^DELETE/.test(sql) || /^(?:UPDATE|INSERT INTO|DELETE FROM) personal_finance_planner/.test(sql),
     ),
   );
 });

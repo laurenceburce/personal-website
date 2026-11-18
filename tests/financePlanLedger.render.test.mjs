@@ -1172,11 +1172,11 @@ test("marking an annual payment done leaves every cash and reserve value unchang
   assert.match(done[10], /DoneMarked manually/);
   assert.match(
     plain(render([payment])),
-    /it does not create a transaction or change its planned amount/,
+    /marking a custom row done records it in its assigned accounts/,
   );
 });
 
-test("a historical conversion keeps both flow amounts visible and identifies only its live-account side", () => {
+test("an overdue unrecorded conversion remains in the live projection until recorded", () => {
   const document = { salary: {}, bills: [], allocations: [] };
   const accounts = [
     { id: 1, currency: "USD", type: "checking", nativeCurrentBalance: 90 },
@@ -1212,21 +1212,10 @@ test("a historical conversion keeps both flow amounts visible and identifies onl
     const conversion = cells(findRow(html, "fpl-row-manual"));
     assert.equal(conversion[2], "-$10.00");
     assert.equal(conversion[3], "+₱630.00");
-    assert.equal(conversion[4], accountId === 1 ? "$90.00" : "-$10.00");
-    assert.equal(conversion[5], "₱630.00");
+    assert.equal(conversion[4], accountId === 1 ? "$80.00" : "-$10.00");
+    assert.equal(conversion[5], accountId === 1 ? "₱630.00" : "₱1,260.00");
     assert.equal(conversion[10], "To do");
-    assert.match(
-      conversion[1],
-      accountId === 1
-        ? /Already included in the live starting balance · USD -\$10\.00/
-        : /Already included in the live starting balance · PHP \+₱630\.00/,
-    );
-    assert.doesNotMatch(
-      conversion[1],
-      accountId === 1
-        ? /live starting balance · PHP/
-        : /live starting balance · USD/,
-    );
+    assert.doesNotMatch(conversion[1], /Already included in the live starting balance/);
   }
 });
 
@@ -1466,4 +1455,15 @@ test("the upcoming shortcut targets the first unfinished row on or after today",
   assert.ok(plain(renderToStaticMarkup(target)).includes("Next bill"));
   const pastOnly = elements(Ledger({ plan, rows: records.slice(0, 1), today: "2026-12-01" }));
   assert.ok(!pastOnly.some((node) => node.type === "a" && hasClass(node, "fpl-upcoming-link")));
+});
+
+test("recorded plan rows retain their entry controls and show account recording status", () => {
+  const html = render([row({ id: "transaction:99", source: "transaction", entryId: "manual", planGenerated: true,
+    description: "Extra expense", completed: true, completionSource: "plan", recordedInAccounts: true, awaitingBankSync: true })],
+    { onToggleComplete() {} });
+  assert.match(html, /Recorded in accounts · awaiting bank match/);
+  assert.match(html, /aria-label="Edit Extra expense"/);
+  assert.match(html, /aria-label="Reopen Extra expense"/);
+  const scheduled = render([row({ description: "Internet" })], { onRecord() {} });
+  assert.match(scheduled, /aria-label="Record payment: Internet"/);
 });

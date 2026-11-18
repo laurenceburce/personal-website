@@ -43,6 +43,7 @@ const document = () => ({
   plans: [
     {
       id: "plan-1",
+      balanceMode: "snapshot",
       name: "November",
       startDate: "2026-11-01",
       endDate: "2026-11-30",
@@ -170,6 +171,7 @@ test("legacy migration retries a revision race in a consistent transaction and s
       if (sql.includes("SELECT document, revision")) return [[{ ...stored }]];
       if (sql.includes("SELECT a.*")) return [[account]];
       if (sql.includes("SELECT id, currency")) return [[account]];
+      if (sql.includes("source_plan_id IS NOT NULL")) return [[]];
       if (sql.includes("FROM personal_finance_transactions")) return [[{
         account_id: 1, currency: "USD", kind: "expense", amount: "50.00", transaction_date: "2026-11-02",
       }]];
@@ -192,7 +194,7 @@ test("legacy migration retries a revision race in a consistent transaction and s
   };
   const pool = {
     query: async (sql) => {
-      if (sql.startsWith("CREATE TABLE")) return [{}];
+      if (/^\s*(CREATE TABLE|ALTER TABLE)/.test(sql)) return [{}];
       if (sql.includes("SELECT id FROM")) return [[{ id: 1 }]];
       throw new Error(`Unexpected pool query: ${sql}`);
     },
@@ -238,6 +240,28 @@ test("default is an empty personal planner with a USD salary and real local date
   assert.equal(planner.salary.payFrequency, "biweekly");
   assert.match(planner.salary.firstPayDate, /^\d{4}-\d{2}-\d{2}$/);
   assert.deepEqual(validateFinancePlanner(planner), planner);
+});
+
+test("plans default to live balances, explicit snapshots stay opt-in, and live payment entries validate their card target", async () => {
+  const planner = document();
+  delete planner.plans[0].balanceMode;
+  const clean = validateFinancePlanner(planner);
+  assert.equal(clean.plans[0].balanceMode, "live");
+  const untouched = await captureFinancePlannerOpenings({ query() { throw new Error("Live plans do not capture snapshots"); } }, clean);
+  assert.deepEqual(untouched, clean);
+  planner.plans[0].balanceMode = "invalid";
+  assert.throws(() => validateFinancePlanner(planner), /balance mode/);
+  planner.plans[0].balanceMode = "live";
+  Object.assign(planner.plans[0].entries[0], { kind: "transfer", amountMode: "cardBalance", fromAccountId: 1, toAccountId: 2,
+    scheduledRowId: "creditCardDue:2:2027-01-01" });
+  const payment = validateFinancePlanner(planner);
+  assert.equal(payment.plans[0].entries[0].scheduledRowId, "creditCardDue:2:2027-01-01");
+  assert.equal(payment.plans[0].entries[0].amountMode, "cardBalance");
+  const accounts = [{ id: 1, currency: "USD", account_type: "checking" }, { id: 2, currency: "USD", account_type: "credit" }];
+  assert.doesNotThrow(() => validateFinancePlannerAccounts(payment, accounts));
+  assert.throws(() => validateFinancePlannerAccounts(payment, [accounts[0], { ...accounts[1], account_type: "checking" }]), /credit card/);
+  planner.plans[0].entries[0].scheduledRowId = "transaction:9";
+  assert.throws(() => validateFinancePlanner(planner), /scheduled payment/);
 });
 
 test("planner account links and native opening balances round trip as positive numeric identifiers", () => {

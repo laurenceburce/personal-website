@@ -625,6 +625,7 @@ test("live plan openings add flat amounts to current native account percentages"
 test("saved account openings stay fixed through refreshes and replay posted expenses once", () => {
   for (const currency of ["USD", "PHP"]) {
     const plan = {
+      balanceMode: "snapshot",
       startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
       startingAccounts: [{ accountId: 1, percentage: 100 }],
       accountOpeningBalances: [{ accountId: 1, balance: 200 }],
@@ -647,11 +648,105 @@ test("saved account openings stay fixed through refreshes and replay posted expe
 });
 
 test("saved opening percentages and zero amounts remain stable even when an account is archived", () => {
-  const plan = { openingUsd: 25, startingAccounts: [{ accountId: 1, percentage: 80 }, { accountId: 2, percentage: 100 }],
+  const plan = { balanceMode: "snapshot", openingUsd: 25, startingAccounts: [{ accountId: 1, percentage: 80 }, { accountId: 2, percentage: 100 }],
     accountOpeningBalances: [{ accountId: 1, balance: 200 }, { accountId: 2, balance: 0 }] };
   const accounts = [1, 2].map((id) => ({ id, currency: "USD", type: "checking", nativeCurrentBalance: 9000, isArchived: true }));
   assert.equal(getPlanOpening(plan, accounts).usd, 185);
   assert.equal(getPlanOpening(plan, accounts).warnings.length, 0);
+});
+
+test("live plans ignore stale saved openings and keep overdue unpaid commitments in the forecast", () => {
+  const document = { salary: {}, bills: [], allocations: [] };
+  const plan = { id: "live", startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+    startingAccounts: [{ accountId: 1, percentage: 100 }], accountOpeningBalances: [{ accountId: 1, balance: 999 }],
+    entries: [{ id: "unpaid", date: "2026-11-03", description: "Unpaid bill", kind: "expense", accountId: 1, amount: 25, currency: "USD" }] };
+  const accounts = [{ id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 100 }];
+  for (const balanceMode of [undefined, "live"]) {
+    const live = { ...plan, balanceMode };
+    assert.equal(getPlanOpening(live, accounts).usd, 100);
+    assert.equal(getPlanOpening(live, [{ ...accounts[0], nativeCurrentBalance: 150 }]).usd, 150);
+    const rows = buildPlanRows(live, document, 63, { accounts, today: "2026-11-18" });
+    assert.equal(rows[0].balanceUsd, 75);
+    assert.equal(rows[0].completed, false);
+  }
+  assert.equal(getPlanOpening({ ...plan, balanceMode: "snapshot" }, accounts).usd, 999);
+  const completed = buildPlanRows({ ...plan, completedRows: [{ rowId: "entry:unpaid", completedAt: "2026-11-03T00:00:00.000Z" }] },
+    document, 63, { accounts, today: "2026-11-18" });
+  assert.equal(completed[0].balanceUsd, 100);
+});
+
+test("recorded custom entries keep their editable origin and merge with bank descriptions and posting dates", () => {
+  const document = { salary: {}, bills: [], allocations: [] };
+  const plan = { id: "live", startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 0, openingPhp: 0,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+    startingAccounts: [{ accountId: 1, percentage: 100 }], entries: [
+      { id: "fill", date: "2026-11-03", description: "Fill", kind: "expense", accountId: 1, amount: 25, currency: "USD" },
+    ] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 75 }];
+  const actual = { id: 101, planId: plan.id, planRowId: "entry:fill", accountId: 1, date: "2026-11-10",
+    kind: "expense", amount: 25, currency: "USD", merchant: "BANK MERCHANT 001", category: "Shopping" };
+  const recorded = buildPlanRows(plan, document, 63, { accounts, transactions: [actual], today: "2026-11-18" });
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].entryId, "fill");
+  assert.equal(recorded[0].completionKey, "entry:fill");
+  assert.equal(recorded[0].completed, true);
+  assert.equal(recorded[0].completionSource, "plan");
+  assert.equal(recorded[0].recordedInAccounts, true);
+  assert.equal(recorded[0].balanceUsd, 75);
+  const synced = buildPlanRows(plan, document, 63, { accounts,
+    transactions: [{ ...actual, provider: "plaid", planGenerated: false }], today: "2026-11-18" });
+  assert.equal(synced.length, 1);
+  assert.equal(synced[0].completionSource, "transaction");
+  assert.equal(synced[0].planGenerated, false);
+  const otherPlan = buildPlanRows(plan, document, 63, { accounts,
+    transactions: [{ ...actual, planId: "different", merchant: "Fill", date: "2026-11-03" }], today: "2026-11-18" });
+  assert.equal(otherPlan.find((row) => row.source === "manual").completed, false);
+});
+
+test("recorded transfers form one editable ledger row even without linked budget columns", () => {
+  const { plan: base, document, accounts } = cardStatementFixture();
+  const plan = { ...base, id: "live", entries: [{ id: "payment", date: "2026-11-03", description: "Early payment",
+    kind: "transfer", fromAccountId: 1, toAccountId: 2, amount: 50, currency: "USD" }] };
+  const transactions = [
+    { id: 101, accountId: 1, kind: "expense", merchant: "DEBIT 001" },
+    { id: 102, accountId: 2, kind: "income", merchant: "CREDIT 001" },
+  ].map((row) => ({ ...row, date: "2026-11-10", currency: "USD", amount: 50, category: "Other",
+    planId: plan.id, planRowId: "entry:payment", creditCardPaymentFor: 2,
+    creditCardPaymentDueDate: "2026-11-20", awaitingBankSync: true }));
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions, today: "2026-11-18" });
+  const payment = rows.find((row) => row.entryId === "payment");
+  assert.equal(rows.filter((row) => row.transactionId != null).length, 0);
+  assert.equal(payment.completed, true);
+  assert.equal(payment.completionSource, "plan");
+  assert.equal(payment.awaitingBankSync, true);
+  assert.deepEqual(payment.matchedTransactionIds, [101, 102]);
+  assert.equal(payment.date, "2026-11-10");
+  assert.equal(payment.recordedTransactions.length, 2);
+  assert.equal(rows.find((row) => row.id === "creditCardDue:2:2026-11-20").amount, 150);
+});
+
+test("explicit early payment links satisfy their scheduled bill without duplicate forecasts and retain partial remainders", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "rent", name: "Rent", cadence: "monthly",
+    dueDay: 30, amount: 100, currency: "USD", accountId: 1 }] };
+  const plan = { id: "live", startDate: "2026-11-01", endDate: "2026-11-30", openingUsd: 1000, openingPhp: 0,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+    entries: [{ id: "paid", date: "2026-11-03", description: "Early rent", kind: "expense", amount: 100,
+      currency: "USD", accountId: 1, scheduledRowId: "bill:rent:2026-11-30" }] };
+  const actual = { id: 101, date: "2026-11-03", currency: "USD", amount: 100, kind: "expense", accountId: 1,
+    merchant: "Landlord", planId: plan.id, planRowId: "entry:paid", planScheduledRowId: "bill:rent:2026-11-30" };
+  const paid = buildPlanRows(plan, document, 63, { transactions: [actual], today: "2026-11-18" });
+  assert.equal(paid.length, 1);
+  assert.equal(paid[0].entryId, "paid");
+  assert.equal(paid[0].billId, "rent");
+  assert.equal(paid[0].balanceUsd, 900);
+  const partial = buildPlanRows({ ...plan, entries: [{ ...plan.entries[0], amount: 50 }] }, document, 63,
+    { transactions: [{ ...actual, amount: 50, merchant: "Rent" }], today: "2026-11-18" });
+  const remaining = partial.find((row) => row.source === "bill");
+  assert.equal(remaining.amount, 50);
+  assert.equal(remaining.paidAmount, 50);
+  assert.equal(remaining.completed, false);
+  assert.equal(partial.at(-1).balanceUsd, 900);
 });
 
 test("unavailable native starting balances are excluded with a reason, never NaN or an available-balance fallback", () => {
@@ -766,6 +861,7 @@ test("savings completion requires both assigned posted transfer legs once, rathe
 
 test("historical conversion balances suppress each selected live account independently", () => {
   const plan = { startDate: "2026-11-01", endDate: "2026-11-01", openingUsd: 0, openingPhp: 0, includeIncome: false,
+    completedRows: [{ rowId: "entry:convert", completedAt: "2026-11-01T00:00:00.000Z" }],
     startingAccounts: [{ accountId: 1, percentage: 100 }], entries: [
       { id: "convert", date: "2026-11-01", kind: "conversion", description: "Convert", amount: 10, currency: "USD", fromAccountId: 1, toAccountId: 2 },
     ] };
@@ -785,6 +881,7 @@ test("historical live-account reserve tasks do not increase the current earmark 
   const doc = { salary: { amount: 0, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-01", accountId: 1 },
     bills: [{ id: "annual", name: "Annual", amount: 100, savedAmount: 20, cadence: "annual", dueDay: 28, dueMonths: [11], currency: "USD", reserveAccountId: 2, sourceAccountId: 1 }], allocations: [] };
   const plan = { startDate: "2026-11-01", endDate: "2026-11-01", openingUsd: 0, openingPhp: 0, includeIncome: false,
+    completedRows: [{ rowId: "reserve:USD:2026-11-01", completedAt: "2026-11-01T00:00:00.000Z" }],
     startingAccounts: [{ accountId: 1, percentage: 100 }], entries: [] };
   const accounts = [{ id: 1, currency: "USD", nativeCurrentBalance: 100 }];
   const row = buildPlanRows(plan, doc, 63, { accounts, today: "2026-11-02" })[0];
@@ -3200,6 +3297,124 @@ test("early posted autopay is recognized without a statement close and leaves on
   assert.equal(pending[0].amount, 200);
 });
 
+test("explicit payment-cycle provenance recognizes early partial payments without reusing them for the next statement", () => {
+  const { accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], nativeCurrentBalance: 150, creditCardDueStatus: "manual",
+    creditCardDue: { statementBalance: 200, dueDate: "2027-01-01", lastStatementDate: null } };
+  const transactions = [
+    { id: 101, accountId: 1, kind: "expense" }, { id: 102, accountId: 2, kind: "income" },
+  ].map((row) => ({ ...row, date: "2026-11-18", currency: "USD", amount: 50,
+    merchant: "Early card payment", creditCardPaymentFor: 2, creditCardPaymentDueDate: "2027-01-01" }));
+  const early = getCreditCardObligations(accounts, { transactions, today: "2026-11-18" });
+  assert.equal(early[0].amount, 150);
+  assert.equal(early[0].paidAmount, 50);
+  assert.deepEqual(early[0].paymentTransactionIds, [102, 101]);
+  const next = getCreditCardObligations([accounts[0], { ...accounts[1], creditCardDue: {
+    statementBalance: 150, dueDate: "2027-02-01", lastStatementDate: null,
+  } }], { transactions, today: "2027-01-20" });
+  assert.equal(next[0].amount, 150);
+  assert.equal(next[0].paidAmount, 0);
+});
+
+test("live card-payment entries follow remaining debt after early payments and new purchases without a statement", () => {
+  const { plan: base, document, accounts } = cardStatementFixture();
+  const plan = { ...base, id: "live", endDate: "2027-01-01", openingUsd: 0,
+    startingAccounts: [{ accountId: 1, percentage: 100 }], entries: [
+      { id: "scheduled", date: "2027-01-01", description: "Card payment", kind: "transfer", amountMode: "cardBalance",
+        fromAccountId: 1, toAccountId: 2, amount: 500, currency: "USD" },
+    ] };
+  const card = { ...accounts[1], creditCardDue: null, nativeCurrentBalance: 300 };
+  for (const balance of [300, 350, 0, -20]) {
+    const rows = buildPlanRows(plan, document, 63, { accounts: [accounts[0], { ...card, nativeCurrentBalance: balance }], today: "2026-11-18" });
+    const payment = rows.find((row) => row.entryId === "scheduled");
+    assert.equal(payment.amount, Math.max(0, balance));
+    assert.equal(payment.balanceUsd, 1000 - Math.max(0, balance));
+    assert.equal(payment.creditCardPaymentFor, 2);
+  }
+  const entry = { id: "early", date: "2026-11-18", description: "Early card payment", kind: "transfer",
+    amount: 200, fromAccountId: 1, toAccountId: 2, currency: "USD" };
+  const transactions = [
+    { id: 101, accountId: 1, kind: "expense" }, { id: 102, accountId: 2, kind: "income" },
+  ].map((row) => ({ ...row, planId: plan.id, planRowId: "entry:early", creditCardPaymentFor: 2,
+    date: "2026-11-18", amount: 200, currency: "USD", merchant: "Card payment", category: "Transfer" }));
+  const recorded = buildPlanRows({ ...plan, entries: [entry, ...plan.entries] }, document, 63,
+    { accounts: [{ ...accounts[0], nativeCurrentBalance: 800 }, card], transactions, today: "2026-11-18" });
+  assert.equal(recorded.find((row) => row.entryId === "scheduled").amount, 300);
+  assert.equal(recorded.find((row) => row.entryId === "early").completionSource, "plan");
+  assert.equal(recorded.at(-1).balanceUsd, 500);
+  assert.equal(recorded.filter((row) => row.entryId === "early").length, 1);
+});
+
+test("a scheduled live card balance accounts for earlier unpaid commitments and replaces covered statement forecasts", () => {
+  const { plan: base, document, accounts } = cardStatementFixture();
+  const plan = { ...base, id: "live", entries: [
+    { id: "partial", date: "2026-11-10", description: "Pay some", kind: "transfer", fromAccountId: 1, toAccountId: 2,
+      amount: 80, currency: "USD" },
+    { id: "remaining", date: "2026-11-18", description: "Pay rest", kind: "transfer", amountMode: "cardBalance",
+      fromAccountId: 1, toAccountId: 2, amount: 500, currency: "USD" },
+  ] };
+  const rows = buildPlanRows(plan, document, 63, { accounts, today: "2026-11-05" });
+  assert.equal(rows.find((row) => row.entryId === "remaining").amount, 420);
+  assert.equal(rows.filter((row) => row.source === "creditCardDue").length, 0);
+  assert.equal(rows.at(-1).balanceUsd, 500);
+});
+
+test("successive live card payments include future charges and refunds, then reset projected debt", () => {
+  const { plan: base, document, accounts } = cardStatementFixture();
+  const plan = { ...base, id: "future-card", endDate: "2027-01-01", entries: [
+    { id: "purchase", date: "2026-11-20", description: "Card purchase", kind: "expense", accountId: 2, amount: 50, currency: "USD" },
+    { id: "refund", date: "2026-11-21", description: "Refund", kind: "income", accountId: 2, amount: 10, currency: "USD" },
+    { id: "first", date: "2026-12-01", description: "Pay full card", kind: "transfer", amountMode: "cardBalance",
+      fromAccountId: 1, toAccountId: 2, amount: 300, currency: "USD" },
+    { id: "later", date: "2026-12-05", description: "Later purchase", kind: "expense", accountId: 2, amount: 30, currency: "USD" },
+    { id: "second", date: "2027-01-01", description: "Pay full card again", kind: "transfer", amountMode: "cardBalance",
+      fromAccountId: 1, toAccountId: 2, amount: 300, currency: "USD" },
+  ] };
+  const rows = buildPlanRows(plan, document, 63, { accounts: [accounts[0], { ...accounts[1], nativeCurrentBalance: 300, creditCardDue: null }], today: "2026-11-18" });
+  assert.equal(rows.find((row) => row.entryId === "first").amount, 340);
+  assert.equal(rows.find((row) => row.entryId === "second").amount, 30);
+  assert.equal(rows.at(-1).balanceUsd, 630);
+});
+
+test("future card bills are included once while earlier statement payments reduce the next live payment", () => {
+  const { plan: base, document, accounts } = cardStatementFixture();
+  const plan = { ...base, id: "future-bills", endDate: "2027-01-01", entries: [
+    { id: "next", date: "2027-01-01", description: "Remaining card", kind: "transfer", amountMode: "cardBalance",
+      fromAccountId: 1, toAccountId: 2, amount: 500, currency: "USD" },
+  ] };
+  const rows = buildPlanRows(plan, { ...document, bills: [{ id: "bill", name: "New card bill", cadence: "monthly",
+    dueDay: 1, amount: 100, currency: "USD", accountId: 2 }] }, 63,
+    { accounts: [accounts[0], { ...accounts[1], isLinked: true }], today: "2026-11-05" });
+  // Three unpaid monthly card charges land inside this plan. The original
+  // statement and next-cycle estimate cover only the live 500 debt.
+  assert.equal(rows.find((row) => row.entryId === "next").amount, 300);
+  assert.equal(rows.filter((row) => row.source === "creditCardDue").reduce((total, row) => total + row.amount, 0), 500);
+  assert.equal(rows.at(-1).balanceUsd, 200);
+});
+
+test("recorded conversions retain frozen native amounts and one running cash movement after rates change", () => {
+  const plan = { id: "conversion", startDate: "2026-11-18", endDate: "2026-11-18", openingUsd: 100, openingPhp: 0,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [
+      { id: "convert", date: "2026-11-18", kind: "conversion", description: "Convert", amount: 10,
+        currency: "USD", fromAccountId: 1, toAccountId: 2 },
+    ] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 90 },
+    { id: 2, type: "checking", currency: "PHP", nativeCurrentBalance: 630 }];
+  const transactions = [{ id: 101, accountId: 1, kind: "expense", currency: "USD", amount: 10 },
+    { id: 102, accountId: 2, kind: "income", currency: "PHP", amount: 630 }].map((row) => ({ ...row,
+      date: "2026-11-18", planId: plan.id, planRowId: "entry:convert", category: "Transfer" }));
+  for (const includeTransactions of [true, false]) {
+    const rows = buildPlanRows({ ...plan, includeTransactions }, { salary: {}, bills: [], allocations: [] }, 70,
+      { accounts, transactions, today: "2026-11-18" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].usd, -10);
+    assert.equal(rows[0].php, 630);
+    assert.equal(rows[0].recordedConversionAmount, 630);
+    assert.equal(rows[0].balanceUsd, 90);
+    assert.equal(rows[0].balancePhp, 630);
+  }
+});
+
 test("autopay defaults do not apply a second early payment to an unissued estimate", () => {
   const { plan, document, accounts } = cardStatementFixture();
   accounts[1] = { ...accounts[1], isLinked: true, nativeCurrentBalance: 300,
@@ -3410,10 +3625,11 @@ test("credit purchases and card-billed plans change debt while statement dues al
   ] });
   assert.ok(rows.filter((row) => row.source !== "creditCardDue").every((row) => row.cardCreditActivity && row.usd === 0));
   assert.equal(rows.at(-1).balanceUsd, 800);
-  // Existing behavior is preserved when a card has no usable statement data.
+  // A card purchase changes debt even before statement details are available.
   const withoutDues = buildPlanRows(plan, document, 63, { accounts: [accounts[0], { ...accounts[1], creditCardDue: null }],
     transactions: [{ id: 10, date: "2026-11-02", amount: 40, currency: "USD", kind: "expense", accountId: 2 }] });
-  assert.equal(withoutDues.at(-1).balanceUsd, 960);
+  assert.equal(withoutDues.at(-1).balanceUsd, 1000);
+  assert.equal(withoutDues.at(-1).cardCreditActivity, true);
 });
 
 test("posted partial card payments reduce the remaining statement once despite both transfer legs and shifted provider dates", () => {
