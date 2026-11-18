@@ -164,15 +164,16 @@ The finance workspace separates recorded activity from your plans:
   comparisons. Projections start with today's live values and remaining future flows;
   past-only ranges show history and live current balances without inventing past
   running balances. Unknown account values remain unavailable.
-  The responsive transaction table shows date, description, account, native amount,
-  projected account funds, and status. Search or filter **All / Upcoming / Recorded /
+  The transaction table shows date, description, source account, native amount,
+  a separate balance column for every active account, and status. Search or filter **All / Upcoming / Recorded /
   Overdue** without changing calculated balances. Expand **Details** for statement,
   reserve, conversion, and bank matching evidence. Secondary actions stay in each
   row's menu; the primary payment/receipt action stays visible.
   The table scrolls within a fixed-height viewport and initially positions the
   highlighted latest row for today (or the nearest activity). **Jump to current**
   returns there without moving the page; refreshes preserve your browsing position.
-  Expand **Account balances** on any row for every active account's native balance.
+  Account columns remain visible in a horizontally scrollable grid on desktop and
+  mobile, labeled by account name, currency, and balance owed for credit/loan accounts.
   Future rows show projections; recorded rows reconstruct tracked balances from
   current values and later posted activity, using saved order within a day.
   Incomplete history stays unavailable. Text, status chips, and amount colors use

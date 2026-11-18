@@ -41,6 +41,11 @@ const accounts = [
 ];
 const row = (extra = {}) => ({ id: "bill:internet:2026-11-20", date: "2026-11-20", description: "Internet", kind: "expense",
   source: "bill", amount: 25, currency: "USD", accountId: 1, usd: -25, php: 0, balanceUsd: 175, balancePhp: 2000,
+  accountBalanceSnapshotKind: "projected", accountBalanceSnapshot: [
+    { accountId: 1, currency: "USD", balance: extra.balanceUsd ?? 175 },
+    { accountId: 34, currency: "PHP", balance: extra.balancePhp ?? 2000 },
+    { accountId: 37, currency: "PHP", balance: 600, isDebt: true },
+  ],
   ...extra });
 const render = (rows, extra = {}) => renderToStaticMarkup(createElement(Table, { plan, rows, accounts, today, ...extra }));
 const plain = (html) => html.replace(/<[^>]*>/g, "");
@@ -63,17 +68,21 @@ function harness(props) {
   return () => { cursor = 0; return Component({ plan, accounts, today, ...props }); };
 }
 const button = (tree, text) => find(tree, (node) => node.type === "button" && node.props.children === text);
+const accountColumns = (html) => [...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]);
+const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
 
-test("planner table uses six clear columns, account identities and native amounts", () => {
+test("planner table gives each account its own balance column with native account identities", () => {
   const html = render([row()]);
-  assert.equal((html.match(/<th scope="col">/g) || []).length, 6);
-  for (const label of ["Date", "Transaction", "Account", "Amount", "Projected balance", "Status"]) assert.ok(html.includes(label));
+  assert.equal((html.match(/<th\b/g) || []).length, 5 + accounts.length);
+  for (const label of ["Date", "Transaction", "Account", "Amount", "Status", "Balance owed"]) assert.ok(html.includes(label));
+  assert.deepEqual(accountColumns(html), ["1", "34", "37"]);
   assert.match(html, /Daily checking · ••1234/);
   assert.match(html, /-\$25\.00/);
-  assert.match(html, /\$175\.00/);
-  assert.match(html, /₱2,000\.00/);
+  assert.match(accountCell(html, 1), /\$175\.00/);
+  assert.match(accountCell(html, 34), /₱2,000\.00/);
+  assert.match(accountCell(html, 37), /₱600\.00/);
   assert.match(html, /aria-label="Details for Internet"/);
-  assert.doesNotMatch(html, /Starting balances|Scroll budget columns|Show columns/);
+  assert.doesNotMatch(html, /Starting balances|Show columns|fpt-balances-row|Account balances for Internet/);
 });
 
 test("transfer rows show source and card destination rather than a misleading zero cash amount", () => {
@@ -84,20 +93,19 @@ test("transfer rows show source and card destination rather than a misleading ze
   assert.match(html, /Card payment/);
 });
 
-test("recorded history identifies its current anchor and retains financial details", () => {
+test("recorded history displays its per-account balances and retains financial details", () => {
   const html = render([row({ date: today, source: "transaction", completed: true, completionSource: "plan", planGenerated: true,
     entryId: "coffee", recordedInAccounts: true, awaitingBankSync: true, reserveUsd: 75, savingsPhp: 300,
+    accountBalanceSnapshotKind: "recorded", accountBalanceSnapshotNote: "Reconstructed after recorded payment.",
     cardCreditActivity: true, recordedTransactions: [{ id: 3, date: today, kind: "expense", amount: 25,
       currency: "USD", description: "Bank receipt", accountName: "Daily checking" }] })], { onToggleComplete() {}, onEdit() {}, onDelete() {} });
-  assert.match(html, /Included in current balance/);
+  assert.match(accountCell(html, 1), /\$175\.00/);
   assert.match(html, /Awaiting bank match/);
   assert.match(html, /Bank receipt/);
   assert.match(html, /Annual reserve · USD/);
   assert.match(html, /Savings · PHP/);
   assert.match(html, /aria-label="Reopen Internet"/);
-  const snapshot = render([row({ date: today, completed: true })], { plan: { ...plan, balanceMode: "snapshot" } });
-  assert.doesNotMatch(snapshot, /Included in current balance/);
-  assert.match(snapshot, /\$175\.00/);
+  assert.doesNotMatch(html, /Included in current balance|Account balances for Internet/);
 });
 
 test("status and search filters preserve precomputed balances and source rows", () => {
@@ -168,16 +176,14 @@ test("empty date ranges and loading states remain useful without an oversized em
   assert.doesNotMatch(html, /<table/);
 });
 
-test("continuous planner rows use aggregate projected balances and keep past due history distinct", () => {
-  const html = render([row({ balanceUsd: 175, projectedBalanceUsd: 1200, projectedBalancePhp: 42000 })],
+test("account columns use row snapshots instead of aggregate totals or current account fallbacks", () => {
+  const html = render([row({ balanceUsd: 9999, projectedBalanceUsd: 8888, projectedBalancePhp: 7777,
+    accountBalanceSnapshot: [{ accountId: 37, balance: 600 }, { accountId: "1", balance: 0 }, { accountId: 34, balance: 42000 }] })],
     { plan: { ...plan, continuous: true } });
-  assert.match(html, /\$1,200\.00/);
-  assert.match(html, /₱42,000\.00/);
-  assert.doesNotMatch(html, /\$175\.00/);
-  const past = render([row({ date: "2026-11-17", projectedBalanceUsd: 1200, projectedBalancePhp: 42000 })],
-    { plan: { ...plan, continuous: true } });
-  assert.match(past, /Past due · review payment/);
-  assert.doesNotMatch(past, /\$1,200\.00/);
+  assert.match(accountCell(html, 1), /\$0\.00/);
+  assert.match(accountCell(html, 34), /₱42,000\.00/);
+  assert.match(accountCell(html, 37), /₱600\.00/);
+  assert.doesNotMatch(html, /\$9,999\.00|\$8,888\.00|₱7,777\.00/);
 });
 
 test("current row is the last transaction today, then nearest past or first upcoming activity", () => {
@@ -195,50 +201,55 @@ test("current row is the last transaction today, then nearest past or first upco
   assert.match(html, /role="region" aria-label="Scrollable transaction table"/);
 });
 
-test("account balance expansion shows every supplied native snapshot, card credit and unknown values", () => {
+test("account columns show zero, card credits and unavailable values without expansion", () => {
   const snapshot = [
-    { accountId: 1, name: "Daily checking", mask: "1234", type: "checking", currency: "USD", balance: 123.45 },
+    { accountId: 1, name: "Daily checking", mask: "1234", type: "checking", currency: "USD", balance: 0 },
     { accountId: 34, name: "Peso savings", type: "savings", currency: "PHP", balance: 12000 },
     { accountId: 37, name: "RCBC JCB", type: "credit", currency: "PHP", balance: -125, isDebt: true },
     { accountId: 50, name: "Unreported account", type: "checking", currency: "USD", balance: null },
   ];
   const rows = [row({ accountBalanceSnapshot: snapshot, accountBalanceSnapshotKind: "projected" })];
   const before = structuredClone(rows);
-  const get = harness({ rows });
-  let tree = get();
-  const expand = find(tree, (node) => node.props?.["aria-label"] === "Account balances for Internet");
-  assert.equal(expand.props["aria-expanded"], false);
-  expand.props.onClick();
-  tree = get();
-  assert.equal(find(tree, (node) => node.props?.["aria-label"] === "Account balances for Internet").props["aria-expanded"], true);
-  const html = renderToStaticMarkup(tree);
-  assert.match(html, /colSpan="6"/);
-  assert.match(html, /Projected account balances after this transaction/);
+  const html = render(rows, { accounts: [...accounts, { id: 50, name: "Unreported account", type: "checking", currency: "USD", nativeCurrentBalance: 99999 }] });
+  assert.deepEqual(accountColumns(html), ["1", "34", "37", "50"]);
   for (const label of ["Daily checking · ••1234", "Peso savings", "RCBC JCB", "Unreported account"]) assert.ok(html.includes(label));
-  assert.match(html, /\$123\.45/);
-  assert.match(html, /₱12,000\.00/);
-  assert.match(html, /Credit balance · PHP/);
-  assert.match(html, /₱125\.00/);
-  assert.match(html, /Unavailable/);
-  button(tree, "Hide account balances").props.onClick();
-  assert.doesNotMatch(renderToStaticMarkup(get()), /Projected account balances after this transaction/);
+  assert.match(accountCell(html, 1), /\$0\.00/);
+  assert.match(accountCell(html, 34), /₱12,000\.00/);
+  assert.match(accountCell(html, 37), /-₱125\.00/);
+  assert.match(accountCell(html, 37), /Credit/);
+  assert.match(accountCell(html, 50), /—/);
+  assert.doesNotMatch(html, /\$99,999\.00|colSpan=|Hide account balances|fpt-balances-row/);
   assert.deepEqual(rows, before);
 });
 
-test("historical balance panels distinguish reconstructed history from unavailable snapshots", () => {
+test("historical balance columns distinguish recorded snapshots from unavailable coverage", () => {
   for (const kind of ["recorded", "unavailable"]) {
-    const get = harness({ rows: [row({ date: "2026-11-17", accountBalanceSnapshotKind: kind,
+    const html = render([row({ date: "2026-11-17", accountBalanceSnapshotKind: kind,
       accountBalanceSnapshotNote: kind === "unavailable" ? "Later transaction history is incomplete." : "Balances after the recorded transaction.",
       accountBalanceSnapshot: kind === "recorded" ? [{ accountId: 1, name: "Checking", type: "checking", currency: "USD", balance: 175 }] : [],
-    })] });
-    find(get(), (node) => node.props?.["aria-label"] === "Account balances for Internet").props.onClick();
-    const html = renderToStaticMarkup(get());
-    assert.match(html, kind === "recorded" ? /Recorded account balances after this transaction/ : /Account balances unavailable for this transaction/);
+    })], { accounts: accounts.map((account) => ({ ...account, nativeCurrentBalance: 99999 })) });
+    assert.deepEqual(accountColumns(html), ["1", "34", "37"]);
+    assert.match(accountCell(html, 1), kind === "recorded" ? /\$175\.00/ : /—/);
     if (kind === "unavailable") {
       assert.match(html, /Later transaction history is incomplete/);
-      assert.doesNotMatch(html, /Current account balances|Recorded account balances/);
+      assert.doesNotMatch(html, /\$99,999\.00|₱99,999\.00|\$175\.00/);
     }
   }
+});
+
+test("account header order is stable through filters and excludes inactive or unsupported accounts", () => {
+  const extra = [
+    { id: 90, name: "Archived", currency: "USD", type: "checking", isArchived: true },
+    { id: 91, name: "Merged", currency: "PHP", type: "savings", mergedIntoAccountId: 34 },
+    { id: 92, name: "Other currency", currency: "EUR", type: "checking" },
+  ];
+  const get = harness({ accounts: [...accounts, ...extra], rows: [row({ id: "paid", date: today, completed: true, recordedInAccounts: true }), row()] });
+  const before = accountColumns(renderToStaticMarkup(get()));
+  assert.deepEqual(before, ["1", "34", "37"]);
+  button(get(), "Upcoming").props.onClick();
+  assert.deepEqual(accountColumns(renderToStaticMarkup(get())), before);
+  button(get(), "Recorded").props.onClick();
+  assert.deepEqual(accountColumns(renderToStaticMarkup(get())), before);
 });
 
 function effectHarness(initialProps) {
@@ -287,7 +298,7 @@ function effectHarness(initialProps) {
   };
 }
 
-test("table scrolls its own viewport once per range and preserves manual position during refresh, filters and expansion", () => {
+test("table scrolls its own viewport once per range and preserves manual position during refresh and filters", () => {
   const rows = [row({ id: "old", date: "2026-11-17" }), row({ id: "today-one", date: today }),
     row({ id: "today-two", date: today }), row({ id: "future", date: "2026-11-20" })];
   const get = effectHarness({ rows, viewKey: "november" });
@@ -299,9 +310,7 @@ test("table scrolls its own viewport once per range and preserves manual positio
   button(tree, "Upcoming").props.onClick();
   tree = get.render();
   assert.equal(get.scroller.scrollTop, 50);
-  find(tree, (node) => node.props?.["aria-label"] === "Account balances for Internet").props.onClick();
-  tree = get.render();
-  assert.equal(get.calls.length, 1, "expanding balances cannot re-anchor the table");
+  assert.equal(get.calls.length, 1, "filtering account columns cannot re-anchor the table");
   button(tree, "Jump to current").props.onClick();
   tree = get.render();
   assert.equal(get.calls.length, 2);

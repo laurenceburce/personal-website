@@ -14,19 +14,27 @@
 .fp-app .fpt-table-wrap::-webkit-scrollbar-track { background: #edf2ee; border-radius: 10px; }
 .fp-app .fpt-table-wrap::-webkit-scrollbar-thumb { background: #708b7d; border: 3px solid #edf2ee; border-radius: 10px; }
 .fp-app .fpt-table-wrap:focus-visible { outline: 3px solid #225c9d; outline-offset: 3px; }
-.fp-app .fpt-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: #344c3f; font-size: 12px; }
+.fp-app .fpt-table { width: 100%; min-width: 820px; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: #344c3f; font-size: 12px; }
 .fp-app .fpt-table thead th { position: sticky; top: 0; z-index: 4; padding: 14px; border-bottom: 1px solid #a9beb0; background: #edf3ef; color: #324f3e; box-shadow: 0 1px 0 #a9beb0; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .055em; text-align: left; }
-.fp-app .fpt-table th:first-child { border-top-left-radius: 12px; width: 11%; }
-.fp-app .fpt-table th:nth-child(2) { width: 26%; }
-.fp-app .fpt-table th:nth-child(3) { width: 18%; }
-.fp-app .fpt-table th:nth-child(4) { width: 14%; text-align: right; }
-.fp-app .fpt-table th:nth-child(5) { width: 16%; text-align: right; }
-.fp-app .fpt-table th:last-child { border-top-right-radius: 12px; width: 15%; }
+.fp-app .fpt-table th:first-child { border-top-left-radius: 12px; }
+.fp-app .fpt-table th:nth-child(4) { text-align: right; }
+.fp-app .fpt-table th:last-child { border-top-right-radius: 12px; }
+.fp-app .fpt-table .fpt-account-balance-heading { text-align: right; text-transform: none; letter-spacing: 0; background: #e7f0ec; border-left: 1px solid #c1d1c7; font-size: 11px; }
+.fp-app .fpt-account-balance-heading strong, .fp-app .fpt-account-balance-heading > span { display: block; color: #294b39; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.fp-app .fpt-account-balance-heading small { display: block; color: #52675b; font-size: 10px; font-weight: 500; line-height: 1.5; margin-top: 4px; }
+.fp-app .fpt-table .fpt-account-balance { text-align: right; border-left: 1px solid #d5e0d8; font-variant-numeric: tabular-nums; background: #f7faf8; }
+.fp-app .fpt-account-balance > strong, .fp-app .fpt-account-balance > span { display: block; color: #294735; font-size: 12px; font-weight: 700; line-height: 1.6; white-space: nowrap; }
+.fp-app .fpt-account-balance small { display: block; margin-top: 4px; color: #52675b; font-size: 10px; font-weight: 500; line-height: 1.5; }
+.fp-app .fpt-account-balance .fpt-negative { color: #a33426; }
+.fp-app .fpt-account-balance .fpt-positive { color: #166543; }
+.fp-app .fpt-account-balance .fpt-unavailable { color: #52675b; font-weight: 500; }
 .fp-app .fpt-table td { padding: 17px 14px; border-bottom: 1px solid #dfe7e1; vertical-align: top; overflow-wrap: anywhere; }
 .fp-app .fpt-table tr:last-child td { border-bottom: 0; }
 .fp-app .fpt-row:hover > td { background: #fbfdf9; }
 .fp-app .fpt-row-today > td { background: #f3f7ff; }
 .fp-app .fpt-row-current > td, .fp-app .fpt-row-current:hover > td { background: #eaf2ff; border-top: 1px solid #a4bfdf; border-bottom-color: #a4bfdf; }
+.fp-app .fpt-table .fpt-row-today > .fpt-account-balance { background: #f3f7ff; }
+.fp-app .fpt-table .fpt-row-current > .fpt-account-balance, .fp-app .fpt-table .fpt-row-current:hover > .fpt-account-balance { background: #eaf2ff; }
 .fp-app .fpt-row-current > td:first-child { box-shadow: inset 4px 0 #225c9d; }
 .fp-app .fpt-today-tag { display: inline-flex; margin-top: 6px; padding: 3px 6px; border-radius: 4px; background: #dceaff; color: #174d85; font-size: 10px; font-weight: 700; line-height: 1.4; }
 .fp-app .fpt-row-current .fpt-today-tag { background: #225c9d; color: #fff; }
@@ -87,23 +95,6 @@
 .fp-app .fpt-empty p { margin: 8px 0 16px; }
 .fp-app .fpt-footnote { margin: 13px 0 0; }
 .fp-app .fpt-planner-table button:focus-visible, .fp-app .fpt-planner-table summary:focus-visible { outline: 2px solid #4f8968; outline-offset: 3px; }
-.fp-app .fpt-balance-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 3px 0; border: 0; background: transparent; color: #174d85; font: inherit; font-size: 11px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-.fp-app .fpt-balance-toggle[aria-expanded="true"] { color: #12385e; }
-.fp-app .fpt-table .fpt-balances-row > td { padding: 0; background: #f5f8fc; border-bottom: 1px solid #bacde1; }
-.fp-app .fpt-balance-panel { padding: 20px; border-left: 4px solid #527aa6; }
-.fp-app .fpt-balance-panel > header { display: flex; flex-direction: column; gap: 5px; margin-bottom: 15px; color: #294b70; font-size: 12px; }
-.fp-app .fpt-balance-panel > header strong { font-weight: 700; }
-.fp-app .fpt-balance-panel > header p, .fp-app .fpt-balance-panel > header small { color: #4e6358; font-size: 11px; line-height: 1.6; }
-.fp-app .fpt-balance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.fp-app .fpt-balance-card { display: flex; flex-direction: column; justify-content: space-between; gap: 12px; min-width: 0; padding: 14px; border: 1px solid #bdccdc; border-radius: 8px; background: #fff; color: #2c4839; }
-.fp-app .fpt-balance-card > div { display: grid; gap: 4px; }
-.fp-app .fpt-balance-card strong { color: #2c4839; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.fp-app .fpt-balance-card small { color: #52675b; font-size: 10px; line-height: 1.5; }
-.fp-app .fpt-balance-card > span, .fp-app .fpt-balance-card .fpt-balance-value { color: #203d2e; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.fp-app .fpt-balance-card > .fpt-balance-change { font-size: 10px; color: #52675b; }
-.fp-app .fpt-balance-empty { color: #4e6358; font-size: 11px; line-height: 1.7; }
-.fp-app .fpt-balance-card .fpt-negative { color: #a33426; }
-.fp-app .fpt-balance-card .fpt-positive { color: #166543; }
 @media (max-width: 1000px) {
   .fp-app .fpt-table th, .fp-app .fpt-table td { padding-left: 10px; padding-right: 10px; }
   .fp-app .fpt-toolbar { gap: 10px; }
@@ -113,42 +104,14 @@
   .fp-app .fpt-filter-tabs { flex: 1; }
   .fp-app .fpt-filter-tabs button { flex: 1; padding: 8px; font-size: 10px; }
   .fp-app .fpt-count { margin-left: 0; font-size: 10px; }
-  .fp-app .fpt-table-wrap { max-height: 72vh; padding: 2px 6px 2px 2px; border: 0; border-radius: 4px; scroll-padding-top: 10px; }
-  .fp-app .fpt-table, .fp-app .fpt-table tbody { display: block; }
-  .fp-app .fpt-table thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-  .fp-app .fpt-table .fpt-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 13px 12px; margin-bottom: 12px; padding: 16px; border: 1px solid #c5d3ca; border-radius: 11px; }
-  .fp-app .fpt-table .fpt-row-today { background: #f3f7ff; border-color: #bed0e7; }
-  .fp-app .fpt-table .fpt-row-current { background: #eaf2ff; border: 2px solid #225c9d; box-shadow: inset 4px 0 #225c9d; padding: 15px; }
-  .fp-app .fpt-row-current > td, .fp-app .fpt-row-current:hover > td { background: transparent; border: 0; }
-  .fp-app .fpt-row-current > td:first-child { box-shadow: none; }
-  .fp-app .fpt-table td { display: block; padding: 0; border: 0; min-width: 0; }
-  .fp-app .fpt-row:hover > td { background: transparent; }
-  .fp-app .fpt-date { grid-column: 1; grid-row: 1; align-self: center; }
-  .fp-app .fpt-status-cell { grid-column: 2; grid-row: 1; text-align: right; }
-  .fp-app .fpt-status-cell .fpt-actions { justify-content: flex-end; }
-  .fp-app .fpt-status-cell .fpt-status > small { font-size: 9px; }
-  .fp-app .fpt-transaction { grid-column: 1 / -1; grid-row: 2; }
-  .fp-app .fpt-transaction > strong { font-size: 14px; }
-  .fp-app .fpt-account { grid-column: 1 / -1; grid-row: 3; }
-  .fp-app .fpt-account-pair { display: flex; flex-wrap: wrap; gap: 5px; }
-  .fp-app .fpt-account-pair small { margin: 0; font-size: 11px; }
-  .fp-app .fpt-amount { grid-column: 1; grid-row: 4; text-align: left; }
-  .fp-app .fpt-projection { grid-column: 2; grid-row: 4; }
-  .fp-app .fpt-amount::before, .fp-app .fpt-projection::before { content: attr(data-label); display: block; margin-bottom: 5px; font-size: 9px; font-weight: 400; color: #52675b; }
-  .fp-app .fpt-projection .fpt-money-stack small { display: none; }
-  .fp-app .fpt-money-stack { font-size: 13px; }
+  .fp-app .fpt-table-wrap { max-height: 72vh; scroll-padding-top: 78px; }
+  .fp-app .fpt-table thead th { padding-top: 12px; padding-bottom: 12px; }
+  .fp-app .fpt-table td { padding-top: 15px; padding-bottom: 15px; }
+  .fp-app .fpt-transaction > strong { font-size: 13px; }
+  .fp-app .fpt-money-stack { font-size: 12px; }
   .fp-app .fpt-detail-body { padding: 12px; font-size: 10px; }
   .fp-app .fpt-detail-body small { font-size: 10px; }
   .fp-app .fpt-footnote { font-size: 10px !important; }
-  .fp-app .fpt-today-tag { display: flex; width: fit-content; }
   .fp-app .fpt-jump-current { font-size: 10px; min-height: 36px; }
-  .fp-app .fpt-table .fpt-balances-row { display: block; margin: -5px 0 12px; }
-  .fp-app .fpt-table .fpt-balances-row > td { padding: 0; border: 1px solid #bacde1; border-radius: 9px; }
-  .fp-app .fpt-balance-panel { padding: 15px 12px; border-left-width: 3px; }
-  .fp-app .fpt-balance-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .fp-app .fpt-balance-card { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 10px; padding: 12px; }
-  .fp-app .fpt-balance-card > div { min-width: 0; }
-  .fp-app .fpt-balance-card > span, .fp-app .fpt-balance-card .fpt-balance-value { margin-left: auto; font-size: 14px; text-align: right; }
-  .fp-app .fpt-balance-card > .fpt-balance-change { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { .fp-app .fpt-planner-table * { scroll-behavior: auto !important; } }
