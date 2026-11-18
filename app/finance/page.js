@@ -7,6 +7,7 @@ import {
   getFinancePlanActivity,
 } from "../lib/financeStore";
 import { localDate } from "../lib/financePlanner.mjs";
+import { getLivePlannerRange, getLivePlannerComputationRange } from "../lib/financeLivePlanner.mjs";
 
 export const dynamic = "force-dynamic";
 
@@ -29,11 +30,12 @@ export const metadata = {
   },
 };
 
-function cleanCallback(month, tab, quick = false) {
+function cleanCallback(month, tab, quick = false, range) {
   const params = new URLSearchParams();
   if (month) params.set("month", month);
   if (tab) params.set("tab", tab);
   if (quick) params.set("quick", "1");
+  if (range) { params.set("from", range.startDate); params.set("to", range.endDate); }
   const query = params.toString();
   return query ? `/finance?${query}` : "/finance";
 }
@@ -52,11 +54,15 @@ export default async function FinancePage({ searchParams }) {
       ? params.tab
       : "home";
   const access = await getFinanceAccess();
+  let plannerRange;
+  try { plannerRange = getLivePlannerRange({ startDate: typeof params?.from === "string" ? params.from : undefined,
+    endDate: typeof params?.to === "string" ? params.to : undefined }); }
+  catch { plannerRange = getLivePlannerRange(); }
 
   if (!access.session) {
     const callback = isBankRedirect
       ? `/finance?${new URLSearchParams(Object.entries(params).filter(([, value]) => typeof value === "string")).toString()}`
-      : cleanCallback(month, tab, params?.quick === "1");
+      : cleanCallback(month, tab, params?.quick === "1", ["plans", "budget"].includes(tab) ? plannerRange : null);
     redirect(`/finance/login?callbackUrl=${encodeURIComponent(callback)}`);
   }
 
@@ -83,8 +89,7 @@ export default async function FinancePage({ searchParams }) {
   const planActivity =
     ["plans", "budget"].includes(tab) && firstPlan
       ? await getFinancePlanActivity({
-          startDate: firstPlan.startDate,
-          endDate: firstPlan.endDate,
+          ...getLivePlannerComputationRange(plannerRange),
         })
       : null;
 
@@ -94,6 +99,7 @@ export default async function FinancePage({ searchParams }) {
       initialActivity={activity}
       initialPlanActivity={planActivity}
       initialTab={tab}
+      initialPlannerRange={plannerRange}
     />
   );
 }

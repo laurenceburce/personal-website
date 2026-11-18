@@ -3,7 +3,7 @@
 import { useState } from "react";
 import FinanceNumberInput from "./FinanceNumberInput";
 import FinanceAccountSelect from "./FinanceAccountSelect";
-import { convert, formatDate, localDate, money, salaryOccurrences } from "../lib/financePlanner.mjs";
+import { addDays, convert, formatDate, localDate, money, salaryOccurrences } from "../lib/financePlanner.mjs";
 
 function Field({ label, children, hint }) {
   return (
@@ -52,14 +52,15 @@ export default function FinancePlanEntryForm({
   const knownDebt = currentDebt !== null && currentDebt !== undefined && Number.isFinite(Number(currentDebt));
   const paymentAmount = liveCardBalance ? knownDebt ? Math.max(0, Number(currentDebt)) : "" : draft.amount;
   const [error, setError] = useState("");
-  const stopDate = recurring && draft.repeatUntil ? draft.repeatUntil : plan.endDate;
+  const stopDate = recurring && draft.repeatUntil ? draft.repeatUntil
+    : plan.continuous ? addDays(draft.date > today ? draft.date : today, 90) : plan.endDate;
   const salaryReady = ["biweekly", "semimonthly"].includes(salary.payFrequency) &&
     formatDate(salary.firstPayDate) !== "—";
   const missingPaydaySchedule = draft.recurrence === "payday" && !salaryReady;
-  const dateError = formatDate(draft.date) === "—" || draft.date < plan.startDate || draft.date > plan.endDate
-    ? "Choose a start date within this plan."
-    : recurring && (formatDate(stopDate) === "—" || stopDate < draft.date || stopDate > plan.endDate)
-      ? "Repeat until must be on or after the start date and within this plan."
+  const dateError = formatDate(draft.date) === "—" || draft.date < (plan.continuous ? "1900-01-01" : plan.startDate) || draft.date > (plan.continuous ? "2200-12-31" : plan.endDate)
+    ? plan.continuous ? "Choose a valid transaction date." : "Choose a start date within this plan."
+    : recurring && (formatDate(stopDate) === "—" || stopDate < draft.date || stopDate > (plan.continuous ? "2200-12-31" : plan.endDate))
+      ? "Repeat until must be on or after the start date."
       : "";
   const paydays = draft.recurrence === "payday" && salaryReady && !dateError
     ? salaryOccurrences(salary, draft.date, stopDate) : [];
@@ -95,8 +96,8 @@ export default function FinancePlanEntryForm({
           <input
             required
             type="date"
-            min={plan.startDate}
-            max={plan.endDate}
+            min={plan.continuous ? "1900-01-01" : plan.startDate}
+            max={plan.continuous ? "2200-12-31" : plan.endDate}
             value={draft.date}
             onChange={(event) => set("date", event.target.value)}
           />
@@ -141,11 +142,11 @@ export default function FinancePlanEntryForm({
           </select>
         </Field>
         {recurring && (
-          <Field label="Repeat until" hint={`Leave blank to repeat through ${formatDate(plan.endDate, { year: "numeric" })}.`}>
+          <Field label="Repeat until" hint={plan.continuous ? "Leave blank to keep repeating." : `Leave blank to repeat through ${formatDate(plan.endDate, { year: "numeric" })}.`}>
             <input
               type="date"
               min={draft.date || plan.startDate}
-              max={plan.endDate}
+              max={plan.continuous ? "2200-12-31" : plan.endDate}
               value={draft.repeatUntil}
               onChange={(event) => set("repeatUntil", event.target.value)}
             />

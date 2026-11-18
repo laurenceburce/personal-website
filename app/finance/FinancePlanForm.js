@@ -167,7 +167,7 @@ export default function FinancePlanForm({
         });
       }}
     >
-      <Field label="Plan name">
+      {!draft.continuous && <><Field label="Plan name">
         <input
           autoFocus
           required
@@ -203,6 +203,7 @@ export default function FinancePlanForm({
           <option value="snapshot">Historical · saved starting balances</option>
         </select>
       </Field>
+      </>}
       <label className="fp-checkbox">
         <input
           type="checkbox"
@@ -484,7 +485,7 @@ export default function FinancePlanForm({
           "includeAnnualReserve",
           "Set aside money for annual bills each payday",
         ],
-      ].map(([field, label]) => (
+      ].filter(([field]) => !draft.continuous || field !== "includeTransactions").map(([field, label]) => (
         <label className="fp-checkbox" key={field}>
           <input
             type="checkbox"
@@ -505,7 +506,7 @@ export default function FinancePlanForm({
         className="fp-button fp-primary"
         disabled={busy || disabled}
       >
-        {busy ? "Saving…" : plan ? "Save plan" : "Create plan"}
+        {busy ? "Saving…" : draft.continuous ? "Save settings" : plan ? "Save plan" : "Create plan"}
       </button>
     </form>
   );

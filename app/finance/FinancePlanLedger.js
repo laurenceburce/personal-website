@@ -81,7 +81,7 @@ function SavingsBalance({ value = 0, currency, unusedOnPhone = false }) {
   );
 }
 
-function SourceLabel({ row }) {
+export function SourceLabel({ row }) {
   const labels = {
     salary: "Scheduled income",
     bill: "Scheduled bill",

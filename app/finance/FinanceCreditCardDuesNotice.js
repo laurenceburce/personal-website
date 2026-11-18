@@ -1,5 +1,5 @@
 import { financeAccountLabel } from "./FinanceAccountSelect";
-import { formatDate, money } from "../lib/financePlanner.mjs";
+import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 
 export default function FinanceCreditCardDuesNotice({
   accounts = [],
@@ -7,6 +7,7 @@ export default function FinanceCreditCardDuesNotice({
   plan,
   onReviewAccounts,
   onEditPlan,
+  onChangeRange,
   paymentHistoryWarning,
 }) {
   const cards = accounts.filter(
@@ -23,7 +24,8 @@ export default function FinanceCreditCardDuesNotice({
   });
   const missingWithEstimate = missing.filter((account) => account.isLinked && estimatedAccountIds.has(String(account.id)));
   const missingWithoutEstimate = missing.filter((account) => account.isLinked && !estimatedAccountIds.has(String(account.id)));
-  const manualMissing = missing.filter((account) => !account.isLinked);
+  const manualMissing = missing.filter((account) => !account.isLinked && !(plan?.entries || []).some((entry) =>
+    entry.kind === "transfer" && Number(entry.toAccountId) === Number(account.id) && entry.date >= localDate()));
   const unplannedBalances = cards.filter((account) => {
     if (!account.isLinked && missing.includes(account)) return false;
     const balance = Object.hasOwn(account, "nativeCurrentBalance")
@@ -43,6 +45,10 @@ export default function FinanceCreditCardDuesNotice({
       (!missing.includes(account) || estimatedAccountIds.has(String(account.id))),
   );
   const names = (items) => items.map(financeAccountLabel).join(", ");
+  const showPayments = () => onChangeRange?.({
+    startDate: [plan.startDate, ...beforePlan.map((row) => row.date)].sort()[0],
+    endDate: [plan.endDate, ...afterPlan.map((row) => row.date)].sort().at(-1),
+  });
   return (
     <div className="fp-credit-card-dues-notice">
       <p className="fp-plan-flow-note">
@@ -53,7 +59,7 @@ export default function FinanceCreditCardDuesNotice({
       {beforePlan.length > 0 && (
         <div className="fp-plan-warning" role="status">
           <p>
-            These automatic payments fall before this plan starts on {formatDate(plan.startDate, { year: "numeric" })} and are not deducted in its rows. Check posted payments and the plan’s starting balances.
+            These automatic payments fall before {plan.continuous ? "the visible range" : "this plan starts"} on {formatDate(plan.startDate, { year: "numeric" })}. Check their recorded payment status.
           </p>
           <ul>
             {beforePlan.map((row) => (
@@ -63,13 +69,14 @@ export default function FinanceCreditCardDuesNotice({
               </li>
             ))}
           </ul>
-          {onEditPlan && <button onClick={onEditPlan}>Edit plan</button>}
+          {plan.continuous && onChangeRange ? <button onClick={showPayments}>Show payment dates</button>
+            : onEditPlan && <button onClick={onEditPlan}>Edit plan</button>}
         </div>
       )}
       {afterPlan.length > 0 && (
         <div className="fp-plan-warning" role="status">
           <p>
-            These estimates from current unbilled balances fall after this plan ends on {formatDate(plan.endDate, { year: "numeric" })} and are not included in its available funds.
+            These estimates from current unbilled balances fall after {plan.continuous ? "the visible range ends" : "this plan ends"} on {formatDate(plan.endDate, { year: "numeric" })} and are not included in {plan.continuous ? "this projection" : "its available funds"}.
             {" "}Planned payments are not deducted from these amounts:
           </p>
           <ul>
@@ -83,8 +90,9 @@ export default function FinanceCreditCardDuesNotice({
             ))}
           </ul>
           <p>
-            Extend the plan’s end date to include these payments.
-            {onEditPlan && <>{" "}<button onClick={onEditPlan}>Edit plan</button></>}
+            {plan.continuous ? "Change the date range to include these payments." : "Extend the plan’s end date to include these payments."}
+            {plan.continuous && onChangeRange ? <> <button onClick={showPayments}>Show payment dates</button></>
+              : onEditPlan && <>{" "}<button onClick={onEditPlan}>Edit plan</button></>}
           </p>
         </div>
       )}

@@ -10,6 +10,10 @@ import {
   saveFinancePlanner,
 } from "../app/lib/financePlannerStore.js";
 import { capturePlanAccountOpenings } from "../app/lib/financePlanOpening.mjs";
+import { createPrimaryFinancePlan, ensurePrimaryFinancePlanner } from "../app/lib/financePrimaryPlanner.mjs";
+import { addDays, buildPlanRows } from "../app/lib/financePlanner.mjs";
+import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
+import { getLivePlannerAnalytics } from "../app/lib/financeLivePlanner.mjs";
 
 const document = () => ({
   salary: {
@@ -154,11 +158,13 @@ test("capturing a new selected account preserves explicit zero and negative bala
 test("legacy migration retries a revision race in a consistent transaction and subsequent saves keep the opening", async (t) => {
   const original = document();
   original.plans[0].startingAccounts = [{ accountId: 1, percentage: 100 }];
+  original.plans.unshift(createPrimaryFinancePlan());
   const stored = {
     document: JSON.stringify(original), revision: 1,
     exchange_rate: JSON.stringify({ rate: 58, fetchedAt: "2000-01-01T00:00:00.000Z" }),
   };
   const lifecycle = [];
+  const ledgerWrites = [];
   let conflict = true;
   const account = { id: 1, name: "Checking", currency: "USD", account_type: "checking",
     external_provider: "plaid", external_account_id: "bank-1", current_balance: "150.00" };
@@ -168,6 +174,7 @@ test("legacy migration retries a revision race in a consistent transaction and s
     commit: async () => lifecycle.push("commit"),
     release: () => lifecycle.push("release"),
     query: async (sql) => {
+      if (/^\s*(?:INSERT INTO|UPDATE|DELETE FROM) personal_finance_transactions/.test(sql)) ledgerWrites.push(sql);
       if (sql.includes("SELECT document, revision")) return [[{ ...stored }]];
       if (sql.includes("SELECT a.*")) return [[account]];
       if (sql.includes("SELECT id, currency")) return [[account]];
@@ -181,7 +188,7 @@ test("legacy migration retries a revision race in a consistent transaction and s
       if (sql.includes("AND revision = ?") && conflict) {
         conflict = false;
         const concurrent = JSON.parse(stored.document);
-        concurrent.plans[0].name = "Saved on another device";
+        concurrent.plans[1].name = "Saved on another device";
         stored.document = JSON.stringify(concurrent);
         stored.revision++;
         return [{ affectedRows: 0 }];
@@ -219,27 +226,100 @@ test("legacy migration retries a revision race in a consistent transaction and s
   const migrated = await getFinancePlanner();
   assert.equal(migrated.configured, true);
   assert.equal(migrated.revision, 3);
-  assert.equal(migrated.document.plans[0].name, "Saved on another device");
-  assert.deepEqual(migrated.document.plans[0].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
+  assert.equal(migrated.document.plans[0].id, "live-planner");
+  assert.equal(migrated.document.plans[0].continuous, true);
+  assert.equal(migrated.document.plans[1].name, "Saved on another device");
+  assert.deepEqual(migrated.document.plans[1].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
   assert.deepEqual(lifecycle, ["begin", "rollback", "begin", "commit", "release", "rate"]);
 
   // An older browser tab omits snapshots while changing an unrelated field.
   const edited = structuredClone(migrated.document);
-  edited.plans[0].accountOpeningBalances = [];
-  edited.plans[0].name = "Renamed";
+  edited.plans[1].accountOpeningBalances = [];
+  edited.plans[1].name = "Renamed";
   account.current_balance = "999.00";
   const saved = await saveFinancePlanner(edited, migrated.revision);
   assert.equal(saved.revision, 4);
-  assert.deepEqual(saved.document.plans[0].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
+  assert.deepEqual(saved.document.plans[1].accountOpeningBalances, [{ accountId: 1, balance: 200 }]);
   assert.deepEqual(lifecycle.slice(-3), ["begin", "commit", "release"]);
+  const stable = await getFinancePlanner();
+  assert.equal(stable.revision, saved.revision, "a repeated load does not rewrite the same primary migration");
+  assert.equal(stored.document, JSON.stringify(saved.document));
+  const raw = JSON.parse(stored.document);
+  delete raw.plans[0].includeTransactions;
+  stored.document = JSON.stringify(raw);
+  const normalized = await getFinancePlanner();
+  assert.equal(normalized.revision, stable.revision + 1, "validator-supplied primary fields are saved with a revision bump");
+  assert.equal(JSON.parse(stored.document).plans[0].includeTransactions, true);
+  assert.equal((await getFinancePlanner()).revision, normalized.revision, "the normalized stored shape is idempotent");
+  assert.deepEqual(ledgerWrites, [], "workspace migration cannot manufacture or delete account receipts");
 });
 
-test("default is an empty personal planner with a USD salary and real local date", () => {
+test("default personal planner automatically includes one ongoing live workspace", () => {
   const planner = createDefaultFinancePlanner();
+  assert.equal(planner.salary.amount, 0);
   assert.equal(planner.salary.currency, "USD");
   assert.equal(planner.salary.payFrequency, "biweekly");
   assert.match(planner.salary.firstPayDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(planner.plans.length, 1);
+  assert.equal(planner.plans[0].id, "live-planner");
+  assert.equal(planner.plans[0].continuous, true);
+  assert.deepEqual(planner.plans[0].entries, []);
   assert.deepEqual(validateFinancePlanner(planner), planner);
+});
+
+test("a fresh automatic planner cannot invent income or increase projected account balances", () => {
+  const planner = createDefaultFinancePlanner();
+  const currentDate = planner.salary.firstPayDate;
+  const accounts = [{ id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 }];
+  const range = { startDate: currentDate, endDate: addDays(currentDate, 90) };
+  const view = { ...planner.plans[0], ...range };
+  const rows = buildPlanRows(view, planner, 58, { today: currentDate, accounts });
+  assert.ok(rows.every((row) => row.kind !== "income" || row.amount === 0));
+  const projected = buildAccountPlan(view, planner, 58, { today: currentDate, accounts, rows });
+  const analytics = getLivePlannerAnalytics({ today: currentDate, accounts, rows: projected.rows, range });
+  assert.deepEqual(analytics.assets.USD, { current: 1000, projected: 1000, change: 0 });
+  assert.equal(analytics.cashflow.USD.income, 0);
+  const saved = document();
+  assert.equal(ensurePrimaryFinancePlanner(saved, currentDate).salary.amount, 2000, "saved salary is never replaced by the fresh default");
+});
+
+test("primary migration preserves saved identities, history and legacy plans while expanding its storage horizon", () => {
+  const planner = document();
+  planner.plans[0].includeTransactions = false;
+  planner.plans[0].completedRows = [{ rowId: "entry:conversion-1", completedAt: "2026-11-06T12:00:00.000Z" }];
+  planner.plans[0].rowOverrides = [{ rowId: "entry:historical:2023-02-02", date: "2023-02-03", description: "Historical", amount: 1 }];
+  planner.plans.push({ ...planner.plans[0], id: "legacy-plan", name: "Historical plan" });
+  const before = structuredClone(planner);
+  const normalized = ensurePrimaryFinancePlanner(planner, "2026-11-18");
+  const primary = normalized.plans[0];
+  assert.equal(primary.id, "plan-1");
+  assert.equal(primary.balanceMode, "live");
+  assert.equal(primary.continuous, true);
+  assert.equal(primary.includeTransactions, true);
+  assert.equal(primary.startDate, "2023-02-02");
+  assert.equal(primary.endDate, "2027-11-18");
+  assert.deepEqual(primary.entries, before.plans[0].entries);
+  assert.deepEqual(primary.completedRows, before.plans[0].completedRows);
+  assert.deepEqual(primary.rowOverrides, before.plans[0].rowOverrides);
+  assert.deepEqual(normalized.plans[1], before.plans[1]);
+  assert.deepEqual(planner, before);
+  assert.deepEqual(ensurePrimaryFinancePlanner(normalized, "2026-11-18"), normalized, "repeated reads do not change the document again");
+  assert.equal(ensurePrimaryFinancePlanner({ ...planner, plans: [] }, "2026-11-18").plans[0].id, "live-planner");
+});
+
+test("continuous storage retains decades of entries without expanding all recurring forecasts", () => {
+  const planner = document();
+  Object.assign(planner.plans[0], { continuous: true, startDate: "2000-01-01", endDate: "2040-12-31",
+    entries: [{ id: "daily", date: "2000-01-01", description: "Daily commitment", recurrence: "daily", repeatUntil: null,
+      kind: "expense", currency: "USD", amount: 1 }] });
+  assert.equal(validateFinancePlanner(planner).plans[0].entries[0].date, "2000-01-01");
+  planner.plans[0].continuous = false;
+  assert.throws(() => validateFinancePlanner(planner), /two years/);
+  planner.plans[0].continuous = "true";
+  assert.throws(() => validateFinancePlanner(planner), /Continuous planner/);
+  for (const invalid of [null, [], { ...planner.plans[0], entries: {} }])
+    assert.throws(() => validateFinancePlanner(ensurePrimaryFinancePlanner({ ...planner, plans: [invalid] })),
+      (error) => error.status === 400);
 });
 
 test("plans default to live balances, explicit snapshots stay opt-in, and live payment entries validate their card target", async () => {

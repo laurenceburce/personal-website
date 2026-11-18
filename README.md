@@ -151,144 +151,40 @@ The finance workspace separates recorded activity from your plans:
   the next four paydays preview before saving. New planners default to every
   two weeks, anchored exactly 14 days from the first payday. Twice-monthly pay
   deliberately uses two fixed calendar dates instead.
-- **Budget plans:** dated money-flow plans with starting available USD/PHP balances
-  and separately entered annual reserves. Include salary, bills, payday savings
-  and expense allocations, annual-bill set-asides, custom entries/conversions,
-  and recorded transactions across the entire date range (including transfers).
-  Plans use live account balances by default, including older plans with saved
-  openings. Choose **Historical · saved starting balances** to keep a dated snapshot.
+- **Live planner:** one ongoing planner is available automatically, with no plan
+  creation, switching, or deletion step. Existing entry and receipt IDs stay intact.
+  Use date presets or custom **From / Through** dates to browse past activity and
+  upcoming payments. These dates change only the view and can be shared in the URL;
+  they never trim saved entries, change account balances, or record a payment.
+  Projection ranges can extend up to two years. New transactions can be dated
+  outside the current view, and recurring entries can continue without an end date.
+  The USD and PHP summaries compare **Current balance** with **Projected balance**
+  through the selected end date, including changes and a trend. Native asset balances
+  stay separate from card/loan balances. Expand **Balances by account** for individual
+  comparisons. Projections start with today's live values and remaining future flows;
+  past-only ranges show history and live current balances without inventing past
+  running balances. Unknown account values remain unavailable.
+  The responsive transaction table shows date, description, account, native amount,
+  projected account funds, and status. Search or filter **All / Upcoming / Recorded /
+  Overdue** without changing calculated balances. Expand **Details** for statement,
+  reserve, conversion, and bank matching evidence. Secondary actions stay in each
+  row's menu; the primary payment/receipt action stays visible.
   Add a one-time row as **Planned** or **Recorded · already happened**. Recording
-  creates account transactions; completing a custom row records its assigned
-  accounts too. Transfers create both native account legs. Manual account balances
-  update immediately. Linked accounts include recorded amounts while awaiting a
-  bank match; a unique posted bank transaction with the same account, currency,
-  direction, amount and nearby date replaces the generated record once.
-  Use **Record payment** or **Record receipt** on scheduled rows to enter an actual
-  date and amount, including early or partial payments. A **Credit card payment**
-  can follow the **Live remaining card balance**, so earlier payments and new
-  purchases update the scheduled amount. Recorded payments remain fixed.
-  Removing a recorded custom row reverses its generated manual transactions;
-  deleting an entire plan retains account history as standalone transactions.
-  Imported bank records are always retained.
-  Pending bank entries are excluded until posted. A matching posted salary or
-  bill replaces its scheduled row; conservative matching uses amount, currency,
-  date and description, including bank descriptions such as electronic deposits
-  for salary. Generic deposits and transfers do not replace salary forecasts.
-  Enable **Link balance columns to bank accounts** in the plan editor to assign
-  a separate native account to Available, Annual reserve, and Savings in each
-  currency. Linked columns start with current bank balances; an explicit dated
-  account opening can be supplied for historical projections. Bank deposits into
-  the reserve or savings account affect that column only. Matching planned
-  transfers and their posted debit/credit records appear as one row, with bank
-  evidence in its details. A unique same-day debit/credit pair can replace a
-  reserve or savings estimate with the actual amount; details retain the planned
-  amount. Partial transfers keep their unposted leg pending.
-  Posted movements already included in live balances are not replayed. Linked
-  annual reserves show the account's full bank balance; per-bill earmarks remain
-  separate funding calculations. Linked credit card dues use the corresponding
-  Available account as their planned funding source. The column headers name
-  each account, and unavailable bank balances remain unavailable.
-  Each annual bill keeps its own saved balance and payday
-  contributions. An annual payment row shows only the additional cash needed
-  after using those funds, with the full payment and reserve used in its detail.
-  For example, a $395 bill with $100 saved needs $295 more; later set-asides can
-  reduce that further. If two paydays remain before it is due, the contribution
-  is $147.50 per payday. Plans recalculate against the remaining payment dates
-  and earmarked balance on every payday. Set-asides pause when the next payment
-  is funded, then resume after payment for the following installment or renewal.
-  Saved balances seed each hypothetical plan once and are
-  not reduced in the bill editor by a forecast. Undated bills are flagged;
-  annual reserves still build on paydays.
-  Flow sources can be toggled when creating or editing a plan. Opening balances
-  are measured before the first day's flows; opening reserves must be actual
-  funds you have set aside, not the suggested savings target.
-  Saved amounts entered on annual bills are included automatically in the
-  starting reserve. The plan's total starting reserve can increase that amount
-  with unassigned funds; it does not add the same item savings a second time.
-  Select starting bank accounts and a percentage, then add flat USD/PHP amounts.
-  In historical mode, account starting balances are saved with the plan and stay fixed when bank
-  data refreshes. Linked Available, Annual reserve, and Savings columns also use
-  their saved openings. New openings are calculated before the plan's first
-  day by removing known posted movements since that date from the current balance;
-  later transactions are applied once. Existing plans capture missing openings
-  on their next load in historical mode. Earlier original amounts that were never saved cannot be
-  recovered without transaction history; correct them in the plan editor's
-  **Starting balance** fields. Editing a name, date, or percentage preserves
-  saved account amounts. Already-earmarked annual savings are excluded from
-  available starting cash once and remain in the reserve pocket.
-  Rows can be marked done or reopened manually. Posted transactions automatically
-  complete conservative account/currency/amount/date/name matches; pending and
-  future entries do not. Automatic completion remains available when recorded
-  cash-flow rows are hidden. Transfers need both assigned native legs, including
-  grouped annual-reserve contributions. Scheduled checkmarks track progress;
-  **Record payment** creates actual account activity. No action sends a bank payment.
-  Bank balances and transaction matches refresh when Budget plans opens, regains
-  focus, and every five minutes while visible. Automatic provider refresh attempts
-  share a 60-second cooldown; **Refresh bank data** forces a fresh request. Failures
-  keep the last known data with an explicit notice.
-  Linked credit card statement balances and payment dates are included
-  automatically when the bank supplies them through Plaid Liabilities. Reported
-  statements use the full statement balance, reduced by known payments. Credit
-  cards have **Automatic payment settings** under **Bank accounts**. Enable the
-  option and choose **Days before due date** (default seven; zero means the due
-  date). Budget plans deduct the payment on that earlier calendar date, including
-  when it falls in the previous month or brings the payment inside the plan's
-  date range. The original bank due date stays visible. Unbilled estimates use
-  the same schedule, and posted payments reduce the remaining forecast once.
-  These settings describe autopay already arranged with the bank; they do not
-  enroll the card or send payments. Cards without autopay keep their due dates.
-  Manually created credit cards have a **Payment details** editor on their
-  account card. Enter the statement balance in the card's currency and its
-  payment due date; the minimum payment and statement date are optional.
-  Budget plans use the full entered statement balance, apply the saved autopay
-  schedule, and subtract recorded payments once. A remaining unbilled balance
-  uses the entered monthly cycle for a separately labeled estimate. Saving
-  statement details leaves the tracked card balance unchanged and records no
-  payment. Update these fields when a new statement arrives. Linked cards keep
-  their bank-supplied statement details.
-  Linked cards also show an **Estimated** next payment for their currently unbilled
-  balance, using the current balance less the remaining reported statement.
-  The bank's next payment date is used when no issued statement is available;
-  otherwise the following monthly due date is estimated. Purchases, payments,
-  refunds, and interest can change the final amount. The known balance is
-  included once; it is not repeated as new debt in every future month. New bank
-  statements replace the estimate. Payments beyond the plan end are listed in
-  a notice so the plan can be extended. Missing dates and cached details from a
-  failed refresh are identified in the workspace.
-  For cards with complete statement details, charges update projected card debt;
-  statement payments reduce available cash. Posted payments, including earlier
-  statement-cycle payments, reduce the remaining due. A planned account transfer
-  to that card covers the corresponding due amount without another forecast
-  payment. Linked-column plans use their Available account for card payments;
-  other plans require an explicit transfer to project a funding account.
-  Annual card bills use their charge anniversary, separately from the card's
-  payment due date. A uniquely matched posted annual fee already in the card
-  balance is attributed inside its statement payment, including charges before
-  the plan starts. Its saved annual reserve covers that part of the payment;
-  Checking covers the remainder. The charge is not added again on the payment
-  date, and the full statement amount is preserved. Statement amounts and dates
-  stay synced to bank data.
-  Edit a scheduled row to change its date, description, or amount for that one
-  occurrence in that plan. Recurring settings and other dates stay unchanged;
-  **Reset** restores the recurring default. Enter zero to skip an occurrence's
-  amount. Annual payment edits use the full payment before reserve coverage;
-  annual set-aside edits are distributed across bills up to their funding need.
-  Running savings columns start with linked savings-account balances and show
-  planned movements, with annual reserves excluded. Accounts are counted once;
-  savings without an assigned account accumulate separately from zero. Unknown
-  bank balances are shown as unavailable.
-  On phones, budget plans use compact table rows with a pinned item column.
-  Open **Columns** to choose currencies and balances, tap **⋯** for row details,
-  or use **Upcoming** to jump to the next unfinished item. **Reset columns**
-  restores the default view.
-  **Add entry → Repeat** supports daily, monthly, or every-payday entries, plus
-  one-time entries. Choose a start date and optional stop date; a blank stop date
-  repeats through the plan end. Monthly entries retain their original day and
-  use month-end in shorter months. Payday entries follow the saved salary
-  schedule even when forecast salary is hidden. Each occurrence has its own
-  completion status and can be edited separately. Use **Recurring entries** or
-  **Series** to edit the recurring default; individual overrides remain in force.
-  Deleting a series removes its occurrences from that plan.
+  creates account transactions; completing a custom row records its assigned accounts
+  too. Transfers create both native account legs. Manual balances update immediately.
+  Linked accounts include recorded amounts while awaiting a unique posted bank match,
+  which replaces the generated record once. Use **Record payment** or **Record receipt**
+  to enter the actual date and amount, including early or partial payments.
+  **Credit card payment / Live remaining card balance** follows new charges and earlier
+  payments, while recorded payments keep their actual amounts. Statement balances and
+  optional autopay timing remain configurable under **Bank accounts**. No action sends
+  a bank payment. Removing a recorded custom row reverses generated manual transactions;
+  imported bank records are retained.
+  **Planner settings** contains income, allocation, reserve, and optional account
+  assignments. A new workspace starts with no assumed salary. Salary and bill schedules
+  still drive payday allocations and annual reserves. Repeating transactions and
+  payment setup details are available below the table. Balances and transaction matches
+  refresh on open, focus, and every five minutes while visible; **Refresh** checks now.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.

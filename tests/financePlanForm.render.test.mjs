@@ -400,3 +400,14 @@ test("live linked columns show current native values while snapshot correction c
   tree = editor.render();
   assert.equal(find(tree, (node) => node.props?.label === "Annual reserve · USD starting balance").props.children.props.value, 300);
 });
+
+test("continuous planner settings omit plan creation, names and saved viewing dates", () => {
+  const html = renderToStaticMarkup(createElement(PlanForm, { plan: { ...plan, continuous: true, balanceMode: "live" },
+    document, accounts: [account], onSave() {} }));
+  const text = plain(html);
+  assert.ok(text.includes("Save settings"));
+  assert.ok(!text.includes("Plan name"));
+  assert.ok(!text.includes("Create plan"));
+  assert.ok(!text.includes("Historical · saved starting balances"));
+  assert.ok(!html.includes('type="date"'));
+});

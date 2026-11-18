@@ -32,7 +32,14 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
     const overrides = new Map((plan.rowOverrides || []).map((row) => [row.rowId, row]));
     for (const entry of plan.entries || []) {
       const recurring = entry.recurrence && entry.recurrence !== "once";
-      for (const occurrence of entryOccurrences(entry, plan.startDate, plan.endDate, document.salary)) {
+      // A continuous planner can span years. Its receipts are addressed by
+      // completion IDs, so recording never expands every unpaid recurrence.
+      const prefix = `entry:${entry.id}:`;
+      const occurrenceDates = recurring
+        ? [...completed].filter((rowId) => rowId.startsWith(prefix)).map((rowId) => rowId.slice(prefix.length))
+        : completed.has(`entry:${entry.id}`) ? [entry.date] : [];
+      const occurrences = occurrenceDates.flatMap((day) => entryOccurrences(entry, day, day, document.salary));
+      for (const occurrence of occurrences) {
         const rowId = recurring ? `entry:${entry.id}:${occurrence.date}` : `entry:${entry.id}`;
         if (!completed.has(rowId)) continue;
         const row = { ...entry, date: occurrence.date, ...overrides.get(rowId) };
@@ -94,8 +101,8 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
   // Removing a whole forecast never erases payments already made. Preserve its
   // receipts as editable history, including bank reconciliation still in flight.
   for (const row of existing) {
-    if (planIds.has(row.source_plan_id)) continue;
     const saved = parse(row.plan_record_json);
+    if (planIds.has(row.source_plan_id) && !saved.detached) continue;
     if (!saved.planId || !saved.rowId || !saved.leg) continue;
     const changedAccount = Number(row.account_id) !== Number(saved.accountId) || row.kind !== saved.kind;
     const spec = { ...saved, detached: true,

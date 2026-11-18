@@ -7,9 +7,7 @@ import {
   convert,
   formatDate,
   getSummary,
-  getAnnualReserveOpening,
   getCreditCardObligations,
-  getPlanOpening,
   localDate,
   addDays,
   money,
@@ -22,9 +20,7 @@ import {
 import FinanceAccountSelect, {
   financeAccountLabel,
 } from "./FinanceAccountSelect";
-import FinanceAccountPlanView, {
-  AccountAllocationSummary,
-} from "./FinanceAccountPlanView";
+import { AccountAllocationSummary } from "./FinanceAccountPlanView";
 import FinanceInstall from "./FinanceInstall";
 import Modal from "./FinanceModal";
 import FinanceNumberInput from "./FinanceNumberInput";
@@ -33,7 +29,11 @@ import PlanOccurrenceForm from "./FinancePlanOccurrenceForm";
 import EntryForm from "./FinancePlanEntryForm";
 import FinanceOverview from "./FinanceOverview";
 import FinanceCreditCardDuesNotice from "./FinanceCreditCardDuesNotice";
-import Ledger from "./FinancePlanLedger";
+import Ledger from "./FinancePlannerTable";
+import FinancePlannerRange from "./FinancePlannerRange";
+import FinancePlannerAnalytics from "./FinancePlannerAnalytics";
+import { ensurePrimaryFinancePlanner } from "../lib/financePrimaryPlanner.mjs";
+import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, withLivePlannerBalances } from "../lib/financeLivePlanner.mjs";
 import { BillForm, BillsTable } from "./FinanceBills";
 import {
   QuickTransactionForm,
@@ -42,12 +42,13 @@ import {
 } from "./FinanceActivity";
 import "./finance.css";
 import "./finance-workspace.css";
+import "./finance-live-planner.css";
 
 const NAV = [
   { id: "home", label: "Overview", icon: "grid" },
   { id: "bills", label: "Bills", icon: "receipt" },
   { id: "spending", label: "Spending plan", icon: "chart" },
-  { id: "plans", label: "Budget plans", icon: "calendar" },
+  { id: "plans", label: "Live planner", icon: "calendar" },
   { id: "transactions", label: "Transactions", icon: "exchange" },
   { id: "accounts", label: "Bank accounts", icon: "bank" },
   { id: "settings", label: "Salary & settings", icon: "settings" },
@@ -76,8 +77,8 @@ const PAGE_COPY = {
     "Know what to set aside and what’s yours to spend.",
   ],
   plans: [
-    "Budget plans",
-    "Plan upcoming bills, savings, and transfers.",
+    "Your live planner",
+    "Today’s balances. Upcoming payments. A clearer view of what’s next.",
   ],
   transactions: [
     "Your money in motion",
@@ -699,9 +700,10 @@ export default function FinanceAppClient({
   initialTab,
   initialActivity,
   initialPlanActivity = null,
+  initialPlannerRange,
   today = localDate(),
 }) {
-  const [state, setState] = useState(snapshot);
+  const [state, setState] = useState(() => ({ ...snapshot, document: ensurePrimaryFinancePlanner(snapshot.document, today) }));
   const [tab, setTab] = useState(normalizeTab(initialTab));
   const [activity, setActivity] = useState(initialActivity);
   const [selectedMonth, setSelectedMonth] = useState(initialActivity.month);
@@ -714,9 +716,7 @@ export default function FinanceAppClient({
   const [recordRefreshVersion, setRecordRefreshVersion] = useState(0);
   const [cadence, setCadence] = useState("monthly");
   const [modal, setModal] = useState(null);
-  const [selectedPlanId, setSelectedPlanId] = useState(
-    snapshot.document.plans[0]?.id || "",
-  );
+  const [plannerRange, setPlannerRange] = useState(() => getLivePlannerRange({ ...initialPlannerRange, today }));
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [bankRefreshing, setBankRefreshing] = useState(false);
@@ -735,56 +735,58 @@ export default function FinanceAppClient({
     () => getSummary(document, rate, today),
     [document, rate, today],
   );
-  const plan =
-    document.plans.find((item) => item.id === selectedPlanId) ||
-    document.plans[0];
-  const legacyPlanOpeningReserve = useMemo(
-    () => getAnnualReserveOpening(plan, document),
-    [plan, document],
-  );
-  const legacyPlanOpening = useMemo(
-    () => getPlanOpening(plan, accounts, document),
-    [plan, accounts, document],
-  );
+  const plan = document.plans[0];
+  const computationRange = getLivePlannerComputationRange(plannerRange, today);
+  const projectionPlan = useMemo(() => ({ ...plan, ...computationRange, balanceMode: "live", includeTransactions: true }),
+    [plan, computationRange.startDate, computationRange.endDate]);
   const planRows = useMemo(
     () =>
       plan
-        ? buildPlanRows(plan, document, rate, {
+        ? buildPlanRows(projectionPlan, document, rate, {
             today,
             accounts,
             transactions:
-              planActivity?.from === plan.startDate &&
-              planActivity?.to === plan.endDate
+              planActivity?.from === projectionPlan.startDate &&
+              planActivity?.to === projectionPlan.endDate
                 ? planActivity.transactions
                 : [],
             creditCardPaymentTransactions:
-              planActivity?.from === plan.startDate &&
-              planActivity?.to === plan.endDate
+              planActivity?.from === projectionPlan.startDate &&
+              planActivity?.to === projectionPlan.endDate
                 ? planActivity.creditCardPaymentTransactions || []
                 : [],
           })
         : [],
-    [plan, document, rate, planActivity, accounts, today],
+    [projectionPlan, document, rate, planActivity, accounts, today],
   );
   const accountPlan = useMemo(
     () =>
       plan
-        ? buildAccountPlan(plan, document, rate, {
+        ? buildAccountPlan(projectionPlan, document, rate, {
             accounts,
             rows: planRows,
             today,
           })
         : null,
-    [plan, document, rate, accounts, planRows, today],
+    [projectionPlan, document, rate, accounts, planRows, today],
   );
-  const displayedPlanRows = accountPlan?.rows || planRows;
-  const planOpening = plan?.accountLinks ? accountPlan?.openingBalances || legacyPlanOpening : legacyPlanOpening;
-  const planOpeningReserve = plan?.accountLinks ? accountPlan?.openingReserve || legacyPlanOpeningReserve : legacyPlanOpeningReserve;
-  const planBalance = (value, currency = "USD") => Number.isFinite(value) ? money(value, currency) : "—";
+  const futurePlan = useMemo(() => ({ ...projectionPlan, startDate: today,
+    endDate: plannerRange.endDate < today ? today : plannerRange.endDate }), [projectionPlan, today, plannerRange.endDate]);
+  const futurePlanRows = useMemo(() => buildPlanRows(futurePlan, document, rate, { today, accounts,
+    transactions: planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate ? planActivity.transactions : [],
+    creditCardPaymentTransactions: planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate ? planActivity.creditCardPaymentTransactions || [] : [],
+  }), [futurePlan, document, rate, today, accounts, planActivity, projectionPlan]);
+  const futureAccountPlan = useMemo(() => buildAccountPlan(futurePlan, document, rate, { accounts, rows: futurePlanRows, today }),
+    [futurePlan, document, rate, accounts, futurePlanRows, today]);
+  const displayedPlanRows = withLivePlannerBalances({ accounts, today,
+    rows: [...(accountPlan?.rows || planRows).filter((row) => row.date < today), ...futureAccountPlan.rows]
+      .filter((row) => row.source !== "salary" || Number(row.amount) > 0) });
+  const visiblePlanRows = filterLivePlannerRows(displayedPlanRows, plannerRange);
+  const plannerAnalytics = getLivePlannerAnalytics({ accounts, rows: displayedPlanRows, range: plannerRange, today });
   const planRecordsMatch = Boolean(
     plan &&
-    planActivity?.from === plan.startDate &&
-    planActivity?.to === plan.endDate,
+    planActivity?.from === projectionPlan.startDate &&
+    planActivity?.to === projectionPlan.endDate,
   );
   const creditCardObligations = useMemo(
     () => getCreditCardObligations(accounts, {
@@ -813,8 +815,8 @@ export default function FinanceAppClient({
   const activityRequest = useRef(0);
   const planActivityRequest = useRef(0);
   const bankRefreshRequest = useRef(null);
-  const activePlanRef = useRef(plan);
-  activePlanRef.current = plan;
+  const activePlanRef = useRef(projectionPlan);
+  activePlanRef.current = projectionPlan;
   const selectedMonthRef = useRef(selectedMonth);
   const pageCopy = PAGE_COPY[tab];
   useEffect(() => {
@@ -822,16 +824,16 @@ export default function FinanceAppClient({
     if (
       recordRefreshVersion === 0 &&
       planActivity?.configured &&
-      planActivity.from === plan.startDate &&
-      planActivity.to === plan.endDate
+      planActivity.from === projectionPlan.startDate &&
+      planActivity.to === projectionPlan.endDate
     )
       return;
-    loadPlanActivity(plan);
+    loadPlanActivity(projectionPlan);
   }, [
     tab,
     plan?.id,
-    plan?.startDate,
-    plan?.endDate,
+    projectionPlan.startDate,
+    projectionPlan.endDate,
     plan?.includeTransactions,
     recordRefreshVersion,
   ]);
@@ -857,6 +859,7 @@ export default function FinanceAppClient({
     const onPop = () => {
       const params = new URL(window.location.href).searchParams;
       setTab(normalizeTab(params.get("tab")));
+      try { setPlannerRange(getLivePlannerRange({ startDate: params.get("from") || undefined, endDate: params.get("to") || undefined, today })); } catch { /* Keep the last valid timeline. */ }
       const month = params.get("month") || localDate().slice(0, 7);
       if (MONTH_PATTERN.test(month) && month !== selectedMonthRef.current) {
         selectedMonthRef.current = month;
@@ -936,7 +939,7 @@ export default function FinanceAppClient({
       if (requestId === activityRequest.current) setActivityLoading(false);
     }
   }
-  async function loadPlanActivity(targetPlan = plan) {
+  async function loadPlanActivity(targetPlan = projectionPlan) {
     if (!targetPlan) return true;
     const requestId = ++planActivityRequest.current;
     setPlanActivityLoading(true);
@@ -1024,6 +1027,15 @@ export default function FinanceAppClient({
     url.searchParams.set("month", month);
     window.history.pushState({}, "", url);
     loadActivity(month);
+  }
+  function changePlannerRange(nextRange) {
+    const checked = getLivePlannerRange({ ...nextRange, today });
+    setPlanActivityError("");
+    setPlannerRange(checked);
+    const url = new URL(window.location.href);
+    url.searchParams.set("from", checked.startDate);
+    url.searchParams.set("to", checked.endDate);
+    window.history.pushState({}, "", url);
   }
   async function performAction(action, data = {}) {
     const response = await fetch("/api/finance", {
@@ -1130,10 +1142,10 @@ export default function FinanceAppClient({
             ? "This planner changed on another device. Reload the page before saving again; your current edits are still open."
             : result.error || "Could not save your changes.",
         );
-      setState(result);
+      setState({ ...result, document: ensurePrimaryFinancePlanner(result.document, today) });
       setNotice(message);
       setModal(null);
-      await Promise.all([loadActivity(), ...(plan ? [loadPlanActivity(result.document.plans.find((item) => item.id === plan.id) || plan)] : [])]);
+      await Promise.all([loadActivity(), loadPlanActivity(projectionPlan)]);
       return true;
     } catch (err) {
       setError(err.message);
@@ -1159,13 +1171,10 @@ export default function FinanceAppClient({
   const saveAllocation = (row) =>
     save({ ...document, allocations: upsert(document.allocations, row) });
   async function savePlan(row) {
-    if (
-      await save(
+    return save(
         { ...document, plans: upsert(document.plans, row) },
-        "Budget plan saved.",
-      )
-    )
-      setSelectedPlanId(row.id);
+        "Planner updated.",
+      );
   }
   async function togglePlanCompletion(row) {
     if (!plan || busy || row.completionSource === "transaction") return;
@@ -1385,7 +1394,7 @@ export default function FinanceAppClient({
             <strong>{activeNav.label}</strong>
           </span>
           <div>
-            <Button
+            {tab !== "plans" && <Button
               icon="plus"
               variant="primary"
               className="fp-quick-add"
@@ -1394,7 +1403,7 @@ export default function FinanceAppClient({
             >
               <span className="fp-quick-label-desktop">Add transaction</span>
               <span className="fp-quick-label-mobile">Quick add</span>
-            </Button>
+            </Button>}
             <span className="fp-private-badge">
               <Icon name="lock" size={12} /> Private
             </span>
@@ -1432,9 +1441,10 @@ export default function FinanceAppClient({
               <Button
                 icon="plus"
                 variant="primary"
-                onClick={() => open({ type: "plan" })}
+                onClick={() => open({ type: "entry" })}
+                disabled={!state.configured}
               >
-                New plan
+                Add transaction
               </Button>
             ) : (
               <span className="fp-heading-icon">
@@ -1592,7 +1602,7 @@ export default function FinanceAppClient({
                     open({ type: "transaction", transaction })
                   }
                   onDelete={(row) => open({ type: "deleteTransaction", row })}
-                  onReviewPlan={(planId) => { setSelectedPlanId(planId); navigate("plans"); }}
+                  onReviewPlan={() => navigate("plans")}
                 />
               )}
             </div>
@@ -1902,360 +1912,62 @@ export default function FinanceAppClient({
           )}
 
           {tab === "plans" && (
-            <>
-              {!document.plans.length ? (
-                <section className="fp-card">
-                  <Empty
-                    icon="calendar"
-                    title="Make room for what’s next"
-                    action={
-                      <Button
-                        icon="plus"
-                        variant="primary"
-                        onClick={() => open({ type: "plan" })}
-                      >
-                        Create a budget plan
-                      </Button>
-                    }
-                  >
-                    Choose your dates and starting balances. Your bills and
-                    paydays will fill themselves in.
-                  </Empty>
-                </section>
-              ) : (
-                <>
-                  <div className="fp-plan-selector">
-                    {document.plans.map((item) => (
-                      <button
-                        key={item.id}
-                        className={plan.id === item.id ? "active" : ""}
-                        onClick={() => {
-                          setPlanActivityError("");
-                          setSelectedPlanId(item.id);
-                        }}
-                      >
-                        <Icon name="calendar" size={17} />
-                        <span>
-                          {item.name}
-                          <small>
-                            {formatDate(item.startDate)} –{" "}
-                            {formatDate(item.endDate)}
-                          </small>
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                  <section className="fp-card">
-                    <div className="fp-card-heading fp-plan-heading">
-                      <div>
-                        <h2>{plan.name}</h2>
-                        <span className="fp-label-pill" role={bankRefreshing ? "status" : undefined}>
-                          {bankRefreshing ? "Syncing bank data…" : "Money flow"}
-                        </span>
-                      </div>
-                      <div className="fp-button-row fp-plan-actions">
-                        <Button
-                          icon="plus"
-                          variant="primary"
-                          onClick={() => open({ type: "entry" })}
-                        >
-                          Add entry
-                        </Button>
-                        <Button
-                          icon="edit"
-                          onClick={() => open({ type: "plan", plan })}
-                        >
-                          Edit plan
-                        </Button>
-                      </div>
-                      <details className="fp-plan-secondary-actions">
-                        <summary>More options</summary>
-                        <div className="fp-button-row">
-                          <Button
-                            icon="refresh"
-                            disabled={bankRefreshing || !activity.configured}
-                            onClick={() => refreshPlanBanks(true)}
-                          >
-                            {bankRefreshing
-                              ? "Refreshing bank data…"
-                              : "Refresh bank data"}
-                          </Button>
-                          {plan.includeTransactions !== false && (
-                            <Button
-                              icon="refresh"
-                              disabled={planActivityLoading}
-                              onClick={() => loadPlanActivity(plan)}
-                            >
-                              {planActivityLoading
-                                ? "Refreshing flows…"
-                                : "Refresh flows"}
-                            </Button>
-                          )}
-                          <Button
-                            icon="trash"
-                            aria-label={`Delete ${plan.name}`}
-                            onClick={() =>
-                              open({
-                                type: "delete",
-                                collection: "plans",
-                                row: plan,
-                              })
-                            }
-                          >
-                            Delete plan
-                          </Button>
-                        </div>
-                      </details>
+            <section className="fp-live-workspace" aria-label="Live planner">
+              <div className="fp-live-toolbar">
+                <div className="fp-live-sync" role="status">
+                  <span className={`fp-live-dot${bankRefreshing ? " fp-live-dot-busy" : ""}`} />
+                  {bankRefreshing ? "Updating account balances…" : !activity.configured ? "Account data unavailable"
+                    : !accounts.length ? "Connect an account to see live balances" : "Connected to your accounts"}
+                  {bankRefreshedAt && <small>Checked {new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(new Date(bankRefreshedAt))}</small>}
+                </div>
+                <div className="fp-button-row">
+                  <Button icon="refresh" disabled={bankRefreshing || !activity.configured} onClick={() => refreshPlanBanks(true)}>
+                    {bankRefreshing ? "Refreshing…" : "Refresh"}
+                  </Button>
+                  <Button icon="settings" onClick={() => open({ type: "plan", plan })}>Planner settings</Button>
+                </div>
+              </div>
+              <FinancePlannerRange range={plannerRange} today={today} onChange={changePlannerRange} loading={planActivityLoading} />
+              {(bankRefreshError || planActivityError) && <div className="fp-alert fp-alert-warning" role="status">
+                {bankRefreshError || planActivityError} Showing the last available data.
+                <Button variant="text" onClick={() => refreshPlanBanks(true)}>Try again</Button>
+              </div>}
+              {planRecordsMatch && planActivity?.warning && !planActivityError && <div className="fp-alert fp-alert-warning" role="status">{planActivity.warning}</div>}
+              <FinancePlannerAnalytics analytics={plannerAnalytics} loading={planWaitingForRecords || planActivityLoading} onReviewAccounts={() => navigate("accounts")} />
+              <section className="fp-card fp-live-transactions" aria-label="Planner transactions">
+                <div className="fp-live-section-heading">
+                  <div><h2>Transactions & payments</h2><p>Recorded activity and upcoming commitments, together.</p></div>
+                </div>
+                {planWaitingForRecords ? <div className="fp-loading-state" role="status">Loading transactions for these dates…</div> : (
+                  <Ledger today={today} plan={plan} accounts={accounts} rows={visiblePlanRows}
+                    busy={busy} onToggleComplete={togglePlanCompletion} onRecord={recordScheduledRow}
+                    onEditOccurrence={(row) => open({ type: "occurrence", row, planId: plan.id })}
+                    onResetOccurrence={resetPlanOccurrence}
+                    onEdit={(entry) => open({ type: "entry", entry })}
+                    onDelete={(row) => open({ type: "deleteEntry", row })} />
+                )}
+              </section>
+              <div className="fp-live-support">
+                {recurringEntries.length > 0 && <details className="fp-plan-recurring-entries">
+                  <summary>Repeating transactions <span>{recurringEntries.length}</span></summary>
+                  <ul>{recurringEntries.map((entry) => <li key={entry.id}>
+                    <div><strong>{entry.description}</strong><small>{recurringEntryLabel(entry.recurrence)} · {money(entry.amount, entry.currency)}</small></div>
+                    <div className="fp-button-row">
+                      <Button disabled={busy || !state.configured} aria-label={`Edit recurring entry: ${entry.description}`} onClick={() => open({ type: "entry", entry })}>Edit series</Button>
+                      <Button disabled={busy || !state.configured} aria-label={`Delete recurring entry: ${entry.description}`} onClick={() => open({ type: "deleteEntry", row: entry })}>Delete series</Button>
                     </div>
-                    <details className="fp-plan-info">
-                      <summary className="fp-plan-date-range">
-                        {formatDate(plan.startDate, { year: "numeric" })} –{" "}
-                        {formatDate(plan.endDate, { year: "numeric" })}
-                      </summary>
-                      <p className="fp-inline-note">
-                        Balances{" "}
-                        {plan.balanceMode === "snapshot" && plan.accountOpeningBalances?.length
-                          ? "start from the amounts saved with this plan, before its first day’s flows. Bank refreshes update transactions without changing these starting balances. Edit the plan to correct a starting amount."
-                          : plan.accountLinks
-                          ? "follow the accounts named in each column. Posted bank movements already included in their current balances are not counted again."
-                          : plan.startingAccounts?.length
-                          ? "use current live account contributions. Already-posted flows reflected in those balances are not counted again."
-                          : "begin before the first day’s flows."}
-                      </p>
-                      {bankRefreshedAt && (
-                        <p className="fp-inline-note">
-                          Bank data checked{" "}
-                          {new Intl.DateTimeFormat("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "numeric",
-                            minute: "2-digit",
-                            timeZone: "America/New_York",
-                          }).format(new Date(bankRefreshedAt))}
-                          . Refreshes when this view opens, returns to focus,
-                          and every five minutes while visible.
-                        </p>
-                      )}
-                    </details>
-                    {bankRefreshError && (
-                      <p className="fp-alert fp-alert-warning" role="status">
-                        {bankRefreshError} Showing the last available balances;
-                        refresh again or review Bank accounts.
-                      </p>
-                    )}
-                    <FinanceCreditCardDuesNotice
-                      accounts={accounts}
-                      obligations={creditCardObligations}
-                      plan={plan}
-                      onReviewAccounts={() => navigate("accounts")}
-                      onEditPlan={() => open({ type: "plan", plan })}
-                      paymentHistoryWarning={planRecordsMatch ? planActivity?.creditCardPaymentWarning : ""}
-                    />
-                    {plan.includeTransactions === false &&
-                      planActivityLoading && (
-                        <p className="fp-inline-note" role="status">
-                          Checking posted transactions for completed rows…
-                        </p>
-                      )}
-                    <div className="fp-plan-summary fp-plan-flow-summary">
-                      <div>
-                        <span>Available funds · USD</span>
-                        <strong
-                          className={
-                            (displayedPlanRows.at(-1)?.balanceUsd ?? planOpening.usd) < 0
-                              ? "fp-negative"
-                              : "fp-positive"
-                          }
-                        >
-                          {planWaitingForRecords
-                            ? "—"
-                            : planBalance(
-                                displayedPlanRows.length ? displayedPlanRows.at(-1).balanceUsd : planOpening.usd,
-                              )}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Available funds · PHP</span>
-                        <strong
-                          className={
-                            (displayedPlanRows.at(-1)?.balancePhp ?? planOpening.php) < 0
-                              ? "fp-negative"
-                              : ""
-                          }
-                        >
-                          {planWaitingForRecords
-                            ? "—"
-                            : planBalance(
-                                displayedPlanRows.length ? displayedPlanRows.at(-1).balancePhp : planOpening.php,
-                                "PHP",
-                              )}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Annual reserve · USD</span>
-                        <strong>
-                          {planWaitingForRecords
-                            ? "—"
-                            : planBalance(
-                                displayedPlanRows.length ? displayedPlanRows.at(-1).reserveUsd : planOpeningReserve.usd,
-                              )}
-                        </strong>
-                      </div>
-                      <div>
-                        <span>Annual reserve · PHP</span>
-                        <strong>
-                          {planWaitingForRecords
-                            ? "—"
-                            : planBalance(
-                                displayedPlanRows.length ? displayedPlanRows.at(-1).reservePhp : planOpeningReserve.php,
-                                "PHP",
-                              )}
-                        </strong>
-                      </div>
-                    </div>
-                    {plan.includeTransactions !== false &&
-                      planActivityError && (
-                        <div
-                          className="fp-alert fp-alert-warning"
-                          role="status"
-                        >
-                          {planActivityError}{" "}
-                          {planRecordsMatch
-                            ? "Review the loaded records before relying on the ending balances."
-                            : "Scheduled flows and your plan entries are shown without recorded transactions."}
-                          <Button
-                            variant="text"
-                            onClick={() => loadPlanActivity(plan)}
-                          >
-                            Retry recorded flows
-                          </Button>
-                        </div>
-                      )}
-                    {plan.includeTransactions !== false &&
-                      planRecordsMatch &&
-                      planActivity?.warning &&
-                      !planActivityError && (
-                        <div
-                          className="fp-alert fp-alert-warning"
-                          role="status"
-                        >
-                          {planActivity.warning}
-                        </div>
-                      )}
-                    {plan.includeTransactions !== false &&
-                      planRecordsMatch &&
-                      planActivity?.transactions.some(
-                        (transaction) => transaction.pending,
-                      ) && (
-                        <p className="fp-plan-flow-note">
-                          Pending bank entries are not deducted until posted.
-                          Scheduled bill payments remain in the plan until a
-                          matching recorded payment replaces them.
-                        </p>
-                      )}
-                    {undated.length > 0 && (
-                      <p className="fp-plan-warning">
-                        {undated.map((bill) => bill.name).join(", ")}{" "}
-                        {undated.length === 1
-                          ? "needs a due date"
-                          : "need due dates"}{" "}
-                        to appear in this forecast.{" "}
-                        <button onClick={() => navigate("bills")}>
-                          Edit bills
-                        </button>
-                      </p>
-                    )}
-                    {recurringEntries.length > 0 && (
-                      <details className="fp-plan-recurring-entries">
-                        <summary>Recurring entries · {recurringEntries.length}</summary>
-                        <ul>
-                          {recurringEntries.map((entry) => (
-                            <li key={entry.id}>
-                              <div>
-                                <strong>{entry.description}</strong>
-                                <small>
-                                  {recurringEntryLabel(entry.recurrence)} · {money(entry.amount, entry.currency)}
-                                  {" "}· {formatDate(entry.date, { year: "numeric" })} –{" "}
-                                  {formatDate(entry.repeatUntil || plan.endDate, { year: "numeric" })}
-                                </small>
-                              </div>
-                              <div className="fp-button-row">
-                                <Button
-                                  disabled={busy || !state.configured}
-                                  aria-label={`Edit recurring entry: ${entry.description}`}
-                                  onClick={() => open({ type: "entry", entry })}
-                                >
-                                  Edit series
-                                </Button>
-                                <Button
-                                  disabled={busy || !state.configured}
-                                  aria-label={`Delete recurring entry: ${entry.description}`}
-                                  onClick={() => open({ type: "deleteEntry", row: entry })}
-                                >
-                                  Delete series
-                                </Button>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
-                    {planWaitingForRecords ? (
-                      <div className="fp-card fp-loading-state" role="status">
-                        Loading recorded money flows for these dates…
-                      </div>
-                    ) : (
-                      <Ledger
-                        today={today}
-                        plan={plan}
-                        accounts={accounts}
-                        rows={displayedPlanRows}
-                        openingReserve={planOpeningReserve}
-                        openingBalances={planOpening}
-                        openingSavings={accountPlan?.openingSavings}
-                        onToggleComplete={togglePlanCompletion}
-                        onRecord={recordScheduledRow}
-                        onEditOccurrence={(row) =>
-                          open({ type: "occurrence", row, planId: plan.id })
-                        }
-                        onResetOccurrence={resetPlanOccurrence}
-                        busy={busy}
-                        onEdit={(entry) => open({ type: "entry", entry })}
-                        onDelete={(row) => open({ type: "deleteEntry", row })}
-                      />
-                    )}
-                    {!planWaitingForRecords && (
-                      <details className="fp-plan-account-details">
-                        <summary>
-                          Projected balances by account
-                          {accountPlan?.warnings.length > 0 && (
-                            <> · {accountPlan.warnings.length} notices</>
-                          )}
-                        </summary>
-                        <FinanceAccountPlanView projection={accountPlan} />
-                      </details>
-                    )}
-                    <p className="fp-plan-flow-note">
-                      This plan includes dated bills, credit card statements,
-                      and your plan entries
-                      {plan.includeIncome ? ", scheduled salary" : ""}
-                      {plan.includeAllocations !== false
-                        ? ", payday savings and expense allocations"
-                        : ""}
-                      {plan.includeAnnualReserve !== false
-                        ? ", annual-bill set-asides"
-                        : ""}
-                      {plan.includeTransactions !== false
-                        ? ", and recorded transactions across the full date range (including transfers)"
-                        : ""}
-                      . Matching posted flows replace their scheduled rows. Add
-                      currency-conversion entries when one currency needs
-                      funding.
-                    </p>
-                  </section>
-                </>
-              )}
-            </>
+                  </li>)}</ul>
+                </details>}
+                <details className="fp-live-setup"><summary>Payment setup & details</summary>
+                  <FinanceCreditCardDuesNotice accounts={accounts} obligations={creditCardObligations} plan={projectionPlan}
+                    onReviewAccounts={() => navigate("accounts")} onEditPlan={() => open({ type: "plan", plan })}
+                    onChangeRange={(next) => { try { changePlannerRange(next); } catch (reason) { setError(reason.message); } }}
+                    paymentHistoryWarning={planRecordsMatch ? planActivity?.creditCardPaymentWarning : ""} />
+                  {undated.length > 0 && <p className="fp-plan-warning">{undated.map((bill) => bill.name).join(", ")} {undated.length === 1 ? "needs a due date" : "need due dates"} to appear in the projection. <button onClick={() => navigate("bills")}>Edit bills</button></p>}
+                  <p className="fp-inline-note">Balances refresh when you open this planner, return to it, and every five minutes while visible. Recorded rows update accounts; matching bank imports replace them. Future payments stay planned until recorded.</p>
+                </details>
+              </div>
+            </section>
           )}
           <footer className="fp-footer">
             <a className="fp-mobile-back" href="/">
@@ -2299,9 +2011,7 @@ export default function FinanceAppClient({
                       ? "Edit allocation"
                       : "Add an allocation"
                     : modal.type === "plan"
-                      ? modal.plan
-                        ? "Edit budget plan"
-                        : "Create a budget plan"
+                      ? "Planner settings"
                       : modal.type === "occurrence"
                         ? "Edit this plan occurrence"
                         : modal.type === "entry"

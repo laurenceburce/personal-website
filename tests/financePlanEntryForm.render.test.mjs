@@ -312,3 +312,15 @@ test("a live card payment cannot infer a missing card balance", () => {
   assert.equal(form.saved(), undefined);
   assert.ok(plain(renderToStaticMarkup(form.render())).includes("Refresh the card balance or enter a fixed payment amount"));
 });
+
+test("continuous planner entry dates are independent of the currently stored or viewed horizon", () => {
+  const entry = { id: "later", date: "2028-01-15", description: "Future renewal", kind: "expense", amount: 50,
+    currency: "USD", recurrence: "once", accountId: 1 };
+  const form = harness({ plan: { ...plan, continuous: true }, entry });
+  const tree = form.render();
+  assert.equal(input(tree, "Date", "input").props.max, "2200-12-31");
+  assert.equal(input(tree, "Date", "input").props.min, "1900-01-01");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().date, entry.date);
+  assert.equal(form.saved().recordNow, false);
+});

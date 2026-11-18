@@ -66,8 +66,8 @@ export default function FinancePlanOccurrenceForm({
           <input
             type="date"
             required
-            min={plan.startDate}
-            max={plan.endDate}
+            min={plan.continuous ? "1900-01-01" : plan.startDate}
+            max={plan.continuous ? "2200-12-31" : plan.endDate}
             value={draft.date}
             onChange={(event) => set("date", event.target.value)}
           />

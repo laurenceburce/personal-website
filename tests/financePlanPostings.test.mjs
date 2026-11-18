@@ -176,6 +176,26 @@ test("future and uncompleted rows stay forecasts; only a completed recurring occ
   assert.equal(specs[0].rowId, `entry:daily:${today}`);
 });
 
+test("an ongoing planner records only addressed completed occurrences across decades of recurrence", () => {
+  const daily = entry({ id: "daily", date: "2000-01-01", recurrence: "daily", repeatUntil: null });
+  const monthly = entry({ id: "monthly", date: "2000-01-31", recurrence: "monthly", repeatUntil: null });
+  const doc = planner([daily, monthly], [
+    { rowId: `entry:daily:${today}`, completedAt: `${today}T12:00:00.000Z` },
+    { rowId: "entry:monthly:2026-02-28", completedAt: `${today}T12:00:00.000Z` },
+    { rowId: "entry:monthly:2026-02-27", completedAt: `${today}T12:00:00.000Z` },
+  ]);
+  Object.assign(doc.plans[0], { continuous: true, startDate: "2000-01-01", endDate: "2040-12-31",
+    rowOverrides: [{ rowId: "entry:daily:2026-11-18", date: "2026-11-17", description: "Paid early", amount: 15 }] });
+  const specs = financePlanPostingSpecs(doc, [manual(37, "credit", 0)], [], { today });
+  assert.deepEqual(specs.map((row) => [row.rowId, row.date, row.amount]), [
+    ["entry:daily:2026-11-18", "2026-11-17", 15], ["entry:monthly:2026-02-28", "2026-02-28", 20],
+  ]);
+  doc.plans[0].startDate = "2026-11-18";
+  doc.plans[0].endDate = "2026-12-18";
+  assert.deepEqual(financePlanPostingSpecs(doc, [manual(37, "credit", 0)], [], { today }), specs,
+    "changing a view-sized horizon cannot delete historical receipts");
+});
+
 test("deleting a whole plan retains recorded manual history and its corrected detached amount", async () => {
   const document = planner([entry({ amount: 100 })]);
   const store = ledger([manual(37, "credit", 500)], document);
@@ -186,6 +206,9 @@ test("deleting a whole plan retains recorded manual history and its corrected de
   assert.equal(store.accounts()[0].nativeCurrentBalance, 600);
   assert.equal(financePlanTransactionMetadata(store.rows()[0]).planDetached, true);
   assert.equal(financePlanTransactionMetadata(store.rows()[0]).planGenerated, false, "detached receipts cannot reopen a row in another plan");
+  document.plans = [{ id: "main", entries: [], completedRows: [] }];
+  await store.refresh();
+  assert.equal(store.rows().length, 1, "recreating an automatic workspace with the same ID cannot erase detached history");
   const edited = store.rows()[0];
   // Simulate a user correcting its now standalone manual transaction.
   document.plans = [];

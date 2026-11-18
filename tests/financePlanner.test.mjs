@@ -4136,3 +4136,30 @@ test("each recurring card-payment transfer covers its statement share without co
   assert.equal(rows.filter((row) => row.source === "manual" && row.completed).length, 1);
   assert.equal(rows.at(-1).balanceUsd, 800);
 });
+
+test("continuous live card payments do not assume an earlier unassigned statement was funded", () => {
+  const document = { salary: { amount: 0, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-18", accountId: null },
+    bills: [], allocations: [] };
+  const plan = { id: "main", continuous: true, balanceMode: "live", startDate: "2026-11-18", endDate: "2026-12-20",
+    openingUsd: 0, openingPhp: 0, includeIncome: false, includeTransactions: true,
+    includeAllocations: false, includeAnnualReserve: false,
+    entries: [{ id: "later", date: "2026-12-15", description: "Remaining card payment", kind: "transfer", amount: 0,
+      currency: "USD", fromAccountId: 1, toAccountId: 2, amountMode: "cardBalance" }] };
+  const accounts = [{ id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, name: "Card", type: "credit", currency: "USD", nativeCurrentBalance: 200, isLinked: false, creditCardDueStatus: "manual",
+      creditCardDue: { statementBalance: 100, dueDate: "2026-11-25", lastStatementDate: "2026-11-01" } }];
+  const laterAmount = (view = plan, source = accounts, planner = document) => buildPlanRows(view, planner, 58,
+    { today: "2026-11-18", accounts: source }).find((row) => row.entryId === "later").amount;
+  assert.equal(laterAmount(), 200, "the statement has no assigned funding account");
+  assert.equal(laterAmount({ ...plan, accountLinks: { availableUsdAccountId: 1 } }), 100);
+  assert.equal(laterAmount(plan, accounts, { ...document, salary: { ...document.salary, accountId: 1 } }), 100);
+  for (const invalid of [{ ...accounts[0], isArchived: true }, { ...accounts[0], type: "credit" },
+    { ...accounts[0], currency: "PHP" }, { ...accounts[0], mergedIntoAccountId: 99 }])
+    assert.equal(laterAmount({ ...plan, accountLinks: { availableUsdAccountId: 1 } }, [invalid, accounts[1]]), 200);
+  assert.equal(laterAmount({ ...plan, continuous: false }), 100, "legacy standalone plan behavior stays compatible");
+  const partial = { ...plan, entries: [{ id: "earlier", date: "2026-11-20", description: "Early fixed payment", kind: "transfer",
+    amount: 50, currency: "USD", fromAccountId: 1, toAccountId: 2 }, ...plan.entries] };
+  assert.equal(laterAmount(partial), 150, "explicit payments reduce the debt once while the unfunded remainder stays due");
+  assert.equal(laterAmount({ ...partial, accountLinks: { availableUsdAccountId: 1 } }), 100,
+    "a funded statement uses the earlier payment pool before applying its remainder");
+});

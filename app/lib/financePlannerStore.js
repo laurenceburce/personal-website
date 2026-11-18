@@ -4,6 +4,7 @@ import { financePlanPendingMovementSql, synchronizeFinancePlanPostings } from ".
 import { entryOccurrences } from "./financePlanner.mjs";
 import { mapFinanceActivityAccount } from "./financeActivity.mjs";
 import { capturePlanAccountOpenings, planOpeningAccountIds } from "./financePlanOpening.mjs";
+import { ensurePrimaryFinancePlanner } from "./financePrimaryPlanner.mjs";
 
 const MAX_BYTES = 1_000_000;
 const RATE_CACHE_MS = 60 * 60 * 1000;
@@ -49,9 +50,9 @@ function today() {
 }
 
 export function createDefaultFinancePlanner() {
-  return {
+  return ensurePrimaryFinancePlanner({
     salary: {
-      amount: 2000,
+      amount: 0,
       currency: "USD",
       payFrequency: "biweekly",
       firstPayDate: today(),
@@ -60,7 +61,7 @@ export function createDefaultFinancePlanner() {
     bills: [],
     allocations: [],
     plans: [],
-  };
+  });
 }
 
 function object(value, label) {
@@ -194,7 +195,7 @@ function planAccountLinks(value) {
   }));
 }
 
-function planEntries(value, startDate, endDate, salary) {
+function planEntries(value, startDate, endDate, salary, continuous = false) {
   const entries = rows(value, "Plan entries", 1000, (entry) => {
     const entryDate = date(entry.date, "Entry date");
     if (entryDate < startDate || entryDate > endDate)
@@ -250,6 +251,7 @@ function planEntries(value, startDate, endDate, salary) {
       currency: oneOf(entry.currency, ["USD", "PHP"], "Entry currency"),
     };
   });
+  if (continuous) return entries;
   let occurrences = 0;
   for (const entry of entries) {
     occurrences += entryOccurrences(entry, startDate, endDate, salary).length;
@@ -435,12 +437,17 @@ export function validateFinancePlanner(value) {
             : null,
       }),
     ),
-    plans: rows(source.plans, "Budget plans", 50, (plan) => {
+    plans: rows(source.plans, "Budget plans", 50, (plan, index) => {
       const startDate = date(plan.startDate, "Plan start date");
       const endDate = date(plan.endDate, "Plan end date");
+      if (plan.continuous !== undefined && typeof plan.continuous !== "boolean")
+        throw plannerError("Continuous planner must be true or false.");
+      if (plan.continuous === true && index !== 0)
+        throw plannerError("Only the primary planner can be continuous.");
+      const continuous = plan.continuous === true;
       if (
         endDate < startDate ||
-        (Date.parse(endDate) - Date.parse(startDate)) / DAY_MS > 731
+        (!continuous && (Date.parse(endDate) - Date.parse(startDate)) / DAY_MS > 731)
       ) {
         throw plannerError(
           "Plan dates must be in order and no more than two years apart.",
@@ -448,6 +455,7 @@ export function validateFinancePlanner(value) {
       }
       return {
         name: text(plan.name, "Plan name", 120),
+        ...(plan.continuous === undefined ? {} : { continuous }),
         balanceMode: oneOf(plan.balanceMode ?? "live", ["live", "snapshot"], "Plan balance mode"),
         startDate,
         endDate,
@@ -482,7 +490,7 @@ export function validateFinancePlanner(value) {
           plan.includeAnnualReserve === undefined
             ? true
             : boolean(plan.includeAnnualReserve, "Include annual reserves"),
-        entries: planEntries(plan.entries, startDate, endDate, salary),
+        entries: planEntries(plan.entries, startDate, endDate, salary, continuous),
       };
     }),
   };
@@ -955,10 +963,13 @@ export async function getFinancePlanner() {
       const stored = typeof rows[0].document === "string"
         ? JSON.parse(rows[0].document) : rows[0].document;
       const original = validateFinancePlanner(stored);
-      const document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, original));
+      const document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, ensurePrimaryFinancePlanner(original)));
       await synchronizeFinancePlanPostings(connection, document, { today: today(), rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
       let revision = Number(rows[0].revision);
-      if (JSON.stringify(document) !== JSON.stringify(original)) {
+      // Persist the complete normalized shape once, including fields that the
+      // validator supplies. Comparing only normalized objects can return a new
+      // primary planner shape without ever saving it or advancing its revision.
+      if (JSON.stringify(document) !== JSON.stringify(stored)) {
         const [result] = await connection.execute(
           "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1 AND revision = ?",
           [JSON.stringify(document), revision],
@@ -998,7 +1009,7 @@ export async function getFinancePlanner() {
 }
 
 export async function saveFinancePlanner(value, revision) {
-  let document = validateFinancePlanner(value);
+  let document = validateFinancePlanner(ensurePrimaryFinancePlanner(value));
   if (!Number.isInteger(revision) || revision < 1 || revision > 4_294_967_294)
     throw plannerError("Reload the planner before saving.", 409);
   let database;

@@ -1440,7 +1440,15 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const cardId = Number(row.creditAccountId);
       const reserved = Math.min(row.amount, projectedPaymentPool.get(cardId) || 0);
       projectedPaymentPool.set(cardId, roundMoney((projectedPaymentPool.get(cardId) || 0) - reserved));
-      if (projectedDebt.get(cardId) != null)
+      const fundingId = linkedAccount("available", row.currency, salary.currency === row.currency ? salary.accountId : null);
+      const funding = cardAccountsById.get(Number(fundingId));
+      const validFunding = funding && funding.currency === row.currency &&
+        !["credit", "loan"].includes(funding.type || funding.account_type) &&
+        !funding.isArchived && !funding.is_archived && !funding.isSyncExcluded && !funding.is_sync_excluded &&
+        !funding.mergedIntoAccountId && !funding.merged_into_account_id;
+      // An unassigned statement cannot silently pay down debt in the live
+      // tracker. Explicit earlier transfers already reduced it via their legs.
+      if (projectedDebt.get(cardId) != null && (!plan.continuous || validFunding))
         projectedDebt.set(cardId, roundMoney(projectedDebt.get(cardId) - (row.amount - reserved)));
       continue;
     }
