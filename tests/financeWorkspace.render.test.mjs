@@ -1674,6 +1674,19 @@ test("expanded November 20 rows before a recorded Fill exclude its later JCB exp
     ...require("react"), useState, useEffect() {}, useRef: (initial) => useState(() => ({ current: initial }))[0],
   }).default;
   const renderTable = () => { cursor = 0; return Table(ledger.props); };
+  const collapsedRows = [...renderToStaticMarkup(renderTable()).matchAll(/<tr\b[^>]*data-row-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/g)]
+    .map((match) => match[1]);
+  const collapsedTotals = (label, currency) => collapsedRows.map((row) => {
+    const section = row.match(new RegExp(`<dl\\b[^>]*aria-label="${label}"[^>]*>([\\s\\S]*?)<\\/dl>`))?.[1];
+    assert.ok(section, `Missing ${label} in a collapsed November 20 row`);
+    return section.match(new RegExp(`<dt>${currency}<\\/dt><dd\\b[^>]*>([\\s\\S]*?)<\\/dd>`))?.[1].replace(/<[^>]*>/g, "");
+  });
+  assert.deepEqual(collapsedTotals("Credit cards", "PHP"),
+    ["₱4,336.88", "₱4,336.88", "₱4,336.88", "₱4,336.88", "-₱15,663.12", "₱10,824.12"]);
+  assert.deepEqual(collapsedTotals("Credit cards", "USD"), Array(6).fill("$1,660.15"));
+  assert.deepEqual(collapsedTotals("Account funds", "USD"), Array(6).fill("$50.00"));
+  assert.deepEqual(collapsedTotals("Account funds", "PHP"),
+    ["₱67,554.08", "₱112,130.78", "₱112,130.78", "₱112,130.78", "₱92,130.78", "₱92,130.78"]);
   findElement(renderTable(), (node) => node.type === "button" && node.props.children === "Expand accounts").props.onClick();
   const html = renderToStaticMarkup(renderTable());
   const renderedRows = [...html.matchAll(/<tr\b[^>]*data-row-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);

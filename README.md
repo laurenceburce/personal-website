@@ -170,8 +170,10 @@ The finance workspace separates recorded activity from your plans:
   past-only ranges show history and live current balances without inventing past
   running balances. Unknown account values remain unavailable.
   The table opens in its compact view: date, description and status, USD, PHP,
-  and running account funds. Known recorded balances and future estimates both
-  appear row by row; cards and loans stay separate from account funds.
+  and running balances. Account funds and credit card totals sit side by side,
+  each with USD and PHP amounts arranged horizontally. Positive card totals are
+  owed; negative totals are credit. Known recorded balances and future estimates
+  both appear row by row. Loans remain in their individual account columns.
   **Expand accounts** in the balance column
   reveals individual account columns across the whole table; **Collapse accounts**
   returns to the compact view. Search or filter **All / Upcoming / Recorded /
@@ -184,8 +186,8 @@ The finance workspace separates recorded activity from your plans:
   returns there without moving the page; refreshes preserve your browsing position.
   Expanded account columns use a horizontally scrollable grid on desktop and
   mobile, labeled by account name, currency, and balance owed for credit/loan accounts.
-  On mobile, the compact table fits the screen, while expanded account columns
-  scroll inside their own viewport. Portrait and landscape are supported.
+  On mobile, the table scrolls inside its own viewport to keep the horizontal
+  balances readable. Portrait and landscape are supported.
   Future rows show projections; recorded rows reconstruct tracked balances from
   current values and later posted activity, following the table's transaction order
   within each day. Later transactions do not change earlier rows' account balances.

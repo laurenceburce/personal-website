@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
+import { formatDate, localDate, money, roundMoney } from "../lib/financePlanner.mjs";
 import { getPlanRowCategory } from "../lib/financePlanPresentation.mjs";
 import { SourceLabel } from "./FinancePlanLedger";
 import "./finance-planner-table.css";
@@ -16,6 +16,29 @@ const balance = (value, currency) => Number.isFinite(value) ? money(value, curre
 const accountName = (account) => account
   ? `${account.name || "Account"}${account.mask ? ` · ••${account.mask}` : ""}` : "Choose an account";
 const accountTypeOrder = (account) => ({ checking: 0, savings: 1, credit: 2 }[account.type || account.account_type] ?? 3);
+
+function creditCardBalances(row, accounts) {
+  const snapshots = new Map((row.accountBalanceSnapshot || []).map((item) => [Number(item.accountId), item]));
+  return ["USD", "PHP"].map((currency) => {
+    const cards = accounts.filter((account) => account.currency === currency);
+    if (!cards.length) return [currency, 0];
+    if (!["recorded", "projected"].includes(row.accountBalanceSnapshotKind)) return [currency, null];
+    const balances = cards.map((account) => snapshots.get(Number(account.id)));
+    if (balances.some((item) => !Number.isFinite(item?.balance) || (item.currency && item.currency !== currency)))
+      return [currency, null];
+    return [currency, roundMoney(balances.reduce((total, item) => total + item.balance, 0))];
+  });
+}
+
+function RunningTotals({ values, label, debt = false }) {
+  return <dl className="fpt-running-totals" aria-label={label}>
+    {values.map(([currency, value]) => <div key={currency}><dt>{currency}</dt>
+      <dd className={debt ? value > 0 ? "fpt-negative" : value < 0 ? "fpt-positive" : "" : value < 0 ? "fpt-negative" : ""}
+        title={debt && Number.isFinite(value) ? value < 0 ? "Credit balance" : "Balance owed" : undefined}>
+        {balance(value, currency)}
+      </dd></div>)}
+  </dl>;
+}
 
 function transactionAmount(row, currency) {
   const amount = row.grossAmount ?? row.amount;
@@ -171,10 +194,12 @@ export default function FinancePlannerTable({
   const columnAnchor = useRef(null);
   const current = selectCurrentPlannerRow(rows, today);
   const accountColumns = accounts.filter((account, index) => !account.isArchived && !account.is_archived &&
+    !account.isSyncExcluded && !account.is_sync_excluded &&
     !account.mergedIntoAccountId && !account.merged_into_account_id && ["USD", "PHP"].includes(account.currency) &&
     accounts.findIndex((item) => Number(item.id) === Number(account.id)) === index)
     .sort((a, b) => ["USD", "PHP"].indexOf(a.currency) - ["USD", "PHP"].indexOf(b.currency) ||
       accountTypeOrder(a) - accountTypeOrder(b));
+  const creditAccounts = accountColumns.filter((account) => (account.type || account.account_type) === "credit");
   const expanded = accountsExpanded && accountColumns.length > 0;
   const accountGroups = ["USD", "PHP"].map((currency) => ({
     currency, accounts: accountColumns.filter((account) => account.currency === currency),
@@ -263,22 +288,22 @@ export default function FinancePlannerTable({
       {filtered && <button type="button" className="fp-button fp-secondary" onClick={clear}>Clear filters</button>}
     </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
-      <table className="fpt-table" style={expanded ? { width: `${760 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
-        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show account columns grouped by currency to the right.</caption>
-        <colgroup><col style={{ width: expanded ? "90px" : "9%" }}/><col style={{ width: expanded ? "240px" : "31%" }}/>
-          <col style={{ width: expanded ? "120px" : "15%" }}/><col style={{ width: expanded ? "120px" : "15%" }}/>
-          <col style={{ width: expanded ? "190px" : "30%" }}/></colgroup>
+      <table className="fpt-table" style={expanded ? { width: `${970 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
+        <caption className="fp-sr-only">Recorded and planned transactions in date order. Running balances show account funds and credit cards side by side in USD and PHP. Expand to show individual account columns grouped by currency to the right.</caption>
+        <colgroup><col style={{ width: expanded ? "90px" : "7%" }}/><col style={{ width: expanded ? "240px" : "27%" }}/>
+          <col style={{ width: expanded ? "120px" : "10%" }}/><col style={{ width: expanded ? "120px" : "10%" }}/>
+          <col style={{ width: expanded ? "400px" : "46%" }}/></colgroup>
         {expanded && accountGroups.map((group) => <colgroup key={group.currency}>
           {group.accounts.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>)}
         <thead><tr><th scope="col" rowSpan={expanded ? 2 : undefined}>Date</th>
           <th scope="col" rowSpan={expanded ? 2 : undefined}>Description</th>
           <th scope="col" rowSpan={expanded ? 2 : undefined}>USD</th><th scope="col" rowSpan={expanded ? 2 : undefined}>PHP</th>
           <th scope="col" rowSpan={expanded ? 2 : undefined} className="fpt-projection-heading"><span>Running balance</span>
-            <small>Account funds · cards separately</small>
             <button type="button" className="fpt-balance-expand" disabled={loading || !accountColumns.length}
               aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
               {expanded ? "Collapse accounts" : "Expand accounts"}
             </button>
+            <div className="fpt-balance-sections"><span>Account funds</span><span title="Positive balances are owed; negative balances are credit. Loans are shown in individual account columns.">Credit cards</span></div>
           </th>
           {expanded && accountGroups.map((group) => <th key={group.currency} scope="colgroup"
             className="fpt-currency-heading" colSpan={group.accounts.length} data-currency={group.currency}>{group.currency}</th>)}
@@ -338,11 +363,11 @@ export default function FinancePlannerTable({
               const value = transactionAmount(row, currency);
               return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{money(value, currency)}</td>;
             })}
-            <td className="fpt-projection" data-label="Running balance" title={row.accountBalanceSnapshotNote}>{!hasRowBalances && inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
+            <td className="fpt-projection" data-label="Running balance" title={row.accountBalanceSnapshotNote}><div className="fpt-running-sections"><div>{!hasRowBalances && inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
                 : !hasRowBalances && plan.continuous && row.date < today ? <small className="fpt-balance-note">{done ? "Marked done · no account record" : "Past due · review payment"}</small>
-                  : <dl className="fpt-running-totals">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
-                    ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
-                    <div key={currency}><dt>{currency}</dt><dd className={value < 0 ? "fpt-negative" : ""}>{balance(value, currency)}</dd></div>)}</dl>}
+                  : <RunningTotals label="Account funds" values={[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
+                    ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]]}/>}
+              </div><RunningTotals label="Credit cards" values={creditCardBalances(row, creditAccounts)} debt/></div>
             </td>
             {expanded && accountColumns.map((account) => <AccountCell key={account.id} row={row} account={account}
               accounts={accounts} plan={plan} today={today}/>)}
@@ -353,7 +378,7 @@ export default function FinancePlannerTable({
     </div>}
     <p className="fpt-footnote" id={`${tableId}-hint`}>{expanded
       ? "Scroll sideways to view each account balance and activity tags. Unavailable history is shown as an em dash. Future balances are projected."
-      : "Running balances show account funds in USD and PHP. Expand accounts for individual balances, cards, and activity. Rotate your phone for a wider landscape view."}</p>
+      : "Account funds and credit cards are separate totals in USD and PHP. Positive card balances are owed; negative balances are credit. Scroll sideways on smaller screens, or expand accounts for individual balances and activity."}</p>
     {visible.length > 0 && <details className="fpt-notes">
       <summary>Reserves &amp; planning notes</summary>
       <div className="fpt-notes-list">{visible.map((row) => <article key={row.id} data-notes-for={row.id}>

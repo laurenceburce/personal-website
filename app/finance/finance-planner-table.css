@@ -21,7 +21,7 @@
 .fp-app .fpt-table-wrap::-webkit-scrollbar-track { background: #f3f6f3; }
 .fp-app .fpt-table-wrap::-webkit-scrollbar-thumb { border: 2px solid #f3f6f3; border-radius: 8px; background: #a5b7ac; }
 .fp-app .fpt-table-wrap:focus-visible { outline: 2px solid #527fae; outline-offset: 3px; }
-.fp-app .fpt-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: #344a3d; font-size: 13px; }
+.fp-app .fpt-table { width: 100%; min-width: 680px; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: #344a3d; font-size: 13px; }
 .fp-app .fpt-table th, .fp-app .fpt-table td { padding: 10px 12px; border-right: 1px solid #e5ebe7; border-bottom: 1px solid #e4ebe6; vertical-align: middle; overflow-wrap: anywhere; }
 .fp-app .fpt-table th:last-child, .fp-app .fpt-table td:last-child { border-right: 0; }
 .fp-app .fpt-table thead { position: sticky; top: 0; z-index: 4; }
@@ -30,25 +30,27 @@
 .fp-app .fpt-table thead .fpt-currency-heading { padding: 6px 12px; border-left: 1px solid #c8d7cd; background: #e6f0e9; color: #355940; font-size: 11px; letter-spacing: .04em; }
 .fp-app .fpt-table .fpt-projection-heading { background: #edf4ef; }
 .fp-app .fpt-projection-heading > span { display: block; color: #304e3c; }
-.fp-app .fpt-projection-heading > small { display: block; margin-top: 3px; color: #52675b; font-size: 10px; font-weight: 400; }
+.fp-app .fpt-balance-sections, .fp-app .fpt-running-sections { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: center; gap: 12px; }
+.fp-app .fpt-balance-sections { margin-top: 8px; color: #52675b; font-size: 10px; font-weight: 500; }
+.fp-app .fpt-balance-sections > :last-child, .fp-app .fpt-running-sections > :last-child { padding-left: 12px; border-left: 1px solid #d4dfd8; }
 .fp-app .fpt-balance-expand { display: inline-flex; justify-content: center; margin-top: 5px; padding: 3px 8px; border: 1px solid #c7d9cc; border-radius: 5px; background: #fff; color: #3e654b; font: inherit; font-size: 10px; font-weight: 500; cursor: pointer; }
 .fp-app .fpt-balance-expand:hover { background: #f4f9f5; border-color: #9fbea8; }
 .fp-app .fpt-table tr:last-child td { border-bottom: 0; }
 .fp-app .fpt-date-start:not(:first-child) > td { border-top: 1px solid #c7d4cb; }
 .fp-app .fpt-table .fpt-date { padding-top: 12px; color: #52675b; font-size: 11px; line-height: 1.5; text-align: center; vertical-align: top; }
 .fp-app .fpt-amount, .fp-app .fpt-projection, .fp-app .fpt-account-balance { font-variant-numeric: tabular-nums; }
-.fp-app .fpt-table .fpt-amount { text-align: center; }
+.fp-app .fpt-table .fpt-amount { padding-left: 3px; padding-right: 3px; font-size: clamp(10px, .9vw, 13px); text-align: center; white-space: nowrap; }
 .fp-app .fpt-row > .fpt-flow-in { background: #f0f8f2; color: #2b6b46; }
 .fp-app .fpt-row > .fpt-flow-out { background: #fdf2ef; color: #a44c3c; }
 .fp-app .fpt-row > .fpt-flow-zero { background: #fff; color: #52675b; }
 .fp-app .fpt-table .fpt-projection { background: #fafcfb; }
-.fp-app .fpt-running-totals { width: 100%; max-width: 185px; margin: 0 auto; }
-.fp-app .fpt-running-totals > div { display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: baseline; gap: 10px; padding: 2px 0; }
-.fp-app .fpt-running-totals dt { color: #52675b; font-size: 10px; font-weight: 500; text-align: left; }
-.fp-app .fpt-running-totals dd { margin: 0; color: #304b3a; font-size: 13px; font-weight: 600; line-height: 1.5; text-align: right; }
+.fp-app .fpt-running-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: baseline; gap: 8px; width: 100%; margin: 0; }
+.fp-app .fpt-running-totals > div { min-width: 0; padding: 2px 0; text-align: center; }
+.fp-app .fpt-running-totals dt { margin-bottom: 3px; color: #52675b; font-size: 9px; font-weight: 500; }
+.fp-app .fpt-running-totals dd { margin: 0; color: #304b3a; font-size: clamp(10px, .9vw, 13px); font-weight: 600; line-height: 1.5; white-space: nowrap; }
 .fp-app .fpt-table .fpt-balance-note { display: block; max-width: 170px; margin: 0 auto; color: #52675b; font-size: 11px; line-height: 1.5; text-align: center; }
 .fp-app .fpt-negative, .fp-app .fpt-running-totals .fpt-negative { color: #b34838; }
-.fp-app .fpt-positive { color: #2b6b46; }
+.fp-app .fpt-positive, .fp-app .fpt-running-totals .fpt-positive { color: #2b6b46; }
 
 .fp-app .fpt-description-line { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .fp-app .fpt-description-title { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
@@ -141,19 +143,13 @@
   .fp-app .fpt-table thead th { padding: 9px 4px; font-size: 11px; }
   .fp-app .fpt-table { font-size: 11px; }
   .fp-app .fpt-table .fpt-date { padding-top: 10px; font-size: 10px; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(1) { width: 10% !important; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(2) { width: 26% !important; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(3), .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(4) { width: 18% !important; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(5) { width: 28% !important; }
   .fp-app .fpt-description-line { flex-wrap: wrap; gap: 4px; }
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-description-title { flex: 1 1 100%; width: 100%; gap: 2px; }
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-description-title > strong { flex: 1; }
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-action-menu > summary { min-width: 18px; padding: 3px 2px; letter-spacing: 0; }
   .fp-app .fpt-description-line .fpt-status-pill { margin-left: 0; }
-  .fp-app .fpt-running-totals > div { grid-template-columns: 21px minmax(0, 1fr); gap: 4px; }
-  .fp-app .fpt-running-totals dt { font-size: 8px; }
-  .fp-app .fpt-running-totals dd { font-size: 11px; }
-  .fp-app .fpt-projection-heading > small { font-size: 9px; }
+  .fp-app .fpt-running-totals { gap: 6px; }
+  .fp-app .fpt-running-totals dd { font-size: 10px; }
   .fp-app .fpt-balance-expand { padding: 3px 5px; font-size: 9px; }
   .fp-app .fpt-table .fpt-balance-note { font-size: 10px; }
   .fp-app .fpt-note-balances { column-gap: 16px; }
@@ -167,9 +163,6 @@
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table th,
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table td { padding-left: 3px; padding-right: 3px; }
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-amount { padding-left: 1px; padding-right: 1px; font-size: clamp(9px, 2.6vw, 11px); letter-spacing: -.035em; white-space: nowrap; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-running-totals > div { display: block; padding: 2px 0; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-running-totals dt { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-running-totals dd { font-size: 10px; text-align: center; letter-spacing: -.02em; white-space: nowrap; }
   .fp-app .fpt-note-balances { grid-template-columns: minmax(0, 1fr); max-width: 280px; }
   .fp-app .fpt-notes-list { padding: 0 11px; }
 }

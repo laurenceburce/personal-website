@@ -72,6 +72,12 @@ const button = (tree, text) => find(tree, (node) => node.type === "button" && no
 const accountColumns = (html) => [...new Set([...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]))];
 const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
 const changeTags = (html, id) => [...accountCell(html, id).matchAll(/<span class="[^"]*fpt-change-tag[^"]*"[^>]*>(.*?)<\/span>/g)].map((match) => match[1]);
+const runningValues = (html, label) => {
+  const section = html.match(new RegExp(`<dl\\b[^>]*aria-label="${label}"[^>]*>([\\s\\S]*?)<\\/dl>`))?.[1];
+  assert.ok(section, `Missing ${label} running balances`);
+  return Object.fromEntries([...section.matchAll(/<dt>(USD|PHP)<\/dt><dd\b[^>]*>([\s\S]*?)<\/dd>/g)]
+    .map(([, currency, value]) => [currency, plain(value)]));
+};
 const renderExpanded = (rows, extra = {}) => {
   const get = harness({ rows, ...extra });
   button(get(), "Expand accounts").props.onClick();
@@ -158,6 +164,98 @@ test("running balances stay numeric while reserves and explanations remain in th
   assert.doesNotMatch(html, /<details class="fpt-notes" open/);
 });
 
+test("compact running balances keep account funds separate from signed credit card totals", () => {
+  const bank = [
+    { id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 99999 },
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 9000 },
+    { id: 3, account_type: "credit", currency: "USD", nativeCurrentBalance: 8000 },
+    { id: 4, type: "credit", currency: "PHP", nativeCurrentBalance: 7000 },
+    { id: 5, type: "loan", currency: "USD", nativeCurrentBalance: 6000 },
+  ];
+  const rows = [row({ projectedBalanceUsd: 175, projectedBalancePhp: 2000, accountBalanceSnapshot: [
+    { accountId: 1, currency: "USD", balance: 175 },
+    { accountId: 2, currency: "USD", balance: 1.99 },
+    { accountId: 3, currency: "USD", balance: 1658.16 },
+    { accountId: 4, currency: "PHP", balance: -125 },
+    { accountId: 5, currency: "USD", balance: 500 },
+  ] })];
+  const before = structuredClone({ bank, rows });
+  for (const html of [render(rows, { accounts: bank }), renderExpanded(rows, { accounts: bank })]) {
+    assert.deepEqual(runningValues(html, "Account funds"), { USD: "$175.00", PHP: "₱2,000.00" });
+    assert.deepEqual(runningValues(html, "Credit cards"), { USD: "$1,660.15", PHP: "-₱125.00" });
+    assert.match(html, /<dd\b[^>]*title="Balance owed"[^>]*>\$1,660\.15/);
+    assert.match(html, /<dd\b[^>]*title="Credit balance"[^>]*>-₱125\.00/);
+    assert.doesNotMatch(html, /\$99,999\.00|\$9,000\.00|\$8,000\.00|₱7,000\.00|\$6,000\.00/);
+  }
+  assert.deepEqual({ bank, rows }, before);
+});
+
+test("credit card totals count unique active cards and exclude loans and inactive accounts", () => {
+  const bank = [
+    { id: 1, type: "checking", currency: "USD" },
+    { id: 2, type: "credit", currency: "USD" },
+    { id: "2", type: "credit", currency: "USD", name: "Duplicate account" },
+    { id: 3, account_type: "credit", currency: "PHP" },
+    { id: 4, type: "credit", currency: "USD", isSyncExcluded: true },
+    { id: 5, type: "credit", currency: "USD", is_sync_excluded: 1 },
+    { id: 6, type: "credit", currency: "USD", is_archived: 1 },
+    { id: 7, type: "credit", currency: "PHP", mergedIntoAccountId: 3 },
+    { id: 8, type: "loan", currency: "USD" },
+    { id: 9, type: "credit", currency: "EUR" },
+  ];
+  const rows = [row({ accountBalanceSnapshot: [
+    { accountId: 1, currency: "USD", balance: 175 },
+    { accountId: 2, currency: "USD", balance: 12.25 },
+    { accountId: 3, currency: "PHP", balance: 0 },
+    ...bank.filter((account) => account.id >= 4).map((account) => ({
+      accountId: account.id, currency: account.currency, balance: 999,
+    })),
+  ] })];
+  const html = renderExpanded(rows, { accounts: bank });
+  assert.deepEqual(runningValues(html, "Credit cards"), { USD: "$12.25", PHP: "₱0.00" });
+  assert.deepEqual(accountColumns(html).sort(), ["1", "2", "3", "8"]);
+  assert.equal((html.match(/<th\b[^>]*data-account-id="2"/g) || []).length, 1);
+});
+
+test("unknown card snapshots never use a partial sum or fall back to current account balances", () => {
+  const bank = [
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 9000 },
+    { id: 3, type: "credit", currency: "USD", currentBalance: 8000 },
+    { id: 4, type: "credit", currency: "PHP", nativeCurrentBalance: 7000 },
+  ];
+  const snapshot = [
+    { accountId: 2, currency: "USD", balance: 10 },
+    { accountId: 3, currency: "USD", balance: 20 },
+    { accountId: 4, currency: "PHP", balance: 40 },
+  ];
+  for (const missing of [null, NaN, Infinity, "missing", "wrong currency"]) {
+    const values = snapshot.flatMap((item) => item.accountId !== 3 ? [item]
+      : missing === "missing" ? [] : missing === "wrong currency" ? [{ ...item, currency: "PHP" }]
+        : [{ ...item, balance: missing }]);
+    const html = render([row({ accountBalanceSnapshot: values })], { accounts: bank });
+    const totals = runningValues(html, "Credit cards");
+    assert.match(totals.USD, /^(?:Unavailable|—)$/);
+    assert.equal(totals.PHP, "₱40.00", "one unknown currency does not hide another known currency");
+    assert.doesNotMatch(html, /\$9,000\.00|\$8,000\.00|₱7,000\.00/);
+  }
+  for (const change of [{ accountBalanceSnapshotKind: "unavailable", accountBalanceSnapshot: snapshot },
+    { accountBalanceSnapshot: undefined }]) {
+    const totals = runningValues(render([row(change)], { accounts: bank }), "Credit cards");
+    assert.match(totals.USD, /^(?:Unavailable|—)$/);
+    assert.match(totals.PHP, /^(?:Unavailable|—)$/);
+  }
+});
+
+test("currencies without active credit cards show zero while legacy account funds remain visible", () => {
+  for (const bank of [[], [{ id: 1, type: "checking", currency: "USD" },
+    { id: 2, type: "loan", currency: "USD" },
+    { id: 3, type: "credit", currency: "PHP", isArchived: true }]]) {
+    const html = render([row({ accountBalanceSnapshot: undefined })], { accounts: bank });
+    assert.deepEqual(runningValues(html, "Credit cards"), { USD: "$0.00", PHP: "₱0.00" });
+    assert.deepEqual(runningValues(html, "Account funds"), { USD: "$175.00", PHP: "₱2,000.00" });
+  }
+});
+
 test("card expenses display their native amount without changing projected cash or running balances", () => {
   const rows = planner.buildPlanRows({ ...plan, endDate: "2026-11-30", balanceMode: "snapshot", openingUsd: 175, openingPhp: 2000,
     includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [],
@@ -228,7 +326,7 @@ test("horizontal account columns retain row count and put movement tags only on 
   const expanded = renderExpanded([transfer]);
   assert.equal((expanded.match(/<tr\b[^>]*data-row-id=/g) || []).length, (compact.match(/<tr\b[^>]*data-row-id=/g) || []).length);
   assert.equal((expanded.match(/<td\b/g) || []).length, 5 + accounts.length);
-  assert.match(expanded, /width:1330px/);
+  assert.match(expanded, /<table class="fpt-table" style="width:\d+px;min-width:100%"/);
   assert.deepEqual(changeTags(expanded, 1), ["-25.00"]);
   assert.deepEqual(changeTags(expanded, 34), ["+1,400.00"]);
   assert.match(accountCell(expanded, 1), /fpt-change-negative/);
