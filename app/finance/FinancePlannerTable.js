@@ -1,6 +1,6 @@
 "use client";
 
-import { Children, isValidElement, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 import { getPlanRowCategory } from "../lib/financePlanPresentation.mjs";
 import { SourceLabel } from "./FinancePlanLedger";
@@ -32,7 +32,7 @@ function positionCurrentRow(scroller, row, behavior = "auto") {
   if (!scroller || !row) return false;
   const headerHeight = scroller.querySelector("thead")?.getBoundingClientRect().height || 0;
   const top = scroller.scrollTop + row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - headerHeight - 16;
-  scroller.scrollTo({ top: Math.max(0, top), behavior });
+  scroller.scrollTo({ top: Math.max(0, top), left: 0, behavior });
   return true;
 }
 
@@ -48,32 +48,68 @@ function rowAccounts(row, accounts, plan) {
   return { names: names.length ? names : [row.accountName || "Not assigned"] };
 }
 
-function accountInvolved(row, account, accounts, plan) {
-  const ids = [row.accountId, row.fromAccountId, row.toAccountId, row.creditAccountId,
-    row.sourceAccountId, row.creditCardPaymentFor, ...(row.accountMovements || []).map((move) => move.accountId),
-    ...(row.recordedTransactions || []).map((item) => item.accountId)];
-  if (ids.some((id) => id != null && Number(id) === Number(account.id))) return true;
-  const assigned = rowAccounts(row, accounts, plan);
-  const names = [assigned.from, assigned.to, ...(assigned.names || []),
-    ...(row.recordedTransactions || []).map((item) => item.accountName)];
-  return names.includes(accountName(account)) || names.includes(account.name);
+const validAccountId = (id) => id != null && Number.isFinite(Number(id)) && Number(id) > 0;
+const sameAccount = (id, account) => validAccountId(id) && Number(id) === Number(account.id);
+const normalizedName = (name) => String(name || "").trim().toLowerCase().replace(/•+/g, "•");
+
+function legacyAccountMatch(name, account, accounts) {
+  if (!name) return false;
+  const normalized = normalizedName(name);
+  const matches = accounts.filter((item) => normalized === normalizedName(item.name) ||
+    normalized === normalizedName(accountName(item)));
+  return new Set(matches.map((item) => Number(item.id))).size === 1 &&
+    matches.some((item) => sameAccount(item.id, account));
 }
 
-// Reuse financial provenance without the ledger's expandable detail controls.
-function SourceTags({ row }) {
-  const textContent = (node) => isValidElement(node)
-    ? Children.map(node.props.children, textContent) : node;
-  return Children.map(SourceLabel({ row }).props.children, (child) => child &&
-    <span className="fpt-info-tag">{textContent(child)}</span>);
+function activityInAccount(activity, account, accounts) {
+  return validAccountId(activity.accountId) ? sameAccount(activity.accountId, account)
+    : legacyAccountMatch(activity.accountName, account, accounts);
+}
+
+function accountInvolved(row, account, accounts, plan) {
+  const ids = [row.accountId, row.fromAccountId, row.toAccountId, row.creditAccountId,
+    row.sourceAccountId, row.fundingAccountId, row.reserveAccountId, row.creditCardPaymentFor,
+    ...(row.reserveAllocations || []).flatMap((item) => [item.sourceAccountId, item.reserveAccountId]),
+    ...(row.accountMovements || []).map((move) => move.accountId),
+    ...(row.recordedTransactions || []).map((item) => item.accountId)].filter(validAccountId);
+  if (ids.some((id) => sameAccount(id, account))) return true;
+  if ([...(row.accountMovements || []), ...(row.recordedTransactions || [])]
+    .some((item) => activityInAccount(item, account, accounts))) return true;
+  if (ids.length) return false;
+  const assigned = rowAccounts(row, accounts, plan);
+  return [assigned.from, assigned.to, ...(assigned.names || [])]
+    .some((name) => legacyAccountMatch(name, account, accounts));
+}
+
+function fallbackAccountAmount(row, account) {
+  const amount = row.grossAmount ?? row.amount;
+  if (!Number.isFinite(amount)) return null;
+  if (row.kind === "transfer" || row.kind === "conversion") {
+    if (sameAccount(row.fromAccountId, account)) return row.currency === account.currency ? -amount : null;
+    if (sameAccount(row.toAccountId || row.creditAccountId, account)) {
+      if (row.currency === account.currency) return amount;
+      const converted = account.currency === "USD" ? row.usd : row.php;
+      return Number.isFinite(converted) ? converted : null;
+    }
+    return null;
+  }
+  // Secondary reserve/funding accounts may own only part of the native total.
+  // When their posted legs are absent, do not invent a movement for them.
+  if (validAccountId(row.accountId) && !sameAccount(row.accountId, account)) return null;
+  if (!validAccountId(row.accountId) && (row.reserveAllocations?.length ||
+    [row.sourceAccountId, row.reserveAccountId, row.fundingAccountId].some(validAccountId))) return null;
+  return row.currency === account.currency ? (row.kind === "income" ? amount : -amount) : null;
 }
 
 function AccountCell({ row, account, accounts, plan, today }) {
   const snapshot = row.accountBalanceSnapshot?.find((item) => Number(item.accountId) === Number(account.id));
   const value = row.accountBalanceSnapshotKind === "unavailable" ? null : snapshot?.balance;
   const involved = accountInvolved(row, account, accounts, plan);
-  const from = Number(row.fromAccountId) === Number(account.id);
-  const to = Number(row.toAccountId || row.creditAccountId) === Number(account.id);
-  const moves = (row.accountMovements || []).filter((move) => Number(move.accountId) === Number(account.id));
+  const from = sameAccount(row.fromAccountId, account);
+  const to = sameAccount(row.toAccountId || row.creditAccountId, account);
+  const moves = (row.accountMovements || []).filter((move) => activityInAccount(move, account, accounts));
+  const receipts = (row.recordedTransactions || []).filter((item) => activityInAccount(item, account, accounts));
+  const fallbackAmount = fallbackAccountAmount(row, account);
   const debt = ["credit", "loan"].includes(account.type);
   const negative = Number.isFinite(value) && (debt ? value > 0 : value < 0);
   return <td className={`fpt-account-balance${negative ? " fpt-negative" : ""}`} data-account-id={account.id}
@@ -82,10 +118,13 @@ function AccountCell({ row, account, accounts, plan, today }) {
     {Number.isFinite(value) && debt && <small>{value < 0 ? "Credit balance" : "Balance owed"}</small>}
     {involved && <div className="fpt-account-tags" aria-label={`Activity in ${accountName(account)} for ${row.description}`}>
       <span className="fpt-info-tag">{row.creditCardPaymentFor ? "Card payment" : from ? "Sent" : to ? "Received" : getPlanRowCategory(row).label}</span>
-      {moves.length ? moves.map((move, index) => <span key={index} className="fpt-info-tag">{signed(Number(move.amount) || 0, move.currency || account.currency)}</span>)
-        : <span className="fpt-info-tag">{["USD", "PHP"].includes(row.currency) && row.currency === account.currency && Number.isFinite(row.grossAmount ?? row.amount)
-          ? money(row.grossAmount ?? row.amount, account.currency) : money(Number(account.currency === "USD" ? row.usd : row.php) || 0, account.currency)}</span>}
-      <SourceTags row={{ ...row, accountMovements: [], accountNames: [], recordedTransactions: [] }}/>
+      {moves.length ? moves.map((move, index) => <span key={index} className="fpt-info-tag">
+        {signed(move.amount, move.currency || account.currency)}
+        {Number.isFinite(move.balanceDelta) && move.balanceDelta !== move.amount &&
+          <> · Balance owed {signed(move.balanceDelta, move.currency || account.currency)}</>}
+      </span>) : !receipts.length && fallbackAmount != null &&
+        <span className="fpt-info-tag">{signed(fallbackAmount, account.currency)}</span>}
+      <SourceLabel row={row} asTags omitMovementDetails/>
       {from && row.toAccountId && <span className="fpt-info-tag">to {accountName(accounts.find((item) => Number(item.id) === Number(row.toAccountId)))}</span>}
       {to && row.fromAccountId && <span className="fpt-info-tag">from {accountName(accounts.find((item) => Number(item.id) === Number(row.fromAccountId)))}</span>}
       {row.notes && <span className="fpt-info-tag">{row.notes}</span>}
@@ -94,11 +133,9 @@ function AccountCell({ row, account, accounts, plan, today }) {
       {row.recurring && <span className="fpt-info-tag">Repeats</span>}
       {row.awaitingBankSync && <span className="fpt-info-tag">Awaiting bank match</span>}
       {recorded(row, today) && row.completionSource === "transaction" && (row.matchedForecast || row.recordedTransactions?.length > 0) && <span className="fpt-info-tag">Matched to account</span>}
-      {(row.recordedTransactions || []).filter((item) => Number(item.accountId) === Number(account.id) || item.accountName === account.name)
-        .map((item, index) => <span key={index} className="fpt-info-tag">{item.description} {money(item.amount, item.currency || account.currency)}</span>)}
-      {[["Annual reserve", account.currency === "USD" ? row.reserveUsd : row.reservePhp],
-        ["Savings", account.currency === "USD" ? row.savingsUsd : row.savingsPhp]].filter(([, amount]) => Number.isFinite(amount))
-        .map(([label, amount]) => <span key={label} className="fpt-info-tag">{label} · {account.currency} {money(amount, account.currency)}</span>)}
+      {receipts.map((item, index) => <span key={index} className="fpt-info-tag">
+        {item.description || item.merchant || "Bank transaction"} · {formatDate(item.date || row.date)} · {signed((item.kind === "income" ? 1 : -1) * item.amount, item.currency || account.currency)}
+      </span>)}
     </div>}
   </td>;
 }
@@ -275,13 +312,14 @@ export default function FinancePlannerTable({
                   : <div className="fpt-money-stack">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
                     ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
                     <span key={currency} className={value < 0 ? "fpt-negative" : ""}><small>{currency}</small>{balance(value, currency)}</span>)}</div>}
-              {(!expanded || !accountColumns.some((account) => accountInvolved(row, account, accounts, plan))) &&
-                <div className="fpt-account-tags"><SourceTags row={row}/>
-                  {[["Annual reserve", row.reserveUsd, "USD"], ["Annual reserve", row.reservePhp, "PHP"],
-                    ["Savings", row.savingsUsd, "USD"], ["Savings", row.savingsPhp, "PHP"]]
-                    .filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
-                      <span key={`${label}-${currency}`} className="fpt-info-tag">{label}{" \u00b7 "}{currency}{money(value, currency)}</span>)}
-                </div>}
+              <div className="fpt-account-tags">
+                {(!expanded || !accountColumns.some((account) => accountInvolved(row, account, accounts, plan))) &&
+                  <SourceLabel row={row} asTags/>}
+                {[["Annual reserve", row.reserveUsd, "USD"], ["Annual reserve", row.reservePhp, "PHP"],
+                  ["Savings", row.savingsUsd, "USD"], ["Savings", row.savingsPhp, "PHP"]]
+                  .filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
+                    <span key={`${label}-${currency}`} className="fpt-info-tag">{label}{" · "}{currency}{money(value, currency)}</span>)}
+              </div>
             </td>
             {expanded && accountColumns.map((account) => <AccountCell key={account.id} row={row} account={account}
               accounts={accounts} plan={plan} today={today}/>)}

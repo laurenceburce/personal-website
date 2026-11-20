@@ -207,9 +207,65 @@ test("recorded history displays its per-account balances and retains financial d
   assert.match(html, /Awaiting bank match/);
   assert.match(html, /Bank receipt/);
   assert.match(html, /Annual reserve · USD/);
-  assert.match(html, /Annual reserve · USD/);
+  assert.match(html, /Savings · PHP/);
+  assert.doesNotMatch(accountCell(html, 1), /Annual reserve|Savings · PHP/);
   assert.match(html, /aria-label="Reopen Internet"/);
 
+});
+
+test("explicit account IDs keep activity and receipts out of same-name accounts", () => {
+  const duplicateAccounts = [
+    { id: 1, name: "Checking", currency: "USD", type: "checking" },
+    { id: 2, name: "Checking", currency: "USD", type: "checking" },
+  ];
+  const html = renderExpanded([row({ completed: true, date: today, accountNames: ["Checking"],
+    accountMovements: [], reflectedInRecordedTransactions: true,
+    recordedTransactions: [{ id: 5, accountId: 1, accountName: "Checking", date: today,
+      kind: "expense", amount: 25, currency: "USD", description: "Internet receipt" }],
+  })], { accounts: duplicateAccounts });
+  assert.match(accountCell(html, 1), /Internet receipt/);
+  assert.match(accountCell(html, 1), /-\$25\.00/);
+  assert.match(accountCell(html, 1), /Matched bank movement included here once/);
+  assert.doesNotMatch(accountCell(html, 1), /Cash movement shown in matched recorded transactions|<details/);
+  assert.doesNotMatch(accountCell(html, 2), /fpt-account-tags|Internet receipt|Scheduled bill/);
+});
+
+test("legacy names require a unique account and accept either mask format", () => {
+  const duplicateAccounts = [
+    { id: 1, name: "Checking", mask: "1234", currency: "USD", type: "checking" },
+    { id: 2, name: "Checking", mask: "5678", currency: "USD", type: "checking" },
+  ];
+  const legacy = row({ accountId: null, accountNames: ["Checking"], accountMovements: [] });
+  const ambiguous = renderExpanded([legacy], { accounts: duplicateAccounts });
+  for (const id of [1, 2]) assert.doesNotMatch(accountCell(ambiguous, id), /fpt-account-tags/);
+  const masked = renderExpanded([{ ...legacy, accountNames: ["Checking · •1234"] }], { accounts: duplicateAccounts });
+  assert.match(accountCell(masked, 1), /fpt-account-tags/);
+  assert.doesNotMatch(accountCell(masked, 2), /fpt-account-tags/);
+});
+
+test("completed expense and transfer tags retain their native signs without projected movements", () => {
+  const expense = renderExpanded([row({ completed: true, accountMovements: [] })]);
+  assert.match(accountCell(expense, 1), /fpt-info-tag">-\$25\.00/);
+  const transfer = renderExpanded([row({ kind: "transfer", accountId: null, fromAccountId: 1, toAccountId: 2,
+    completed: true, amount: 100, accountMovements: [] })], { accounts: [accounts[0],
+    { id: 2, name: "Savings", currency: "USD", type: "savings" }] });
+  assert.match(accountCell(transfer, 1), /-\$100\.00/);
+  assert.match(accountCell(transfer, 2), /\+\$100\.00/);
+});
+
+test("reserve allocation IDs retain activity ownership without inventing a movement amount", () => {
+  const html = renderExpanded([row({ source: "reserve", completed: true, accountId: null, accountMovements: [],
+    amount: 100, reserveAllocations: [{ sourceAccountId: 1, reserveAccountId: 34, amount: 100 }] })]);
+  for (const id of [1, 34]) assert.match(accountCell(html, id), /fpt-account-tags/);
+  assert.doesNotMatch(accountCell(html, 37), /fpt-account-tags/);
+  assert.doesNotMatch(accountCell(html, 34), /fpt-info-tag">-?₱100\.00/);
+});
+
+test("debt movement tags distinguish the transaction from its change to the amount owed", () => {
+  const html = renderExpanded([row({ accountId: 37, currency: "PHP", amount: 120,
+    accountMovements: [{ accountId: 37, amount: -120, balanceDelta: 120, currency: "PHP" }] })]);
+  assert.match(accountCell(html, 37), /-₱120\.00/);
+  assert.match(accountCell(html, 37), /Balance owed \+₱120\.00/);
 });
 
 test("status and search filters preserve precomputed balances and source rows", () => {
@@ -411,7 +467,7 @@ test("table scrolls its own viewport once per range and preserves manual positio
     row({ id: "today-two", date: today }), row({ id: "future", date: "2026-11-20" })];
   const get = effectHarness({ rows, viewKey: "november" });
   let tree = get.render();
-  assert.deepEqual(get.calls, [{ top: 344, behavior: "auto" }]);
+  assert.deepEqual(get.calls, [{ top: 344, left: 0, behavior: "auto" }]);
   get.scroller.scrollTop = 50;
   tree = get.render({ rows: rows.map((entry) => ({ ...entry })) });
   assert.equal(get.calls.length, 1, "refresh cannot override the user's scroll");
@@ -434,10 +490,12 @@ test("table scrolls its own viewport once per range and preserves manual positio
   assert.equal(get.calls.at(-1).top, 50, "collapsing columns preserves the visible row rather than jumping to current");
   assert.equal(get.scroller.scrollTop, 50);
   assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), []);
+  get.scroller.scrollLeft = 380;
   button(tree, "Jump to current").props.onClick();
   tree = get.render();
   assert.equal(get.calls.length, 4);
   assert.equal(get.calls.at(-1).top, 344);
+  assert.equal(get.scroller.scrollLeft, 0, "jumping back to current also brings the transaction description into view");
   assert.match(renderToStaticMarkup(tree), /4 transactions/);
   get.scroller.scrollTop = 25;
   get.render({ viewKey: "new-window" });

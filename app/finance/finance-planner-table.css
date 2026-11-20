@@ -7,7 +7,9 @@
 .fp-app .fpt-filter-tabs { display: inline-flex; padding: 3px; gap: 3px; background: #f2f5f1; border-radius: 8px; }
 .fp-app .fpt-filter-tabs button { border: 0; border-radius: 6px; padding: 7px 10px; background: transparent; color: #4e6358; font: inherit; font-size: 11px; cursor: pointer; }
 .fp-app .fpt-filter-tabs button[aria-pressed="true"] { color: #255a41; background: #fff; box-shadow: 0 1px 4px #1f382810; font-weight: 600; }
-.fp-app .fpt-filter-tabs button:disabled, .fp-app .fpt-actions button:disabled { opacity: .45; cursor: default; }
+.fp-app .fpt-filter-tabs button:disabled, .fp-app .fpt-actions button:disabled,
+.fp-app .fpt-account-columns-toggle:disabled, .fp-app .fpt-account-columns-toggle-mobile:disabled,
+.fp-app .fpt-jump-current:disabled { opacity: .45; cursor: default; }
 .fp-app .fpt-count { margin-left: auto; color: #52675b; font-size: 11px; }
 .fp-app .fpt-table-wrap { min-width: 0; max-height: min(70vh, 760px); overflow: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-color: #708b7d #edf2ee; scroll-padding-top: 58px; border: 1px solid #a9beb0; border-radius: 12px; background: #fff; }
 .fp-app .fpt-table-wrap::-webkit-scrollbar { width: 12px; height: 12px; }
@@ -17,7 +19,6 @@
 .fp-app .fpt-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: #344c3f; font-size: 12px; }
 .fp-app .fpt-table thead th { position: sticky; top: 0; z-index: 4; padding: 14px; border-bottom: 1px solid #a9beb0; background: #edf3ef; color: #324f3e; box-shadow: 0 1px 0 #a9beb0; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .055em; text-align: left; }
 .fp-app .fpt-table th:first-child { border-top-left-radius: 12px; }
-.fp-app .fpt-table th:nth-child(4) { text-align: right; }
 .fp-app .fpt-table th:last-child { border-top-right-radius: 12px; }
 .fp-app .fpt-table .fpt-account-balance-heading { text-align: right; text-transform: none; letter-spacing: 0; background: #e7f0ec; border-left: 1px solid #c1d1c7; font-size: 11px; }
 .fp-app .fpt-account-balance-heading strong, .fp-app .fpt-account-balance-heading > span { display: block; color: #294b39; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
@@ -41,29 +42,6 @@
 .fp-app .fpt-jump-current { display: inline-flex; align-items: center; justify-content: center; min-height: 35px; padding: 7px 11px; border: 1px solid #a4bfdf; border-radius: 7px; background: #edf4ff; color: #174d85; font-size: 11px; font-weight: 700; }
 .fp-app .fpt-jump-current:hover { background: #dceaff; border-color: #225c9d; }
 .fp-app .fpt-date { color: #52675b; font-size: 11px; line-height: 1.7; }
-.fp-app .fpt-transaction > strong { display: block; font-weight: 600; line-height: 1.5; color: #294735; }
-.fp-app .fpt-row-recorded .fpt-transaction > strong { color: #355b45; }
-.fp-app .fpt-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin-top: 7px; font-size: 10px; color: #52675b; }
-.fp-app .fpt-category { display: inline-flex; padding: 2px 6px; border-radius: 4px; background: #f0f3ef; color: #3f5547; }
-.fp-app .fpt-category-bill .fpt-category { color: #81500c; background: #fff0cf; }
-.fp-app .fpt-category-income .fpt-category { color: #155e3e; background: #def0e5; }
-.fp-app .fpt-category-transfer .fpt-category { color: #4d3880; background: #eee6ff; }
-.fp-app .fpt-category-savings .fpt-category { color: #215e89; background: #e2effb; }
-.fp-app .fpt-category-reserve .fpt-category { color: #6b3384; background: #f2e5fa; }
-.fp-app .fpt-details > summary { list-style: none; cursor: pointer; color: #275f45; text-decoration: underline; text-underline-offset: 2px; }
-.fp-app .fpt-details > summary::-webkit-details-marker, .fp-app .fpt-action-menu > summary::-webkit-details-marker { display: none; }
-.fp-app .fpt-details { position: relative; }
-.fp-app .fpt-detail-body { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding: 14px; border: 1px solid #e0e9df; border-radius: 8px; background: #fbfdf9; font-size: 11px; color: #435e4d; line-height: 1.7; }
-.fp-app .fpt-details[open] { flex-basis: 100%; }
-.fp-app .fpt-detail-body small { display: block; color: inherit; font-size: 11px; }
-.fp-app .fpt-detail-body ul { margin: 5px 0; padding-left: 17px; }
-.fp-app .fpt-detail-body summary { cursor: pointer; color: #37684b; }
-.fp-app .fpt-extra-balances { margin: 5px 0 0; padding-top: 8px; border-top: 1px solid #e0e8dd; }
-.fp-app .fpt-extra-balances > div { display: flex; justify-content: space-between; gap: 12px; }
-.fp-app .fpt-extra-balances dt, .fp-app .fpt-extra-balances dd { margin: 0; }
-.fp-app .fpt-account { font-size: 11px; color: #4e6358; line-height: 1.65; }
-.fp-app .fpt-account-pair { display: block; }
-.fp-app .fpt-account-pair small { display: block; margin-top: 3px; font-size: 10px; color: #52675b; }
 .fp-app .fpt-amount, .fp-app .fpt-projection { text-align: right; font-variant-numeric: tabular-nums; }
 .fp-app .fpt-money-stack { display: flex; flex-direction: column; gap: 4px; font-weight: 600; line-height: 1.6; }
 .fp-app .fpt-money-stack > span { display: block; }
@@ -73,16 +51,14 @@
 .fp-app .fpt-negative { color: #a33426; }
 .fp-app .fpt-positive { color: #166543; }
 .fp-app .fpt-status-pill { display: inline-flex; padding: 4px 8px; border: 1px solid #c6d2e1; border-radius: 5px; font-size: 10px; font-weight: 700; line-height: 1.4; background: #e9eef5; color: #3d536e; }
-.fp-app .fpt-status-recorded { background: #def0e5; color: #155e3e; }
 .fp-app .fpt-status-overdue { background: #fde8e3; color: #8f2e20; }
-.fp-app .fpt-status-recorded { border-color: #acd1b9; }
 .fp-app .fpt-status-overdue { border-color: #e7b4a8; }
 .fp-app .fpt-status-done { background: #e8eee7; color: #435443; border-color: #c6d3c1; }
-.fp-app .fpt-status > small { display: block; margin-top: 5px; font-size: 10px; color: #52675b; }
 .fp-app .fpt-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .fp-app .fpt-record { padding: 0; border: 0; background: transparent; color: #165d3d; font: inherit; font-size: 10px; cursor: pointer; }
 .fp-app .fpt-action-menu { position: relative; }
 .fp-app .fpt-action-menu > summary { padding: 3px 7px; border-radius: 4px; color: #52675b; list-style: none; cursor: pointer; letter-spacing: 1px; font-size: 10px; }
+.fp-app .fpt-action-menu > summary::-webkit-details-marker { display: none; }
 .fp-app .fpt-action-menu > summary:hover { background: #f0f4ed; }
 .fp-app .fpt-action-menu[open] { width: 100%; }
 .fp-app .fpt-action-menu > div { position: relative; z-index: 1; min-width: 0; width: 100%; max-width: 220px; margin-top: 5px; padding: 5px; background: #fff; border: 1px solid #b8cbbb; border-radius: 8px; box-shadow: 0 3px 12px #203c2710; }
@@ -105,9 +81,6 @@
 .fp-app .fpt-table .fpt-date { font-size: 12px; line-height: 1.4; vertical-align: top; text-align: center; }
 .fp-app .fpt-table .fpt-amount { text-align: center; }
 .fp-app .fpt-date-start:not(:first-child) > td { border-top: 1px solid #889d90; }
-.fp-app .fpt-transaction > strong { font-weight: 500; line-height: 1.4; }
-.fp-app .fpt-row-meta { margin-top: 3px; }
-.fp-app .fpt-row-meta > span { display: none; }
 .fp-app .fpt-amount, .fp-app .fpt-projection { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .fp-app .fpt-row > .fpt-flow-in { background: #d7efdf; color: #174f34; }
 .fp-app .fpt-row > .fpt-flow-out { background: #faddd8; color: #852d24; }
@@ -116,12 +89,6 @@
 .fp-app .fpt-projection .fpt-money-stack > span { justify-content: space-between; }
 .fp-app .fpt-account-columns-toggle, .fp-app .fpt-account-columns-toggle-mobile { display: block; margin: 4px auto 0; padding: 4px 6px; border: 1px solid #9db7a8; border-radius: 3px; background: #fff; color: #1b593e; font: inherit; font-size: 12px; cursor: pointer; }
 .fp-app .fpt-account-columns-toggle-mobile { display: none; }
-.fp-app .fpt-account-list { margin: 6px 0 0; padding-top: 4px; border-top: 1px solid #a9beb0; }
-.fp-app .fpt-account-list > div { padding: 4px 0; border-bottom: 1px solid #d5e0d8; }
-.fp-app .fpt-account-list dt { text-align: left; font-size: 12px; color: #52675b; }
-.fp-app .fpt-account-list dd { margin: 0; }
-.fp-app .fpt-account-list dd small { display: block; font-size: 10px; }
-.fp-app .fpt-detail-body { padding: 6px; }
 @media (max-width: 760px) {
   .fp-app .fp-live-transactions { padding: 12px 4px; }
   .fp-app .fpt-toolbar { gap: 7px; margin-bottom: 10px; }
@@ -135,11 +102,16 @@
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(3), .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(4) { width: 19% !important; }
   .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(5) { width: 30% !important; }
   .fp-app .fpt-table th, .fp-app .fpt-table td { padding: 5px 2px; }
-  .fp-app .fpt-table thead th, .fp-app .fpt-transaction > strong { font-size: 11px; }
+  .fp-app .fpt-table thead th { font-size: 11px; }
   .fp-app .fpt-table .fpt-date { font-size: 10px; }
   .fp-app .fpt-account-columns-toggle { font-size: 10px; padding: 3px 2px; }
-  .fp-app .fpt-account-list dt { font-size: 10px; }
   .fp-app .fpt-today-tag { font-size: 9px; padding: 1px 2px; }
+  .fp-app .fpt-accounts-expanded .fpt-table { font-size: 14px; }
+  .fp-app .fpt-accounts-expanded .fpt-table th, .fp-app .fpt-accounts-expanded .fpt-table td { padding: 6px 8px; }
+  .fp-app .fpt-accounts-expanded .fpt-table thead th { font-size: 12px; }
+  .fp-app .fpt-accounts-expanded .fpt-table .fpt-date { font-size: 12px; }
+  .fp-app .fpt-accounts-expanded .fpt-account-columns-toggle { font-size: 12px; padding: 4px 6px; }
+  .fp-app .fpt-accounts-expanded .fpt-account-tags .fpt-info-tag { font-size: 12px; }
 }
 @media (max-height: 500px) and (orientation: landscape) {
   .fp-app .fpt-table-wrap { max-height: 80dvh; }

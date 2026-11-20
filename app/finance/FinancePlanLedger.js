@@ -1,5 +1,6 @@
 "use client";
 
+import { Children, isValidElement } from "react";
 import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 import { PLAN_ROW_CATEGORIES, getPlanRowCategory } from "../lib/financePlanPresentation.mjs";
 import "./finance-plan-ledger.css";
@@ -81,7 +82,14 @@ function SavingsBalance({ value = 0, currency, unusedOnPhone = false }) {
   );
 }
 
-export function SourceLabel({ row }) {
+// Preserve readable boundaries when turning the ledger's notes into plain tags.
+function sourceTagText(node, nested = false) {
+  if (!isValidElement(node)) return node;
+  const text = Children.map(node.props.children, (child) => sourceTagText(child, true));
+  return nested && ["small", "summary", "li"].includes(node.type) ? [" · ", text] : text;
+}
+
+export function SourceLabel({ row, asTags = false, omitMovementDetails = false }) {
   const labels = {
     salary: "Scheduled income",
     bill: "Scheduled bill",
@@ -143,7 +151,7 @@ export function SourceLabel({ row }) {
         Number(allocation.sourceAccountId) ===
           Number(allocation.reserveAccountId),
     );
-  return (
+  const content = (
     <>
       <small className="fpl-source-label">
         {label}
@@ -273,7 +281,7 @@ export function SourceLabel({ row }) {
           {row.recordedTransactions?.length ? "Matched bank movement included here once" : "Cash movement shown in matched recorded transactions"}
         </small>
       )}
-      {row.recordedTransactions?.length > 0 && (
+      {!omitMovementDetails && row.recordedTransactions?.length > 0 && (
         <details className="fpl-account-movements">
           <summary>Matched bank records · {row.recordedTransactions.length}</summary>
           <ul>
@@ -297,7 +305,7 @@ export function SourceLabel({ row }) {
           Earmarked within the same account; bank balance stays unchanged.
         </small>
       )}
-      {(row.accountMovements?.length > 0 || row.accountNames?.length > 0) && (
+      {!omitMovementDetails && (row.accountMovements?.length > 0 || row.accountNames?.length > 0) && (
         <details className="fpl-account-movements">
           <summary>{row.accountMovements?.length > 0 ? "Account movements" : "Linked accounts"}</summary>
           {row.accountNames?.length > 0 && (
@@ -328,6 +336,8 @@ export function SourceLabel({ row }) {
       )}
     </>
   );
+  return asTags ? Children.map(content.props.children, (child) => child &&
+    <span className="fpt-info-tag">{sourceTagText(child)}</span>) : content;
 }
 
 function CompletionStatus({ row, onToggleComplete, busy }) {
