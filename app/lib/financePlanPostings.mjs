@@ -11,10 +11,12 @@ const parse = (value) => {
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const dateOnly = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || "").slice(0, 10);
 const money = (value) => roundMoney(Number(value) || 0);
-const manualAccount = (account) => account && Number(account.id) > 0 &&
+const inactiveAccount = (account) => !account || Boolean(account.is_archived || account.isArchived ||
+  account.is_sync_excluded || account.isSyncExcluded || account.merged_into_account_id || account.mergedIntoAccountId);
+const unlinkedAccount = (account) => account && Number(account.id) > 0 &&
   !account.isLinked && !account.external_provider && !account.provider && !account.external_account_id && !account.externalAccountId &&
-  !account.connection_id && !account.connectionId && !account.is_archived && !account.isArchived &&
-  !account.is_sync_excluded && !account.isSyncExcluded && !account.merged_into_account_id && !account.mergedIntoAccountId;
+  !account.connection_id && !account.connectionId;
+const manualAccount = (account) => unlinkedAccount(account) && !inactiveAccount(account);
 const posted = (row, today) => !row.pending && !row.is_provider_removed && row.duplicate_of_id == null &&
   dateOnly(row.posting_date || row.transaction_date) <= today;
 const nativeDelta = (row) => (row.kind === "income" ? 1 : -1) * Number(row.amount);
@@ -26,6 +28,45 @@ const manualReceiptOriginal = (row) => ({
 const tooManyMovements = () => Object.assign(new Error("The live planner contains more than 10,000 manual transactions through today. Shorten recurring schedules before saving."), { status: 400 });
 const ownGenerated = (row, plan) => plan && String(row.source_plan_id) === String(plan.id) && row.plan_generated &&
   !providerRecord(row) && !parse(row.plan_record_json).detached;
+const eventKey = (row) => keyFor(row.source_plan_id, row.source_plan_row_id, "");
+
+// Removing an account freezes the whole recorded event, including its still
+// active counterpart. Later forecast edits cannot split that saved transfer.
+function inactiveHistoryEvents(accounts, existing, today) {
+  const byId = new Map(accounts.map((account) => [Number(account.id), account]));
+  const records = existing.filter((row) => posted(row, today));
+  const generatedEvents = new Set(records.filter((row) => parse(row.plan_record_json).manualPlannerSource ||
+    (row.plan_generated && !providerRecord(row))).map(eventKey));
+  return new Set(records.filter((row) => parse(row.plan_record_json).inactiveAccountHistory ||
+    (generatedEvents.has(eventKey(row)) && inactiveAccount(byId.get(Number(row.account_id))))).map(eventKey));
+}
+function settledStatementEvents(accounts, existing, today) {
+  const byId = new Map(accounts.map((account) => [Number(account.id), account]));
+  return new Set(existing.filter((row) => {
+    if (!posted(row, today)) return false;
+    const saved = parse(row.plan_record_json);
+    if (saved.settledCardCycleHistory) return true;
+    if (!saved.manualPlannerSource || saved.plannerSource !== "creditCardDue") return false;
+    const card = byId.get(Number(saved.creditCardPaymentFor));
+    if (!unlinkedAccount(card) || (card.credit_card_due_status || card.creditCardDueStatus) !== "manual") return false;
+    const statement = parse(card.credit_card_due_json || card.creditCardDue);
+    const previousDue = saved.creditCardPaymentDueDate;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(previousDue || "") ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(statement.dueDate || "") || statement.dueDate <= previousDue) return false;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(statement.lastStatementDate || ""))
+      return statement.lastStatementDate > previousDue;
+    // Older manual records may omit closing dates. A monthly advance preserves
+    // their actual payment; a small due-date correction remains authoritative.
+    return Date.parse(`${statement.dueDate}T00:00:00Z`) - Date.parse(`${previousDue}T00:00:00Z`) >= 28 * DAY;
+  }).map(eventKey));
+}
+const freezePostingHistory = (row, inactive, settled, today) =>
+  (inactive.has(eventKey(row)) || settled.has(eventKey(row))) && posted(row, today)
+  ? { ...row, plan_record_json: JSON.stringify({ ...parse(row.plan_record_json), detached: true,
+    ...(inactive.has(eventKey(row)) ? { inactiveAccountHistory: true } : {}),
+    ...(settled.has(eventKey(row)) ? { settledCardCycleHistory: true } : {}),
+  }) }
+  : row;
 
 // A refresh rebuilds the planner's movements from its baseline, rather than
 // treating yesterday's derived receipts as another source of money.
@@ -52,6 +93,11 @@ export const financePlanPendingMovementSql = (alias = "a", currentDate = localDa
 /** The live planner owns manual movements through today; linked accounts require recording. */
 export function financePlanPostingSpecs(document, accounts, existing = [], { today = localDate(), rate = 58, transactions = [] } = {}) {
   const primary = document.plans?.[0]?.continuous ? document.plans[0] : null;
+  const inactiveEvents = inactiveHistoryEvents(accounts, existing, today);
+  const settledEvents = settledStatementEvents(accounts, existing, today);
+  const frozenEvents = new Set([...inactiveEvents, ...settledEvents]);
+  existing = existing.map((row) => freezePostingHistory(row, inactiveEvents, settledEvents, today));
+  transactions = transactions.map((row) => freezePostingHistory(row, inactiveEvents, settledEvents, today));
   accounts = manualPlannerBaseline(accounts, existing, primary, today);
   const byId = new Map(accounts.map((row) => [Number(row.id), row]));
   const prior = new Map(existing.map((row) => [keyFor(row.source_plan_id, row.source_plan_row_id, row.source_plan_leg), parse(row.plan_record_json)]));
@@ -77,6 +123,9 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
           fromAccountId: savedEntry.fromAccountId ?? available(savedEntry.currency),
           toAccountId: savedEntry.toAccountId ?? available(savedEntry.currency === "USD" ? "PHP" : "USD"),
         } : savedEntry;
+      const assigned = ["transfer", "conversion"].includes(entry.kind)
+        ? [entry.fromAccountId, entry.toAccountId] : [entry.accountId];
+      if (assigned.some((id) => Number(id) > 0 && inactiveAccount(byId.get(Number(id))))) continue;
       const recurring = entry.recurrence && entry.recurrence !== "once";
       const automaticEntry = authoritative && [entry.accountId, entry.fromAccountId, entry.toAccountId]
         .some((id) => manualAccount(byId.get(Number(id))));
@@ -90,6 +139,7 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
       const occurrences = occurrenceDates.flatMap((day) => entryOccurrences(entry, day, day, document.salary));
       for (const occurrence of occurrences) {
         const rowId = recurring ? `entry:${entry.id}:${occurrence.date}` : `entry:${entry.id}`;
+        if (frozenEvents.has(keyFor(plan.id, rowId, ""))) continue;
         if (!completed.has(rowId) && !automaticEntry) continue;
         const row = { ...entry, date: occurrence.date, ...overrides.get(rowId) };
         if (!row.date || row.date > today) continue;
@@ -153,14 +203,14 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
         } else append("single", source, row.kind, amount, null);
     }
   }
-  if (primary) reuseManualReceipts(document, primary, accounts, specs, transactions, today, rate);
+  if (primary) reuseManualReceipts(document, primary, accounts, specs, transactions, today, rate, frozenEvents);
   // New balance-following payments include the same generated card charges as
   // the table. Previously recorded payment amounts remain fixed on refresh.
   for (let index = 0; index < dynamicPayments.length; index++) {
     const payment = dynamicPayments[index];
     const unresolved = new Set(dynamicPayments.slice(index).map((item) => keyFor(item.planId, item.rowId, "")));
     const evidence = specs.filter((spec) => !unresolved.has(keyFor(spec.planId, spec.rowId, "")));
-    const scheduled = scheduledManualSpecs(document, primary, accounts, existing, evidence, transactions, today, rate);
+    const scheduled = scheduledManualSpecs(document, primary, accounts, existing, evidence, transactions, today, rate, frozenEvents);
     const target = byId.get(payment.accountId);
     const earlierCustom = evidence.filter((spec) => spec.planId === primary.id && spec.accountId === payment.accountId &&
       spec.date <= payment.date && !spec.reusedTransactionId);
@@ -174,16 +224,16 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
   }
   const positive = specs.filter((spec) => spec.amount > 0);
   if (primary && accounts.some(manualAccount))
-    positive.push(...scheduledManualSpecs(document, primary, accounts, existing, positive, transactions, today, rate));
+    positive.push(...scheduledManualSpecs(document, primary, accounts, existing, positive, transactions, today, rate, frozenEvents));
   if (new Set(positive.filter((spec) => spec.manualPlannerSource).map((spec) => keyFor(spec.planId, spec.rowId, ""))).size > 10000)
     throw tooManyMovements();
   return positive;
 }
 
-function reuseManualReceipts(document, primary, accounts, specs, transactions, today, rate) {
+function reuseManualReceipts(document, primary, accounts, specs, transactions, today, rate, frozenEvents) {
   const automatic = specs.filter((spec) => spec.manualPlannerSource && spec.amount > 0);
   if (!automatic.length || !transactions.length) return;
-  const scheduled = scheduledManualSpecs(document, primary, accounts, [], [], [], today, rate);
+  const scheduled = scheduledManualSpecs(document, primary, accounts, [], [], [], today, rate, frozenEvents);
   const candidates = transactions.filter((row) => !providerRecord(row) && !ownGenerated(row, primary) && posted(row, today));
   const transaction = (row) => ({ date: dateOnly(row.posting_date || row.transaction_date),
     kind: row.kind, amount: Number(row.amount), currency: row.currency, accountId: Number(row.account_id),
@@ -214,7 +264,7 @@ function reuseManualReceipts(document, primary, accounts, specs, transactions, t
   }
 }
 
-function scheduledManualSpecs(document, primary, accounts, existing, custom, transactions, today, rate) {
+function scheduledManualSpecs(document, primary, accounts, existing, custom, transactions, today, rate, frozenEvents) {
   const mapped = accounts.map(mapFinanceActivityAccount).filter(Boolean);
   const hasPaydays = document.salary?.firstPayDate && (primary.includeIncome ||
     (primary.includeAllocations !== false && document.allocations?.length) ||
@@ -254,6 +304,25 @@ function scheduledManualSpecs(document, primary, accounts, existing, custom, tra
   const specs = [];
   for (const row of native) {
     if (row.date > today || ["transaction", "manual"].includes(row.source)) continue;
+    if (frozenEvents.has(keyFor(primary.id, row.id, ""))) continue;
+    const linked = (kind, currency, fallback) => plan.accountLinks
+      ? plan.accountLinks[`${kind}${currency === "PHP" ? "Php" : "Usd"}AccountId`] : fallback;
+    const unavailable = (selected) => Number(selected) > 0 && inactiveAccount(byId.get(Number(selected)));
+    if (row.source === "allocation" && row.allocationKind === "savings" && [
+      linked("available", row.currency, row.sourceAccountId ?? document.salary?.accountId),
+      linked("savings", row.currency, row.accountId),
+    ].some(unavailable)) continue;
+    if (row.source === "reserve" && (row.reserveAllocations || []).some((allocation) => {
+      const bill = document.bills?.find((item) => item.id === allocation.billId);
+      return allocation.amount > 0 && [
+        linked("available", row.currency, allocation.sourceAccountId ?? bill?.sourceAccountId ?? document.salary?.accountId),
+        linked("annualReserve", row.currency, allocation.reserveAccountId ?? bill?.reserveAccountId),
+      ].some(unavailable);
+    })) continue;
+    if (row.annualPayment && row.reserveUsed > 0 && [
+      linked("annualReserve", row.currency, row.reserveAccountId),
+      row.accountId ?? linked("available", row.currency),
+    ].some(unavailable)) continue;
     const moves = (row.accountMovements || []).filter((move) => move.kind !== "recorded" && !move.recordedDate);
     // An unfunded statement is an obligation, not proof that debt was paid.
     if (row.source === "creditCardDue" && !moves.some((move) => move.amount < 0 &&
@@ -316,13 +385,17 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
       FROM personal_finance_transactions t WHERE t.pending = 0 AND t.duplicate_of_id IS NULL
         AND t.is_provider_removed = 0 AND t.transaction_date <= ? FOR UPDATE`, [today]);
   }
+  const inactiveEvents = inactiveHistoryEvents(accounts, existing, today);
+  const settledEvents = settledStatementEvents(accounts, existing, today);
+  for (const row of existing) Object.assign(row, freezePostingHistory(row, inactiveEvents, settledEvents, today));
   const specs = financePlanPostingSpecs(document, accounts, existing, { today, rate, transactions });
   const planIds = new Set((document.plans || []).map((plan) => plan.id));
   // Removing a whole forecast never erases payments already made. Preserve its
   // receipts as editable history, including bank reconciliation still in flight.
   for (const row of existing) {
     const saved = parse(row.plan_record_json);
-    if (saved.manualPlannerSource && !planIds.has(row.source_plan_id)) continue;
+    if (saved.manualPlannerSource && !planIds.has(row.source_plan_id) &&
+        !saved.inactiveAccountHistory && !saved.settledCardCycleHistory) continue;
     if (planIds.has(row.source_plan_id) && !saved.detached) continue;
     if (!saved.planId || !saved.rowId || !saved.leg) continue;
     const changedAccount = Number(row.account_id) !== Number(saved.accountId) || row.kind !== saved.kind;

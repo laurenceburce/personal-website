@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerComputationRange, getLivePlannerRange, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../app/lib/financeLivePlanner.mjs";
+import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
 
 const today = "2026-11-18";
 const range = { startDate: today, endDate: "2027-01-01" };
@@ -124,6 +125,82 @@ test("card dues need a valid cash funding leg before projected debt can be paid"
   assert.equal(funded.assets.USD.projected, 900);
   assert.equal(funded.unassignedCount, 0);
   assert.equal(funded.cashflow.USD.payments, 100);
+});
+
+test("partially funded card dues reduce debt only by their known native funding", () => {
+  const date = "2026-11-20";
+  const accounts = [account(1, "checking", 60), account(2, "savings", 40), account(3, "credit", 100)];
+  const due = { id: "due", date: "2026-11-21", description: "Card statement", source: "creditCardDue",
+    kind: "expense", amount: 100, currency: "USD", creditAccountId: 3,
+    annualBillCoverage: [{ billId: "fee", billName: "Annual fee", reserveUsed: 40, reserveAccountId: 2 }] };
+  for (const fullyFunded of [false, true]) {
+    const plan = { id: "live", startDate: date, endDate: due.date, balanceMode: "live", entries: [],
+      accountLinks: { annualReserveUsdAccountId: 2, ...(fullyFunded ? { availableUsdAccountId: 1 } : {}) } };
+    const built = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63,
+      { today: date, accounts, rows: [due] });
+    const before = structuredClone({ accounts, rows: built.rows });
+    const input = { accounts, rows: built.rows, today: date };
+    const summary = getLivePlannerAnalytics({ ...input, range: { startDate: date, endDate: due.date } });
+    const snapshot = withLivePlannerAccountSnapshots(input)[0];
+    assert.equal(summary.debt.USD.projected, fullyFunded ? 0 : 60);
+    assert.equal(built.accounts.find((item) => item.accountId === 3).endingBalance, summary.debt.USD.projected);
+    assert.equal(summary.assets.USD.projected, fullyFunded ? 0 : 60);
+    assert.equal(summary.cashflow.USD.payments, fullyFunded ? 100 : 40);
+    assert.equal(summary.unassignedCount, fullyFunded ? 0 : 1);
+    assert.equal(snapshot.accountBalanceSnapshot.find((item) => item.accountId === 3).balance, summary.debt.USD.projected);
+    assert.equal(snapshot.projectedBalanceUsd, summary.assets.USD.projected);
+    assert.equal(withLivePlannerBalances(input)[0].projectedBalanceUsd, summary.assets.USD.projected);
+    assert.deepEqual({ accounts, rows: built.rows }, before, "funding caps must not rewrite stored rows or account balances");
+  }
+});
+
+test("card payment funding caps ignore unavailable, invalid and already recorded native debits", () => {
+  const date = "2026-11-20";
+  const accounts = [account(1, "checking", 100), account(2, "credit", 100),
+    { ...account(3, "savings", 500), isArchived: true }, account(4, "checking", 500, "PHP"),
+    { ...account(5, "checking", 500), isSyncExcluded: true }];
+  const credit = movement(2, 100, "USD", { balanceDelta: -100 });
+  for (const ignored of [movement(3, -60), movement(5, -60), movement(99, -60), movement(4, -60),
+    movement(4, -60, "PHP"), movement(1, -60, "USD", { recordedDate: date }),
+    movement(1, -60, "USD", { balanceDelta: NaN })]) {
+    const rows = [flow("due", "2026-11-21", [movement(1, -40), ignored, credit],
+      { source: "creditCardDue", amount: 100, currency: "USD", creditAccountId: 2 })];
+    const before = structuredClone({ accounts, rows });
+    const input = { accounts, rows, today: date };
+    const summary = getLivePlannerAnalytics({ ...input, range: { startDate: date, endDate: rows[0].date } });
+    const snapshot = withLivePlannerAccountSnapshots(input)[0];
+    assert.equal(summary.debt.USD.projected, 60);
+    assert.equal(summary.unassignedCount, 1);
+    assert.equal(snapshot.accountBalanceSnapshot.find((item) => item.accountId === 2).balance, 60);
+    assert.equal(snapshot.projectedBalanceUsd, summary.assets.USD.projected);
+    assert.deepEqual({ accounts, rows }, before);
+  }
+});
+
+test("multiple card credit legs share their funding once and cannot exceed the remaining due", () => {
+  const accounts = [account(1, "checking", 200), account(2, "credit", 200)];
+  for (const [funding, expectedDebt] of [[40, 160], [200, 100]]) {
+    const rows = [flow("due", "2026-11-21", [movement(1, -funding), movement(2, 60), movement(2, 60)],
+      { source: "creditCardDue", amount: 100, currency: "USD", creditAccountId: 2 })];
+    const input = { accounts, rows, today };
+    const summary = getLivePlannerAnalytics({ ...input, range });
+    const snapshot = withLivePlannerAccountSnapshots(input)[0];
+    assert.equal(summary.debt.USD.projected, expectedDebt);
+    assert.equal(snapshot.accountBalanceSnapshot.find((item) => item.accountId === 2).balance, expectedDebt);
+    assert.equal(snapshot.projectedBalanceUsd, summary.assets.USD.projected);
+  }
+});
+
+test("a known future funding amount does not invent an unavailable cash balance", () => {
+  const accounts = [account(1, "checking", null), account(2, "credit", 100)];
+  const rows = [flow("due", "2026-11-21", [movement(1, -40), movement(2, 100)],
+    { source: "creditCardDue", amount: 100, currency: "USD", creditAccountId: 2 })];
+  const input = { accounts, rows, today };
+  const summary = getLivePlannerAnalytics({ ...input, range });
+  const snapshot = withLivePlannerAccountSnapshots(input)[0];
+  assert.equal(summary.assets.USD.projected, null);
+  assert.equal(summary.debt.USD.projected, 60);
+  assert.deepEqual(snapshot.accountBalanceSnapshot.map((item) => item.balance), [null, 60]);
 });
 
 test("expanded recorded balances reverse later posted movements and keep both transfer legs together", () => {

@@ -71,10 +71,12 @@ export default async function FinancePage({ searchParams }) {
       <main className="finance-private-page">
         <section className="finance-auth-card">
           <p className="finance-kicker">Private Finance</p>
-          <h1>Access restricted</h1>
-          <p>This tracker is only available to the owner account.</p>
+          <h1>{access.emailAllowed ? "Verify your sign-in" : "Access restricted"}</h1>
+          <p>{access.emailAllowed
+            ? "Finance requires a verified owner email. Sign in again with your Google, GitHub or LinkedIn owner account."
+            : "This tracker is only available to the owner account with a verified email."}</p>
           <a href="/finance/login" className="finance-link-button">
-            Use another account
+            {access.emailAllowed ? "Sign in with a verified email" : "Use another account"}
           </a>
         </section>
       </main>

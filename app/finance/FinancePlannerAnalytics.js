@@ -38,8 +38,8 @@ export default function FinancePlannerAnalytics({ analytics, loading = false, on
       {["USD", "PHP"].map((currency) => <article className="fpla-balance-card" key={currency}>
         <header><span className="fpla-currency">{currency}</span><span>Account balances</span></header>
         <dl className={`fpla-comparison${[assets[currency].current, assets[currency].projected].some((amount) => balance(amount, currency).length > 13) ? " fpla-comparison-long" : ""}`}>
-          <div><dt>Current balance</dt><dd>{balance(assets[currency].current, currency)}</dd><small>Live across your accounts</small></div>
-          <div><dt>Projected balance</dt><dd className={assets[currency].projected < 0 ? "fpla-negative" : ""}>{hasProjection ? value(assets[currency].projected, currency) : "—"}</dd><small>{hasProjection ? `By ${formatDate(range.endDate, { year: "numeric" })}` : "Choose a future date to project"}</small></div>
+          <div><dt>Current balance</dt><dd>{balance(assets[currency].current, currency)}<small>Live across your accounts</small></dd></div>
+          <div><dt>Projected balance</dt><dd className={assets[currency].projected < 0 ? "fpla-negative" : ""}>{hasProjection ? value(assets[currency].projected, currency) : "—"}<small>{hasProjection ? `By ${formatDate(range.endDate, { year: "numeric" })}` : "Choose a future date to project"}</small></dd></div>
         </dl>
         {hasProjection && <div className={`fpla-change ${assets[currency].change < 0 ? "fpla-change-down" : ""}`}>
           <span>Projected change</span><strong>{loading ? "—" : changeText(assets[currency].change, currency)}</strong>

@@ -45,7 +45,7 @@
   padding: 7px;
   background: transparent;
   border-color: transparent;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-delete:hover {
   color: #a14d43;
@@ -78,7 +78,7 @@
 .fa-bank-intro p {
   font-size: 11px !important;
   line-height: 1.8;
-  color: #65766a !important;
+  color: #52675b !important;
   margin-top: 4px !important;
 }
 .fa-bank-intro {
@@ -99,7 +99,7 @@
 .fa-activity-summary > div > span {
   display: block;
   font-size: 11px;
-  color: #65766a;
+  color: #52675b;
   margin-bottom: 8px;
 }
 .fa-activity-summary strong {
@@ -159,7 +159,7 @@
   gap: 12px;
   margin: 13px 0 16px;
   font-size: 10px;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-history-note button {
   border: 0;
@@ -182,7 +182,7 @@
 .fa-transactions th {
   padding: 13px 11px;
   font-size: 10px;
-  color: #65766a;
+  color: #52675b;
   font-weight: 650;
   background: #f8faf8;
   border-top: 1px solid #e8eee9;
@@ -211,7 +211,7 @@
 .fa-transactions td > small,
 .fa-transaction-title small {
   display: block;
-  color: #65766a;
+  color: #52675b;
   font-size: 10px;
   line-height: 1.7;
   margin-top: 3px;
@@ -260,7 +260,7 @@
   padding: 1px 5px;
   font-size: 9px;
   line-height: 1.7;
-  color: #65766a;
+  color: #52675b;
   background: #f8faf7;
   white-space: nowrap;
 }
@@ -303,7 +303,7 @@
   padding-top: 17px;
   border-top: 1px solid #edf1ed;
   font-size: 10px;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-pagination > div {
   display: flex;
@@ -320,7 +320,7 @@
   align-items: flex-start;
   gap: 7px;
   font-size: 11px !important;
-  color: #65766a !important;
+  color: #52675b !important;
   line-height: 1.8 !important;
   margin: 0 !important;
 }
@@ -366,7 +366,7 @@
 .fa-empty p {
   font-size: 12px !important;
   line-height: 1.8 !important;
-  color: #65766a !important;
+  color: #52675b !important;
   max-width: 420px;
   margin: 0 !important;
 }
@@ -402,7 +402,7 @@
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
-  color: #65766a;
+  color: #52675b;
   font-size: 12px;
   font-weight: 650;
   min-height: 39px;
@@ -454,7 +454,7 @@
 }
 .fa-field small {
   font-size: 10px;
-  color: #65766a;
+  color: #52675b;
   line-height: 1.8;
 }
 .fa-field input:focus-visible,
@@ -531,7 +531,7 @@
 .fa-more-details > summary > span {
   font-size: 10px;
   font-weight: 400;
-  color: #65766a;
+  color: #52675b;
   margin-left: auto;
 }
 .fa-details-grid {
@@ -546,7 +546,7 @@
 .fa-quick-note {
   font-size: 11px !important;
   line-height: 1.8 !important;
-  color: #65766a !important;
+  color: #52675b !important;
 }
 .fa-form-error {
   font-size: 11px !important;
@@ -606,11 +606,11 @@
 .fa-provider-heading > div > span {
   font-size: 10px;
   display: block;
-  color: #65766a;
+  color: #52675b;
   margin-top: 3px;
 }
 .fa-provider-card > p {
-  color: #65766a !important;
+  color: #52675b !important;
   font-size: 12px !important;
   line-height: 1.8 !important;
 }
@@ -630,7 +630,7 @@
   margin-left: auto;
 }
 .fa-authorization-badge {
-  color: #597c85;
+  color: #3c6069;
   background: #eff7f9;
   border-color: #dae8ed;
 }
@@ -646,12 +646,12 @@
 }
 .fa-brankas-card .fa-provider-warning {
   background: #f1f6f8;
-  color: #5c7881 !important;
+  color: #3c5c65 !important;
   border-color: #e0e9ed;
 }
 .fa-provider-setup {
   font-size: 11px;
-  color: #65766a;
+  color: #52675b;
   line-height: 1.8;
 }
 .fa-peso-icon {
@@ -717,7 +717,7 @@
 .fa-account-group-empty {
   margin: 0 !important;
   font-size: 11px !important;
-  color: #65766a !important;
+  color: #52675b !important;
 }
 .fa-accounts-grid {
   display: grid;
@@ -764,14 +764,14 @@
 }
 .fa-account-heading p {
   font-size: 10px !important;
-  color: #65766a !important;
+  color: #52675b !important;
   line-height: 1.6 !important;
   margin-top: 3px !important;
   overflow-wrap: anywhere;
 }
 .fa-account-currency {
   font-size: 9px;
-  color: #65766a;
+  color: #52675b;
   background: #f0f5ee;
   padding: 3px 6px;
   border: 1px solid #e4ece0;
@@ -783,7 +783,7 @@
 }
 .fa-account-balance > span {
   display: block;
-  color: #65766a;
+  color: #52675b;
   font-size: 10px;
   margin-bottom: 4px;
 }
@@ -798,7 +798,7 @@
 }
 .fa-account-balance > small {
   font-size: 10px;
-  color: #65766a;
+  color: #52675b;
   display: block;
   margin-top: 5px;
 }
@@ -815,7 +815,7 @@
   margin: 0;
 }
 .fa-credit-card-due dt {
-  color: #65766a;
+  color: #52675b;
   font-size: 10px;
   margin-bottom: 4px;
 }
@@ -831,7 +831,7 @@
 .fa-credit-card-due > p {
   display: block;
   margin: 9px 0 0 !important;
-  color: #65766a !important;
+  color: #52675b !important;
   font-size: 10px !important;
   line-height: 1.7 !important;
 }
@@ -846,7 +846,7 @@
 }
 .fa-account-source {
   font-size: 9px;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-account-source.fa-is-linked:before {
   content: "";
@@ -860,7 +860,7 @@
 }
 .fa-account-card > footer > small {
   font-size: 9px;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-connections {
   display: grid;
@@ -903,7 +903,7 @@
 }
 .fa-connection-copy > small {
   font-size: 10px;
-  color: #65766a;
+  color: #52675b;
   display: block;
   margin: 3px 0 5px;
   overflow-wrap: anywhere;
@@ -1130,7 +1130,7 @@
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.4px;
-    color: #65766a;
+    color: #52675b;
   }
   .fa-transactions td:nth-child(2) {
     grid-row: 1;
@@ -1459,7 +1459,7 @@
 }
 .fa-account-mask {
   display: block;
-  color: #65766a;
+  color: #52675b;
   font-size: 11px;
   margin-top: 3px;
 }
@@ -1478,7 +1478,7 @@
 .fa-account-edit-form p {
   font-size: 11px !important;
   line-height: 1.7 !important;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-account-edit-form .fa-form-error {
   color: #984c3d;
@@ -1518,7 +1518,7 @@
 }
 .fa-card-autopay p,
 .fa-card-autopay small {
-  color: #65766a;
+  color: #52675b;
   font-size: 11px !important;
   line-height: 1.7 !important;
 }
@@ -1542,7 +1542,7 @@
   padding: 12px 0;
   border-top: 1px solid #e8eee6;
   font-size: 11px;
-  color: #65766a;
+  color: #52675b;
 }
 .fa-account-allocations > div {
   display: flex;
@@ -1618,7 +1618,7 @@
 .fa-manual-account-form > p {
   font-size: 11px !important;
   line-height: 1.7 !important;
-  color: #65766a !important;
+  color: #52675b !important;
   margin: 0 0 16px !important;
 }
 .fa-manual-account-form > fieldset {

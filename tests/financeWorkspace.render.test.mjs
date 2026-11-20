@@ -988,6 +988,35 @@ test("the Google monthly bill is automatically done for its posted card charge w
   }
 });
 
+test("a Google charge before the visible timeline completes its bill without replaying outside-window money", () => {
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const props = fixture("plans", 0, {
+    bills: [{ id: "google", name: "Google", amount: 2, currency: "USD", cadence: "monthly", dueDay: 18, accountId: 3 }],
+    plans: [{ ...base, continuous: true, balanceMode: "live", startDate: "2026-11-18", includeTransactions: true }],
+  }, { balanceAsOf: "2026-11-20", accounts: [{ id: 3, name: "US Bank Credit", type: "credit", currency: "USD",
+    isLinked: true, nativeCurrentBalance: 1.99 }] });
+  props.today = "2026-11-20";
+  const charge = { id: 123, date: "2026-11-17", merchant: "GOOGLE *Google One", amount: 1.99, currency: "USD",
+    kind: "expense", accountId: 3, provider: "plaid" };
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions: [], matchingTransactions: [charge],
+    balanceTransactions: [charge], balanceHistoryFrom: charge.date, balanceHistoryThrough: props.today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const rows = table(props).rows;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].date, "2026-11-18");
+  assert.equal(rows[0].completed, true);
+  assert.equal(rows[0].amount, 1.99);
+  assert.deepEqual(rows[0].matchedTransactionIds, [123]);
+  assert.equal(rows[0].recordedTransactions[0].date, charge.date);
+  assert.equal(rows[0].accountBalanceSnapshot.find((account) => account.accountId === 3).balance, 1.99);
+  assert.equal(analytics(props).debt.USD.current, 1.99);
+  assert.equal(analytics(props).debt.USD.projected, 1.99);
+  const html = renderToStaticMarkup(createElement(Workspace, alignFixture(props)));
+  assert.match(html, /fpt-status-done[^>]*>Done</);
+  assert.doesNotMatch(html, /fpt-row-overdue|Record payment: Google/);
+  assert.deepEqual(props, before);
+});
+
 test("a balance read failure keeps the plan popup and its last bank data available", async () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const account = {

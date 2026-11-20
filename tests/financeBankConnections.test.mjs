@@ -303,6 +303,87 @@ test("active plan receipts are edited through their plan while detached manual h
   }
 });
 
+test("manual transaction edits hold the ownership lock until commit so planner adoption sees the corrected receipt", async (t) => {
+  bankEnvironment(t);
+  let receipt = { id: 9, amount: 20, source_plan_id: null, plan_generated: 0 };
+  let locked = false;
+  let adoptionWaiting = false;
+  const adopt = () => {
+    if (receipt && receipt.amount === 20) receipt.source_plan_id = "live";
+  };
+  const { api, queries, lifecycle } = backend((sql, params) => {
+    if (sql.startsWith("SELECT id, external_provider")) {
+      locked = sql.endsWith("FOR UPDATE");
+      return [{ ...receipt }];
+    }
+    if (sql.startsWith("SELECT id, currency")) {
+      if (locked) adoptionWaiting = true; else adopt();
+      return [{ id: 1, currency: "USD" }];
+    }
+    if (sql.startsWith("UPDATE personal_finance_transactions")) {
+      receipt.amount = params[6];
+      return { affectedRows: 1 };
+    }
+    return [];
+  }, { commit() {
+    locked = false;
+    if (adoptionWaiting) adopt();
+  } });
+  await api.updateFinanceTransaction(9, { date: "2026-11-18", kind: "expense", accountId: 1,
+    category: "Food", merchant: "Corrected", note: "", amount: 25, currency: "USD" });
+  assert.equal(receipt.amount, 25);
+  assert.equal(receipt.source_plan_id, null, "a planner entry for the previous amount cannot adopt the corrected receipt");
+  assert.deepEqual(lifecycle, ["begin", "commit", "release"]);
+  assert.ok(queries.filter(({ sql }) => /SELECT id, external_provider|UPDATE personal_finance_transactions/.test(sql))
+    .every(({ inTransaction }) => inTransaction));
+});
+
+test("manual receipt deletes and failed edits release transactional ownership locks", async (t) => {
+  bankEnvironment(t);
+  for (const operation of ["delete", "failure"]) {
+    let receipt = { id: 9, amount: 20, source_plan_id: null, plan_generated: 0 };
+    let original;
+    const { api, queries, lifecycle } = backend((sql) => {
+      if (sql.startsWith("SELECT id, external_provider")) {
+        assert.match(sql, /FOR UPDATE$/);
+        return [receipt];
+      }
+      if (sql.startsWith("DELETE FROM personal_finance_transactions")) {
+        receipt = null;
+        return { affectedRows: 1 };
+      }
+      if (sql.startsWith("UPDATE personal_finance_transactions")) {
+        receipt.amount = 25;
+        throw new Error("Write failed");
+      }
+      return [];
+    }, { begin() { original = structuredClone(receipt); }, rollback() { receipt = original; } });
+    if (operation === "delete") {
+      await api.deleteFinanceTransaction(9);
+      assert.equal(receipt, null);
+      assert.deepEqual(lifecycle, ["begin", "commit", "release"]);
+    } else {
+      await assert.rejects(api.updateFinanceTransaction(9, { date: "2026-11-18", kind: "expense", accountId: null,
+        category: "Food", merchant: "Corrected", note: "", amount: 25, currency: "USD" }), /Write failed/);
+      assert.equal(receipt.amount, 20);
+      assert.deepEqual(lifecycle, ["begin", "rollback", "release"]);
+    }
+    assert.ok(queries.filter(({ sql }) => /^(?:DELETE FROM|UPDATE) personal_finance_transactions/.test(sql)).every(({ inTransaction }) => inTransaction));
+  }
+});
+
+test("malformed destructive IDs cannot be coerced into another account or receipt", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend((sql) => sql.startsWith("SELECT id FROM personal_finance_accounts")
+    ? [{ id: 1 }] : { affectedRows: 1 });
+  for (const id of [true, false, {}, [1], "1e0", " 1 ", "1.0", 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(api.archiveFinanceAccount(id), (error) => error.status === 400, String(id));
+    await assert.rejects(api.deleteFinanceTransaction(id), (error) => error.status === 400, String(id));
+  }
+  assert.ok(!queries.some(({ sql }) => /^(?:DELETE FROM personal_finance_transactions|UPDATE personal_finance_accounts SET is_archived)/.test(sql)));
+  assert.deepEqual(await api.archiveFinanceAccount("1"), { id: 1 }, "ordinary numeric string IDs remain valid");
+});
+
 test("manual account edits reject malformed values before database access", async (t) => {
   bankEnvironment(t);
   const valid = { name: "Cash", type: "cash", currentBalance: 125.50 };
@@ -1570,6 +1651,54 @@ const planCardCache = (overrides = {}) => ({
   }),
 });
 
+test("bill boundary receipts stay separate from visible flows and extend native balance evidence", async (t) => {
+  bankEnvironment(t);
+  const early = planPaymentRecord(11, "2026-11-14", { kind: "expense", amount: 1.99, merchant: "GOOGLE *Google One" });
+  const visible = planPaymentRecord(12, "2026-11-15");
+  const late = planPaymentRecord(13, "2026-11-16", { kind: "expense", amount: 2 });
+  const { api, queries } = backend((sql) => {
+    if (sql.startsWith("SELECT t.*") && sql.includes("t.transaction_date < ? OR t.transaction_date > ?"))
+      return [early, visible, late, planPaymentRecord(14, "2026-11-13", { pending: 1 })];
+    if (sql.startsWith("SELECT t.*")) return [visible];
+    if (sql.startsWith("SELECT t.id, DATE_FORMAT")) return [early, visible, late];
+    return [];
+  });
+  const result = await api.getFinancePlanActivity({ startDate: "2026-11-15", endDate: "2026-11-15" });
+  assert.deepEqual(result.transactions.map((row) => row.id), [12]);
+  assert.deepEqual(result.matchingTransactions.map((row) => [row.id, row.amount, row.merchant]),
+    [[11, 1.99, "GOOGLE *Google One"], [13, 2, "Payment thank you"]]);
+  assert.equal(result.matchingWarning, "");
+  assert.equal(result.matchingLimitHit, false);
+  assert.equal(result.balanceHistoryFrom, "2026-11-14");
+  const matching = queries.find(({ sql }) => sql.includes("t.transaction_date < ? OR t.transaction_date > ?"));
+  assert.deepEqual(matching.params, ["2026-11-12", "2026-11-18", "2026-11-15", "2026-11-15"]);
+  assert.match(matching.sql, /duplicate_of_id IS NULL AND t.is_provider_removed = 0/);
+  assert.match(matching.sql, /t.currency IN \('USD', 'PHP'\) AND t.pending = 0/);
+  const balances = queries.find(({ sql }) => sql.startsWith("SELECT t.id, DATE_FORMAT"));
+  assert.equal(balances.params[0], "2026-11-14", "a matched early receipt remains available to reconstruct its account snapshot");
+});
+
+test("bill matching evidence failures and limits preserve visible transactions with separate warnings", async (t) => {
+  bankEnvironment(t);
+  for (const failed of [false, true]) {
+    const { api } = backend((sql) => {
+      if (sql.startsWith("SELECT t.*") && sql.includes("t.transaction_date < ? OR t.transaction_date > ?")) {
+        if (failed) throw new Error("Boundary evidence unavailable");
+        return Array.from({ length: 10001 }, (_, index) => planPaymentRecord(index + 1, "2026-11-14"));
+      }
+      if (sql.startsWith("SELECT t.*")) return [planPaymentRecord(22, "2026-11-15")];
+      return [];
+    });
+    const result = await api.getFinancePlanActivity({ startDate: "2026-11-15", endDate: "2026-11-15" });
+    assert.equal(result.configured, true);
+    assert.deepEqual(result.transactions.map((row) => row.id), [22]);
+    assert.equal(result.matchingTransactions.length, failed ? 0 : 10000);
+    assert.equal(result.matchingLimitHit, !failed);
+    assert.match(result.matchingWarning, failed ? /could not be loaded/ : /10,000/);
+    assert.equal(result.warning, undefined);
+  }
+});
+
 test("plans return earlier partial card payments as separate evidence without expanding visible flows", async (t) => {
   bankEnvironment(t);
   const {api, queries} = backend((sql) => {
@@ -1680,7 +1809,7 @@ test("plans skip the payment-history query when cached cards have no usable due 
     ? [planCardCache({dueDate: null})] : []);
   const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
   assert.deepEqual(result.creditCardPaymentTransactions, []);
-  assert.equal(queries.filter(({sql}) => sql.startsWith("SELECT t.*")).length, 1);
+  assert.equal(queries.filter(({sql}) => sql.startsWith("SELECT t.*")).length, 2);
 });
 
 test("payment-history failures retain visible plan transactions with a separate evidence warning", async (t) => {

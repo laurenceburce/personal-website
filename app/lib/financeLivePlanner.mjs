@@ -11,7 +11,8 @@ const dateTime = (value) => {
 const nativeMoney = (value) => ["number", "string"].includes(typeof value) && String(value).trim() !== "" && Number.isFinite(Number(value))
   ? roundMoney(Number(value)) : null;
 const isDebt = (account) => ["credit", "loan"].includes(account.type || account.account_type);
-const active = (account) => !account.isArchived && !account.is_archived && !account.mergedIntoAccountId && !account.merged_into_account_id;
+const active = (account) => !account.isArchived && !account.is_archived && !account.isSyncExcluded && !account.is_sync_excluded &&
+  !account.mergedIntoAccountId && !account.merged_into_account_id;
 const orderedPastRows = (rows, range, today) => rows.filter((row) => row.date >= range.startDate && row.date < today &&
   row.date <= range.endDate && !row.completed && !row.pending && row.source !== "transaction").length;
 
@@ -53,13 +54,36 @@ const projectedAccountMoves = (row, byId, today) => {
     const account = byId.get(Number(move.accountId));
     return account && account.currency === move.currency && (!move.recordedDate || move.recordedDate > today);
   });
-  const unfundedCardPayment = row.source === "creditCardDue" && Number(row.amount) > 0 &&
-    !validMoves.some((move) => !isDebt(byId.get(Number(move.accountId))) && Number(move.balanceDelta ?? move.amount) < 0);
-  const moves = unfundedCardPayment ? validMoves.filter((move) => {
+  const paymentAmount = nativeMoney(row.amount);
+  if (row.source !== "creditCardDue" || !(paymentAmount > 0))
+    return { moves: validMoves, unfundedCardPayment: false };
+  const paymentCredit = (move) => {
     const account = byId.get(Number(move.accountId));
-    return !(isDebt(account) && Number(move.balanceDelta ?? -Number(move.amount)) < 0 &&
-      (row.creditAccountId == null || Number(row.creditAccountId) === Number(move.accountId)));
-  }) : validMoves;
+    return isDebt(account) && nativeMoney(move.balanceDelta ?? -Number(move.amount)) < 0 &&
+      (row.creditAccountId == null || Number(row.creditAccountId) === Number(move.accountId));
+  };
+  const funding = new Map();
+  for (const move of validMoves) {
+    const delta = nativeMoney(move.balanceDelta ?? move.amount);
+    if (!isDebt(byId.get(Number(move.accountId))) && delta < 0)
+      funding.set(move.currency, roundMoney((funding.get(move.currency) || 0) - delta));
+  }
+  const currencies = row.currency ? [row.currency] : [...new Set(validMoves.filter(paymentCredit).map((move) => move.currency))];
+  const knownFunding = roundMoney(currencies.reduce((total, currency) => total + (funding.get(currency) || 0), 0));
+  const unfundedCardPayment = knownFunding < paymentAmount;
+  let remainingPayment = paymentAmount;
+  // A reserve can fund part of a due while its remaining funding account is
+  // unavailable. Only the known native cash debits can reduce projected debt.
+  const moves = validMoves.flatMap((move) => {
+    if (!paymentCredit(move)) return [move];
+    const reduction = -nativeMoney(move.balanceDelta ?? -Number(move.amount));
+    const available = !row.currency || row.currency === move.currency ? funding.get(move.currency) || 0 : 0;
+    const funded = roundMoney(Math.min(reduction, available, remainingPayment));
+    if (!(funded > 0)) return [];
+    funding.set(move.currency, roundMoney(available - funded));
+    remainingPayment = roundMoney(remainingPayment - funded);
+    return [funded === reduction ? move : { ...move, amount: funded, balanceDelta: -funded }];
+  });
   return { moves, unfundedCardPayment };
 };
 

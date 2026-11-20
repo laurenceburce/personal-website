@@ -505,6 +505,20 @@ test("historical balance columns distinguish recorded snapshots from unavailable
   }
 });
 
+test("compact recorded rows show reconstructed running funds and manually done rows are not labeled past due", () => {
+  const recorded = row({ date: "2026-11-17", completed: true, completionSource: "transaction",
+    accountBalanceSnapshotKind: "recorded", projectedBalanceUsd: 321, projectedBalancePhp: 12500 });
+  let html = render([recorded], { plan: { ...plan, continuous: true } });
+  assert.match(html, /\$321\.00/);
+  assert.match(html, /₱12,500\.00/);
+  assert.doesNotMatch(html, /Included in current balance|Past due/);
+  const manuallyDone = row({ date: "2026-11-17", completed: true, completionSource: "manual",
+    accountBalanceSnapshotKind: "unavailable", accountBalanceSnapshot: [], projectedBalanceUsd: null, projectedBalancePhp: null });
+  html = render([manuallyDone], { plan: { ...plan, continuous: true } });
+  assert.match(html, /Marked done/);
+  assert.doesNotMatch(html, /Past due|\$175\.00/);
+});
+
 test("account list order is stable through filters and excludes inactive or unsupported accounts", () => {
   const extra = [
     { id: 90, name: "Archived", currency: "USD", type: "checking", isArchived: true },

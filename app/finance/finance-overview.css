@@ -4,7 +4,7 @@
   color: #263c33;
 }
 .fpi-overview p {
-  color: #65766a;
+  color: #52675b;
   font-size: 12px;
   line-height: 1.7;
 }
@@ -225,7 +225,7 @@
   min-width: 48px;
   margin-top: -7px;
   margin-bottom: 36px;
-  color: #6b7f71;
+  color: #52675b;
   text-align: right;
   font-size: 10px;
 }
@@ -314,7 +314,7 @@
 .fpi-month-label small {
   display: block;
   margin-top: 3px;
-  color: #6d8073;
+  color: #52675b;
   font-size: 9px;
 }
 .fpi-chart-empty {
@@ -525,7 +525,7 @@
 }
 .fpi-due-date span {
   font-size: 9px;
-  color: #647d6b;
+  color: #48614f;
   margin-top: 4px;
 }
 .fpi-transaction-glyph {

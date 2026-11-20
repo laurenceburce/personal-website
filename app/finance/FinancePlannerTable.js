@@ -134,7 +134,7 @@ function AccountCell({ row, account, accounts, plan }) {
   const extraReceipts = receipts.filter((item) => !moves.some((move) => move.transactionId != null &&
     String(move.transactionId) === String(item.transactionId ?? item.id)));
   const fallbackAmount = fallbackAccountAmount(row, account);
-  const debt = ["credit", "loan"].includes(account.type);
+  const debt = ["credit", "loan"].includes(account.type || account.account_type);
   const negative = Number.isFinite(value) && (debt ? value > 0 : value < 0);
   return <td className={`fpt-account-balance${negative ? " fpt-negative" : ""}`} data-account-id={account.id}
     title={row.accountBalanceSnapshotNote || "Account balance after this transaction"}>
@@ -274,6 +274,7 @@ export default function FinancePlannerTable({
           <th scope="col" rowSpan={expanded ? 2 : undefined}>Description</th>
           <th scope="col" rowSpan={expanded ? 2 : undefined}>USD</th><th scope="col" rowSpan={expanded ? 2 : undefined}>PHP</th>
           <th scope="col" rowSpan={expanded ? 2 : undefined} className="fpt-projection-heading"><span>Running balance</span>
+            <small>Account funds · cards separately</small>
             <button type="button" className="fpt-balance-expand" disabled={loading || !accountColumns.length}
               aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
               {expanded ? "Collapse accounts" : "Expand accounts"}
@@ -295,6 +296,8 @@ export default function FinancePlannerTable({
           const canEdit = manualEntry || editableOccurrence;
           const actions = canEdit || canToggle || (row.isOverride && onResetOccurrence);
           const inCurrentBalance = plan.balanceMode !== "snapshot" && accountRecorded(row, today) && row.date <= today;
+          const hasRowBalances = ["recorded", "projected"].includes(row.accountBalanceSnapshotKind) &&
+            Object.hasOwn(row, "projectedBalanceUsd") && Object.hasOwn(row, "projectedBalancePhp");
           const currentRow = String(row.id) === currentId;
           const isToday = row.date === today;
           const done = recorded(row, today);
@@ -308,7 +311,8 @@ export default function FinancePlannerTable({
             </td>}
             <td className="fpt-transaction">
               <div className="fpt-description-line"><div className="fpt-description-title"><strong>{row.description}</strong>
-                {(actions || canRecord) && <details className="fpt-action-menu"><summary aria-label={`Actions for ${row.description}`}>•••</summary><div>
+                {(actions || canRecord) && <details className="fpt-action-menu"><summary aria-label={`Actions for ${row.description}`}>•••</summary><div
+                  onClick={(event) => { if (event.target.closest("button")) event.currentTarget.parentElement.open = false; }}>
                 {canRecord && <button type="button" className="fpt-record" disabled={busy}
                   aria-label={`Record ${row.kind === "income" ? "receipt" : "payment"}: ${row.description}`} onClick={() => !busy && onRecord(row)}>
                   {row.kind === "income" ? "Record receipt" : "Record payment"}</button>}
@@ -325,7 +329,8 @@ export default function FinancePlannerTable({
                 </div></details>}
               </div>
                 {done ? <span className="fpt-status-pill fpt-status-done">Done</span>
-                  : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span> : null}
+                  : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span>
+                    : <span className="fpt-status-pill">Planned</span>}
               </div>
               {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
@@ -333,8 +338,8 @@ export default function FinancePlannerTable({
               const value = transactionAmount(row, currency);
               return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{money(value, currency)}</td>;
             })}
-            <td className="fpt-projection" data-label="Running balance">{inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
-                : plan.continuous && row.date < today ? <small className="fpt-balance-note">Past due · review payment</small>
+            <td className="fpt-projection" data-label="Running balance" title={row.accountBalanceSnapshotNote}>{!hasRowBalances && inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
+                : !hasRowBalances && plan.continuous && row.date < today ? <small className="fpt-balance-note">{done ? "Marked done · no account record" : "Past due · review payment"}</small>
                   : <dl className="fpt-running-totals">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
                     ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
                     <div key={currency}><dt>{currency}</dt><dd className={value < 0 ? "fpt-negative" : ""}>{balance(value, currency)}</dd></div>)}</dl>}
@@ -348,7 +353,7 @@ export default function FinancePlannerTable({
     </div>}
     <p className="fpt-footnote" id={`${tableId}-hint`}>{expanded
       ? "Scroll sideways to view each account balance and activity tags. Unavailable history is shown as an em dash. Future balances are projected."
-      : "Expand accounts to see individual balances and activity. Rotate your phone for a wider landscape view."}</p>
+      : "Running balances show account funds in USD and PHP. Expand accounts for individual balances, cards, and activity. Rotate your phone for a wider landscape view."}</p>
     {visible.length > 0 && <details className="fpt-notes">
       <summary>Reserves &amp; planning notes</summary>
       <div className="fpt-notes-list">{visible.map((row) => <article key={row.id} data-notes-for={row.id}>

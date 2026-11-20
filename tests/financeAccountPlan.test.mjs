@@ -8,6 +8,49 @@ import { buildPlanRows } from "../app/lib/financePlanner.mjs";
 import { financePlanPostingSpecs, financePlanTransactionMetadata } from "../app/lib/financePlanPostings.mjs";
 import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
+test("matching-only bill receipts never replay against live or dated native openings", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDay: 18, amount: 2, currency: "USD", accountId: 1 }] };
+  const bank = [{ id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 98.01 }];
+  const receipt = { id: 101, date: "2026-11-17", kind: "expense", accountId: 1, amount: 1.99, currency: "USD", merchant: "Google" };
+  for (const snapshot of [true, false]) for (const includeTransactions of [true, false]) {
+    const planner = { id: "live", startDate: "2026-11-18", endDate: "2026-11-20", balanceMode: snapshot ? "snapshot" : "live",
+      accountLinks: { availableUsdAccountId: 1 }, includeIncome: false, includeTransactions, includeAllocations: false,
+      includeAnnualReserve: false, entries: [], ...(snapshot ? { accountOpeningBalances: [{ accountId: 1, balance: 100 }] } : {}) };
+    const rows = buildPlanRows(planner, document, 58, { accounts: bank, matchingTransactions: [receipt], today: "2026-11-23" });
+    const result = buildAccountPlan(planner, document, 58, { accounts: bank, rows, today: "2026-11-23" });
+    assert.equal(result.rows.length, 1);
+    assert.equal(result.rows[0].date, "2026-11-18");
+    assert.equal(result.rows[0].completed, true);
+    assert.equal(result.rows[0].recordedTransactions[0].date, "2026-11-17");
+    assert.deepEqual(result.rows[0].accountMovements, []);
+    assert.equal(result.accounts[0].endingBalance, snapshot ? 100 : 98.01);
+  }
+});
+
+test("partial reserve funding followed by full-balance payments conserves native cash and card debt", () => {
+  for (const currency of ["USD", "PHP"]) {
+    const bank = [{ id: 1, name: "Checking", type: "checking", currency, nativeCurrentBalance: 1000 },
+      { id: 2, name: "Reserve", type: "savings", currency, nativeCurrentBalance: 40 },
+      { id: 3, name: "Card", type: "credit", currency, nativeCurrentBalance: 100,
+        creditCardDue: { statementBalance: 100, dueDate: "2026-11-20", lastStatementDate: "2026-11-02" } }];
+    const document = { salary: {}, allocations: [], bills: [{ id: "annual", name: "Annual fee", cadence: "annual", amount: 100,
+      currency, dueMonths: [10], dueDay: 30, savedAmount: 40, accountId: 3, reserveAccountId: 2 }] };
+    const planner = { id: "live", continuous: true, startDate: "2026-11-01", endDate: "2026-11-30", balanceMode: "live",
+      accountLinks: { [currency === "USD" ? "annualReserveUsdAccountId" : "annualReservePhpAccountId"]: 2 },
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [21, 22].map((day) => ({
+        id: `pay:${day}`, date: `2026-11-${day}`, description: "Pay full", kind: "transfer", amountMode: "cardBalance",
+        amount: 100, currency, fromAccountId: 1, toAccountId: 3,
+      })) };
+    const charge = { id: 9, date: "2026-10-30", kind: "expense", accountId: 3, amount: 100, currency, merchant: "Annual fee" };
+    const result = buildAccountPlan(planner, document, 58, { accounts: bank, creditCardPaymentTransactions: [charge], today: "2026-11-18" });
+    assert.deepEqual(result.accounts.map((account) => account.endingBalance), [940, 0, 0]);
+    assert.deepEqual(result.rows.filter((row) => row.source === "manual").map((row) => row.amount), [60, 0]);
+    assert.equal(result.accounts[0].endingBalance + result.accounts[1].endingBalance - result.accounts[2].endingBalance,
+      1000 + 40 - 100, "native net worth is preserved by reserve and checking card payments");
+  }
+});
+
 const accounts = [
   {
     id: 1,
@@ -583,7 +626,7 @@ test("salary, annual reserves and payday savings project into separate accounts 
   assert.equal(before, JSON.stringify({ plan, document, accounts }));
 });
 
-test("automatic card dues reduce the liability without inventing a funding account debit", () => {
+test("automatic card dues retain native debt until a funding account is assigned", () => {
   const cardAccounts = [
     { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
     { id: 2, name: "Travel Card", type: "credit", currency: "USD", nativeCurrentBalance: 300,
@@ -594,10 +637,40 @@ test("automatic card dues reduce the liability without inventing a funding accou
   const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
     { accounts: cardAccounts, today: "2026-11-04" });
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 1000);
-  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 100);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 300);
   assert.equal(result.rows[0].balanceUsd, 800);
-  assert.deepEqual(result.rows[0].accountMovements.map((move) => [move.accountId, move.amount, move.balanceDelta]), [[2, 200, -200]]);
+  assert.deepEqual(result.rows[0].accountMovements, []);
   assert.ok(result.warnings.some((warning) => warning.includes("funding account is unknown")));
+});
+
+test("native card payments use valid reserve and available funding without erasing an unfunded remainder", () => {
+  for (const currency of ["USD", "PHP"]) for (const fundingId of [null, 1, 4, 5, 6, 7, 99]) {
+    const suffix = currency === "USD" ? "Usd" : "Php";
+    const account = (id, type, balance, extra = {}) => ({ id, name: `Account ${id}`, type, currency,
+      nativeCurrentBalance: balance, ...extra });
+    const accounts = [account(1, "checking", 60), account(2, "savings", 40), account(3, "credit", 100),
+      account(4, "checking", 60, { currency: currency === "USD" ? "PHP" : "USD" }),
+      account(5, "checking", 60, { isArchived: true }), account(6, "loan", 60),
+      account(7, "checking", 60, { isSyncExcluded: true })];
+    const plan = { id: "live", startDate: "2026-11-20", endDate: "2026-11-21", balanceMode: "live", entries: [],
+      accountLinks: { [`annualReserve${suffix}AccountId`]: 2,
+        ...(fundingId == null ? {} : { [`available${suffix}AccountId`]: fundingId }) } };
+    const due = { id: "due", date: plan.endDate, description: "Card statement", source: "creditCardDue", kind: "expense",
+      amount: 100, currency, creditAccountId: 3,
+      annualBillCoverage: [{ billId: "fee", billName: "Annual fee", reserveUsed: 40, reserveAccountId: 2 }] };
+    const before = structuredClone({ accounts, plan, due });
+    const result = buildAccountPlan(plan, { salary: {}, bills: [], allocations: [] }, 63,
+      { today: plan.startDate, accounts, rows: [due] });
+    const funded = fundingId === 1 ? 100 : 40;
+    assert.equal(byId(result, 3).endingBalance, 100 - funded);
+    assert.equal(byId(result, 2).endingBalance, 0);
+    assert.equal(byId(result, 1).endingBalance, fundingId === 1 ? 0 : 60);
+    assert.equal(byId(result, 6).endingBalance, 60, "a liability cannot act as an available-cash funding account");
+    assert.equal(result.rows[0].accountMovements.find((move) => move.accountId === 3).amount, funded);
+    assert.equal(result.rows[0].accountMovements.filter((move) => move.amount < 0)
+      .reduce((sum, move) => sum - move.amount, 0), funded);
+    assert.deepEqual({ accounts, plan, due }, before);
+  }
 });
 
 test("linked account forecasts pay cards on their autopay date even when the bank due date is outside the plan", () => {
@@ -755,7 +828,7 @@ test("estimated unbilled card payments shift before the cycle due date without m
   assert.equal(accounts[1].creditCardDue.dueDate, "2026-12-03");
 });
 
-test("a next-cycle estimate pays the known native card debt once without guessing the funding account", () => {
+test("a next-cycle estimate retains native card debt when its funding account is unknown", () => {
   const cardAccounts = [
     { id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 2000 },
     { id: 2, name: "Venture X", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 1380.16,
@@ -766,8 +839,8 @@ test("a next-cycle estimate pays the known native card debt once without guessin
   const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
     { accounts: cardAccounts, today: "2026-11-05" });
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 2000);
-  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
-  assert.deepEqual(result.rows[0].accountMovements.map((move) => [move.accountId, move.amount, move.balanceDelta]), [[2, 1380.16, -1380.16]]);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 1380.16);
+  assert.deepEqual(result.rows[0].accountMovements, []);
   assert.equal(result.rows[0].balanceUsd, 619.84);
   assert.equal(result.rows[0].estimated, true);
 });
@@ -785,7 +858,8 @@ test("planned payments split between actual and estimated dues conserve native a
   const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
     { accounts: cardAccounts, today: "2026-11-05" });
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 750);
-  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 250,
+    "only the assigned explicit payment reduces debt; the remaining due has no native funding");
   assert.equal(result.rows.at(-1).balanceUsd, 500);
 });
 
@@ -809,7 +883,8 @@ test("same-day reflected payments do not shrink an estimate or replay native tra
     ] });
     assert.equal(result.rows.find((row) => row.estimated).amount, 1000);
     assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 700);
-    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+    assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 1000,
+      "the posted payment is reflected once and its unfunded estimate cannot pay the debt again");
     assert.equal(result.rows.at(-1).balanceUsd, -300);
     assert.deepEqual(result.rows.find((row) => row.entryId === "paid").accountMovements, []);
   }
@@ -832,7 +907,8 @@ test("card purchases and posted partial payments change owed balances once along
   const result = buildAccountPlan(cardPlan, { salary: {}, bills: [], allocations: [] }, 63,
     { accounts: cardAccounts, rows, today: "2026-11-04" });
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 950);
-  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 140);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 290,
+    "the posted partial payment reduces debt once while the unfunded statement remains owed");
   assert.equal(result.rows.at(-1).balanceUsd, 800);
 });
 
@@ -855,7 +931,8 @@ test("annual card charges increase debt while keeping their reserve held for sta
   assert.equal(charge.reserveUsed, 0);
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingBalance, 1200);
   assert.equal(result.accounts.find((account) => account.accountId === 1).endingAnnualReserved, 200);
-  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 200);
+  assert.equal(result.accounts.find((account) => account.accountId === 2).endingBalance, 400,
+    "the annual charge increases debt without an unfunded statement payment erasing the earlier balance");
 });
 
 function annualCardCoverageFixture(reserveUsed = 395) {

@@ -96,8 +96,13 @@ Sign in at `/admin/login` with that string as the password.
 
 ### 4. Finance tracker (`/finance`)
 
-The tracker is gated to one owner email (`FINANCE_ALLOWED_EMAILS`,
-defaulting to `laurenceburce@gmail.com`) via OAuth sign-in. For local testing, skip OAuth
+The tracker requires an allowed owner email (`FINANCE_ALLOWED_EMAILS`,
+defaulting to `laurenceburce@gmail.com`) and verified email proof from Google,
+GitHub, or LinkedIn. Microsoft sign-in remains available for the public portfolio;
+its email claim alone does not authorize private finance access. Existing signed
+Google/GitHub owner sessions keep their access until re-login or expiry. New
+sign-ins verify the email; if verification fails, verify the address at the provider
+and sign in again. For local testing, skip OAuth
 entirely with a dev-only bypass instead of registering an OAuth app (it is
 ignored whenever `NODE_ENV=production`):
 
@@ -164,19 +169,23 @@ The finance workspace separates recorded activity from your plans:
   comparisons. Projections start with today's live values and remaining future flows;
   past-only ranges show history and live current balances without inventing past
   running balances. Unknown account values remain unavailable.
-  The table opens in its compact view: date, description, source account, native
-  amount, projected balance, and status. **Expand accounts** in the balance column
+  The table opens in its compact view: date, description and status, USD, PHP,
+  and running account funds. Known recorded balances and future estimates both
+  appear row by row; cards and loans stay separate from account funds.
+  **Expand accounts** in the balance column
   reveals individual account columns across the whole table; **Collapse accounts**
   returns to the compact view. Search or filter **All / Upcoming / Recorded /
-  Overdue** without changing calculated balances. Expand **Details** for statement,
-  reserve, conversion, and bank matching evidence. Secondary actions stay in each
-  row's menu; the primary payment/receipt action stays visible.
+  Overdue** without changing calculated balances. **Reserves & planning notes**
+  below the table contains statement, reserve, conversion, and matching evidence.
+  Each transaction's menu sits beside its description and includes recording,
+  editing, and deletion where available.
   The table scrolls within a fixed-height viewport and initially positions the
   highlighted latest row for today (or the nearest activity). **Jump to current**
   returns there without moving the page; refreshes preserve your browsing position.
   Expanded account columns use a horizontally scrollable grid on desktop and
   mobile, labeled by account name, currency, and balance owed for credit/loan accounts.
-  On mobile, the compact view keeps its readable cards and an account-columns toggle.
+  On mobile, the compact table fits the screen, while expanded account columns
+  scroll inside their own viewport. Portrait and landscape are supported.
   Future rows show projections; recorded rows reconstruct tracked balances from
   current values and later posted activity, following the table's transaction order
   within each day. Later transactions do not change earlier rows' account balances.
@@ -202,11 +211,17 @@ The finance workspace separates recorded activity from your plans:
   Matching bills use a one-cent rounding tolerance consistently: a $1.99 posted
   charge can complete a $2 bill without creating another $0.01 payment or adding
   that cent to a projected card payoff. The recorded charge keeps its actual amount.
+  Posted bill charges up to three days outside the selected dates can still
+  complete their matching occurrence. Those receipts remain matching evidence;
+  their money is not counted again inside the viewing window.
   **Credit card payment / Live remaining card balance** follows new charges and earlier
   payments, while recorded payments keep their actual amounts. Statement balances and
   optional autopay timing remain configurable under **Bank accounts**. No action sends
   a bank payment. Removing a recorded custom row reverses generated manual transactions;
   imported bank records are retained.
+  A statement's projected debt reduction uses only its assigned funding. If a
+  reserve covers part of a payment and no account funds the rest, the remaining
+  debt stays owed. Later full-balance payments use that remaining amount.
   **Planner settings** contains income, allocation, reserve, and optional account
   assignments. A new workspace starts with no assumed salary. Salary and bill schedules
   still drive payday allocations and annual reserves. Repeating transactions and
@@ -234,6 +249,12 @@ The finance workspace separates recorded activity from your plans:
   Use **Edit account** on a manual account or card to change its name, type,
   or current native balance. Balance corrections adjust the starting balance and retain transaction history;
   card statement details and automatic payment settings stay separate.
+  Archiving an account keeps already recorded transactions, including both sides
+  of a recorded transfer. Advancing a card to its next statement also retains
+  the previous cycle's recorded payments.
+  For older manual statements without a closing date, advancing the due date
+  by at least 28 days is treated as a new cycle and preserves the prior payment.
+  Smaller date corrections remain part of the current cycle.
 - **Salary & settings:** monthly salary with instant USD/PHP conversion and
   the first payday used by forecasts.
   Choose the account receiving salary. Each bill can select a payment account;
@@ -254,11 +275,10 @@ Finance number fields preserve partial editing text, validate values on save,
 and accept unambiguous pasted USD/PHP amounts. Backdrop gestures do not dismiss
 edit dialogs; explicit close/Escape remain available, and Enter in text fields
 does not accidentally submit the form.
-Phone layouts use compact navigation, two-column plan summaries, and ledger
-cards that fit the screen with completion and edit actions on each card. Unused
-reserve/savings currencies collapse on phones; desktop keeps every column.
-Plan refresh/delete controls live under **More options**, with account forecasts
-and supporting details expandable. Edit dialogs follow the keyboard viewport and
+Phone layouts use compact navigation, summaries, and a table with expandable
+account columns. Status labels distinguish recorded, planned, and past-due rows.
+Refresh and planner settings are above the timeline; account comparisons and
+supporting details are expandable. Edit dialogs follow the keyboard viewport and
 restore the page's scroll position when closed.
 
 Overview income/spending totals exclude pending and future-dated transactions,
@@ -295,8 +315,9 @@ Concurrent changes on another device are rejected instead of silently overwritte
 
 For a starting point, choose **Use workbook example** under **Salary & settings**.
 It adds editable sample bills from the reference workbook; it does not record
-payments or move money. Budget plans are hypothetical and recalculate when
-salary, bills, or reference rates change.
+payments or move money. Future projections recalculate when salary, bills, or
+reference rates change. Assigned manual account activity through today updates
+tracked balances; future activity stays projected.
 
 For phone access, deploy this app to your existing HTTPS host with the same
 MySQL, `AUTH_SECRET`, and OAuth settings. Open `/finance` on your phone and sign in with the

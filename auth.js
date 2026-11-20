@@ -3,6 +3,7 @@ import GitHub from "next-auth/providers/github";
 import Google from "next-auth/providers/google";
 import LinkedIn from "next-auth/providers/linkedin";
 import MicrosoftEntraID from "next-auth/providers/microsoft-entra-id";
+import { hasFinanceEmailProof, verifyFinanceEmail } from "./app/lib/financeAccess.mjs";
 
 const providers = [];
 const DEFAULT_FINANCE_EMAIL = "laurenceburce@gmail.com";
@@ -56,9 +57,11 @@ export const { handlers: { GET, POST }, auth } = NextAuth({
     strategy: "jwt"
   },
   callbacks: {
-    async jwt({ token, account }) {
+    async jwt({ token, account, profile }) {
       if (account?.provider) {
         token.provider = account.provider;
+        token.financeEmailVerified = isFinanceAuthorizedEmail(token.email) &&
+          await verifyFinanceEmail({ account, profile, email: token.email });
       }
 
       return token;
@@ -66,7 +69,10 @@ export const { handlers: { GET, POST }, auth } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         session.user.provider = token.provider || "";
-        session.user.isFinanceAuthorized = isFinanceAuthorizedEmail(session.user.email);
+        if (typeof token.email === "string") session.user.email = token.email;
+        if (typeof token.financeEmailVerified === "boolean") session.user.financeEmailVerified = token.financeEmailVerified;
+        else delete session.user.financeEmailVerified;
+        session.user.isFinanceAuthorized = isFinanceAuthorizedEmail(session.user.email) && hasFinanceEmailProof(session.user);
       }
 
       return session;

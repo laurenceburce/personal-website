@@ -730,9 +730,10 @@ function cleanColor(value) {
 
 function cleanId(value, label = "ID") {
   if (value === "" || value == null) return null;
-  const id = Number(value);
-  if (!Number.isInteger(id) || id <= 0) throw appError(`${label} is invalid.`);
-  return id;
+  if (!["number", "string"].includes(typeof value) || !/^\d+$/.test(String(value)) ||
+      !Number.isSafeInteger(Number(value)) || Number(value) <= 0)
+    throw appError(`${label} is invalid.`);
+  return Number(value);
 }
 
 function cleanDate(value) {
@@ -1233,6 +1234,9 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
     configured: false,
     ...range,
     transactions: [],
+    matchingTransactions: [],
+    matchingLimitHit: false,
+    matchingWarning: "",
     creditCardPaymentTransactions: [],
     creditCardPaymentLimitHit: false,
     creditCardPaymentWarning: "",
@@ -1279,9 +1283,11 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
         "Only the first 10,000 recorded transactions in this range are included. Plan balances may be incomplete.",
       );
     const creditCardPayments = await getFinanceCreditCardPaymentActivity(database, range);
+    const matching = await getFinancePlanMatchingActivity(database, range, currentDate);
     // A visible statement may settle through receipts before the selected
     // window. Include those known receipt dates in the reconstruction floor.
-    const balanceFrom = [range.from, ...creditCardPayments.creditCardPaymentTransactions
+    const balanceFrom = [range.from, ...matching.matchingTransactions.map((row) => row.date),
+      ...creditCardPayments.creditCardPaymentTransactions
       .filter((row) => !row.pending && typeof row.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.date) &&
         row.date >= "1900-01-01" && row.date <= currentDate)
       .map((row) => row.date)].sort()[0];
@@ -1292,6 +1298,7 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
       transactions,
       limitHit,
       ...creditCardPayments,
+      ...matching,
       ...balanceHistory,
       ...(warnings.length ? { warning: warnings.join(" ") } : {}),
     };
@@ -1301,6 +1308,40 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
       warning:
         "Recorded transactions could not be loaded. Your saved records have not been changed; retry to include them in this plan.",
     };
+  }
+}
+
+// Boundary receipts can settle an in-range bill without becoming visible cash
+// flows. Keep this evidence separate from both the table and statement history.
+async function getFinancePlanMatchingActivity(database, range, currentDate) {
+  const empty = { matchingTransactions: [], matchingLimitHit: false, matchingWarning: "" };
+  const shifted = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+  const from = ["1900-01-01", shifted(range.from, -3)].sort().at(-1);
+  const to = ["2200-12-31", shifted(range.to, 3), currentDate].sort()[0];
+  if (from > to) return empty;
+  try {
+    const [rows] = await database.query(`
+      SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+        a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
+      FROM personal_finance_transactions t
+      LEFT JOIN personal_finance_accounts a ON a.id = t.account_id
+      LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+      WHERE t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+        AND t.currency IN ('USD', 'PHP') AND t.pending = 0
+        AND t.kind IN ('income', 'expense')
+        AND t.transaction_date >= ? AND t.transaction_date <= ?
+        AND (t.transaction_date < ? OR t.transaction_date > ?)
+      ORDER BY t.transaction_date ASC, t.id ASC LIMIT 10001`, [from, to, range.from, range.to]);
+    const limitHit = rows.length > 10000;
+    return {
+      matchingTransactions: rows.slice(0, 10000).map(mapTransaction).filter((row) => !row.pending &&
+        CURRENCY_SET.has(row.currency) && row.date >= from && row.date <= to &&
+        (row.date < range.from || row.date > range.to)),
+      matchingLimitHit: limitHit,
+      matchingWarning: limitHit ? "Only the first 10,000 boundary receipts are available for bill matching. Some bills may remain unmatched." : "",
+    };
+  } catch {
+    return { ...empty, matchingWarning: "Boundary receipts could not be loaded. Some bills may remain unmatched; refresh to retry." };
   }
 }
 
@@ -2081,7 +2122,7 @@ async function requireManualTransaction(pool, transactionId) {
   if (transactionId === null)
     throw appError("Choose a valid transaction.", 400);
   const [rows] = await pool.query(
-    "SELECT id, external_provider, external_transaction_id, source_plan_id, plan_generated, plan_record_json FROM personal_finance_transactions WHERE id = ? LIMIT 1",
+    "SELECT id, external_provider, external_transaction_id, source_plan_id, plan_generated, plan_record_json FROM personal_finance_transactions WHERE id = ? LIMIT 1 FOR UPDATE",
     [transactionId],
   );
   if (!rows.length) throw appError("Transaction was not found.", 404);
@@ -2094,6 +2135,23 @@ async function requireManualTransaction(pool, transactionId) {
       "Bank-imported transactions are read-only. Correct the source record through your bank and sync again.",
       409,
     );
+}
+
+async function editManualTransaction(pool, transactionId, edit) {
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    // A refresh can adopt an independent manual receipt. Hold its row lock from
+    // the ownership check through the edit so that adoption cannot race a write.
+    await requireManualTransaction(connection, transactionId);
+    await edit(connection);
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback().catch(() => {});
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function createFinanceTransaction(data) {
@@ -2147,35 +2205,36 @@ export async function updateFinanceTransaction(id, data) {
   } = clean;
   const transactionId = cleanId(id, "Transaction");
   const pool = requirePool(await ensureFinanceSchema());
-  await requireManualTransaction(pool, transactionId);
-  await validateTransactionAccount(pool, accountId, currency);
+  await editManualTransaction(pool, transactionId, async (connection) => {
+    await validateTransactionAccount(connection, accountId, currency);
 
-  await pool.query(
-    `UPDATE personal_finance_transactions
-     SET transaction_date = ?,
-         kind = ?,
-         account_id = ?,
-         category = ?,
-         merchant = ?,
-         note = ?,
-         amount = ?,
-         currency = ?,
-         updated_at = ?
-     WHERE id = ? AND (external_provider IS NULL OR external_provider = '')
-       AND (external_transaction_id IS NULL OR external_transaction_id = '')`,
-    [
-      transactionDate,
-      kind,
-      accountId,
-      category,
-      merchant,
-      note,
-      amount,
-      currency,
-      new Date(),
-      transactionId,
-    ],
-  );
+    await connection.query(
+      `UPDATE personal_finance_transactions
+       SET transaction_date = ?,
+           kind = ?,
+           account_id = ?,
+           category = ?,
+           merchant = ?,
+           note = ?,
+           amount = ?,
+           currency = ?,
+           updated_at = ?
+       WHERE id = ? AND (external_provider IS NULL OR external_provider = '')
+         AND (external_transaction_id IS NULL OR external_transaction_id = '')`,
+      [
+        transactionDate,
+        kind,
+        accountId,
+        category,
+        merchant,
+        note,
+        amount,
+        currency,
+        new Date(),
+        transactionId,
+      ],
+    );
+  });
 
   return { id: transactionId };
 }
@@ -2183,11 +2242,10 @@ export async function updateFinanceTransaction(id, data) {
 export async function deleteFinanceTransaction(id) {
   const pool = requirePool(await ensureFinanceSchema());
   const transactionId = cleanId(id, "Transaction");
-  await requireManualTransaction(pool, transactionId);
-  await pool.query(
+  await editManualTransaction(pool, transactionId, (connection) => connection.query(
     "DELETE FROM personal_finance_transactions WHERE id = ? AND (external_provider IS NULL OR external_provider = '') AND (external_transaction_id IS NULL OR external_transaction_id = '')",
     [transactionId],
-  );
+  ));
   return { id: transactionId };
 }
 

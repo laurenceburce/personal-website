@@ -35,7 +35,7 @@ export default function FinancePlanEntryForm({
   today = localDate(),
 }) {
   const [draft, setDraft] = useState(() => ({
-    date: today < plan.startDate ? plan.startDate : today > plan.endDate ? plan.endDate : today,
+    date: plan.continuous ? today : today < plan.startDate ? plan.startDate : today > plan.endDate ? plan.endDate : today,
     description: "",
     kind: "expense",
     amount: "",
@@ -125,8 +125,15 @@ export default function FinancePlanEntryForm({
           />
         </Field>
         <Field label="Entry type">
-          <select value={draft.kind} onChange={(event) => setDraft((current) => ({ ...current, kind: event.target.value,
-            amountMode: event.target.value === "cardPayment" && !current.recordNow ? "cardBalance" : "fixed" }))}>
+          <select value={draft.kind} onChange={(event) => {
+            const kind = event.target.value;
+            setError("");
+            setDraft((current) => ({ ...current, kind,
+              toAccountId: (current.kind === "conversion") !== (kind === "conversion") ||
+                (kind === "cardPayment" && !accounts.some((account) => Number(account.id) === Number(current.toAccountId) && account.type === "credit"))
+                ? null : current.toAccountId,
+              amountMode: kind === "cardPayment" && !current.recordNow ? "cardBalance" : "fixed" }));
+          }}>
             <option value="expense">Expense / savings</option>
             <option value="income">Income</option>
             <option value="transfer">Transfer between accounts</option>
@@ -248,7 +255,11 @@ export default function FinancePlanEntryForm({
               currency={draft.currency}
               value={draft.fromAccountId}
               emptyLabel={defaultAccountLabel(draft.currency)}
-              onChange={(value) => set("fromAccountId", value)}
+              onChange={(value) => {
+                setError("");
+                setDraft((current) => ({ ...current, fromAccountId: value,
+                  toAccountId: value != null && Number(value) === Number(current.toAccountId) ? null : current.toAccountId }));
+              }}
               allowNone={!transfer && !recording}
               required={transfer || recording}
             />

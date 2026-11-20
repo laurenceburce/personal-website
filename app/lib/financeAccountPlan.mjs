@@ -15,7 +15,8 @@ const id = (value) =>
 const liability = (account) =>
   ["credit", "loan"].includes(account?.type || account?.account_type);
 const archived = (account) =>
-  Boolean(account?.isArchived || account?.is_archived || account?.mergedIntoAccountId || account?.merged_into_account_id);
+  Boolean(account?.isArchived || account?.is_archived || account?.isSyncExcluded || account?.is_sync_excluded ||
+    account?.mergedIntoAccountId || account?.merged_into_account_id);
 const finiteBalance = (value) =>
   ["number", "string"].includes(typeof value) &&
     !(typeof value === "string" && !value.trim()) && Number.isFinite(Number(value))
@@ -431,8 +432,16 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       }
       cardReserveConsumptions.set(row.id, reserveConsumptions);
       const remainingFunding = Math.max(0, roundMoney(row.amount - reserveFunding));
-      const funding = movement(linkedId("available", currency), -remainingFunding, currency, "cardFunding", row.description);
+      const fundingId = defaultSource(null, currency, row.description);
+      const funding = liability(accountById.get(fundingId)) ? null
+        : movement(fundingId, -remainingFunding, currency, "cardFunding", row.description);
       if (funding) movements.push(funding);
+      // An unassigned remainder cannot pay down a native card balance. Reserve
+      // funding still pays its known portion when the other source is missing.
+      if (result) {
+        result.amount = roundMoney(Math.min(row.amount, reserveFunding + (funding ? remainingFunding : 0)));
+        if (!result.amount) movements = movements.filter((move) => move !== result);
+      }
       if (remainingFunding > 0 && !funding)
         warnings.add(plan.accountLinks
           ? `${row.description}: choose a linked available-funds account in ${currency} to include this planned payment in that balance.`
@@ -563,7 +572,8 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
         transaction.kind === "income" ? transaction.amount : -transaction.amount,
         transaction.currency, "recorded", transaction.description || row.description);
       if (recorded) direct.push({ ...recorded, recordedDate: transaction.date,
-        transactionId: transaction.transactionId ?? transaction.id });
+        transactionId: transaction.transactionId ?? transaction.id,
+        ...(transaction.matchingOnly ? { matchingOnly: true } : {}) });
     }
     return { ...row, accountMovements: direct };
   });
@@ -622,9 +632,9 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
       })
       .filter(
         (move) =>
-          opening.has(move.accountId) ||
+          !move.matchingOnly && (opening.has(move.accountId) ||
           (move.recordedDate ? move.recordedDate > today :
-            row.source === "transaction" ? row.date > today : !row.completed),
+            row.source === "transaction" ? row.date > today : !row.completed)),
       );
     for (const move of projected) {
       const account = accountById.get(move.accountId);

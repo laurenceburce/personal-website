@@ -44,6 +44,7 @@ export default function AuthProviderButtons({
   onBeforeSignIn,
   onSignInError,
   onStatusChange,
+  allowedProviders,
   className = "auth-provider-list"
 }) {
   const [providers, setProviders] = useState(null);
@@ -57,13 +58,19 @@ export default function AuthProviderButtons({
 
       try {
         const response = await fetch("/api/auth/providers", { cache: "no-store" });
-        const payload = response.ok ? await response.json() : {};
+        if (!response.ok) throw new Error("Sign-in options unavailable");
+        const payload = await response.json();
         if (cancelled) return;
 
-        setProviders(payload);
+        const configured = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+        const eligible = Object.fromEntries(Object.entries(configured).filter(([, provider]) =>
+          provider && typeof provider.id === "string" && (!allowedProviders || allowedProviders.includes(provider.id))));
+        setProviders(eligible);
         onStatusChange?.(
-          Object.keys(payload).length === 0
-            ? "OAuth sign-in is not configured yet."
+          Object.keys(eligible).length === 0
+            ? allowedProviders
+              ? "Verified-email sign-in is not configured for finance. Please contact the site owner."
+              : "OAuth sign-in is not configured yet."
             : ""
         );
       } catch {
@@ -75,7 +82,7 @@ export default function AuthProviderButtons({
 
     loadProviders();
     return () => { cancelled = true; };
-  }, [onStatusChange]);
+  }, [onStatusChange, allowedProviders]);
 
   const entries = Object.values(providers || {});
 

@@ -208,6 +208,33 @@ test("new one-time entries start today within plan bounds and stay planned until
   }
 });
 
+test("ongoing planner entries start today even when the saved plan dates are in the past or future", () => {
+  for (const today of ["2026-10-31", "2026-12-01"]) {
+    const form = harness({ today, plan: { ...plan, continuous: true } });
+    const tree = form.render();
+    assert.equal(input(tree, "Date", "input").props.value, today);
+    assert.equal(input(tree, "Date", "input").props.min, "1900-01-01");
+    assert.equal(input(tree, "Date", "input").props.max, "2200-12-31");
+  }
+});
+
+test("changing transfer currency rules or selecting its destination as source clears the stale destination", () => {
+  const accounts = [{ id: 1, name: "Checking", type: "checking", currency: "USD" },
+    { id: 2, name: "Savings", type: "savings", currency: "USD" }, { id: 3, name: "PHP", type: "checking", currency: "PHP" }];
+  const form = harness({ accounts, entry: { id: "move", date: plan.startDate, kind: "transfer", description: "Move",
+    amount: 50, currency: "USD", fromAccountId: 1, toAccountId: 2 } });
+  let tree = form.render();
+  accountSelect(tree, "From account").props.onChange(2);
+  tree = form.render();
+  assert.equal(accountSelect(tree, "To account").props.value, null);
+  accountSelect(tree, "To account").props.onChange(1);
+  tree = form.render();
+  input(tree, "Entry type", "select").props.onChange({ target: { value: "conversion" } });
+  tree = form.render();
+  assert.equal(accountSelect(tree, "To account").props.value, null);
+  assert.equal(accountSelect(tree, "From account").props.value, 2);
+});
+
 test("manual income and expenses use the live planner without a separate recording choice", () => {
   for (const kind of ["income", "expense"]) {
     const form = harness({ manualAccountsFromPlanner: true, today: "2026-11-18", accounts: cardAccounts });

@@ -818,6 +818,53 @@ test("bill rounding does not forgive a linked salary or manual-entry cent remain
   }
 });
 
+test("posted bill evidence just outside a viewing window completes the occurrence without adding outside cash flows", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDay: 18, amount: 2, currency: "USD", accountId: 1 }] };
+  const base = { id: "live", startDate: "2026-11-18", endDate: "2026-11-20", openingUsd: 100,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  for (const includeTransactions of [true, false]) for (const receiptDate of ["2026-11-17", "2026-11-21"]) {
+    const receipt = { id: 101, date: receiptDate, kind: "expense", accountId: 1, amount: 1.99, currency: "USD",
+      merchant: "GOOGLE *Google One", provider: "plaid" };
+    for (const field of ["transactions", "matchingTransactions"]) {
+      const plan = { ...base, includeTransactions };
+      const before = structuredClone({ document, plan, receipt });
+      const rows = buildPlanRows(plan, document, 58, { today: "2026-11-23", [field]: [receipt,
+        { ...receipt, id: 102, merchant: "Unrelated merchant" }] });
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].id, "bill:google:2026-11-18");
+      assert.equal(rows[0].date, "2026-11-18");
+      assert.equal(rows[0].completed, true);
+      assert.equal(rows[0].amount, 1.99);
+      assert.deepEqual(rows[0].matchedTransactionIds, [101]);
+      assert.equal(rows[0].recordedTransactions[0].date, receiptDate);
+      assert.equal(rows[0].balanceUsd, 100, "outside receipts cannot be debited inside the viewing window");
+      assert.deepEqual({ document, plan, receipt }, before);
+    }
+  }
+  for (const patch of [{ pending: true }, { date: "2026-11-14" }, { accountId: 2 }, { currency: "PHP" }, { kind: "income" }]) {
+    const rows = buildPlanRows(base, document, 58, { today: "2026-11-23", matchingTransactions: [
+      { id: 101, date: "2026-11-17", kind: "expense", accountId: 1, amount: 1.99, currency: "USD", merchant: "Google", ...patch },
+    ] });
+    assert.equal(rows[0].completed, false, JSON.stringify(patch));
+    assert.equal(rows[0].amount, 2, JSON.stringify(patch));
+  }
+  const halo = { id: 101, date: "2026-11-17", kind: "expense", accountId: 1, amount: 1.99, currency: "USD", merchant: "Google" };
+  for (const includeTransactions of [true, false]) {
+    const rows = buildPlanRows({ ...base, includeTransactions }, document, 58, { today: "2026-11-23",
+      transactions: [{ ...halo, id: 102, date: "2026-11-18" }], matchingTransactions: [halo] });
+    const completed = rows.find((row) => row.completed);
+    assert.deepEqual(completed.matchedTransactionIds, [102], "in-window receipt ownership takes precedence over halo evidence");
+    assert.equal(completed.matchedOutsideWindow, undefined);
+  }
+  const repeatedDocument = { ...document, bills: [{ ...document.bills[0], amount: 4, dueDays: [18, 19] }] };
+  const repeated = buildPlanRows(base, repeatedDocument, 58, { today: "2026-11-23", matchingTransactions: [halo] });
+  assert.equal(repeated.filter((row) => row.completed).length, 1, "one outside receipt cannot pay two occurrences");
+  assert.equal(repeated.find((row) => row.date === "2026-11-19").completed, false);
+  const futureEvidence = buildPlanRows(base, document, 58, { today: "2026-11-20", matchingTransactions: [{ ...halo, date: "2026-11-21" }] });
+  assert.equal(futureEvidence[0].completed, false, "future records cannot prove a bill was paid");
+});
+
 test("unavailable native starting balances are excluded with a reason, never NaN or an available-balance fallback", () => {
   const accounts = [
     { id: 1, currency: "USD", nativeCurrentBalance: null, currentBalance: 50, availableBalance: 60 },
@@ -3847,6 +3894,31 @@ test("a historical annual card fee funds one full statement payment without anot
   assert.equal(before, JSON.stringify({ document, plan, accounts, charge }));
 });
 
+test("live full-balance payments account for the resolved native portion of earlier reserve-funded dues", () => {
+  for (const currency of ["USD", "PHP"]) for (const reserveAmount of [0, 40, 100]) for (const beforeDue of [false, true]) {
+    const accounts = [{ id: 1, name: "Checking", type: "checking", currency, nativeCurrentBalance: 1000 },
+      { id: 2, name: "Reserve", type: "savings", currency, nativeCurrentBalance: reserveAmount },
+      { id: 3, name: "Card", type: "credit", currency, nativeCurrentBalance: 100,
+        creditCardDue: { statementBalance: 100, dueDate: "2026-11-20", lastStatementDate: "2026-11-02" } }];
+    const document = { salary: {}, allocations: [], bills: [{ id: "annual", name: "Annual fee", cadence: "annual", amount: 100,
+      currency, dueMonths: [10], dueDay: 30, savedAmount: reserveAmount, accountId: 3, reserveAccountId: 2 }] };
+    const plan = { id: "live", continuous: true, startDate: "2026-11-01", endDate: "2026-11-30", balanceMode: "live",
+      accountLinks: { [currency === "USD" ? "annualReserveUsdAccountId" : "annualReservePhpAccountId"]: 2 },
+      includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [
+        { id: "first", date: beforeDue ? "2026-11-19" : "2026-11-21", description: "Pay full", kind: "transfer", amountMode: "cardBalance",
+          amount: 100, currency, fromAccountId: 1, toAccountId: 3 },
+        { id: "second", date: "2026-11-22", description: "Pay full again", kind: "transfer", amountMode: "cardBalance",
+          amount: 100, currency, fromAccountId: 1, toAccountId: 3 },
+      ] };
+    const charge = { id: 9, date: "2026-10-30", kind: "expense", accountId: 3, amount: 100, currency, merchant: "Annual fee" };
+    const before = structuredClone({ document, plan, accounts, charge });
+    const rows = buildPlanRows(plan, document, 58, { accounts, creditCardPaymentTransactions: [charge], today: "2026-11-18" });
+    assert.equal(rows.find((row) => row.entryId === "first").amount, beforeDue ? 100 : 100 - reserveAmount, `${currency}, reserve=${reserveAmount}, before=${beforeDue}`);
+    assert.equal(rows.find((row) => row.entryId === "second").amount, 0, "successive full payments cannot pay the same debt twice");
+    assert.deepEqual({ document, plan, accounts, charge }, before);
+  }
+});
+
 test("annual charge attribution follows its statement cycle when an estimate becomes an issued statement", () => {
   for (const issued of [false, true]) {
     const { document, plan, accounts, charge } = annualCardFeeFixture();
@@ -4240,7 +4312,7 @@ test("continuous live card payments do not assume an earlier unassigned statemen
   assert.equal(laterAmount(), 200, "the statement has no assigned funding account");
   assert.equal(laterAmount({ ...plan, accountLinks: { availableUsdAccountId: 1 } }), 100);
   assert.equal(laterAmount(plan, accounts, { ...document, salary: { ...document.salary, accountId: 1 } }), 100);
-  for (const invalid of [{ ...accounts[0], isArchived: true }, { ...accounts[0], type: "credit" },
+  for (const invalid of [{ ...accounts[0], isArchived: true }, { ...accounts[0], isSyncExcluded: true }, { ...accounts[0], type: "credit" },
     { ...accounts[0], currency: "PHP" }, { ...accounts[0], mergedIntoAccountId: 99 }])
     assert.equal(laterAmount({ ...plan, accountLinks: { availableUsdAccountId: 1 } }, [invalid, accounts[1]]), 200);
   assert.equal(laterAmount({ ...plan, continuous: false }), 100, "legacy standalone plan behavior stays compatible");

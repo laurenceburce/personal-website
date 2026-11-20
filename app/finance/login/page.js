@@ -30,6 +30,7 @@ export default async function FinanceLoginPage({ searchParams }) {
     <FinanceLoginClient
       callbackUrl={callbackUrl}
       currentEmail={access.email}
+      currentProvider={access.session?.user?.provider}
       isSignedIn={Boolean(access.session)}
     />
   );

@@ -750,6 +750,7 @@ export default function FinanceAppClient({
             today,
             accounts,
             transactions: planRecordsMatch ? planActivity.transactions : [],
+            matchingTransactions: planRecordsMatch ? planActivity.matchingTransactions || [] : [],
             creditCardPaymentTransactions: planRecordsMatch ? planActivity.creditCardPaymentTransactions || [] : [],
           })
         : [],
@@ -770,6 +771,7 @@ export default function FinanceAppClient({
     endDate: plannerRange.endDate < today ? today : plannerRange.endDate }), [projectionPlan, today, plannerRange.endDate]);
   const futurePlanRows = useMemo(() => buildPlanRows(futurePlan, document, rate, { today, accounts,
     transactions: planRecordsMatch ? planActivity.transactions : [],
+    matchingTransactions: planRecordsMatch ? planActivity.matchingTransactions || [] : [],
     creditCardPaymentTransactions: planRecordsMatch ? planActivity.creditCardPaymentTransactions || [] : [],
   }), [futurePlan, document, rate, today, accounts, planActivity, planRecordsMatch]);
   const futureAccountPlan = useMemo(() => buildAccountPlan(futurePlan, document, rate, { accounts, rows: futurePlanRows, today }),
@@ -1913,7 +1915,9 @@ export default function FinanceAppClient({
                 <div className="fp-live-sync" role="status">
                   <span className={`fp-live-dot${bankRefreshing ? " fp-live-dot-busy" : ""}`} />
                   {bankRefreshing ? "Updating account balances…" : !activity.configured ? "Account data unavailable"
-                    : !accounts.length ? "Connect an account to see live balances" : "Connected to your accounts"}
+                    : !accounts.length ? "Add or connect an account to see balances"
+                      : bankRefreshError ? "Showing last available balances"
+                        : accounts.some((account) => account.isLinked) ? "Bank and planner balances loaded" : "Manual balances follow your planner"}
                   {bankRefreshedAt && <small>Checked {new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }).format(new Date(bankRefreshedAt))}</small>}
                 </div>
                 <div className="fp-button-row">
@@ -1929,10 +1933,11 @@ export default function FinanceAppClient({
                 <Button variant="text" onClick={() => refreshPlanBanks(true)}>Try again</Button>
               </div>}
               {planRecordsMatch && planActivity?.warning && !planActivityError && <div className="fp-alert fp-alert-warning" role="status">{planActivity.warning}</div>}
+              {planRecordsMatch && planActivity?.matchingWarning && !planActivityError && <div className="fp-alert fp-alert-warning" role="status">{planActivity.matchingWarning}</div>}
               <FinancePlannerAnalytics analytics={plannerAnalytics} loading={planWaitingForRecords || planActivityLoading} onReviewAccounts={() => navigate("accounts")} />
               <section className="fp-card fp-live-transactions" aria-label="Planner transactions">
                 <div className="fp-live-section-heading">
-                  <div><h2>Transactions & payments</h2><p>Recorded activity and upcoming commitments, together.</p></div>
+                  <div><h2>Transactions & payments</h2><p>Balances after each transaction. Planned rows show estimates.</p></div>
                 </div>
                 {planWaitingForRecords ? <div className="fp-loading-state" role="status">{planActivityError
                   ? "Refresh transactions to show balances for the current date." : "Loading transactions for these dates…"}</div> : (

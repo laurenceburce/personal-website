@@ -1050,7 +1050,8 @@ function planTransferLegs(row, rate) {
 
 function planCompletion(rows, plan, actual, document, rate, today) {
   const manual = new Map((plan.completedRows || []).map((row) => [row.rowId, row.completedAt]));
-  const posted = actual.filter((row) => !row.scheduled && row.date <= today);
+  const posted = actual.filter((row) => !row.scheduled && row.date <= today &&
+    (!row.matchingOnly || row.matchingOnlyForecastId != null));
   const consumed = new Set(posted.filter((row) => row.matchedForecast && row.matchedForecast.source !== "creditCardDue").map((row) => row.id));
   return rows.map((row) => {
     const completionKey = row.matchedForecast?.id || row.id;
@@ -1058,7 +1059,9 @@ function planCompletion(rows, plan, actual, document, rate, today) {
     if (!matches.length && row.source !== "transaction") {
       if (["salary", "bill", "manual"].includes(row.source)) {
         const match = posted.find((transaction) =>
-          !consumed.has(transaction.id) && (forecastMatchesTransaction(row, transaction) ||
+          !consumed.has(transaction.id) && (row.matchedOutsideWindow
+            ? transaction.matchingOnlyForecastId === row.id
+            : !transaction.matchingOnly || transaction.matchingOnlyForecastId === row.id) && (forecastMatchesTransaction(row, transaction) ||
             (row.deferReserveToCardDue && row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.transactionId))),
         );
         if (match) matches = [match];
@@ -1101,6 +1104,7 @@ function planCompletion(rows, plan, actual, document, rate, today) {
       ...(recordedByPlan ? { planGenerated: true, recordedInAccounts: true,
         awaitingBankSync: matches.some((match) => match.awaitingBankSync) } : {}),
       ...(matches.length && matches.every((match) => match.manualPlannerSource) ? { manualPlannerSource: true } : {}),
+      ...(row.matchedOutsideWindow ? { recordedTransactions: matches.map((match) => ({ ...match })) } : {}),
       matchedTransactionIds: row.source === "creditCardDue" ? row.paymentTransactionIds || [] : matches.map((match) => match.transactionId).filter((id) => id != null),
     };
   });
@@ -1146,7 +1150,8 @@ function linkedFundingPair(row, expectedAmount, rows, actual, today, document) {
 // Linked columns describe native accounts. A planned transfer and its imported
 // debit/credit are one ledger event, with the bank records retained as evidence.
 function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
-  const posted = actual.filter((row) => !row.scheduled && row.date <= today);
+  const posted = actual.filter((row) => !row.scheduled && row.date <= today &&
+    (!row.matchingOnly || row.matchingOnlyForecastId != null));
   const consumed = new Set(posted.filter((row) => row.matchedForecast && row.matchedForecast.source !== "creditCardDue")
     .map((row) => String(row.transactionId)));
   const coalescedIds = new Set();
@@ -1199,7 +1204,8 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
         ...(debit ? { amount: debit.amount } : {}),
         ...(receipt ? { recordedConversionAmount: receipt.amount, recordedConversionCurrency: receipt.currency } : {}),
       } : {}),
-      ...(complete && plan.includeTransactions !== false ? { date: recordedDate, scheduledDate: row.date } : {}),
+      ...(complete && plan.includeTransactions !== false && !evidence.every((transaction) => transaction.matchingOnly)
+        ? { date: recordedDate, scheduledDate: row.date } : {}),
       recordedTransactions: evidence.map((transaction) => ({ ...transaction })),
       ...(evidence.every((transaction) => transaction.manualPlannerSource) ? { manualPlannerSource: true } : {}),
       recordedTransactionsIncluded: plan.includeTransactions !== false,
@@ -1215,7 +1221,7 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
   if (plan.includeTransactions !== false) {
     const linkedIds = new Set(Object.values(plan.accountLinks || {}).filter((id) => id != null).map(Number));
     const byAccount = new Map(accounts.map((account) => [Number(account.id), account]));
-    const unclaimed = posted.filter((transaction) => !consumed.has(String(transaction.transactionId)) &&
+    const unclaimed = posted.filter((transaction) => !transaction.matchingOnly && !consumed.has(String(transaction.transactionId)) &&
       !transaction.creditCardPaymentFor && transferTransaction(transaction) && linkedIds.has(Number(transaction.accountId)) &&
       !["credit", "loan"].includes(byAccount.get(Number(transaction.accountId))?.type));
     const counterparts = (transaction) => unclaimed.filter((other) => other.kind !== transaction.kind &&
@@ -1273,7 +1279,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const cardAccountsById = new Map((options.accounts || []).map((account) => [Number(account.id), account]));
   const creditAccountIds = new Set((options.accounts || []).filter((account) =>
     (account.type || account.account_type) === "credit").map((account) => Number(account.id)));
-  const cardPaymentTransactions = [...(options.transactions || []), ...(options.creditCardPaymentTransactions || [])];
+  const cardPaymentTransactions = [...(options.transactions || []), ...(options.matchingTransactions || []), ...(options.creditCardPaymentTransactions || [])];
   const today = Number.isFinite(dateTime(options.today)) ? options.today : localDate();
   const cardObligations = creditCardObligations(options.accounts || [], { transactions: cardPaymentTransactions, today });
   const { statements } = cardObligations;
@@ -1444,6 +1450,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     .map((account) => [Number(account.id), knownCardBalance(Object.hasOwn(account, "nativeCurrentBalance")
       ? account.nativeCurrentBalance : account.currentBalance)]));
   const projectedPaymentPool = new Map();
+  const assumedCardFunding = new Map();
   const projectedEvents = [...forecasts, ...cardObligations.obligations.map((row) => ({ ...row, autoCardPayment: true }))]
     .filter((row) => row.date >= plan.startDate && row.date <= plan.endDate);
   const debtPriority = (row) => row.autoCardPayment ? 3 : row.liveCardBalance ? 2 : row.kind === "transfer" || row.kind === "conversion" ? 1 : 0;
@@ -1461,8 +1468,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         !funding.mergedIntoAccountId && !funding.merged_into_account_id;
       // An unassigned statement cannot silently pay down debt in the live
       // tracker. Explicit earlier transfers already reduced it via their legs.
-      if (projectedDebt.get(cardId) != null && (!plan.continuous || validFunding))
-        projectedDebt.set(cardId, roundMoney(projectedDebt.get(cardId) - (row.amount - reserved)));
+      const payable = Math.max(0, roundMoney(row.amount - reserved));
+      const funded = options._resolvedCardDueFunding?.has(row.id)
+        ? Math.min(payable, options._resolvedCardDueFunding.get(row.id)) : !plan.continuous || validFunding ? payable : 0;
+      assumedCardFunding.set(row.id, funded);
+      if (projectedDebt.get(cardId) != null)
+        projectedDebt.set(cardId, roundMoney(projectedDebt.get(cardId) - funded));
       continue;
     }
     if (row.liveCardBalance && projectedDebt.get(Number(row.toAccountId)) != null)
@@ -1556,11 +1567,16 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       ...nativeFlow(remaining, obligation.currency, "expense") });
   }
   {
-    for (const transaction of options.transactions || []) {
+    for (const { transaction, evidenceOnly } of [
+      ...(options.transactions || []).map((transaction) => ({ transaction, evidenceOnly: false })),
+      ...(options.matchingTransactions || []).map((transaction) => ({ transaction, evidenceOnly: true })),
+    ]) {
+      const matchingOnly = evidenceOnly || transaction.date < plan.startDate || transaction.date > plan.endDate;
       if (
         !Number.isFinite(dateTime(transaction.date)) ||
-        transaction.date < plan.startDate ||
-        transaction.date > plan.endDate ||
+        transaction.date < matchingStart ||
+        transaction.date > matchingEnd ||
+        (matchingOnly && transaction.date > today) ||
         transaction.pending
       )
         continue;
@@ -1606,6 +1622,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         ...(transaction.creditCardPaymentDueDate ? { creditCardPaymentDueDate: transaction.creditCardPaymentDueDate } : {}),
         kind: transaction.kind,
         source: "transaction",
+        ...(matchingOnly ? { matchingOnly: true } : {}),
         scheduled: transaction.date > today,
         ...nativeFlow(
           transaction.amount,
@@ -1633,18 +1650,23 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   // Completion checks always see posted records, even when their cash flows are
   // excluded from this hypothetical ledger by the plan's display setting.
   const completionActual = actual;
-  const visibleActual = plan.includeTransactions === false ? [] : actual;
+  const visibleActual = plan.includeTransactions === false ? [] : actual.filter((transaction) => !transaction.matchingOnly);
   const explicitlyPaidForecasts = new Set();
   const linkedSchedules = new Map();
   for (const forecast of forecasts.filter((row) => row.source !== "creditCardDue" && ["income", "expense"].includes(row.kind))) {
-    const payments = actual.filter((transaction) => !transaction.scheduled && scheduledPlanTransaction(forecast, transaction) &&
+    const payments = actual.filter((transaction) => !transaction.scheduled && (!transaction.matchingOnly || forecast.source === "bill") && scheduledPlanTransaction(forecast, transaction) &&
       transaction.kind === forecast.kind && transaction.currency === forecast.currency &&
       (forecast.accountId == null || Number(forecast.accountId) === Number(transaction.accountId)));
     if (!payments.length) continue;
     const paid = roundMoney(payments.reduce((total, transaction) => total + transaction.amount, 0));
     const remaining = unpaidForecastAmount(forecast, paid);
+    for (const transaction of payments.filter((transaction) => transaction.matchingOnly)) transaction.matchingOnlyForecastId = forecast.id;
     for (const transaction of payments) linkedSchedules.set(transaction.id, { ...forecast });
-    if (remaining === 0) explicitlyPaidForecasts.add(forecast.id);
+    if (remaining === 0) {
+      explicitlyPaidForecasts.add(forecast.id);
+      if (payments.every((transaction) => transaction.matchingOnly)) Object.assign(forecast,
+        { scheduledAmount: forecast.amount, matchedOutsideWindow: true }, nativeFlow(paid, forecast.currency, forecast.kind));
+    }
     else Object.assign(forecast, nativeFlow(remaining, forecast.currency, forecast.kind), {
       scheduledAmount: forecast.amount, paidAmount: paid, partialPayment: true,
       paymentTransactionIds: payments.map((transaction) => transaction.transactionId),
@@ -1712,6 +1734,22 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     if (matched.source === "salary")
       actualPayDates.set(matched.paydayDate || matched.originalDate || matched.date, transaction.date);
   }
+  // Boundary receipts prove an in-window bill was paid, but never become a
+  // second cash flow inside the requested window or consume another forecast.
+  for (const transaction of actual.filter((row) => row.matchingOnly && row.matchingOnlyForecastId == null)) {
+    const candidates = forecasts.filter((forecast) => forecast.source === "bill" &&
+      forecast.date >= plan.startDate && forecast.date <= plan.endDate && !usedForecasts.has(forecast.id) &&
+      !actual.some((other) => !other.matchingOnly && !other.scheduled && forecastMatchesTransaction(forecast, other)) &&
+      (transaction.planScheduledRowId == null || scheduledPlanTransaction(forecast, transaction)) && forecastMatchesTransaction(forecast, transaction));
+    candidates.sort((first, second) => Math.abs(dateTime(first.date) - dateTime(transaction.date)) -
+      Math.abs(dateTime(second.date) - dateTime(transaction.date)) || first.id.localeCompare(second.id));
+    const matched = candidates[0];
+    if (!matched) continue;
+    transaction.matchingOnlyForecastId = matched.id;
+    usedForecasts.add(matched.id);
+    Object.assign(matched, { scheduledAmount: matched.amount, matchedOutsideWindow: true },
+      nativeFlow(transaction.amount, transaction.currency, transaction.kind));
+  }
   for (const transaction of actual) {
     const scheduled = linkedSchedules.get(transaction.id);
     if (!scheduled) continue;
@@ -1728,7 +1766,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const rows = [
     ...forecasts.filter(
       (row) =>
-        !usedForecasts.has(row.id) &&
+        (!usedForecasts.has(row.id) || row.matchedOutsideWindow) &&
         row.date >= plan.startDate &&
         row.date <= plan.endDate &&
         (row.source !== "salary" || plan.includeIncome),
@@ -1956,8 +1994,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const flowAccount = row.source === "allocation"
       ? row.allocationKind === "savings" ? row.sourceAccountId : row.accountId
       : row.fromAccountId ?? row.accountId;
-    let balanceAppliedUsd = isBankReflected(row, flowAccount) ? 0 : row.usd;
-    let balanceAppliedPhp = isBankReflected(row, flowAccount) ? 0 : row.php;
+    let balanceAppliedUsd = row.matchedOutsideWindow || isBankReflected(row, flowAccount) ? 0 : row.usd;
+    let balanceAppliedPhp = row.matchedOutsideWindow || isBankReflected(row, flowAccount) ? 0 : row.php;
     if (row.kind === "conversion") {
       const sourceReflected = isBankReflected(row, row.fromAccountId);
       const destinationReflected = isBankReflected(row, row.toAccountId);
@@ -2176,13 +2214,14 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       );
       const reserveUsed = roundMoney(fromBill + fromUnassigned);
       const reserveShortfall = roundMoney(grossAmount - reserveUsed);
-      const reserveReflected = isBankReflected(row, row.accountId) || isBankReflected(row, row.reserveAccountId);
+      const reserveReflected = row.matchedOutsideWindow || isBankReflected(row, row.accountId) || isBankReflected(row, row.reserveAccountId);
       if (!reserveReflected) billReserves.set(key, roundMoney(saved - fromBill));
       const funding = billFunding.get(key);
       if (funding && !reserveReflected) {
         funding.base = funding.amount;
         funding.paidThrough = row.originalDate || row.scheduledDate || row.date;
       }
+      if (funding && row.matchedOutsideWindow) funding.paidThrough = row.originalDate || row.date;
       if (!reserveReflected) unassigned[row.currency] = roundMoney((unassigned[row.currency] || 0) - fromUnassigned);
       // Reconciliation keeps the full payment; only its unfunded portion uses available cash.
       append({
@@ -2348,6 +2387,34 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       balanceUsd: reconciledUsd, balancePhp: reconciledPhp,
     };
   });
+  if (plan.continuous && !options._resolvedCardDueFunding &&
+      paymentEntries.some((row) => row.liveCardBalance && !completedForecasts.has(row.id))) {
+    const asset = (account, currency) => account && account.currency === currency &&
+      !["credit", "loan"].includes(account.type || account.account_type) && !account.isArchived && !account.is_archived &&
+      !account.isSyncExcluded && !account.is_sync_excluded &&
+      !account.mergedIntoAccountId && !account.merged_into_account_id;
+    const fundedDues = new Map();
+    for (const row of reconciled.filter((row) => row.source === "creditCardDue")) {
+      const available = cardAccountsById.get(Number(linkedAccount("available", row.currency,
+        salary.currency === row.currency ? salary.accountId : null)));
+      let funded = asset(available, row.currency) ? row.amount : 0;
+      if (!funded) for (const coverage of row.annualBillCoverage || []) {
+        const reserveId = plan.accountLinks
+          ? plan.accountLinks[`annualReserve${row.currency === "PHP" ? "Php" : "Usd"}AccountId`] : coverage.reserveAccountId;
+        if (!asset(cardAccountsById.get(Number(reserveId)), row.currency)) continue;
+        const earmark = Math.max(0, roundMoney(coverage.reserveUsed));
+        const alreadyPaid = Math.min(earmark, Math.max(0, roundMoney(coverage.reserveAlreadyPaidAmount)));
+        const transferred = Math.min(roundMoney(earmark - alreadyPaid), Math.max(0, roundMoney(coverage.reserveTransferredAmount)));
+        funded = roundMoney(funded + Math.min(Math.max(0, roundMoney(earmark - alreadyPaid - transferred)),
+          Math.max(0, roundMoney(row.amount - funded))));
+      }
+      fundedDues.set(row.id, funded);
+    }
+    // The first pass resolves actual annual-reserve coverage. Recalculate live
+    // balance targets once when that native funding differs from the estimate.
+    if ([...fundedDues].some(([id, amount]) => assumedCardFunding.has(id) && Math.abs(assumedCardFunding.get(id) - amount) >= 0.005))
+      return buildPlanRows(plan, document, rate, { ...options, _resolvedCardDueFunding: fundedDues });
+  }
   return plan.accountLinks || completionActual.some((transaction) => transaction.planRowId != null &&
     String(transaction.planId) === String(plan.id))
     ? linkedPlanTransactions(reconciled, plan, completionActual, options.accounts || [], rate, today)

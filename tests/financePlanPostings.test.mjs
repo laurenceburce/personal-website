@@ -210,6 +210,149 @@ const livePlanner = (entries = [], completed = []) => {
   return document;
 };
 
+test("removing a manual account preserves its posted history through refreshes and later planner edits", async () => {
+  for (const flags of [{ is_archived: 1 }, { is_sync_excluded: 1 }, { merged_into_account_id: 99 }]) {
+    const fill = entry();
+    const document = livePlanner([fill]);
+    const account = manual(37, "credit", 100);
+    const store = ledger([account], document);
+    await store.refresh();
+    const recorded = store.rows()[0];
+    Object.assign(account, flags);
+    for (let index = 0; index < 3; index++) await store.refresh();
+    assert.equal(store.rows().length, 1);
+    assert.equal(store.rows()[0].id, recorded.id);
+    assert.equal(store.rows()[0].amount, 20);
+    assert.equal(financePlanTransactionMetadata(store.rows()[0]).planDetached, true);
+    assert.equal(store.accounts()[0].nativeCurrentBalance, 120);
+    fill.amount = 35;
+    fill.date = "2026-12-01";
+    await store.refresh();
+    document.plans[0].entries = [];
+    for (let index = 0; index < 3; index++) await store.refresh();
+    assert.equal(store.rows()[0].id, recorded.id);
+    assert.equal(store.rows()[0].amount, 20);
+    assert.equal(store.accounts()[0].nativeCurrentBalance, 120);
+    assert.equal(account.opening_balance, 100);
+    for (const field of Object.keys(flags)) delete account[field];
+    document.plans[0].entries = [entry({ amount: 35 })];
+    await store.refresh();
+    assert.equal(store.rows().length, 1, "reactivating an account cannot regenerate its archived event");
+    assert.equal(store.rows()[0].amount, 20);
+  }
+});
+
+test("an archived transfer account freezes both posted legs and keeps them in later balance-payment baselines", async () => {
+  const payment = entry({ id: "old-pay", kind: "transfer", accountId: null, fromAccountId: 34, toAccountId: 37, amount: 50 });
+  const document = livePlanner([payment]);
+  const source = manual(34, "savings", 1000);
+  const store = ledger([source, manual(37, "credit", 100), manual(1, "checking", 1000)], document);
+  await store.refresh();
+  const original = store.rows().map((row) => [row.id, row.account_id, row.amount]);
+  source.is_archived = 1;
+  const remaining = entry({ id: "new-pay", kind: "transfer", accountId: null, fromAccountId: 1, toAccountId: 37,
+    amount: 0, amountMode: "cardBalance" });
+  document.plans[0].entries.push(remaining);
+  await store.refresh(); await store.refresh();
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [950, 0, 950]);
+  assert.equal(store.rows().find((row) => row.source_plan_row_id === "entry:new-pay").amount, 50,
+    "a retained card credit stays in the baseline instead of being subtracted as derived activity");
+  assert.ok(store.rows().filter((row) => row.source_plan_row_id === "entry:old-pay")
+    .every((row) => financePlanTransactionMetadata(row).planDetached));
+  payment.amount = 80;
+  await store.refresh();
+  payment.date = "2026-12-01";
+  await store.refresh();
+  document.plans[0].entries = [];
+  for (let index = 0; index < 3; index++) await store.refresh();
+  assert.deepEqual(store.rows().map((row) => [row.id, row.account_id, row.amount]), original);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [950, 50, 1000]);
+});
+
+test("freezing a removed manual account preserves its linked provider counterpart without rewriting bank history", async () => {
+  for (const freezeBeforeImport of [false, true]) for (const removedLeg of ["manual", "linked"]) {
+    const payment = entry({ id: "payment", kind: "transfer", accountId: null, fromAccountId: 34, toAccountId: 37, amount: 50 });
+    const document = livePlanner([payment], [completion("payment")]);
+    const manualSource = manual(34, "savings", 1000);
+    const card = { ...bank(37, 100), account_type: "credit" };
+    const removed = removedLeg === "manual" ? manualSource : card;
+    const store = ledger([manualSource, card], document);
+    await store.refresh();
+    if (freezeBeforeImport) { removed.is_archived = 1; await store.refresh(); }
+    const imported = { id: 9, transaction_date: today, account_id: 37, currency: "PHP", kind: "income", amount: 50,
+      merchant: "Original bank payment", external_provider: "plaid", external_transaction_id: "bank-payment" };
+    card.current_balance = 50;
+    store.add(imported);
+    await store.refresh();
+    const recorded = store.rows().map((row) => [row.id, row.account_id, row.amount]);
+    removed.is_archived = 1;
+    payment.amount = 80;
+    await store.refresh();
+    document.plans[0].entries = [];
+    document.plans[0].completedRows = [];
+    for (let index = 0; index < 3; index++) await store.refresh();
+    assert.deepEqual(store.rows().map((row) => [row.id, row.account_id, row.amount]), recorded);
+    const bankReceipt = store.rows().find((row) => row.id === 9);
+    for (const [field, value] of Object.entries(imported)) assert.equal(bankReceipt[field], value, field);
+    assert.ok(store.rows().every((row) => financePlanTransactionMetadata(row).planDetached));
+    assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [950, 50]);
+  }
+});
+
+test("archiving a linked account retains its recorded provisional receipt and still reconciles the bank import", async () => {
+  const purchase = entry({ accountId: 1 });
+  const document = planner([purchase]);
+  const account = bank(1);
+  const store = ledger([account], document);
+  await store.refresh();
+  const recordedId = store.rows()[0].id;
+  account.is_archived = 1;
+  purchase.amount = 35;
+  for (let index = 0; index < 3; index++) await store.refresh();
+  assert.equal(store.rows().length, 1);
+  assert.equal(store.rows()[0].id, recordedId);
+  assert.equal(store.rows()[0].amount, 20);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 980);
+  document.plans[0].entries = [];
+  document.plans[0].completedRows = [];
+  await store.refresh();
+  account.current_balance = 980;
+  const imported = { id: 9, transaction_date: today, account_id: 1, currency: "PHP", kind: "expense", amount: 20,
+    merchant: "Original imported purchase", external_provider: "plaid", external_transaction_id: "bank-purchase" };
+  store.add(imported);
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().length, 1);
+  for (const [field, value] of Object.entries(imported)) assert.equal(store.rows()[0][field], value, field);
+  assert.equal(financePlanTransactionMetadata(store.rows()[0]).planDetached, true);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 980);
+});
+
+test("inactive manual accounts cannot receive new explicit or automatic transfer legs", () => {
+  const rows = [entry(), entry({ id: "from-inactive", kind: "transfer", accountId: null, fromAccountId: 37, toAccountId: 34 }),
+    entry({ id: "to-inactive", kind: "transfer", accountId: null, fromAccountId: 34, toAccountId: 37 }),
+    entry({ id: "recurring", kind: "transfer", accountId: null, fromAccountId: 34, toAccountId: 37,
+      date: "1900-01-01", recurrence: "daily" })];
+  const document = livePlanner(rows, rows.map((row) => completion(row.id)));
+  const accounts = [manual(34, "checking", 1000), { ...manual(37, "savings", 100), is_archived: 1 }];
+  assert.deepEqual(financePlanPostingSpecs(document, accounts, [], { today }), []);
+});
+
+test("archived payday savings preserve prior paired history without generating new active-source withdrawals", async () => {
+  const document = livePlanner();
+  document.salary = { amount: 0, currency: "PHP", accountId: 1, payFrequency: "semimonthly", firstPayDate: "2026-11-01" };
+  document.allocations = [{ id: "saving", name: "Savings", kind: "savings", amount: 50, currency: "PHP", accountId: 34, sourceAccountId: 1 }];
+  document.plans[0].includeAllocations = true;
+  const savings = manual(34, "savings", 200);
+  const store = ledger([manual(1, "checking", 1000), savings], document);
+  await store.refresh();
+  const recorded = store.rows().map((row) => [row.id, row.account_id, row.amount]);
+  savings.is_archived = 1;
+  document.allocations[0].amount = 75;
+  await store.refresh("2026-12-01"); await store.refresh("2026-12-01");
+  assert.deepEqual(store.rows().map((row) => [row.id, row.account_id, row.amount]), recorded);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [900, 300]);
+});
+
 test("live manual balances include existing planned Fill and payments, preserve independent history and reverse corrections", async () => {
   const fill = entry({ amount: 10457.95 });
   const payment = entry({ id: "payment", description: "Card Payment", kind: "transfer", accountId: null,
@@ -414,6 +557,30 @@ test("a recorded Google card charge does not generate a one-cent recurring bill 
   assert.equal(store.accounts()[0].nativeCurrentBalance, 2);
 });
 
+test("a posted bill before the planner opening prevents a second manual account charge on refresh", async () => {
+  const document = livePlanner();
+  document.plans[0].startDate = today;
+  document.bills = [{ id: "google", name: "Google", amount: 2, currency: "USD", cadence: "monthly", dueDay: 18, accountId: 37 }];
+  const receipt = { id: 9, transaction_date: "2026-11-17", account_id: 37, currency: "USD", kind: "expense",
+    amount: 1.99, merchant: "GOOGLE *Google One", category: "Subscriptions" };
+  const store = ledger([manual(37, "credit", 0, "USD")], document, [receipt]);
+  await store.refresh(); await store.refresh();
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 1.99);
+  assert.equal(store.rows().length, 1);
+  assert.equal(store.rows()[0].id, receipt.id);
+  assert.equal(store.rows()[0].amount, 1.99);
+  const partial = { ...receipt, amount: 1.50, source_plan_id: "main", source_plan_row_id: "entry:actual-google",
+    source_plan_leg: "single", plan_generated: 0, plan_record_json: JSON.stringify({ planId: "main", rowId: "entry:actual-google",
+      planScheduledRowId: "bill:google:2026-11-18" }) };
+  const partialDocument = structuredClone(document);
+  partialDocument.plans[0].entries = [{ id: "actual-google", date: receipt.transaction_date, description: receipt.merchant,
+    kind: "expense", accountId: 37, amount: 1.50, currency: "USD", scheduledRowId: "bill:google:2026-11-18" }];
+  const partialStore = ledger([manual(37, "credit", 0, "USD")], partialDocument, [partial]);
+  await partialStore.refresh(); await partialStore.refresh();
+  assert.equal(partialStore.accounts()[0].nativeCurrentBalance, 2);
+  assert.equal(partialStore.rows().find((row) => row.source_plan_row_id === "bill:google:2026-11-18").amount, 0.50);
+});
+
 test("annual funding and its reserve-covered payment use native transfer legs without spending twice", async () => {
   const document = livePlanner();
   document.salary = { amount: 0, currency: "PHP", accountId: 1, payFrequency: "biweekly", firstPayDate: today };
@@ -454,6 +621,57 @@ test("manual card statements require funding and post debt and funding movements
   document.plans[0].accountLinks = {};
   await store.refresh();
   assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [1000, 500]);
+});
+
+test("advancing a manual card statement preserves its settled cycle and records the next due only once", async () => {
+  for (const withClosingDate of [false, true]) {
+    const document = livePlanner();
+    document.plans[0].accountLinks = { availablePhpAccountId: 1 };
+    const card = { ...manual(37, "credit", 500), credit_card_due_status: "manual",
+      credit_card_due_json: JSON.stringify({ statementBalance: 200, dueDate: today,
+        ...(withClosingDate ? { lastStatementDate: "2026-10-25" } : {}) }) };
+    const store = ledger([manual(1, "checking", 1000), card], document);
+    await store.refresh();
+    const oldReceipts = store.rows().map((row) => [row.id, row.account_id, row.amount, row.transaction_date]);
+    card.credit_card_due_json = JSON.stringify({ statementBalance: 100, dueDate: "2026-12-18",
+      ...(withClosingDate ? { lastStatementDate: "2026-11-25" } : {}) });
+    for (let index = 0; index < 3; index++) await store.refresh("2026-11-26");
+    assert.deepEqual(store.rows().map((row) => [row.id, row.account_id, row.amount, row.transaction_date]), oldReceipts);
+    assert.ok(store.rows().every((row) => financePlanTransactionMetadata(row).planDetached));
+    assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [800, 300]);
+    await store.refresh("2026-12-17");
+    assert.equal(store.rows().length, 2, "the next future statement is still a forecast");
+    for (let index = 0; index < 3; index++) await store.refresh("2026-12-18");
+    assert.equal(store.rows().length, 4);
+    assert.deepEqual(store.rows().filter((row) => row.source_plan_row_id === `creditCardDue:37:${today}`)
+      .map((row) => [row.id, row.account_id, row.amount, row.transaction_date]), oldReceipts);
+    assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [700, 200]);
+  }
+});
+
+test("same-cycle manual statement amount and due-date corrections remain authoritative", async () => {
+  for (const withClosingDate of [false, true]) {
+    const document = livePlanner();
+    document.plans[0].accountLinks = { availablePhpAccountId: 1 };
+    const card = { ...manual(37, "credit", 500), credit_card_due_status: "manual",
+      credit_card_due_json: JSON.stringify({ statementBalance: 200, dueDate: today,
+        ...(withClosingDate ? { lastStatementDate: "2026-10-25" } : {}) }) };
+    const store = ledger([manual(1, "checking", 1000), card], document);
+    await store.refresh();
+    card.credit_card_due_json = JSON.stringify({ statementBalance: 150, dueDate: today,
+      ...(withClosingDate ? { lastStatementDate: "2026-10-25" } : {}) });
+    await store.refresh();
+    assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [850, 350]);
+    const correctedDate = withClosingDate ? "2026-12-18" : "2026-11-19";
+    card.credit_card_due_json = JSON.stringify({ statementBalance: 150, dueDate: correctedDate,
+      ...(withClosingDate ? { lastStatementDate: "2026-10-25" } : {}) });
+    await store.refresh();
+    assert.deepEqual(store.rows(), [], "a due-date correction within the same statement replaces its derived posting date");
+    await store.refresh(correctedDate); await store.refresh(correctedDate);
+    assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [850, 350]);
+    assert.equal(store.rows().length, 2);
+    assert.ok(store.rows().every((row) => !financePlanTransactionMetadata(row).planDetached));
+  }
 });
 
 test("automatic conversion amounts keep their original exchange rate and reject inactive manual legs", async () => {
