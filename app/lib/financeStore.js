@@ -266,6 +266,7 @@ export const ensureFinanceSchema = async () => {
         CREATE TABLE IF NOT EXISTS personal_finance_accounts (
           id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
           name VARCHAR(80) NOT NULL,
+          custom_name VARCHAR(80) NULL,
           account_type VARCHAR(32) NOT NULL DEFAULT 'checking',
           opening_balance DECIMAL(13,2) NOT NULL DEFAULT 0,
           currency CHAR(3) NOT NULL DEFAULT 'USD',
@@ -370,6 +371,10 @@ export const ensureFinanceSchema = async () => {
       await runMigration(
         pool,
         "ALTER TABLE personal_finance_accounts ADD COLUMN currency CHAR(3) NOT NULL DEFAULT 'USD'",
+      );
+      await runMigration(
+        pool,
+        "ALTER TABLE personal_finance_accounts ADD COLUMN custom_name VARCHAR(80) NULL",
       );
       await runMigration(
         pool,
@@ -2298,6 +2303,7 @@ export async function updateFinanceAccount(id, data) {
   const [result] = await pool.query(
     `UPDATE personal_finance_accounts a
      SET name = ?,
+         custom_name = NULL,
          account_type = ?,
          opening_balance = ? ${movementOperator} (
            SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
@@ -2318,6 +2324,33 @@ export async function updateFinanceAccount(id, data) {
   );
   if (!result.affectedRows) throw appError("An active manual account with this currency was not found.", 404);
   return { id: accountId };
+}
+
+export async function renameFinanceAccount(id, data) {
+  if (!["number", "string"].includes(typeof id) ||
+      (typeof id === "string" && !/^\d+$/.test(id)) ||
+      !Number.isSafeInteger(Number(id)) || Number(id) < 1)
+    throw appError("Choose a valid account.");
+  const accountId = Number(id);
+  const name = typeof data?.name === "string" ? data.name.trim().replace(/\s+/g, " ") : "";
+  if (!name || name.length > 80)
+    throw appError("Enter an account name of up to 80 characters.");
+  const pool = requirePool(await ensureFinanceSchema());
+  // Keep the effective name in the existing column so account joins and saved
+  // account IDs share one label. The override survives provider refreshes.
+  const [result] = await pool.query(
+    `UPDATE personal_finance_accounts
+     SET official_name = CASE
+           WHEN NULLIF(official_name, '') IS NULL AND
+             (NULLIF(external_provider, '') IS NOT NULL OR external_account_id IS NOT NULL OR connection_id IS NOT NULL)
+           THEN name ELSE official_name END,
+         name = ?, custom_name = ?, updated_at = ?
+     WHERE id = ? AND is_archived = 0 AND is_sync_excluded = 0
+       AND merged_into_account_id IS NULL`,
+    [name, name, new Date(), accountId],
+  );
+  if (!result.affectedRows) throw appError("An active account was not found.", 404);
+  return { id: accountId, name };
 }
 
 export async function archiveFinanceAccount(id) {
@@ -3103,7 +3136,7 @@ async function syncPlaidAccounts(
       }
       if (accountId) {
         await database.query(
-          `UPDATE personal_finance_accounts SET name = ?, account_type = ?, currency = ?,
+          `UPDATE personal_finance_accounts SET name = COALESCE(custom_name, ?), account_type = ?, currency = ?,
         current_balance = ?, available_balance = ?, account_mask = ?, official_name = ?,
         persistent_account_id = COALESCE(NULLIF(?, ''), persistent_account_id),
         connection_id = GREATEST(COALESCE(connection_id, 0), ?),
@@ -3666,6 +3699,9 @@ export async function repairDuplicateFinanceAccounts({
         .filter(({ due }) => due)
         .sort((a, b) => (Date.parse(b.due.syncedAt) || 0) - (Date.parse(a.due.syncedAt) || 0))[0];
       const canonical = group.accounts.find((account) => Number(account.id) === Number(group.canonicalId));
+      const customName = canonical?.custom_name || [...group.accounts]
+        .filter((account) => account.custom_name)
+        .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0]?.custom_name || null;
       const autopay = Number(canonical?.credit_card_autopay_enabled) === 1 ? canonical
         : [...group.accounts].filter((account) => Number(account.credit_card_autopay_enabled) === 1)
           .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))[0] || canonical || latest;
@@ -3714,6 +3750,7 @@ export async function repairDuplicateFinanceAccounts({
         `UPDATE personal_finance_accounts SET connection_id = ?, current_balance = ?, available_balance = ?,
         account_mask = ?, official_name = ?, persistent_account_id = ?, credit_card_due_json = ?,
         credit_card_due_status = ?, credit_card_autopay_enabled = ?, credit_card_autopay_days_before_due = ?,
+        name = COALESCE(?, name), custom_name = COALESCE(?, custom_name),
         is_sync_excluded = ?, is_archived = ?, updated_at = NOW(3) WHERE id = ?`,
         [
           latest.connection_id,
@@ -3727,6 +3764,8 @@ export async function repairDuplicateFinanceAccounts({
             latestDue.account.credit_card_due_status === "current" ? "current" : "stale" : "unavailable",
           Number(autopay.credit_card_autopay_enabled) === 1 ? 1 : 0,
           autopay.credit_card_autopay_days_before_due != null && Number.isInteger(autopayDays) && autopayDays >= 0 && autopayDays <= 31 ? autopayDays : 7,
+          customName,
+          customName,
           excluded ? 1 : 0,
           archived ? 1 : 0,
           group.canonicalId,

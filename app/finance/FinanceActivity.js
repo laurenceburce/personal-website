@@ -27,6 +27,8 @@ const ACCOUNT_GROUPS = [
 ];
 const accountGroup = (account) =>
   ["checking", "savings", "credit"].includes(account.type) ? account.type : "other";
+const canRenameAccount = (account) =>
+  !account.isArchived && !account.isSyncExcluded && !account.mergedIntoAccountId;
 const canEditManualAccount = (account) =>
   !account.isLinked && !account.provider && !account.connectionId &&
   !account.isArchived && !account.isSyncExcluded && !account.mergedIntoAccountId;
@@ -185,6 +187,43 @@ function CreditCardDue({ account }) {
             : "Enter payment details below to include this card in Budget Plans."}
       </small>
     </div>
+  );
+}
+
+export function AccountRenameForm({ account, disabled = false, saving = false, onSave, onCancel }) {
+  const [name, setName] = useState(account.name || "");
+  const [error, setError] = useState("");
+  return (
+    <form className="fa-manual-account-form fa-account-edit-form"
+      aria-label={`Rename ${financeAccountLabel(account)}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (disabled || saving || !canRenameAccount(account)) return;
+        const clean = name.trim().replace(/\s+/g, " ");
+        if (!clean || clean.length > 80) return setError("Enter an account name of up to 80 characters.");
+        setError("");
+        return onSave({ name: clean });
+      }}>
+      <h3>Rename account</h3>
+      <fieldset disabled={disabled || saving}>
+        <legend className="fa-sr-only">Account display name</legend>
+        <label className="fa-field">
+          <span>Account name</span>
+          <input name="name" required maxLength={80} autoFocus value={name}
+            onChange={(event) => { setName(event.target.value); setError(""); }} />
+        </label>
+        <p>{account.isLinked
+          ? "This name appears throughout your planner and stays after bank refreshes."
+          : "This name appears in your planner and account lists."}</p>
+        {error && <p className="fa-form-error fa-negative" role="alert">{error}</p>}
+        <div className="fa-button-row">
+          <button type="submit" className="fa-button fa-primary" disabled={disabled || saving}>
+            {saving ? "Saving…" : "Save name"}
+          </button>
+          <ActionButton disabled={disabled || saving} onClick={onCancel}>Cancel</ActionButton>
+        </div>
+      </fieldset>
+    </form>
   );
 }
 
@@ -1268,6 +1307,7 @@ export function BankAccountsPanel({
   });
   const [manualAccountError, setManualAccountError] = useState("");
   const [editingAccountId, setEditingAccountId] = useState(null);
+  const [renamingAccountId, setRenamingAccountId] = useState(null);
   const handlerRef = useRef(null);
   const lockRef = useRef(false);
   const mountedRef = useRef(true);
@@ -1488,6 +1528,15 @@ export function BankAccountsPanel({
       await callbacks.current.onRefresh?.();
       setEditingAccountId(null);
       callbacks.current.onNotice?.(`${details.name} account details and balance saved.`);
+    });
+  }
+
+  async function saveAccountName(account, details) {
+    await runAction(`rename-account:${account.id}`, async () => {
+      await callbacks.current.onAction("renameAccount", { id: account.id, name: details.name });
+      await callbacks.current.onRefresh?.();
+      setRenamingAccountId(null);
+      callbacks.current.onNotice?.(`Account renamed to ${details.name}.`);
     });
   }
 
@@ -2163,6 +2212,22 @@ export function BankAccountsPanel({
                                 )}
                             </footer>
                             <div className="fa-account-controls">
+                              {canRenameAccount(account) && (
+                                <ActionButton
+                                  icon="edit"
+                                  disabled={working || unavailable}
+                                  aria-label={`Rename ${financeAccountLabel(account)}`}
+                                  aria-expanded={renamingAccountId === account.id}
+                                  aria-controls={`fa-account-rename-${account.id}`}
+                                  onClick={() => {
+                                    setRenamingAccountId((current) => current === account.id ? null : account.id);
+                                    setEditingAccountId(null);
+                                    setConfirmation(null);
+                                  }}
+                                >
+                                  Rename
+                                </ActionButton>
+                              )}
                               {canEditManualAccount(account) && (
                                 <ActionButton
                                   icon="edit"
@@ -2172,6 +2237,7 @@ export function BankAccountsPanel({
                                   aria-controls={`fa-account-edit-${account.id}`}
                                   onClick={() => {
                                     setEditingAccountId((current) => current === account.id ? null : account.id);
+                                    setRenamingAccountId(null);
                                     setConfirmation(null);
                                   }}
                                 >
@@ -2183,6 +2249,7 @@ export function BankAccountsPanel({
                                 disabled={working || unavailable}
                                 onClick={() => {
                                   setEditingAccountId(null);
+                                  setRenamingAccountId(null);
                                   setConfirmation({ kind: "account", id: account.id });
                                 }}
                                 aria-label={`Remove ${financeAccountLabel(account)}`}
@@ -2190,6 +2257,18 @@ export function BankAccountsPanel({
                                 Remove
                               </ActionButton>
                             </div>
+                            {canRenameAccount(account) && renamingAccountId === account.id && (
+                              <div id={`fa-account-rename-${account.id}`}>
+                                <AccountRenameForm
+                                  key={account.id}
+                                  account={account}
+                                  disabled={working || unavailable}
+                                  saving={pending === `rename-account:${account.id}`}
+                                  onSave={(details) => saveAccountName(account, details)}
+                                  onCancel={() => setRenamingAccountId(null)}
+                                />
+                              </div>
+                            )}
                             {canEditManualAccount(account) && editingAccountId === account.id && (
                               <div id={`fa-account-edit-${account.id}`}>
                                 <ManualAccountEditForm

@@ -3720,6 +3720,24 @@ test("a bank debit cannot pay two cards at the same issuer and a mask identifies
   assert.equal(rows.at(-1).balanceUsd, 600);
 });
 
+test("renamed cards retain their bank names for unique payment attribution", () => {
+  const { accounts } = cardStatementFixture();
+  accounts[1] = { ...accounts[1], name: "Household spending", officialName: "Travel Card" };
+  accounts.push({ ...accounts[1], id: 3, name: "Everyday rewards", officialName: "Rewards Card", mask: "5678" });
+  const debit = { id: 10, date: "2026-11-02", amount: 50, currency: "USD", kind: "expense", accountId: 1,
+    category: "Loan Payments", merchant: "Travel Card payment" };
+  const before = structuredClone({ accounts, debit });
+  const statements = getCreditCardObligations(accounts, { transactions: [debit], today: "2026-11-04" })
+    .filter((row) => !row.estimated);
+  assert.deepEqual(statements.map((row) => [row.creditAccountId, row.paidAmount, row.amount]), [[2, 50, 150], [3, 0, 200]]);
+  assert.deepEqual(statements[0].paymentTransactionIds, [10]);
+  assert.deepEqual({ accounts, debit }, before);
+
+  const ambiguous = getCreditCardObligations(accounts.map((account) => account.id === 3
+    ? { ...account, officialName: "Travel Card" } : account), { transactions: [debit], today: "2026-11-04" });
+  assert.deepEqual(ambiguous.filter((row) => !row.estimated).map((row) => row.paidAmount), [0, 0]);
+});
+
 function annualCardFeeFixture() {
   return {
     document: {

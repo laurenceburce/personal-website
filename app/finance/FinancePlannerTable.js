@@ -176,6 +176,9 @@ export default function FinancePlannerTable({
     .sort((a, b) => ["USD", "PHP"].indexOf(a.currency) - ["USD", "PHP"].indexOf(b.currency) ||
       accountTypeOrder(a) - accountTypeOrder(b));
   const expanded = accountsExpanded && accountColumns.length > 0;
+  const accountGroups = ["USD", "PHP"].map((currency) => ({
+    currency, accounts: accountColumns.filter((account) => account.currency === currency),
+  })).filter((group) => group.accounts.length);
   const currentId = current == null ? null : String(current.id);
   const tableId = `planner-transactions-${encodeURIComponent(String(plan.id || "live"))}`;
   const windowKey = `${viewKey ?? `${plan.id}:${plan.startDate}:${plan.endDate}`}:${today}`;
@@ -261,21 +264,26 @@ export default function FinancePlannerTable({
     </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
       <table className="fpt-table" style={expanded ? { width: `${760 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
-        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show separate account columns to the right.</caption>
+        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show account columns grouped by currency to the right.</caption>
         <colgroup><col style={{ width: expanded ? "90px" : "9%" }}/><col style={{ width: expanded ? "240px" : "31%" }}/>
           <col style={{ width: expanded ? "120px" : "15%" }}/><col style={{ width: expanded ? "120px" : "15%" }}/>
-          <col style={{ width: expanded ? "190px" : "30%" }}/>
-          {expanded && accountColumns.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>
-        <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">USD</th><th scope="col">PHP</th>
-          <th scope="col" className="fpt-projection-heading"><span>Running balance</span>
+          <col style={{ width: expanded ? "190px" : "30%" }}/></colgroup>
+        {expanded && accountGroups.map((group) => <colgroup key={group.currency}>
+          {group.accounts.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>)}
+        <thead><tr><th scope="col" rowSpan={expanded ? 2 : undefined}>Date</th>
+          <th scope="col" rowSpan={expanded ? 2 : undefined}>Description</th>
+          <th scope="col" rowSpan={expanded ? 2 : undefined}>USD</th><th scope="col" rowSpan={expanded ? 2 : undefined}>PHP</th>
+          <th scope="col" rowSpan={expanded ? 2 : undefined} className="fpt-projection-heading"><span>Running balance</span>
             <button type="button" className="fpt-balance-expand" disabled={loading || !accountColumns.length}
               aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
               {expanded ? "Collapse accounts" : "Expand accounts"}
             </button>
           </th>
-          {expanded && accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
-            <strong>{accountName(account)}</strong><small>{account.currency}{["credit", "loan"].includes(account.type) ? " · Balance owed" : ""}</small>
-          </th>)}</tr></thead>
+          {expanded && accountGroups.map((group) => <th key={group.currency} scope="colgroup"
+            className="fpt-currency-heading" colSpan={group.accounts.length} data-currency={group.currency}>{group.currency}</th>)}
+        </tr>{expanded && <tr>{accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
+          <strong>{accountName(account)}</strong><small>{({ checking: "Checking", savings: "Savings", credit: "Credit card", loan: "Loan", cash: "Cash" })[account.type || account.account_type] || "Account"}</small>
+        </th>)}</tr>}</thead>
         <tbody>{visible.map((row, index) => {
           const category = getPlanRowCategory(row);
           const manualEntry = (row.source === "manual" || row.planGenerated) && plan.entries?.find((entry) => entry.id === row.entryId);

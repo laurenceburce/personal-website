@@ -1006,6 +1006,91 @@ test("the transaction account filter distinguishes same-named savings accounts b
   assert.match(html, /Savings · ••3456/);
 });
 
+function accountRenameHarness(props = {}) {
+  const slots = [];
+  let cursor = 0;
+  const saved = [];
+  const components = loadComponents({ ...require("react"), useState(initial) {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+    return [slots[index], (next) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }];
+  } });
+  const currentProps = { account, onSave: (details) => saved.push(details), onCancel() {}, ...props };
+  const render = () => { cursor = 0; return components.AccountRenameForm(currentProps); };
+  return { render, saved, props: currentProps,
+    set(value) { findElement(render(), (node) => node.type === "input").props.onChange({ target: { value } }); },
+    submit() { return findElement(render(), (node) => node.type === "form").props.onSubmit({ preventDefault() {} }); },
+  };
+}
+
+test("account renaming validates a name and submits no balances or other account details", () => {
+  const linked = { ...bankAccounts[0], name: "Bank checking", nativeCurrentBalance: 1500 };
+  const before = structuredClone(linked);
+  const harness = accountRenameHarness({ account: linked });
+  assert.match(renderToStaticMarkup(harness.render()), /bank refreshes/);
+  for (const invalid of ["", " ", "a".repeat(81)]) {
+    harness.set(invalid);
+    harness.submit();
+    assert.equal(harness.saved.length, 0);
+    assert.ok(findElement(harness.render(), (node) => node.props?.role === "alert"));
+  }
+  harness.set("  Daily   spending  ");
+  harness.props.account = { ...linked, nativeCurrentBalance: 2500 };
+  harness.submit();
+  assert.deepEqual(harness.saved, [{ name: "Daily spending" }]);
+  assert.deepEqual(linked, before);
+  assert.equal(findElement(harness.render(), (node) => node.props?.name === "currentBalance"), null);
+});
+
+test("account renaming is available to manual and linked accounts and saves then refreshes once", async () => {
+  for (const flags of [{}, { isLinked: true, provider: "plaid", connectionId: 4 },
+    { isLinked: true, provider: "brankas", connectionId: 5 }]) {
+    const notices = [];
+    const current = { ...account, ...flags };
+    const before = structuredClone(current);
+    const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [current] },
+      onNotice: (notice) => notices.push(notice) } });
+    const rename = actionButton(harness.render(), "Rename");
+    assert.equal(rename.props["aria-expanded"], false);
+    rename.props.onClick();
+    assert.equal(actionButton(harness.render(), "Rename").props["aria-expanded"], true);
+    const editor = findElement(harness.render(), (node) => node.type?.name === "AccountRenameForm");
+    assert.equal(editor.props.account, current);
+    await editor.props.onSave({ name: "Daily spending", currentBalance: 999, currency: "EUR" });
+    assert.deepEqual(harness.actions, [{ action: "renameAccount", data: { id: current.id, name: "Daily spending" } }]);
+    assert.equal(harness.refreshes(), 1);
+    assert.deepEqual(notices, ["Account renamed to Daily spending."]);
+    assert.equal(findElement(harness.render(), (node) => node.type?.name === "AccountRenameForm"), null);
+    assert.deepEqual(current, before);
+  }
+});
+
+test("failed renames keep the form open, while cancel and disabled accounts cannot save", async () => {
+  const errors = [];
+  const harness = bankHarness({ result() { throw new Error("Name was not saved."); },
+    props: { activity: { ...bankActivity, accounts: [account] }, onError: (error) => errors.push(error) } });
+  actionButton(harness.render(), "Rename").props.onClick();
+  let editor = findElement(harness.render(), (node) => node.type?.name === "AccountRenameForm");
+  await editor.props.onSave({ name: "Wallet" });
+  assert.deepEqual(errors, ["Name was not saved."]);
+  assert.equal(harness.refreshes(), 0);
+  editor = findElement(harness.render(), (node) => node.type?.name === "AccountRenameForm");
+  assert.ok(editor);
+  editor.props.onCancel();
+  assert.equal(findElement(harness.render(), (node) => node.type?.name === "AccountRenameForm"), null);
+  assert.equal(harness.actions.length, 1);
+  for (const props of [{ disabled: true }, { saving: true }, { account: { ...account, isArchived: true } }]) {
+    const blocked = accountRenameHarness(props);
+    blocked.set("New name");
+    blocked.submit();
+    assert.equal(blocked.saved.length, 0);
+  }
+  for (const flags of [{ isArchived: true }, { isSyncExcluded: true }, { mergedIntoAccountId: 2 }]) {
+    const blocked = bankHarness({ props: { activity: { ...bankActivity, accounts: [{ ...account, ...flags }] } } });
+    assert.equal(actionButton(blocked.render(), "Rename"), null);
+  }
+});
+
 function manualAccountEditHarness(props = {}) {
   const slots = [];
   let cursor = 0;

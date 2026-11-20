@@ -212,6 +212,32 @@ test("manual card details reject invalid dates, money and provider-managed or un
   await assert.rejects(api.updateFinanceManualCreditCardDetails(valid), (error) => error.status === 404);
 });
 
+test("account renaming changes only the display name for manual and bank-linked accounts", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend(() => ({ affectedRows: 1 }));
+  assert.deepEqual(await api.renameFinanceAccount("9", { name: "  Daily   spending  ",
+    currentBalance: 0, currency: "EUR", type: "credit", connectionId: 999 }), { id: 9, name: "Daily spending" });
+  const update = queries.find(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts"));
+  assert.deepEqual(update.params.slice(0, 2), ["Daily spending", "Daily spending"]);
+  assert.equal(update.params.at(-1), 9);
+  assert.match(update.sql, /is_archived = 0 AND is_sync_excluded = 0 AND merged_into_account_id IS NULL/);
+  assert.match(update.sql, /THEN name ELSE official_name END/, "legacy provider names remain available for identity matching");
+  assert.doesNotMatch(update.sql.split(" WHERE ")[0], /(?:^|,)\s*(?:currency|account_type|opening_balance|current_balance|available_balance|credit_card_[a-z_]+|external_provider|external_account_id|connection_id)\s*=/);
+  assert.ok(!queries.some(({ sql }) => /^(INSERT INTO|UPDATE|DELETE FROM) personal_finance_transactions/.test(sql)));
+  assert.ok(queries.some(({ sql }) => sql.includes("ADD COLUMN custom_name")));
+});
+
+test("account rename rejects malformed names and cannot update removed accounts", async (t) => {
+  bankEnvironment(t);
+  const { api, queries } = backend(() => ({ affectedRows: 0 }));
+  for (const id of [null, undefined, true, 0, -1, 2.5, Number.MAX_SAFE_INTEGER + 1, "9e0", "9x", ""])
+    await assert.rejects(api.renameFinanceAccount(id, { name: "Checking" }), (error) => error.status === 400);
+  for (const name of [null, undefined, true, "", "  ", "x".repeat(81)])
+    await assert.rejects(api.renameFinanceAccount(9, { name }), (error) => error.status === 400);
+  assert.equal(queries.length, 0);
+  await assert.rejects(api.renameFinanceAccount(9, { name: "Checking" }), (error) => error.status === 404);
+});
+
 test("manual account edits reconcile native balances against recorded movement for assets and liabilities", async (t) => {
   bankEnvironment(t);
   for (const entry of [
@@ -298,6 +324,7 @@ test("account edit SQL only matches active manual accounts and keeps the stored 
   await assert.rejects(api.updateFinanceAccount(9, { name: "Manual card", type: "credit", currentBalance: 50,
     currency: "PHP", color: "#548564" }), (error) => error.status === 404);
   const update = queries.find(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts a"));
+  assert.match(update.sql, /custom_name = NULL/, "the manual editor clears an obsolete display override");
   assert.match(update.sql, /a\.is_archived = 0 AND a\.is_sync_excluded = 0/);
   assert.match(update.sql, /a\.merged_into_account_id IS NULL AND a\.connection_id IS NULL/);
   assert.match(update.sql, /a\.external_provider IS NULL OR a\.external_provider = ''/);
@@ -726,6 +753,19 @@ test("duplicate card repair retains an enabled autopay preference from the re-li
   assert.deepEqual(update.params.slice(8, 10), [1, 10]);
 });
 
+test("duplicate account repair keeps a preferred name from the canonical or most recent renamed account", async (t) => {
+  bankEnvironment(t);
+  for (const [canonicalName, expected] of [["Daily spending", "Daily spending"], [null, "Vacation savings"]]) {
+    const rows = [identityAccount(2, 1, { custom_name: canonicalName }),
+      identityAccount(30, 3, { custom_name: "Vacation savings" })];
+    const { api, queries } = backend((sql) => sql.startsWith("SELECT a.*, c.institution_id") ? rows : []);
+    await api.repairDuplicateFinanceAccounts({ preview: false });
+    const update = queries.find(({ sql }) => sql.includes("SET connection_id = ?"));
+    assert.deepEqual(update.params.slice(10, 12), [expected, expected]);
+    assert.match(update.sql, /name = COALESCE\(\?, name\), custom_name = COALESCE\(\?, custom_name\)/);
+  }
+});
+
 function bankSyncResponse(url, transactions) {
   return response(
     url.endsWith("/accounts/balance/get")
@@ -766,6 +806,32 @@ async function creditBankResponse(url) {
   }
   return response(payload);
 }
+
+test("bank balance refresh keeps a renamed account while updating its provider details", async (t) => {
+  bankEnvironment(t, (url) => bankSyncResponse(url));
+  const stored = { name: "Savings", custom_name: null, current_balance: 50 };
+  const { api, queries } = syncBackend({ onQuery(sql, params) {
+    if (sql.startsWith("UPDATE personal_finance_accounts SET official_name")) {
+      stored.name = params[0];
+      stored.custom_name = params[1];
+      return { affectedRows: 1 };
+    }
+    if (sql.startsWith("UPDATE personal_finance_accounts SET name")) {
+      assert.match(sql, /name = COALESCE\(custom_name, \?\)/);
+      stored.name = stored.custom_name ?? params[0];
+      stored.current_balance = params[3];
+      return { affectedRows: 1 };
+    }
+  } });
+  await api.renameFinanceAccount(2, { name: "Vacation savings" });
+  const result = await api.syncFinanceConnection(3);
+  assert.equal(result.accounts, 1);
+  assert.equal(stored.name, "Vacation savings");
+  assert.equal(stored.current_balance, 100);
+  const update = queries.find(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts SET name"));
+  assert.equal(update.params[0], "Savings", "provider name updates cannot replace the chosen display name");
+  assert.doesNotMatch(update.sql, /custom_name\s*=/);
+});
 
 test("credit sync imports the full statement and due date separately from current balances", async (t) => {
   const requests = [];
@@ -1272,7 +1338,7 @@ test("plans with no connected bank accounts skip providers and return a cacheabl
   assert.equal(queries.length, count);
 });
 
-test("the private finance API protects bank refresh and credit card payment settings", async () => {
+test("the private finance API protects bank refresh, account names and credit card payment settings", async () => {
   const { code: routeCode } = transformSync(
     await readFile(
       new URL("../app/api/finance/route.js", import.meta.url),
@@ -1286,6 +1352,7 @@ test("the private finance API protects bank refresh and credit card payment sett
   const calls = [];
   const autopayCalls = [];
   const manualCalls = [];
+  const renameCalls = [];
   let authorized = true;
   let allowedOrigin = true;
   const module = { exports: {} };
@@ -1311,6 +1378,10 @@ test("the private finance API protects bank refresh and credit card payment sett
           updateFinanceManualCreditCardDetails: async (data) => {
             manualCalls.push(data);
             return data;
+          },
+          renameFinanceAccount: async (id, data) => {
+            renameCalls.push({ id, data });
+            return { id, name: data.name };
           },
           refreshFinancePlanBankData: async (options) => {
             calls.push(options);
@@ -1352,18 +1423,26 @@ test("the private finance API protects bank refresh and credit card payment sett
   const manualResult = await module.exports.POST(manualRequest);
   assert.equal(manualResult.value.ok, true);
   assert.deepEqual(manualResult.value.result, manualData);
+  const renameData = { id: 7, name: "Daily spending" };
+  const renameRequest = { headers: new Headers(), text: async () => JSON.stringify({ action: "renameAccount", data: renameData }) };
+  const renameResult = await module.exports.POST(renameRequest);
+  assert.equal(renameResult.value.ok, true);
+  assert.deepEqual(renameResult.value.result, renameData);
   authorized = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 401);
   assert.equal((await module.exports.POST(autopayRequest)).options.status, 401);
   assert.equal((await module.exports.POST(manualRequest)).options.status, 401);
+  assert.equal((await module.exports.POST(renameRequest)).options.status, 401);
   authorized = true;
   allowedOrigin = false;
   assert.equal((await module.exports.POST(request(true))).options.status, 403);
   assert.equal((await module.exports.POST(autopayRequest)).options.status, 403);
   assert.equal((await module.exports.POST(manualRequest)).options.status, 403);
+  assert.equal((await module.exports.POST(renameRequest)).options.status, 403);
   assert.equal(calls.length, 2);
   assert.equal(autopayCalls.length, 1);
   assert.equal(manualCalls.length, 1);
+  assert.deepEqual(renameCalls, [{ id: 7, data: renameData }]);
 });
 
 const planPaymentRecord = (id, date, overrides = {}) => ({

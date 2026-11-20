@@ -117,7 +117,7 @@ test("planner table defaults to its compact summary and expands accounts into ho
   assert.equal(expand.props["aria-expanded"], false);
   expand.props.onClick();
   const expanded = renderToStaticMarkup(get());
-  assert.equal((expanded.match(/<th\b/g) || []).length, 5 + accounts.length);
+  assert.equal((expanded.match(/<th\b/g) || []).length, 5 + accounts.length + 2);
   assert.match(expanded, /fpt-accounts-expanded/);
   assert.match(expanded, /fpt-account-balance-heading/);
   assert.match(expanded, /Activity in Daily checking/);
@@ -226,7 +226,7 @@ test("horizontal account columns retain row count and put movement tags only on 
       { accountId: 34, amount: 1400, currency: "PHP" }], recurring: true });
   const compact = render([transfer]);
   const expanded = renderExpanded([transfer]);
-  assert.equal((expanded.match(/<tr\b/g) || []).length, (compact.match(/<tr\b/g) || []).length);
+  assert.equal((expanded.match(/<tr\b[^>]*data-row-id=/g) || []).length, (compact.match(/<tr\b[^>]*data-row-id=/g) || []).length);
   assert.equal((expanded.match(/<td\b/g) || []).length, 5 + accounts.length);
   assert.match(expanded, /width:1330px/);
   assert.deepEqual(changeTags(expanded, 1), ["-25.00"]);
@@ -529,6 +529,26 @@ test("account columns group USD then PHP with checking, savings and credit cards
   assert.deepEqual([...html.matchAll(/<td\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]), expected);
   for (const account of bank) assert.ok(accountCell(html, account.id).includes(planner.money(account.id * 100, account.currency)));
   assert.deepEqual(bank, before);
+});
+
+test("expanded account headers span their currency groups without creating empty groups", () => {
+  for (const [bank, groups] of [
+    [accounts, [["USD", 1], ["PHP", 2]]],
+    [accounts.filter((account) => account.currency === "PHP"), [["PHP", 2]]],
+    [accounts.filter((account) => account.currency === "USD"), [["USD", 1]]],
+  ]) {
+    const html = renderExpanded([row()], { accounts: bank });
+    const head = html.match(/<thead>([\s\S]*?)<\/thead>/)[1];
+    const headerRows = [...head.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);
+    assert.equal(headerRows.length, 2);
+    assert.equal((headerRows[0].match(/scope="col" rowSpan="2"/g) || []).length, 5);
+    assert.deepEqual([...head.matchAll(/scope="colgroup" class="fpt-currency-heading" colSpan="(\d+)" data-currency="([^"]+)"/g)]
+      .map((match) => [match[2], Number(match[1])]), groups);
+    assert.deepEqual(accountColumns(headerRows[1]), accountColumns(html));
+    const colgroups = [...html.matchAll(/<colgroup>([\s\S]*?)<\/colgroup>/g)].map((match) => (match[1].match(/<col\b/g) || []).length);
+    assert.deepEqual(colgroups, [5, ...groups.map(([, count]) => count)]);
+    assert.doesNotMatch(render([row()], { accounts: bank }), /fpt-currency-heading|scope="colgroup"|rowSpan="2"/);
+  }
 });
 
 function effectHarness(initialProps, geometry = {}) {

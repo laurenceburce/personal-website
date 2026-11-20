@@ -797,7 +797,7 @@ function creditCardPayments(statement, transactions, today, consumedDebits, stat
     const words = new Set(normalizedDescription([row.merchant, row.note].filter(Boolean).join(" ")).split(" "));
     const named = [...statements.values()].filter(({ account: candidate }) => {
       if (candidate.mask && words.has(String(candidate.mask))) return true;
-      const names = [candidate.name, candidate.institutionName].filter(Boolean).map((name) => normalizedDescription(name)
+      const names = [candidate.name, candidate.officialName, candidate.institutionName].filter(Boolean).map((name) => normalizedDescription(name)
         .split(" ").filter((word) => word.length >= 3 && !["credit", "card", "bank", "checking", "savings", "account"].includes(word)));
       return names.some((tokens) => tokens.length && tokens.every((word) => words.has(word)));
     });
