@@ -76,6 +76,29 @@ const renderExpanded = (rows, extra = {}) => {
   return renderToStaticMarkup(get());
 };
 
+test("shared dates span consecutive visible rows while current activity stays on its transaction", () => {
+  const get = harness({ rows: [
+    row({ id: "first", date: today, description: "Salary" }),
+    row({ id: "second", date: today, description: "Rent" }),
+    row({ id: "current", date: today, description: "Savings" }),
+    row({ id: "future", date: "2026-11-20", description: "Insurance" }),
+  ] });
+  const html = renderToStaticMarkup(get());
+  assert.equal((html.match(/class="fpt-date"/g) || []).length, 2);
+  assert.match(html, /class="fpt-date" rowSpan="3"/);
+  const current = html.match(/<tr\b[^>]*data-row-id="current"[^>]*>([\s\S]*?)<\/tr>/)?.[1];
+  assert.doesNotMatch(current, /class="fpt-date"/);
+  assert.match(current, /Savings<\/strong><span class="fpt-today-tag">Latest today/);
+  assert.equal((current.match(/<td\b/g) || []).length, 4);
+
+  find(get(), (node) => node.type === "input" && node.props.type === "search")
+    .props.onChange({ target: { value: "Savings" } });
+  const filtered = renderToStaticMarkup(get());
+  assert.match(filtered, /class="fpt-date" rowSpan="1"/);
+  assert.match(filtered, /dateTime="2026-11-18"/);
+  assert.match(filtered, /aria-current="true"/);
+});
+
 test("planner table defaults to its compact summary and expands the account list beneath running totals", () => {
   const html = render([row()]);
   assert.equal((html.match(/<th\b/g) || []).length, 5);

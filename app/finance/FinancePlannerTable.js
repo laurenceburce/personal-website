@@ -113,6 +113,14 @@ export default function FinancePlannerTable({
     return [row.description, row.category, getPlanRowCategory(row).label,
       assigned.from, assigned.to, ...(assigned.names || [])].filter(Boolean).join(" ").toLowerCase().includes(query);
   });
+  // Group only consecutive visible dates so filters keep valid row spans.
+  const dateSpans = new Map();
+  for (let index = 0; index < visible.length;) {
+    let end = index + 1;
+    while (end < visible.length && visible[end].date === visible[index].date) end++;
+    dateSpans.set(index, end - index);
+    index = end;
+  }
   const filtered = query || status !== "all";
   const clear = () => { setSearch(""); setStatus("all"); };
   useEffect(() => {
@@ -184,7 +192,7 @@ export default function FinancePlannerTable({
             <button type="button" className="fpt-account-columns-toggle" aria-expanded={expanded} aria-controls={tableId}
               disabled={loading || !accountColumns.length} onClick={toggleAccountColumns}>{expanded ? "Collapse accounts" : "Expand accounts"}</button>
           </th></tr></thead>
-        <tbody>{visible.map((row) => {
+        <tbody>{visible.map((row, index) => {
           const category = getPlanRowCategory(row);
           const assigned = rowAccounts(row, accounts, plan);
           const manualEntry = (row.source === "manual" || row.planGenerated) && plan.entries?.find((entry) => entry.id === row.entryId);
@@ -200,12 +208,13 @@ export default function FinancePlannerTable({
           return <tr key={row.id} ref={(node) => {
             if (node) rowRefs.current.set(String(row.id), node); else rowRefs.current.delete(String(row.id));
           }} aria-current={currentRow ? "true" : undefined} data-row-id={row.id}
-            className={`fpt-row fpt-category-${category.key}${recorded(row, today) ? " fpt-row-recorded" : ""}${isToday ? " fpt-row-today" : ""}${currentRow ? " fpt-row-current" : ""}`}>
-            <td className="fpt-date"><time dateTime={row.date} title={formatDate(row.date, { year: "numeric" })}>{formatDate(row.date, { month: "short", day: "numeric" })}</time>
-              {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
-            </td>
+            className={`fpt-row fpt-category-${category.key}${dateSpans.has(index) ? " fpt-date-start" : ""}${recorded(row, today) ? " fpt-row-recorded" : ""}${isToday ? " fpt-row-today" : ""}${currentRow ? " fpt-row-current" : ""}`}>
+            {dateSpans.has(index) && <td className="fpt-date" rowSpan={dateSpans.get(index)}>
+              <time dateTime={row.date} title={formatDate(row.date, { year: "numeric" })}>{formatDate(row.date, { month: "short", day: "numeric" })}</time>
+            </td>}
             <td className="fpt-transaction">
               <strong>{row.description}</strong>
+              {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
               <div className="fpt-row-meta"><span className="fpt-category">{category.label}</span>{row.estimated && <span>Estimated</span>}
                 {row.recurring && <span>Repeats</span>}
                 <details className="fpt-details"><summary aria-label={`Details for ${row.description}`}>Details</summary>
