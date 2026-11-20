@@ -70,6 +70,7 @@ function harness(props) {
 const button = (tree, text) => find(tree, (node) => node.type === "button" && node.props.children === text);
 const accountColumns = (html) => [...new Set([...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]))];
 const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
+const changeTags = (html, id) => [...accountCell(html, id).matchAll(/<span class="[^"]*fpt-change-tag[^"]*"[^>]*>(.*?)<\/span>/g)].map((match) => match[1]);
 const renderExpanded = (rows, extra = {}) => {
   const get = harness({ rows, ...extra });
   button(get(), "Expand accounts").props.onClick();
@@ -184,10 +185,10 @@ test("horizontal account columns retain row count and put movement tags only on 
   assert.equal((expanded.match(/<tr\b/g) || []).length, (compact.match(/<tr\b/g) || []).length);
   assert.equal((expanded.match(/<td\b/g) || []).length, 5 + accounts.length);
   assert.match(expanded, /width:1330px/);
-  assert.match(accountCell(expanded, 1), /Decreased/);
-  assert.match(accountCell(expanded, 1), /-\$25\.00/);
-  assert.match(accountCell(expanded, 34), /Added/);
-  assert.match(accountCell(expanded, 34), /₱1,400\.00/);
+  assert.deepEqual(changeTags(expanded, 1), ["-25.00"]);
+  assert.deepEqual(changeTags(expanded, 34), ["+1,400.00"]);
+  assert.match(accountCell(expanded, 1), /fpt-change-negative/);
+  assert.match(accountCell(expanded, 34), /fpt-change-positive/);
   assert.doesNotMatch(accountCell(expanded, 37), /fpt-account-tags|Repeats/);
   assert.doesNotMatch(expanded, /fpt-details|Details for|fpt-account-list/);
 });
@@ -213,8 +214,8 @@ test("transfer rows show source and card destination rather than a misleading ze
     fromAccountId: 34, toAccountId: 37, accountId: null, creditCardPaymentFor: 37, usd: 0, php: -300 })]);
   assert.match(plain(html), /Peso savings/);
   assert.match(plain(html), /RCBC JCB/);
-  assert.match(accountCell(html, 34), /Decreased -₱300\.00/);
-  assert.match(accountCell(html, 37), /Owed decreased -₱300\.00/);
+  assert.deepEqual(changeTags(html, 34), ["-300.00"]);
+  assert.deepEqual(changeTags(html, 37), ["-300.00"]);
   assert.match(html, /-₱300\.00/);
   assert.match(html, /credit card payment/);
 });
@@ -246,7 +247,7 @@ test("explicit account IDs keep activity and receipts out of same-name accounts"
       kind: "expense", amount: 25, currency: "USD", description: "Internet receipt" }],
   })], { accounts: duplicateAccounts });
   assert.match(accountCell(html, 1), /Internet receipt/);
-  assert.match(accountCell(html, 1), /-\$25\.00/);
+  assert.deepEqual(changeTags(html, 1), ["-25.00"]);
   assert.match(html, /Matched bank movement included here once/);
   assert.doesNotMatch(accountCell(html, 1), /Cash movement shown in matched recorded transactions|<details/);
   assert.doesNotMatch(accountCell(html, 2), /fpt-account-tags|Internet receipt|Scheduled bill/);
@@ -267,12 +268,12 @@ test("legacy names require a unique account and accept either mask format", () =
 
 test("completed expense and transfer tags retain their native signs without projected movements", () => {
   const expense = renderExpanded([row({ completed: true, accountMovements: [] })]);
-  assert.match(accountCell(expense, 1), /Decreased -\$25\.00/);
+  assert.deepEqual(changeTags(expense, 1), ["-25.00"]);
   const transfer = renderExpanded([row({ kind: "transfer", accountId: null, fromAccountId: 1, toAccountId: 2,
     completed: true, amount: 100, accountMovements: [] })], { accounts: [accounts[0],
     { id: 2, name: "Savings", currency: "USD", type: "savings" }] });
-  assert.match(accountCell(transfer, 1), /-\$100\.00/);
-  assert.match(accountCell(transfer, 2), /\+\$100\.00/);
+  assert.deepEqual(changeTags(transfer, 1), ["-100.00"]);
+  assert.deepEqual(changeTags(transfer, 2), ["+100.00"]);
 });
 
 test("reserve allocation IDs retain activity ownership without inventing a movement amount", () => {
@@ -287,16 +288,15 @@ test("debt movement tags distinguish the transaction from its change to the amou
   const html = renderExpanded([row({ accountId: 37, currency: "PHP", amount: 120,
     accountMovements: [{ accountId: 37, amount: -120, balanceDelta: 120, currency: "PHP" }] })]);
   assert.match(accountCell(html, 37), /-₱120\.00/);
-  assert.match(accountCell(html, 37), /Owed increased \+₱120\.00/);
+  assert.deepEqual(changeTags(html, 37), ["+120.00"]);
 });
 
 test("completed card payment receipts show the amount owed decreasing", () => {
   const html = renderExpanded([row({ completed: true, accountId: 37, currency: "PHP", amount: 300,
     accountMovements: [], recordedTransactions: [{ id: 5, accountId: 37, date: today,
       kind: "income", amount: 300, currency: "PHP", description: "Card payment" }] })]);
-  assert.match(accountCell(html, 37), /Owed decreased -₱300\.00/);
+  assert.deepEqual(changeTags(html, 37), ["-300.00"]);
   assert.match(accountCell(html, 37), /fpt-change-positive/);
-  assert.doesNotMatch(accountCell(html, 37), /Added \+₱300/);
 });
 
 test("partly recorded transfers show each account's own change and avoid duplicate posted tags", () => {
@@ -305,8 +305,8 @@ test("partly recorded transfers show each account's own change and avoid duplica
       { accountId: 34, amount: 1400, currency: "PHP", kind: "conversion" }],
     recordedTransactions: [{ id: 5, accountId: 1, date: today, kind: "expense", amount: 25, currency: "USD" }],
   })]);
-  assert.equal((accountCell(html, 1).match(/Decreased -\$25\.00/g) || []).length, 1);
-  assert.match(accountCell(html, 34), /Added \+₱1,400\.00/);
+  assert.deepEqual(changeTags(html, 1), ["-25.00"]);
+  assert.deepEqual(changeTags(html, 34), ["+1,400.00"]);
   assert.doesNotMatch(accountCell(html, 37), /fpt-change-tag/);
 });
 

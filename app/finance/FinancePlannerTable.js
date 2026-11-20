@@ -105,11 +105,12 @@ function AccountChangeTag({ amount, balanceDelta, currency, debt, note }) {
   if (!Number.isFinite(amount)) return null;
   const delta = Number.isFinite(balanceDelta) ? balanceDelta : debt ? -amount : amount;
   const positive = debt ? delta < 0 : delta > 0;
-  const direction = debt ? delta < 0 ? "Owed decreased" : delta > 0 ? "Owed increased" : "No change"
-    : delta < 0 ? "Decreased" : delta > 0 ? "Added" : "No change";
+  const change = `${delta > 0 ? "+" : ""}${(delta || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })}`;
   return <span className={`fpt-info-tag fpt-change-tag${delta ? positive ? " fpt-change-positive" : " fpt-change-negative" : ""}`}
     title={[note, debt ? `Transaction ${signed(amount, currency)}` : null].filter(Boolean).join(" · ")}>
-    {direction} {signed(delta, currency)}
+    {change}
   </span>;
 }
 
