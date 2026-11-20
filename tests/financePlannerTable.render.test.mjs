@@ -49,6 +49,7 @@ const row = (extra = {}) => ({ id: "bill:internet:2026-11-20", date: "2026-11-20
   ...extra });
 const render = (rows, extra = {}) => renderToStaticMarkup(createElement(Table, { plan, rows, accounts, today, ...extra }));
 const plain = (html) => html.replace(/<[^>]*>/g, "");
+const amountCells = (html) => [...html.matchAll(/<td class="fpt-amount [^"]*">(.*?)<\/td>/g)].map((match) => match[1]);
 function find(node, predicate) {
   if (Array.isArray(node)) return node.map((child) => find(child, predicate)).find(Boolean);
   if (node && typeof node === "object") return predicate(node) ? node : find(node.props?.children, predicate);
@@ -155,6 +156,49 @@ test("running balances stay numeric while reserves and explanations remain in th
   assert.match(notes, /Scheduled bill/);
   assert.match(notes, /Account movements/);
   assert.doesNotMatch(html, /<details class="fpt-notes" open/);
+});
+
+test("card expenses display their native amount without changing projected cash or running balances", () => {
+  const rows = planner.buildPlanRows({ ...plan, endDate: "2026-11-30", balanceMode: "snapshot", openingUsd: 175, openingPhp: 2000,
+    includeIncome: false, includeAllocations: false, includeAnnualReserve: false, entries: [],
+  }, { salary: {}, allocations: [], bills: [
+    { id: "fill", name: "Fill", cadence: "monthly", amount: 10457.95, currency: "PHP", dueDay: 20, accountId: 37 },
+  ] }, 63, { accounts, today });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].cardCreditActivity, true);
+  assert.equal(rows[0].php, 0);
+  assert.equal(rows[0].balancePhp, 2000);
+  const before = structuredClone(rows);
+  for (const html of [render(rows), renderExpanded(rows)]) {
+    assert.deepEqual(amountCells(html), ["$0.00", "-₱10,457.95"]);
+    assert.match(html, /class="fpt-amount fpt-flow-out">-₱10,457\.95/);
+    assert.match(html, /<dt>PHP<\/dt><dd[^>]*>₱2,000\.00/);
+  }
+  assert.deepEqual(rows, before);
+});
+
+test("income, refunds and funded expenses retain their full native value when cash flows differ", () => {
+  for (const [activity, expected] of [
+    [{ currency: "USD", amount: 42, kind: "income", cardCreditActivity: true, usd: 0 }, ["$42.00", "₱0.00"]],
+    [{ currency: "PHP", amount: 1500, kind: "income", linkedPocketActivity: true, php: 0 }, ["$0.00", "₱1,500.00"]],
+    [{ currency: "USD", amount: 99, source: "transaction", linkedPocketActivity: true, usd: 0 }, ["-$99.00", "₱0.00"]],
+    [{ currency: "USD", amount: 120, grossAmount: 120, annualPayment: true, reserveUsed: 120, usd: 0 }, ["-$120.00", "₱0.00"]],
+    [{ currency: "USD", amount: 120, grossAmount: 120, annualPayment: true, reserveUsed: 50, usd: -70 }, ["-$120.00", "₱0.00"]],
+    [{ currency: "PHP", amount: 0, source: "creditCardDue", completed: true, usd: 0, php: 0 }, ["$0.00", "₱0.00"]],
+  ]) {
+    assert.deepEqual(amountCells(render([row(activity)])), expected);
+  }
+});
+
+test("conversions, transfers, reserve flows and legacy rows retain their currency flows", () => {
+  for (const [activity, expected] of [
+    [{ kind: "conversion", amount: 100, usd: -100, php: 6300 }, ["-$100.00", "₱6,300.00"]],
+    [{ kind: "transfer", currency: "PHP", amount: 300, usd: 0, php: -300 }, ["$0.00", "-₱300.00"]],
+    [{ kind: "reserve", source: "reserve", amount: 80, usd: -80 }, ["-$80.00", "₱0.00"]],
+    [{ amount: undefined, usd: -25 }, ["-$25.00", "₱0.00"]],
+  ]) {
+    assert.deepEqual(amountCells(render([row(activity)])), expected);
+  }
 });
 
 test("planner keeps the compact balance summary when no supported active accounts can expand", () => {

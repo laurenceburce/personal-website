@@ -16,6 +16,16 @@ const balance = (value, currency) => Number.isFinite(value) ? money(value, curre
 const accountName = (account) => account
   ? `${account.name || "Account"}${account.mask ? ` · ••${account.mask}` : ""}` : "Choose an account";
 
+function transactionAmount(row, currency) {
+  const amount = row.grossAmount ?? row.amount;
+  // Show the full transaction even when cards or reserves cover its cash impact.
+  if (["income", "expense"].includes(row.kind) &&
+      ["USD", "PHP"].includes(row.currency) && Number.isFinite(amount)) {
+    return row.currency === currency && amount !== 0 ? amount * (row.kind === "income" ? 1 : -1) : 0;
+  }
+  return Number(currency === "USD" ? row.usd : row.php) || 0;
+}
+
 /** Keep chronological rows intact while locating the most relevant activity. */
 export function selectCurrentPlannerRow(rows = [], today = localDate()) {
   const dated = rows.filter((row) => typeof row.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.date));
@@ -308,7 +318,7 @@ export default function FinancePlannerTable({
               {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
             {["USD", "PHP"].map((currency) => {
-              const value = Number(currency === "USD" ? row.usd : row.php) || 0;
+              const value = transactionAmount(row, currency);
               return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{money(value, currency)}</td>;
             })}
             <td className="fpt-projection" data-label="Running balance">{inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
