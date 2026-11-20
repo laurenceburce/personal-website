@@ -2315,7 +2315,8 @@ export async function updateFinanceAccount(id, data) {
     if (planners.length) {
       const document = typeof planners[0].document === "string" ? JSON.parse(planners[0].document) : planners[0].document;
       const savedRate = typeof planners[0].exchange_rate === "string" ? JSON.parse(planners[0].exchange_rate) : planners[0].exchange_rate;
-      await synchronizeFinancePlanPostings(connection, document, { today: currentDate, rate: Number(savedRate?.rate) || 58 });
+      if (document.plans?.[0]?.restart?.version === 1)
+        await synchronizeFinancePlanPostings(connection, document, { today: currentDate, rate: Number(savedRate?.rate) || 58 });
     }
     // Keep recorded activity intact: adjust its opening baseline so the displayed
     // native balance is exactly the amount entered, including for liabilities.

@@ -30,5 +30,7 @@ export function ensurePrimaryFinancePlanner(document, currentDate = localDate())
   const horizon = addDays(currentDate, 365);
   const startDate = dates.slice().sort()[0];
   const endDate = [...dates, horizon > "2200-12-31" ? "2200-12-31" : horizon].sort().at(-1);
-  return { ...document, plans: [{ ...primary, continuous: true, balanceMode: "live", includeTransactions: true, startDate, endDate }, ...document.plans.slice(1)] };
+  return { ...document, plans: [{ ...primary, continuous: true, balanceMode: "live",
+    includeTransactions: primary.restart?.version === 1 ? primary.includeTransactions ?? true : true,
+    startDate, endDate }, ...document.plans.slice(1)] };
 }

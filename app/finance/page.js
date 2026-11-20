@@ -88,6 +88,8 @@ export default async function FinancePage({ searchParams }) {
     getFinanceActivity({ month }),
   ]);
   const firstPlan = snapshot.document.plans[0];
+  plannerRange = getLivePlannerRange({ ...plannerRange, today: activity.balanceAsOf || localDate(),
+    minDate: firstPlan?.restart?.date });
   const planActivity =
     ["plans", "budget"].includes(tab) && firstPlan
       ? await getFinancePlanActivity({

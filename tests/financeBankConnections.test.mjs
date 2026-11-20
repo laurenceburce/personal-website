@@ -418,12 +418,13 @@ test("account edit SQL only matches active manual accounts and keeps the stored 
   assert.deepEqual(update.params.slice(-2), ["PHP", "PHP"]);
 });
 
-function manualCorrectionBackend({ failCorrection = false } = {}) {
+function manualCorrectionBackend({ failCorrection = false, restarted = true } = {}) {
   const currentDate = activity.financeActivityWindow().today;
   let account = { id: 9, name: "Cash", account_type: "cash", currency: "PHP", opening_balance: 0 };
   let transactions = [];
   let snapshot;
   const document = { salary: {}, bills: [], allocations: [], plans: [{ id: "live", continuous: true,
+    ...(restarted ? { restart: { version: 1, date: "1900-01-01", transactionId: 0, balances: [], coveredEntryIds: [] } } : {}),
     balanceMode: "live", startDate: currentDate, endDate: currentDate, includeIncome: false,
     includeAllocations: false, includeAnnualReserve: false, completedRows: [], entries: [{ id: "new-day",
       date: currentDate, description: "Today's income", kind: "income", amount: 1000, currency: "PHP", accountId: 9 }] }] };
@@ -473,6 +474,17 @@ test("manual balance correction materializes a new day's planner income inside t
   assert.equal(store.queries[corrected].params[3], store.currentDate);
   const refreshed = await store.api.getFinanceActivity();
   assert.equal(refreshed.accounts[0].nativeCurrentBalance, 500, "refreshing cannot apply today's salary after calibration");
+});
+
+test("manual balance edits before the first restart cannot replay legacy planner activity", async (t) => {
+  bankEnvironment(t);
+  const store = manualCorrectionBackend({ restarted: false });
+  await store.api.updateFinanceAccount(9, { name: "Cash", type: "cash", currency: "PHP", currentBalance: 500 });
+  assert.deepEqual(store.transactions(), []);
+  assert.equal(store.account().opening_balance, 500);
+  assert.equal(store.balance(), 500);
+  assert.equal((await store.api.getFinanceActivity()).accounts[0].nativeCurrentBalance, 500);
+  assert.deepEqual(store.transactions(), [], "opening another screen cannot materialize old money before the reset captures it");
 });
 
 test("failed manual calibration rolls back both the new planner receipt and its opening baseline", async (t) => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { financePlanPostingSpecs, financePlanTransactionMetadata, refreshFinancePlanPostings } from "../app/lib/financePlanPostings.mjs";
+import { financePlanPostingSpecs, financePlanTransactionMetadata, freezeFinancePlanRestartHistory, refreshFinancePlanPostings, synchronizeFinancePlanPostings } from "../app/lib/financePlanPostings.mjs";
 import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
 const today = "2026-11-18";
@@ -8,7 +8,8 @@ const completion = (id) => ({ rowId: `entry:${id}`, completedAt: `${today}T12:00
 const entry = (extra = {}) => ({ id: "purchase", date: today, description: "Fill", kind: "expense", amount: 20,
   currency: "PHP", accountId: 37, ...extra });
 const planner = (entries, completed = entries.map((row) => completion(row.id))) => ({ salary: {}, plans: [{ id: "main",
-  startDate: "2026-11-01", endDate: "2027-01-31", entries, completedRows: completed }] });
+  startDate: "2026-11-01", endDate: "2027-01-31", entries, completedRows: completed,
+  restart: { version: 1, date: "1900-01-01", transactionId: 0, balances: [], coveredEntryIds: [] } }] });
 const manual = (id, type, balance, currency = "PHP") => ({ id, account_type: type, currency, opening_balance: balance });
 const bank = (id, balance = 1000) => ({ id, account_type: "checking", currency: "PHP", current_balance: balance,
   external_provider: "plaid", external_account_id: `bank-${id}` });
@@ -38,6 +39,12 @@ function ledger(accounts, document, initial = []) {
       const sql = raw.replace(/\s+/g, " ").trim();
       if (sql.startsWith("SELECT document")) return [[{ document, exchange_rate: JSON.stringify({ rate }) }]];
       if (sql.startsWith("SELECT a.*")) return [summary()];
+      if (sql.startsWith("SELECT t.*") && sql.includes("t.id <= ?")) {
+        const allPlans = sql.includes("t.source_plan_id IS NOT NULL");
+        const [planId, transactionId, date] = allPlans ? [null, ...params] : params;
+        return [structuredClone(rows.filter((row) => row.source_plan_id && (allPlans || row.source_plan_id === planId) && row.id <= transactionId &&
+          !row.pending && row.duplicate_of_id == null && !row.is_provider_removed && row.transaction_date <= date))];
+      }
       if (sql.startsWith("SELECT t.*") && sql.includes("t.source_plan_id IS NOT NULL"))
         return [structuredClone(rows.filter((row) => row.source_plan_id))];
       if (sql.startsWith("SELECT t.*") && sql.includes("WHERE t.pending = 0"))
@@ -53,6 +60,8 @@ function ledger(accounts, document, initial = []) {
           source_plan_leg: null, plan_generated: 0, plan_provisional: 0, plan_record_json: null });
       } else if (sql.startsWith("UPDATE") && sql.includes("SET plan_generated = 1, plan_record_json")) {
         Object.assign(rows.find((row) => row.id === params[1]), { plan_generated: 1, plan_record_json: params[0] });
+      } else if (sql.startsWith("UPDATE") && sql.includes("SET plan_record_json = ?")) {
+        Object.assign(rows.find((row) => row.id === params[1]), { plan_record_json: params[0] });
       } else if (sql.startsWith("UPDATE")) {
         Object.assign(rows.find((row) => row.id === params[4]), { source_plan_id: params[0], source_plan_row_id: params[1],
           source_plan_leg: params[2], plan_record_json: params[3], plan_generated: sql.includes("plan_generated = 1") ? 1 : 0, plan_provisional: 0 });
@@ -68,8 +77,26 @@ function ledger(accounts, document, initial = []) {
     },
   };
   return {
-    refresh: (date = today) => { currentDate = date; return refreshFinancePlanPostings({ getConnection: async () => connection }, date); },
+    async refresh(date = today) {
+      currentDate = date;
+      if (document.plans?.length) return refreshFinancePlanPostings({ getConnection: async () => connection }, date);
+      // Exercise explicit plan-removal synchronization independently of the
+      // automatic one-time migration guard on a normal account refresh.
+      try {
+        await connection.beginTransaction();
+        await synchronizeFinancePlanPostings(connection, document, { today: date, rate });
+        await connection.commit();
+      } catch (error) { await connection.rollback(); throw error; }
+      finally { connection.release(); }
+    },
     rows: () => structuredClone(rows), accounts: () => summary().map(mapFinanceActivityAccount),
+    async freeze(date = today, { allPlans = false } = {}) {
+      const transactionId = Math.max(0, ...rows.map((row) => row.id));
+      await connection.beginTransaction();
+      await freezeFinancePlanRestartHistory(connection, { planId: document.plans[0].id, date, transactionId, allPlans });
+      await connection.commit();
+      return transactionId;
+    },
     add: (row) => rows.push(structuredClone(row)), fail: () => { failure = true; }, setRate: (value) => { rate = value; }, events,
   };
 }
@@ -232,6 +259,148 @@ const livePlanner = (entries = [], completed = []) => {
     includeAllocations: false, includeAnnualReserve: false });
   return document;
 };
+
+test("automatic account refresh waits for the one-time planner restart without materializing legacy forecasts", async () => {
+  const document = livePlanner([entry()]);
+  delete document.plans[0].restart;
+  const calls = [];
+  const connection = {
+    async beginTransaction() { calls.push("begin"); },
+    async query(sql) { assert.match(sql, /SELECT document, exchange_rate.*FOR UPDATE/); return [[{ document, exchange_rate: { rate: 58 } }]]; },
+    async commit() { calls.push("commit"); }, async rollback() { calls.push("rollback"); }, release() { calls.push("release"); },
+  };
+  await refreshFinancePlanPostings({ getConnection: async () => connection }, today);
+  assert.deepEqual(calls, ["begin", "commit", "release"]);
+});
+
+test("restart freezes the existing ledger and resumes schedules after the cutover without changing current balances", async () => {
+  const old = entry();
+  const payment = entry({ id: "payment", kind: "transfer", accountId: null, fromAccountId: 1, toAccountId: 37, amount: 50 });
+  const bankExpense = entry({ id: "bank", accountId: 2, amount: 25 });
+  const daily = entry({ id: "daily", date: "2026-11-17", recurrence: "daily", accountId: 1, amount: 3 });
+  const document = livePlanner([old, payment, bankExpense, daily], [completion("bank")]);
+  document.salary = { amount: 100, currency: "PHP", accountId: 1, firstPayDate: today, payFrequency: "biweekly" };
+  document.bills = [{ id: "monthly", name: "Monthly", amount: 40, currency: "PHP", cadence: "monthly", dueDays: [18, 19], accountId: 1 }];
+  document.allocations = [{ id: "savings", name: "Savings", kind: "savings", amount: 10, currency: "PHP", sourceAccountId: 1, accountId: 3 }];
+  Object.assign(document.plans[0], { includeIncome: true, includeAllocations: true });
+  const imported = { id: 8, account_id: 2, transaction_date: today, kind: "expense", amount: 25, currency: "PHP",
+    merchant: "Original bank merchant", note: "Keep the bank fields", external_provider: "plaid", external_transaction_id: "bank-expense" };
+  const independent = { id: 9, account_id: 1, transaction_date: "2026-11-17", kind: "expense", amount: 10, currency: "PHP", merchant: "Independent" };
+  const rawAccounts = [manual(1, "checking", 1000), manual(37, "credit", 100), manual(3, "savings", 0), bank(2, 300)];
+  const store = ledger(rawAccounts, document, [imported, independent]);
+  await store.refresh();
+  const baseline = store.accounts().map((account) => account.nativeCurrentBalance);
+  const saved = store.rows();
+  const financialRows = (rows) => rows.map(({ plan_record_json, ...row }) => row);
+  const transactionId = await store.freeze();
+  assert.deepEqual(financialRows(store.rows()), financialRows(saved), "freezing changes metadata only, including both transfer legs");
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), baseline);
+  assert.equal(store.rows().find((row) => row.id === independent.id).plan_record_json, undefined);
+  document.plans[0].restart = { version: 1, date: today, transactionId, balances: [], coveredEntryIds: [old.id, payment.id, bankExpense.id, daily.id] };
+  old.amount = 999;
+  payment.amount = 80;
+  payment.date = "2026-11-19";
+  document.salary.amount = 200;
+  document.bills[0].amount = 80;
+  document.plans[0].entries.push(entry({ id: "new", accountId: 1, amount: 7 }),
+    entry({ id: "backdated", accountId: 1, amount: 99, date: "2026-11-17" }));
+  for (let index = 0; index < 3; index++) await store.refresh();
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [baseline[0] - 7, ...baseline.slice(1)]);
+  for (const row of saved) assert.deepEqual(financialRows([store.rows().find((current) => current.id === row.id)]), financialRows([row]));
+  assert.equal(store.rows().filter((row) => row.source_plan_row_id === "entry:new").length, 1);
+  assert.equal(store.rows().some((row) => row.source_plan_row_id === "entry:backdated"), false);
+  for (let index = 0; index < 3; index++) await store.refresh("2026-11-19");
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [baseline[0] - 7 - 40 - 3, ...baseline.slice(1)]);
+  assert.equal(store.rows().filter((row) => row.source_plan_row_id === "bill:monthly:2026-11-19").length, 1);
+  assert.equal(store.rows().filter((row) => row.source_plan_row_id === "entry:daily:2026-11-19").length, 1);
+  for (const [field, value] of Object.entries(imported)) assert.equal(store.rows().find((row) => row.id === imported.id)[field], value);
+  document.plans = [];
+  await store.refresh("2026-11-19");
+  assert.deepEqual(financialRows(store.rows()), financialRows(saved), "baseline history remains after its old planner source is removed");
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), baseline);
+  assert.equal(rawAccounts[0].opening_balance, 1000);
+});
+
+test("restart retains valid future overrides of earlier manual and automatic occurrences exactly once", async () => {
+  for (const alreadyRecorded of [false, true]) {
+    const daily = entry({ id: "daily", date: "2026-11-17", recurrence: "daily", accountId: 1, amount: 3 });
+    const once = entry({ id: "once", date: "2026-11-17", accountId: 1, amount: 2 });
+    const document = livePlanner([daily, once]);
+    document.bills = [{ id: "monthly", name: "Monthly", amount: 11, currency: "PHP", cadence: "monthly", dueDay: 17, accountId: 1 }];
+    document.plans[0].restart = { version: 1, date: today, transactionId: alreadyRecorded ? 9 : 0, balances: [], coveredEntryIds: [daily.id, once.id] };
+    document.plans[0].rowOverrides = [
+      { rowId: "entry:daily:2026-11-17", date: "2026-11-19", amount: 7, description: "Moved daily" },
+      { rowId: "entry:once", date: "2026-11-19", amount: 6, description: "Moved once" },
+      { rowId: "bill:monthly:2026-11-17", date: "2026-11-19", amount: 11, description: "Moved bill" },
+    ];
+    const original = { id: 9, source_plan_id: "main", source_plan_row_id: "entry:daily:2026-11-17", source_plan_leg: "single",
+      transaction_date: "2026-11-17", account_id: 1, currency: "PHP", kind: "expense", amount: 3, plan_generated: 1,
+      merchant: "Daily", plan_record_json: JSON.stringify({ planId: "main", rowId: "entry:daily:2026-11-17", leg: "single",
+        accountId: 1, currency: "PHP", kind: "expense", amount: 3, sourceAmount: 3, date: "2026-11-17", description: "Daily",
+        category: "Uncategorized", manualPlannerSource: true, detached: true, resetHistory: true }) };
+    const store = ledger([manual(1, "checking", 1000)], document, alreadyRecorded ? [original] : []);
+    await store.refresh();
+    assert.equal(store.rows().length, alreadyRecorded ? 1 : 0);
+    await store.refresh("2026-11-19"); await store.refresh("2026-11-19");
+    assert.equal(store.accounts()[0].nativeCurrentBalance, alreadyRecorded ? 977 : 973);
+    assert.equal(store.rows().filter((row) => row.source_plan_row_id === "bill:monthly:2026-11-17").length, 1);
+    assert.equal(store.rows().filter((row) => row.source_plan_row_id === "entry:once").length, 1);
+    const moved = store.rows().find((row) => row.source_plan_row_id === "entry:daily:2026-11-17");
+    assert.equal(moved.amount, alreadyRecorded ? 3 : 7, "a captured receipt cannot be reposted by its future override");
+    assert.equal(moved.transaction_date, alreadyRecorded ? "2026-11-17" : "2026-11-19");
+  }
+});
+
+test("restart preserves a posted legacy receipt whose source row identity is incomplete", async () => {
+  const document = livePlanner();
+  const original = { id: 9, source_plan_id: "main", source_plan_row_id: null, source_plan_leg: null,
+    transaction_date: today, account_id: 1, currency: "PHP", kind: "income", amount: 25, plan_generated: 1,
+    merchant: "Legacy saved receipt", note: "Retain this money", plan_record_json: "{}" };
+  const store = ledger([manual(1, "checking", 100)], document, [original]);
+  const transactionId = await store.freeze();
+  document.plans[0].restart = { version: 1, date: today, transactionId, balances: [], coveredEntryIds: [] };
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().length, 1);
+  assert.equal(store.rows()[0].id, original.id);
+  assert.equal(store.rows()[0].amount, 25);
+  assert.equal(store.rows()[0].note, original.note);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 125);
+});
+
+test("restart covers secondary plans without backfilling their missing past receipts or revising captured money", async () => {
+  const cutover = "2026-11-20";
+  const document = livePlanner();
+  const old = entry({ id: "old", date: "2026-11-10", amount: 20 });
+  const missing = entry({ id: "missing", date: "2026-11-10", accountId: 1, amount: 30 });
+  const future = entry({ id: "future", date: "2026-11-21", accountId: 1, amount: 7 });
+  document.plans.push({ id: "legacy", startDate: "2026-11-01", endDate: "2026-11-30", entries: [old, missing, future],
+    completedRows: [old, missing, future].map((row) => ({ rowId: `entry:${row.id}`, completedAt: `${row.date}T12:00:00.000Z` })) });
+  const saved = { id: 9, source_plan_id: "legacy", source_plan_row_id: "entry:old", source_plan_leg: "single",
+    transaction_date: old.date, account_id: 37, currency: "PHP", kind: "expense", amount: 20, plan_generated: 1,
+    merchant: "Legacy recorded expense", note: "Keep original", plan_record_json: JSON.stringify({ planId: "legacy", rowId: "entry:old", leg: "single",
+      accountId: 37, currency: "PHP", kind: "expense", amount: 20, sourceAmount: 20, date: old.date,
+      description: "Legacy recorded expense", category: "Uncategorized" }) };
+  const independent = { id: 8, account_id: 1, transaction_date: old.date, currency: "PHP", kind: "expense", amount: 5, merchant: "Independent" };
+  const store = ledger([manual(1, "checking", 1000), manual(37, "credit", 100)], document, [saved, independent]);
+  const transactionId = await store.freeze(cutover, { allPlans: true });
+  assert.equal(JSON.parse(store.rows().find((row) => row.id === saved.id).plan_record_json).resetHistory, true);
+  assert.equal(store.rows().find((row) => row.id === independent.id).plan_record_json, undefined);
+  document.plans[0].restart = { version: 1, date: cutover, transactionId, balances: [], coveredEntryIds: [] };
+  old.amount = 99;
+  for (let index = 0; index < 3; index++) await store.refresh(cutover);
+  assert.equal(store.rows().length, 2, "a completed secondary forecast cannot materialize old unrecorded money");
+  assert.equal(store.rows().find((row) => row.id === saved.id).amount, 20);
+  assert.equal(store.rows().find((row) => row.id === saved.id).note, "Keep original");
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [995, 120]);
+  document.plans[0].entries.push(entry({ id: "new", accountId: 1, amount: 5, date: cutover }),
+    entry({ id: "income", accountId: 1, kind: "income", amount: 3, date: "2026-11-21" }));
+  await store.refresh(cutover); await store.refresh(cutover);
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [990, 120]);
+  await store.refresh("2026-11-21"); await store.refresh("2026-11-21");
+  assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [986, 120]);
+  assert.equal(store.rows().filter((row) => row.source_plan_id === "legacy" && row.source_plan_row_id === "entry:future").length, 1);
+  assert.equal(store.rows().find((row) => row.id === saved.id).amount, 20);
+});
 
 test("removing a manual account preserves its posted history through refreshes and later planner edits", async () => {
   for (const flags of [{ is_archived: 1 }, { is_sync_excluded: 1 }, { merged_into_account_id: 99 }]) {

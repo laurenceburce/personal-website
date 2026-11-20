@@ -1277,6 +1277,11 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
 /** Available money and the annual-bill reserve are tracked as separate pockets. */
 export function buildPlanRows(plan, document, rate, options = {}) {
   if (!validRange(plan.startDate, plan.endDate)) return [];
+  const restart = plan.restart?.version === 1 && Number.isFinite(dateTime(plan.restart.date)) ? plan.restart : null;
+  const coveredEntries = new Set(restart?.coveredEntryIds || []);
+  const baselineTransaction = (transaction) => restart && transaction.date <= restart.date &&
+    /^\d+$/.test(String(transaction.id)) && /^\d+$/.test(String(restart.transactionId)) &&
+    BigInt(transaction.id) <= BigInt(restart.transactionId);
   const forecasts = [];
   const salary = document.salary || {};
   const linkedAccount = (pocket, currency, fallback) =>
@@ -1287,6 +1292,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const creditAccountIds = new Set((options.accounts || []).filter((account) =>
     (account.type || account.account_type) === "credit").map((account) => Number(account.id)));
   const cardPaymentTransactions = [...(options.transactions || []), ...(options.matchingTransactions || []), ...(options.creditCardPaymentTransactions || [])];
+  const baselinePlanRows = new Set(cardPaymentTransactions.filter((transaction) => baselineTransaction(transaction) &&
+    String(transaction.planId) === String(plan.id) && transaction.planRowId != null).map((transaction) => String(transaction.planRowId)));
   const today = Number.isFinite(dateTime(options.today)) ? options.today : localDate();
   const cardObligations = creditCardObligations(options.accounts || [], { transactions: cardPaymentTransactions, today });
   const { statements } = cardObligations;
@@ -1380,7 +1387,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   };
   for (const entry of plan.entries || []) {
     const recurring = Boolean(entry.recurrence && entry.recurrence !== "once");
-    const occurrences = entryOccurrences(entry, plan.startDate, plan.endDate, salary);
+    const occurrenceStart = restart && plan.startDate < restart.date ? restart.date : plan.startDate;
+    const occurrences = entryOccurrences(entry, occurrenceStart, plan.endDate, salary);
+    if (!recurring && !occurrences.length && overrides.has(`entry:${entry.id}`))
+      occurrences.push(...entryOccurrences(entry, entry.date, entry.date, salary));
     if (recurring) {
       // Only reconstruct an out-of-range date when it is a real occurrence of
       // this series with an override. Unrelated IDs cannot invent extra rows.
@@ -1388,7 +1398,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       for (const rowId of overrides.keys()) {
         if (!String(rowId).startsWith(prefix)) continue;
         const originalDate = String(rowId).slice(prefix.length);
-        if (originalDate >= plan.startDate && originalDate <= plan.endDate) continue;
+        if (originalDate >= occurrenceStart && originalDate <= plan.endDate) continue;
         if (!originalDates.includes(originalDate)) continue;
         occurrences.push(...entryOccurrences(entry, originalDate, originalDate, salary));
       }
@@ -1410,7 +1420,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         ...(recurring ? { recurring: true, recurrence: entry.recurrence } : {}),
         ...entryFlow(entry),
       };
-      if (recurring) row = applyOverride(row);
+      if (recurring || overrides.has(row.id)) row = applyOverride(row);
+      if (restart && (row.date < restart.date || (coveredEntries.has(entry.id) && row.date <= restart.date))) continue;
+      if (baselinePlanRows.has(row.id)) continue;
       if (row.kind === "transfer" && row.amountMode === "cardBalance") {
         const card = cardAccountsById.get(Number(row.toAccountId));
         const balance = card && (card.type || card.account_type) === "credit" && card.currency === row.currency
@@ -1425,7 +1437,10 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       forecasts.push({ ...row, ...entryFlow(row) });
     }
   }
-  for (const row of forecasts) row.planId = plan.id;
+  for (const row of forecasts) {
+    row.planId = plan.id;
+    if (restart && row.source !== "manual" && row.date <= restart.date) row.restartBaseline = true;
+  }
   // Project each card from its live debt through unpaid purchases, refunds and
   // payments. Recorded movements are already in that debt and cannot replay.
   const paymentEntries = forecasts.filter((row) => row.source === "manual" && row.kind === "transfer" &&
@@ -1443,6 +1458,22 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   });
   const completedForecasts = new Set((plan.completedRows || []).map((row) => row.rowId));
   const claimedCardRecords = new Set();
+  if (restart) {
+    const usedBaselineBills = new Set();
+    for (const transaction of postedCardActivity.filter(baselineTransaction).sort((first, second) =>
+      first.date.localeCompare(second.date) || String(first.id).localeCompare(String(second.id)))) {
+      const candidates = forecasts.filter((row) => row.restartBaseline && row.source === "bill" &&
+        row.kind === transaction.kind && row.currency === transaction.currency &&
+        (row.accountId == null || Number(row.accountId) === Number(transaction.accountId)) &&
+        (scheduledPlanTransaction(row, transaction) || (!usedBaselineBills.has(row.id) && forecastMatchesTransaction(row, transaction))));
+      candidates.sort((first, second) => Number(scheduledPlanTransaction(second, transaction)) - Number(scheduledPlanTransaction(first, transaction)) ||
+        Math.abs(dateTime(first.date) - dateTime(transaction.date)) - Math.abs(dateTime(second.date) - dateTime(transaction.date)) || first.id.localeCompare(second.id));
+      if (candidates.length) {
+        usedBaselineBills.add(candidates[0].id);
+        claimedCardRecords.add(String(transaction.id));
+      }
+    }
+  }
   const pendingLeg = (row, leg) => {
     if (completedForecasts.has(row.id)) return 0;
     const sameLeg = (transaction) => Number(transaction.accountId) === Number(leg.accountId) &&
@@ -1465,7 +1496,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const projectedPaymentPool = new Map();
   const assumedCardFunding = new Map();
   const projectedEvents = [...forecasts, ...cardObligations.obligations.map((row) => ({ ...row, autoCardPayment: true }))]
-    .filter((row) => row.date >= plan.startDate && row.date <= plan.endDate);
+    .filter((row) => !row.restartBaseline && !(restart && row.autoCardPayment && row.date <= restart.date) &&
+      row.date >= plan.startDate && row.date <= plan.endDate);
   const debtPriority = (row) => row.autoCardPayment ? 3 : row.liveCardBalance ? 2 : row.kind === "transfer" || row.kind === "conversion" ? 1 : 0;
   projectedEvents.sort((first, second) => first.date.localeCompare(second.date) || debtPriority(first) - debtPriority(second) || first.id.localeCompare(second.id));
   for (const row of projectedEvents) {
@@ -1557,7 +1589,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     plannedCardPayments.set(accountId, entries);
   }
   for (const obligation of [...cardObligations.obligations].sort((a, b) => a.date.localeCompare(b.date))) {
-    if (obligation.date < plan.startDate || obligation.date > plan.endDate) continue;
+    if (obligation.date < plan.startDate || obligation.date > plan.endDate || (restart && obligation.date <= restart.date)) continue;
     let remaining = obligation.amount;
     for (const payment of plannedCardPayments.get(obligation.creditAccountId) || []) {
       if (payment.date > obligation.date || (obligation.estimated && payment.date < today && !payment.committed)) continue;
@@ -1584,7 +1616,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       ...(options.transactions || []).map((transaction) => ({ transaction, evidenceOnly: false })),
       ...(options.matchingTransactions || []).map((transaction) => ({ transaction, evidenceOnly: true })),
     ]) {
-      const matchingOnly = evidenceOnly || transaction.date < plan.startDate || transaction.date > plan.endDate;
+      const matchingOnly = evidenceOnly || baselineTransaction(transaction) || transaction.date < plan.startDate || transaction.date > plan.endDate;
       if (
         !Number.isFinite(dateTime(transaction.date)) ||
         transaction.date < matchingTransactionStart ||
@@ -1825,12 +1857,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const rows = [
     ...forecasts.filter(
       (row) =>
-        (!usedForecasts.has(row.id) || row.matchedOutsideWindow) &&
+        !row.restartBaseline && (!usedForecasts.has(row.id) || row.matchedOutsideWindow) &&
         row.date >= plan.startDate &&
         row.date <= plan.endDate &&
         (row.source !== "salary" || plan.includeIncome),
     ),
-    ...visibleActual,
+    ...visibleActual.filter((row) => !restart || row.date >= restart.date),
   ];
   const annualBills = (document.bills || []).filter(
     (bill) =>
@@ -1860,7 +1892,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
           reserveAllocations,
           ...nativeFlow(0, currency, "expense"),
         });
-        if (row.date >= plan.startDate && row.date <= plan.endDate) rows.push(row);
+        if (row.date >= plan.startDate && row.date <= plan.endDate && (!restart || row.date > restart.date)) rows.push(row);
       }
     }
     if (plan.includeAllocations !== false) {
@@ -1880,7 +1912,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
             linkedAccount("available", allocation.currency, allocation.sourceAccountId ?? salary.accountId),
           ...nativeFlow(allocation.amount, allocation.currency, "expense"),
         });
-        if (row.date >= plan.startDate && row.date <= plan.endDate) rows.push(row);
+        if (row.date >= plan.startDate && row.date <= plan.endDate && (!restart || row.date > restart.date)) rows.push(row);
       }
     }
   }

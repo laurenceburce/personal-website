@@ -818,6 +818,94 @@ test("bill rounding does not forgive a linked salary or manual-entry cent remain
   }
 });
 
+test("a restarted planner keeps baseline history as evidence without replaying old schedules or debt", () => {
+  const cutover = "2026-11-20";
+  const document = {
+    salary: { amount: 1000, currency: "USD", accountId: 1, firstPayDate: cutover, payFrequency: "biweekly" },
+    allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 10, currency: "USD", sourceAccountId: 1, accountId: 3 }],
+    bills: [{ id: "google", name: "Google", amount: 200, currency: "USD", cadence: "monthly", dueDays: [20, 21], accountId: 2 },
+      { id: "annual", name: "Insurance", amount: 120, savedAmount: 60, currency: "USD", cadence: "annual", dueDay: 20,
+        dueMonths: [11], accountId: 1, sourceAccountId: 1, reserveAccountId: 4 }],
+  };
+  const plan = { id: "live", continuous: true, balanceMode: "live", startDate: "2026-11-15", endDate: "2026-12-05",
+    openingUsd: 0, openingPhp: 0, includeIncome: true, includeTransactions: true, includeAllocations: true, includeAnnualReserve: true,
+    accountLinks: { availableUsdAccountId: 1, savingsUsdAccountId: 3, annualReserveUsdAccountId: 4 },
+    restart: { version: 1, date: cutover, transactionId: 50, balances: [], coveredEntryIds: ["old", "daily", "convert", "old-pay"] },
+    entries: [
+      { id: "old", date: cutover, description: "Old expense", kind: "expense", amount: 150, currency: "USD", accountId: 2 },
+      { id: "daily", date: "2026-11-19", description: "Daily", recurrence: "daily", kind: "expense", amount: 5, currency: "USD", accountId: 1 },
+      { id: "convert", date: cutover, description: "Old conversion", kind: "conversion", amount: 10, currency: "USD", fromAccountId: 1, toAccountId: 5 },
+      { id: "old-pay", date: cutover, description: "Old card target", kind: "transfer", amount: 0, amountMode: "cardBalance", currency: "USD", fromAccountId: 1, toAccountId: 2 },
+      { id: "backdated", date: "2026-11-19", description: "Backdated", kind: "expense", amount: 99, currency: "USD", accountId: 1 },
+      { id: "new", date: cutover, description: "New expense", kind: "expense", amount: 7, currency: "USD", accountId: 1 },
+      { id: "pay", date: "2026-11-22", description: "New card target", kind: "transfer", amount: 0, amountMode: "cardBalance", currency: "USD", fromAccountId: 1, toAccountId: 2 },
+    ] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 500, creditCardDueStatus: "manual",
+      creditCardDue: { statementBalance: 50, dueDate: cutover, lastStatementDate: "2026-11-01" } },
+    { id: 3, type: "savings", currency: "USD", nativeCurrentBalance: 100 },
+    { id: 4, type: "savings", currency: "USD", nativeCurrentBalance: 60 },
+    { id: 5, type: "checking", currency: "PHP", nativeCurrentBalance: 1000 }];
+  const transactions = [
+    { id: 10, date: cutover, kind: "expense", amount: 100, currency: "USD", accountId: 2, merchant: "Google" },
+    { id: 11, date: cutover, kind: "income", amount: 1000, currency: "USD", accountId: 1, merchant: "Payroll" },
+    { id: 12, date: "2026-11-19", kind: "expense", amount: 20, currency: "USD", accountId: 1, merchant: "Earlier expense" },
+    { id: 51, date: cutover, kind: "expense", amount: 9, currency: "USD", accountId: 1, merchant: "New bank charge" },
+  ];
+  const before = structuredClone({ document, plan, accounts, transactions });
+  const rows = buildPlanRows(plan, document, 58, { accounts, transactions, today: cutover });
+  assert.ok(rows.every((row) => row.date >= cutover));
+  assert.ok(rows.filter((row) => ["salary", "bill", "allocation", "reserve", "creditCardDue"].includes(row.source))
+    .every((row) => row.date > cutover), "baseline automatic schedules cannot enter the cash or funding walk");
+  assert.ok(rows.some((row) => row.source === "salary" && row.date === "2026-12-04"));
+  assert.ok(rows.some((row) => row.source === "allocation" && row.date === "2026-12-04"));
+  assert.equal(rows.find((row) => row.entryId === "pay").amount, 600, "baseline card dues cannot reduce debt before the new target");
+  assert.equal(rows.find((row) => row.id === "bill:google:2026-11-21").completed, false,
+    "the cutover charge stays assigned to its baseline occurrence");
+  assert.ok(rows.some((row) => row.entryId === "new" && row.date === cutover));
+  assert.ok(rows.some((row) => row.transactionId === 51), "activity created after the watermark remains visible on the cutover day");
+  assert.equal(rows.some((row) => [10, 11, 12].includes(row.transactionId)), false);
+  assert.equal(rows.some((row) => ["old", "convert", "old-pay", "backdated"].includes(row.entryId)), false);
+  assert.ok(rows.filter((row) => row.entryId === "daily").every((row) => row.date > cutover));
+  assert.deepEqual({ document, plan, accounts, transactions }, before);
+});
+
+test("restart floors use future override dates while preserving original recurrence identities", () => {
+  const cutover = "2026-11-20";
+  const document = { salary: { amount: 100, currency: "USD", accountId: 1, firstPayDate: "2026-11-19", payFrequency: "biweekly" },
+    bills: [{ id: "bill", name: "Monthly", amount: 11, currency: "USD", cadence: "monthly", dueDay: 19, accountId: 1 },
+      { id: "annual", name: "Annual", amount: 120, currency: "USD", cadence: "annual", dueDay: 30, dueMonths: [11], accountId: 1 }],
+    allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 10, currency: "USD", sourceAccountId: 1, accountId: 2 }] };
+  const plan = { id: "live", startDate: "2026-11-15", endDate: "2026-11-23", openingUsd: 1000, continuous: true,
+    includeIncome: true, includeTransactions: true, includeAnnualReserve: true, includeAllocations: true,
+    restart: { version: 1, date: cutover, transactionId: 9, balances: [], coveredEntryIds: ["daily", "recorded", "once"] },
+    entries: [{ id: "daily", date: "2026-11-19", recurrence: "daily", description: "Daily", kind: "expense", amount: 3, currency: "USD", accountId: 1 },
+      { id: "recorded", date: "2026-11-19", recurrence: "daily", description: "Already recorded", kind: "expense", amount: 4, currency: "USD", accountId: 1 },
+      { id: "once", date: "2026-11-19", description: "One-off", kind: "expense", amount: 2, currency: "USD", accountId: 1 }],
+    rowOverrides: [
+      { rowId: "entry:daily:2026-11-19", date: "2026-11-22", description: "Moved daily", amount: 7 },
+      { rowId: "entry:recorded:2026-11-19", date: "2026-11-22", description: "Moved recorded", amount: 8 },
+      { rowId: "entry:once", date: "2026-11-22", description: "Moved one-off", amount: 6 },
+      { rowId: "bill:bill:2026-11-19", date: "2026-11-22", description: "Moved bill", amount: 11 },
+      { rowId: "salary:2026-11-19", date: "2026-11-22", description: "Moved salary", amount: 100 },
+      { rowId: "allocation:saving:2026-11-19", date: "2026-11-22", description: "Moved savings", amount: 10 },
+      { rowId: "reserve:USD:2026-11-19", date: "2026-11-22", description: "Moved reserve", amount: 5 },
+    ] };
+  const transaction = { id: 9, date: "2026-11-19", planId: plan.id, planRowId: "entry:recorded:2026-11-19",
+    kind: "expense", amount: 4, currency: "USD", accountId: 1, merchant: "Already recorded", planDetached: true };
+  const before = structuredClone({ document, plan, transaction });
+  const rows = buildPlanRows(plan, document, 58, { transactions: [transaction], today: cutover });
+  for (const id of ["entry:daily:2026-11-19", "entry:once", "bill:bill:2026-11-19", "salary:2026-11-19",
+    "allocation:saving:2026-11-19", "reserve:USD:2026-11-19"]) {
+    const matches = rows.filter((row) => row.id === id);
+    assert.equal(matches.length, 1, id);
+    assert.equal(matches[0].date, "2026-11-22", id);
+  }
+  assert.equal(rows.some((row) => row.id === "entry:recorded:2026-11-19"), false, "a captured receipt is already in the baseline");
+  assert.ok(rows.every((row) => row.date > cutover));
+  assert.deepEqual({ document, plan, transaction }, before);
+});
+
 test("posted bills match chronologically regardless of the API transaction order", () => {
   const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
     dueDays: [18, 20], amount: 200, currency: "USD", accountId: 1 }] };

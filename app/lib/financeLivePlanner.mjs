@@ -17,12 +17,15 @@ const orderedPastRows = (rows, range, today) => rows.filter((row) => row.date >=
   row.date <= range.endDate && !row.completed && !row.pending && row.source !== "transaction").length;
 
 /** A viewing window never changes the planner's saved entries or account openings. */
-export function getLivePlannerRange({ startDate, endDate, today = localDate() } = {}) {
+export function getLivePlannerRange({ startDate, endDate, today = localDate(), minDate } = {}) {
   if (!Number.isFinite(dateTime(today))) throw invalid("Choose a valid current date.");
-  const start = startDate ?? addDays(today, -14);
-  const end = endDate ?? addDays(today, 90);
+  if (minDate != null && !Number.isFinite(dateTime(minDate))) throw invalid("Choose a valid planner start date.");
+  let start = startDate ?? addDays(today, -14);
+  let end = endDate ?? addDays(today, 90);
   if (!Number.isFinite(dateTime(start)) || !Number.isFinite(dateTime(end)))
     throw invalid("Choose valid start and end dates between 1900 and 2200.");
+  if (minDate && start < minDate) start = minDate;
+  if (minDate && end < minDate) end = addDays(today < minDate ? minDate : today, 90);
   if (end < start) throw invalid("The end date must be on or after the start date.");
   if ((dateTime(end) - dateTime(start)) / DAY > 731)
     throw invalid("Choose a date range of up to two years.");
@@ -49,6 +52,29 @@ const sumBalances = (accounts, balances, currency, debt) => {
   if (selected.some((account) => balances.get(Number(account.id)) == null)) return null;
   return roundMoney(selected.reduce((sum, account) => sum + balances.get(Number(account.id)), 0));
 };
+
+/** The reset's known values are an opening point, never another money movement. */
+export function getLivePlannerOpeningRow(plan, { accounts = [] } = {}) {
+  const restart = plan?.restart;
+  if (!restart || !Number.isFinite(dateTime(restart.date))) return null;
+  const selected = accounts.filter((account) => active(account) && CURRENCIES.includes(account.currency));
+  const captured = new Map((restart.balances || []).map((account) => [Number(account.accountId), account]));
+  const balances = new Map(selected.map((account) => {
+    const saved = captured.get(Number(account.id));
+    return [Number(account.id), saved?.currency === account.currency ? nativeMoney(saved.balance) : null];
+  }));
+  const usd = sumBalances(selected, balances, "USD", false);
+  const php = sumBalances(selected, balances, "PHP", false);
+  return {
+    id: `opening:${restart.date}`, date: restart.date, description: "Starting balances", source: "opening", kind: "opening",
+    isOpeningBalance: true, completed: true, completionSource: "transaction", currency: "USD", amount: 0, usd: 0, php: 0,
+    accountBalanceSnapshotKind: "recorded",
+    accountBalanceSnapshotNote: `Known account balances when this planner started on ${restart.date}.`,
+    projectedBalanceUsd: usd, projectedBalancePhp: php, balanceUsd: usd, balancePhp: php,
+    accountBalanceSnapshot: selected.map((account) => ({ accountId: Number(account.id), name: account.name || "Account",
+      type: account.type || account.account_type, currency: account.currency, balance: balances.get(Number(account.id)), isDebt: isDebt(account) })),
+  };
+}
 const projectedAccountMoves = (row, byId, today) => {
   const validMoves = (row.accountMovements || []).filter((move) => {
     const account = byId.get(Number(move.accountId));

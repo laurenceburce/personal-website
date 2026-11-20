@@ -1,10 +1,11 @@
 import mysql from "mysql2/promise";
-import { ensureFinanceSchema } from "./financeStore.js";
-import { financePlanPendingMovementSql, synchronizeFinancePlanPostings } from "./financePlanPostings.mjs";
+import { ensureFinanceSchema, FINANCE_ACCOUNT_TYPES } from "./financeStore.js";
+import { financePlanPendingMovementSql, freezeFinancePlanRestartHistory, synchronizeFinancePlanPostings } from "./financePlanPostings.mjs";
 import { entryOccurrences } from "./financePlanner.mjs";
 import { mapFinanceActivityAccount } from "./financeActivity.mjs";
 import { capturePlanAccountOpenings, planOpeningAccountIds } from "./financePlanOpening.mjs";
 import { ensurePrimaryFinancePlanner } from "./financePrimaryPlanner.mjs";
+import { createRestartedFinancePlanner } from "./financePlannerRestart.mjs";
 
 const MAX_BYTES = 1_000_000;
 const RATE_CACHE_MS = 60 * 60 * 1000;
@@ -165,6 +166,36 @@ function openingAccounts(value) {
   });
 }
 
+function plannerRestart(value) {
+  if (value === undefined) return undefined;
+  object(value, "Planner restart");
+  if (value.version !== 1) throw plannerError("Planner restart version is invalid.");
+  if (!Number.isSafeInteger(value.transactionId) || value.transactionId < 0)
+    throw plannerError("Planner restart transaction must be a valid ledger identifier.");
+  if (!Array.isArray(value.balances) || value.balances.length > 1000)
+    throw plannerError("Planner restart must contain at most 1000 account balances.");
+  const seen = new Set();
+  const balances = value.balances.map((row) => {
+    object(row, "Planner restart account");
+    const id = accountId(row.accountId, "Restart account");
+    if (!id || seen.has(id)) throw plannerError("Planner restart accounts must be unique.");
+    seen.add(id);
+    return { accountId: id,
+      currency: oneOf(row.currency, ["USD", "PHP"], "Restart account currency"),
+      type: oneOf(row.type, FINANCE_ACCOUNT_TYPES, "Restart account type"),
+      balance: row.balance === null ? null : amount(row.balance, "Restart account balance", true) };
+  });
+  if (!Array.isArray(value.coveredEntryIds) || value.coveredEntryIds.length > 1000)
+    throw plannerError("Planner restart must contain at most 1000 covered entries.");
+  const coveredEntryIds = [...new Set(value.coveredEntryIds.map((entry) => {
+    const id = text(entry, "Restart entry ID", 100);
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) throw plannerError("Planner restart entry IDs are invalid.");
+    return id;
+  }))];
+  return { version: 1, date: date(value.date, "Planner restart date"),
+    transactionId: value.transactionId, balances, coveredEntryIds };
+}
+
 function startingAccounts(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 300)
@@ -269,7 +300,7 @@ function rowOverrides(value, startDate, endDate) {
   return value.map((row) => {
     object(row, "Plan row override");
     const rowId = text(row.rowId, "Overridden row ID", 240);
-    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2}))$/.exec(rowId);
+    const match = /^(?:salary:(\d{4}-\d{2}-\d{2})|bill:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|allocation:[A-Za-z0-9_-]{1,100}:(\d{4}-\d{2}-\d{2})|reserve:(?:USD|PHP):(\d{4}-\d{2}-\d{2})|entry:[A-Za-z0-9_-]{1,100}(?::(\d{4}-\d{2}-\d{2}))?)$/.exec(rowId);
     if (!match || seen.has(rowId))
       throw plannerError("Overridden row IDs must be unique scheduled plan row identifiers.");
     for (const day of match.slice(1).filter(Boolean)) date(day, "Original row date");
@@ -456,6 +487,7 @@ export function validateFinancePlanner(value) {
       return {
         name: text(plan.name, "Plan name", 120),
         ...(plan.continuous === undefined ? {} : { continuous }),
+        ...(plan.restart === undefined ? {} : { restart: plannerRestart(plan.restart) }),
         balanceMode: oneOf(plan.balanceMode ?? "live", ["live", "snapshot"], "Plan balance mode"),
         startDate,
         endDate,
@@ -806,11 +838,17 @@ async function ensureSchema() {
       await pool.query(`CREATE TABLE IF NOT EXISTS personal_finance_planner (
         id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
         document LONGTEXT NOT NULL,
+        restart_backup LONGTEXT NULL,
         revision INT UNSIGNED NOT NULL DEFAULT 1,
         exchange_rate TEXT NULL,
         created_at DATETIME(3) NOT NULL,
         updated_at DATETIME(3) NOT NULL
       )`);
+      try {
+        await pool.query("ALTER TABLE personal_finance_planner ADD COLUMN restart_backup LONGTEXT NULL");
+      } catch (error) {
+        if (error?.errno !== 1060 && error?.code !== "ER_DUP_FIELDNAME") throw error;
+      }
       const [existing] = await pool.query(
         "SELECT id FROM personal_finance_planner WHERE id = 1",
       );
@@ -938,6 +976,25 @@ async function latestRate(connection = null, storedRate = null, force = false) {
   return rateRequest;
 }
 
+async function restartFinancePlanner(connection, document, currentDate) {
+  const primary = ensurePrimaryFinancePlanner(document, currentDate).plans[0];
+  const [watermark] = await connection.query(
+    "SELECT COALESCE(MAX(id), 0) AS transaction_id FROM personal_finance_transactions",
+  );
+  const transactionId = Number(watermark[0]?.transaction_id ?? 0);
+  if (!Number.isSafeInteger(transactionId) || transactionId < 0)
+    throw new Error("Planner restart ledger identifier is unavailable");
+  await freezeFinancePlanRestartHistory(connection, { planId: primary.id, date: currentDate, transactionId, allPlans: true });
+  const [rows] = await connection.query(`SELECT a.*,
+    (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
+      FROM personal_finance_transactions t WHERE t.account_id = a.id AND t.currency = a.currency
+        AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+        AND t.transaction_date <= ?) AS native_movement
+    FROM personal_finance_accounts a`, [currentDate]);
+  return createRestartedFinancePlanner(document, rows.map(mapFinanceActivityAccount).filter(Boolean),
+    { date: currentDate, transactionId });
+}
+
 export async function getFinancePlanner() {
   let connection;
   try {
@@ -963,16 +1020,26 @@ export async function getFinancePlanner() {
       const stored = typeof rows[0].document === "string"
         ? JSON.parse(rows[0].document) : rows[0].document;
       const original = validateFinancePlanner(stored);
-      const document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, ensurePrimaryFinancePlanner(original)));
-      await synchronizeFinancePlanPostings(connection, document, { today: today(), rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
+      const currentDate = today();
+      const restarting = original.plans[0]?.restart?.version !== 1;
+      // Capture the existing ledger before any old automatic planner can post
+      // again. A committed restart is applied once under this same row lock.
+      const prepared = restarting ? await restartFinancePlanner(connection, original, currentDate)
+        : ensurePrimaryFinancePlanner(original, currentDate);
+      const document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, prepared, original, currentDate));
+      if (!restarting) await synchronizeFinancePlanPostings(connection, document,
+        { today: currentDate, rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
       let revision = Number(rows[0].revision);
       // Persist the complete normalized shape once, including fields that the
       // validator supplies. Comparing only normalized objects can return a new
       // primary planner shape without ever saving it or advancing its revision.
       if (JSON.stringify(document) !== JSON.stringify(stored)) {
         const [result] = await connection.execute(
-          "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1 AND revision = ?",
-          [JSON.stringify(document), revision],
+          restarting
+            ? "UPDATE personal_finance_planner SET document = ?, restart_backup = COALESCE(restart_backup, ?), revision = revision + 1, updated_at = NOW(3) WHERE id = 1 AND revision = ?"
+            : "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1 AND revision = ?",
+          restarting ? [JSON.stringify(document), typeof rows[0].document === "string" ? rows[0].document : JSON.stringify(stored), revision]
+            : [JSON.stringify(document), revision],
         );
         // Another editor or migration won the race. Read its latest document
         // rather than overwriting changes or returning a stale revision.
@@ -1009,7 +1076,15 @@ export async function getFinancePlanner() {
 }
 
 export async function saveFinancePlanner(value, revision) {
-  let document = validateFinancePlanner(ensurePrimaryFinancePlanner(value));
+  // Restart state belongs to the locked server document. Old tabs can omit it,
+  // and edited client copies cannot move its date, opening or receipt watermark.
+  const incoming = value && typeof value === "object" && !Array.isArray(value) && Array.isArray(value.plans)
+    ? { ...value, plans: value.plans.map((plan) => {
+      if (!plan || typeof plan !== "object" || Array.isArray(plan)) return plan;
+      const { restart, ...fields } = plan;
+      return fields;
+    }) } : value;
+  let document = validateFinancePlanner(incoming);
   if (!Number.isInteger(revision) || revision < 1 || revision > 4_294_967_294)
     throw plannerError("Reload the planner before saving.", 409);
   let database;
@@ -1040,6 +1115,13 @@ export async function saveFinancePlanner(value, revision) {
       );
     const previous = typeof rows[0].document === "string"
       ? JSON.parse(rows[0].document) : rows[0].document;
+    const previousPrimary = previous.plans?.[0];
+    if (previousPrimary?.restart?.version !== 1)
+      throw plannerError("Reload the planner to start its new timeline before saving.", 409);
+    const currentDate = today();
+    document = validateFinancePlanner(ensurePrimaryFinancePlanner({ ...document, plans: [{
+      ...(document.plans[0] || previousPrimary), id: previousPrimary.id, restart: previousPrimary.restart,
+    }, ...document.plans.slice(1)] }, currentDate));
     const ids = referencedAccountIds(document);
     if (ids.length) {
       const [accounts] = await connection.query(
@@ -1048,8 +1130,8 @@ export async function saveFinancePlanner(value, revision) {
       );
       validateFinancePlannerAccounts(document, accounts, previous);
     }
-    document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, document, previous));
-    await synchronizeFinancePlanPostings(connection, document, { today: today(), rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
+    document = validateFinancePlanner(await captureFinancePlannerOpenings(connection, document, previous, currentDate));
+    await synchronizeFinancePlanPostings(connection, document, { today: currentDate, rate: Number(parseStoredRate(rows[0].exchange_rate)?.rate) || 58 });
     await connection.execute(
       "UPDATE personal_finance_planner SET document = ?, revision = revision + 1, updated_at = NOW(3) WHERE id = 1",
       [JSON.stringify(document)],

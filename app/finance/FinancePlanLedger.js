@@ -91,6 +91,7 @@ function sourceTagText(node, nested = false) {
 
 export function SourceLabel({ row, asTags = false, omitMovementDetails = false }) {
   const labels = {
+    opening: "Known starting account balances",
     salary: "Scheduled income",
     bill: "Scheduled bill",
     creditCardDue: "Credit card statement due",

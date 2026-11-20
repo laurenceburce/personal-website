@@ -33,7 +33,7 @@ import Ledger from "./FinancePlannerTable";
 import FinancePlannerRange from "./FinancePlannerRange";
 import FinancePlannerAnalytics from "./FinancePlannerAnalytics";
 import { ensurePrimaryFinancePlanner } from "../lib/financePrimaryPlanner.mjs";
-import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../lib/financeLivePlanner.mjs";
+import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerOpeningRow, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../lib/financeLivePlanner.mjs";
 import { BillForm, BillsTable } from "./FinanceBills";
 import {
   QuickTransactionForm,
@@ -720,7 +720,8 @@ export default function FinanceAppClient({
   const [recordRefreshVersion, setRecordRefreshVersion] = useState(0);
   const [cadence, setCadence] = useState("monthly");
   const [modal, setModal] = useState(null);
-  const [plannerRange, setPlannerRange] = useState(() => getLivePlannerRange({ ...initialPlannerRange, today }));
+  const [plannerRange, setPlannerRange] = useState(() => getLivePlannerRange({ ...initialPlannerRange, today,
+    minDate: snapshot.document.plans[0]?.restart?.date }));
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [bankRefreshing, setBankRefreshing] = useState(false);
@@ -740,6 +741,7 @@ export default function FinanceAppClient({
     [document, rate, today],
   );
   const plan = document.plans[0];
+  const plannerStartDate = plan?.restart?.date;
   const computationRange = getLivePlannerComputationRange(plannerRange, today);
   const projectionPlan = useMemo(() => ({ ...plan, ...computationRange, balanceMode: "live", includeTransactions: true }),
     [plan, computationRange.startDate, computationRange.endDate]);
@@ -807,7 +809,8 @@ export default function FinanceAppClient({
     historyTransactions: balanceHistoryMatches ? planActivity.balanceTransactions || [] : [],
     historyFrom: planActivity?.balanceHistoryFrom, historyThrough: planActivity?.balanceHistoryThrough,
     historyComplete: Boolean(balanceHistoryMatches && planActivity?.balanceHistoryComplete) });
-  const visiblePlanRows = filterLivePlannerRows(displayedPlanRows, plannerRange);
+  const openingRow = getLivePlannerOpeningRow(plan, { accounts });
+  const visiblePlanRows = filterLivePlannerRows(openingRow ? [openingRow, ...displayedPlanRows] : displayedPlanRows, plannerRange);
   const plannerAnalytics = getLivePlannerAnalytics({ accounts, rows: displayedPlanRows, range: plannerRange, today });
   const creditCardObligations = useMemo(
     () => getCreditCardObligations(accounts, {
@@ -880,7 +883,8 @@ export default function FinanceAppClient({
     const onPop = () => {
       const params = new URL(window.location.href).searchParams;
       setTab(normalizeTab(params.get("tab")));
-      try { setPlannerRange(getLivePlannerRange({ startDate: params.get("from") || undefined, endDate: params.get("to") || undefined, today })); } catch { /* Keep the last valid timeline. */ }
+      try { setPlannerRange(getLivePlannerRange({ startDate: params.get("from") || undefined, endDate: params.get("to") || undefined, today,
+        minDate: plannerStartDate })); } catch { /* Keep the last valid timeline. */ }
       const month = params.get("month") || localDate().slice(0, 7);
       if (MONTH_PATTERN.test(month) && month !== selectedMonthRef.current) {
         selectedMonthRef.current = month;
@@ -890,7 +894,7 @@ export default function FinanceAppClient({
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, []);
+  }, [today, plannerStartDate]);
   useEffect(() => {
     const url = new URL(window.location.href);
     if (
@@ -1050,7 +1054,7 @@ export default function FinanceAppClient({
     loadActivity(month);
   }
   function changePlannerRange(nextRange) {
-    const checked = getLivePlannerRange({ ...nextRange, today });
+    const checked = getLivePlannerRange({ ...nextRange, today, minDate: plannerStartDate });
     setPlanActivityError("");
     setPlannerRange(checked);
     const url = new URL(window.location.href);
@@ -1950,7 +1954,7 @@ export default function FinanceAppClient({
                   <Button icon="settings" onClick={() => open({ type: "plan", plan })}>Planner settings</Button>
                 </div>
               </div>
-              <FinancePlannerRange range={plannerRange} today={today} onChange={changePlannerRange} loading={planActivityLoading} />
+              <FinancePlannerRange range={plannerRange} today={today} minDate={plannerStartDate} onChange={changePlannerRange} loading={planActivityLoading} />
               {(bankRefreshError || planActivityError) && <div className="fp-alert fp-alert-warning" role="status">
                 {bankRefreshError || planActivityError} Showing the last available data.
                 <Button variant="text" onClick={() => refreshPlanBanks(true)}>Try again</Button>

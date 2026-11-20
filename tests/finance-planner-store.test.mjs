@@ -14,6 +14,7 @@ import { createPrimaryFinancePlan, ensurePrimaryFinancePlanner } from "../app/li
 import { addDays, buildPlanRows } from "../app/lib/financePlanner.mjs";
 import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
 import { getLivePlannerAnalytics } from "../app/lib/financeLivePlanner.mjs";
+import { createRestartedFinancePlanner } from "../app/lib/financePlannerRestart.mjs";
 
 const document = () => ({
   salary: {
@@ -178,6 +179,8 @@ test("legacy migration retries a revision race in a consistent transaction and s
       if (sql.includes("SELECT document, revision")) return [[{ ...stored }]];
       if (sql.includes("SELECT a.*")) return [[account]];
       if (sql.includes("SELECT id, currency")) return [[account]];
+      if (sql.includes("COALESCE(MAX(id)")) return [[{ transaction_id: 0 }]];
+      if (sql.includes("t.source_plan_id = ?")) return [[]];
       if (sql.includes("source_plan_id IS NOT NULL")) return [[]];
       if (sql.includes("FROM personal_finance_transactions")) return [[{
         account_id: 1, currency: "USD", kind: "expense", amount: "50.00", transaction_date: "2026-11-02",
@@ -254,6 +257,157 @@ test("legacy migration retries a revision race in a consistent transaction and s
   assert.deepEqual(ledgerWrites, [], "workspace migration cannot manufacture or delete account receipts");
 });
 
+test("the authorized restart commits once with a backup, preserves financial history and rejects stale reset edits", async (t) => {
+  const date = createPrimaryFinancePlan().startDate;
+  const past = addDays(date, -1);
+  const source = document();
+  source.salary.firstPayDate = past;
+  source.salary.payFrequency = "biweekly";
+  source.salary.accountId = 1;
+  Object.assign(source.plans[0], { continuous: true, startDate: addDays(date, -20), endDate: addDays(date, 365),
+    accountLinks: { availableUsdAccountId: 1 }, entries: [
+      { id: "old", date: past, description: "Old fee", kind: "expense", amount: 5, currency: "USD", accountId: 2 },
+      { id: "daily", date: addDays(date, -10), description: "Daily fee", kind: "expense", amount: 1,
+        currency: "USD", accountId: 2, recurrence: "daily", repeatUntil: null },
+      { id: "future", date: addDays(date, 1), description: "Future payment", kind: "expense", amount: 20, currency: "USD", accountId: 1 },
+    ] });
+  source.bills[0].accountId = 1;
+  source.plans.push({ ...source.plans[0], id: "legacy-plan", continuous: false, balanceMode: "live", entries: [
+    { id: "history", date: past, description: "Legacy saved fee", kind: "expense", amount: 3, currency: "USD", accountId: 2 },
+    { id: "missing", date: past, description: "Obsolete completed fee", kind: "expense", amount: 9, currency: "USD", accountId: 2 },
+  ], completedRows: [
+    { rowId: "entry:history", completedAt: `${past}T12:00:00.000Z` },
+    { rowId: "entry:missing", completedAt: `${past}T12:00:00.000Z` },
+  ] });
+  const original = validateFinancePlanner(source);
+  const state = { document: JSON.stringify(original), revision: 7, restart_backup: null };
+  const accounts = [
+    { id: 1, name: "Bank", account_type: "checking", currency: "USD", external_provider: "plaid", external_account_id: "bank", current_balance: 1252.13 },
+    { id: 2, name: "Manual wallet", account_type: "cash", currency: "USD", opening_balance: 75 },
+    { id: 3, name: "Manual card", account_type: "credit", currency: "USD", opening_balance: 100 },
+    { id: 4, name: "Unknown bank", account_type: "checking", currency: "USD", external_provider: "plaid", external_account_id: "unknown", current_balance: null },
+    { id: 5, name: "Archived", account_type: "savings", currency: "USD", opening_balance: 999, is_archived: 1 },
+  ];
+  const receipts = [
+    { id: 10, transaction_date: past, account_id: 2, kind: "expense", amount: 5, currency: "USD", merchant: "Old fee", category: "Bills", note: "Saved note",
+      source_plan_id: "plan-1", source_plan_row_id: "entry:old", source_plan_leg: "single", plan_generated: 1, plan_provisional: 0,
+      plan_record_json: JSON.stringify({ manualPlannerSource: true }) },
+    { id: 11, transaction_date: date, account_id: 1, kind: "income", amount: 100, currency: "USD", merchant: "Bank income",
+      external_provider: "plaid", external_transaction_id: "bank-income", source_plan_id: null, plan_generated: 0, plan_provisional: 0 },
+    { id: 12, transaction_date: past, account_id: 3, kind: "expense", amount: 20, currency: "USD", merchant: "Independent card purchase",
+      source_plan_id: null, plan_generated: 0, plan_provisional: 0 },
+    { id: 13, transaction_date: past, account_id: 2, kind: "expense", amount: 3, currency: "USD", merchant: "Legacy saved fee", category: "Bills", note: "Legacy note",
+      source_plan_id: "legacy-plan", source_plan_row_id: "entry:history", source_plan_leg: "single", plan_generated: 1, plan_provisional: 0,
+      plan_record_json: JSON.stringify({ planId: "legacy-plan", rowId: "entry:history", leg: "single", accountId: 2, kind: "expense", amount: 3, currency: "USD" }) },
+  ];
+  const financialRows = () => receipts.map(({ plan_record_json, ...row }) => structuredClone(row));
+  const initialFinancial = financialRows();
+  const initialAccounts = structuredClone(accounts);
+  const initialDocument = state.document;
+  const lifecycle = [];
+  let rollbackState;
+  let failWrite = true;
+  const storedRows = (values = receipts) => values.map((row) => ({ ...row, posting_date: row.transaction_date }));
+  const connection = {
+    beginTransaction: async () => { lifecycle.push("begin"); rollbackState = structuredClone({ state, receipts }); },
+    rollback: async () => {
+      lifecycle.push("rollback"); Object.assign(state, rollbackState.state);
+      receipts.splice(0, receipts.length, ...rollbackState.receipts);
+    },
+    commit: async () => lifecycle.push("commit"), release: () => lifecycle.push("release"),
+    query: async (sql, parameters = []) => {
+      if (sql.includes("SELECT document, revision")) return [[{ ...state,
+        exchange_rate: JSON.stringify({ rate: 58, fetchedAt: new Date().toISOString() }) }]];
+      if (sql.includes("COALESCE(MAX(id)")) { lifecycle.push("watermark"); return [[{ transaction_id: Math.max(0, ...receipts.map((row) => row.id)) }]]; }
+      if (sql.includes("t.source_plan_id = ?")) { lifecycle.push("freeze-read"); return [storedRows(receipts.filter((row) =>
+        row.source_plan_id === parameters[0] && row.id <= parameters[1] && row.transaction_date <= parameters[2]))]; }
+      if (sql.includes("t.source_plan_id IS NOT NULL") && sql.includes("t.id <= ?")) {
+        lifecycle.push("freeze-read"); return [storedRows(receipts.filter((row) => row.source_plan_id &&
+          row.id <= parameters[0] && row.transaction_date <= parameters[1]))];
+      }
+      if (sql.includes("SET plan_record_json = ?")) {
+        lifecycle.push("freeze-write"); receipts.find((row) => row.id === parameters[1]).plan_record_json = parameters[0];
+        return [{ affectedRows: 1 }];
+      }
+      if (sql.includes("SELECT a.*")) {
+        lifecycle.push("balances");
+        return [accounts.map((account) => ({ ...account, native_movement: receipts.filter((row) => row.account_id === account.id &&
+          row.currency === account.currency && row.transaction_date <= date)
+          .reduce((sum, row) => sum + (row.kind === "income" ? 1 : -1) * row.amount, 0) }))];
+      }
+      if (sql.includes("SELECT id, currency")) return [accounts];
+      if (sql.includes("source_plan_id IS NOT NULL")) { lifecycle.push("synchronize"); return [storedRows(receipts.filter((row) => row.source_plan_id))]; }
+      if (sql.includes("t.account_id IN (?)")) return [storedRows(receipts.filter((row) => row.external_provider))];
+      if (sql.includes("FROM personal_finance_transactions t WHERE t.pending = 0")) return [storedRows()];
+      if (sql.includes("INSERT INTO personal_finance_transactions")) {
+        const [transaction_date, kind, account_id, category, merchant, note, amount, currency, source_plan_id, source_plan_row_id,
+          source_plan_leg, plan_provisional, plan_record_json] = parameters;
+        const row = receipts.find((row) => row.source_plan_id === source_plan_id && row.source_plan_row_id === source_plan_row_id && row.source_plan_leg === source_plan_leg);
+        assert.ok(row, "a restart refresh cannot manufacture an old manual receipt");
+        Object.assign(row, { transaction_date, kind, account_id, category, merchant, note, amount, currency, plan_provisional, plan_record_json });
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected restart query: ${sql}`);
+    },
+    execute: async (sql, parameters) => {
+      assert.match(sql, /UPDATE personal_finance_planner SET document/);
+      lifecycle.push("persist");
+      if (failWrite) { failWrite = false; throw new Error("Injected restart persistence failure"); }
+      if (sql.includes("restart_backup")) state.restart_backup ??= parameters[1];
+      state.document = parameters[0]; state.revision++;
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const pool = { getConnection: async () => connection, query: async (sql) => {
+    if (/^\s*(CREATE TABLE|ALTER TABLE)/.test(sql)) return [{}];
+    if (sql.includes("SELECT id FROM")) return [[{ id: 1 }]];
+    throw new Error(`Unexpected restart schema query: ${sql}`);
+  } };
+  t.mock.method(mysql, "createPool", () => pool);
+  const previousUrl = process.env.FINANCE_DATABASE_URL;
+  process.env.FINANCE_DATABASE_URL = "mysql://test:unused@localhost/restart-test";
+  t.after(() => { if (previousUrl === undefined) delete process.env.FINANCE_DATABASE_URL; else process.env.FINANCE_DATABASE_URL = previousUrl; });
+  const isolated = await import(`../app/lib/financePlannerStore.js?restart-transaction=${Date.now()}`);
+  const failed = await isolated.getFinancePlanner();
+  assert.equal(failed.configured, false);
+  assert.equal(state.document, initialDocument);
+  assert.equal(state.revision, 7);
+  assert.equal(state.restart_backup, null);
+  assert.deepEqual(financialRows(), initialFinancial);
+  assert.equal(JSON.parse(receipts[0].plan_record_json).detached, undefined, "receipt metadata rolls back with a failed reset");
+  const restarted = await isolated.getFinancePlanner();
+  assert.equal(restarted.configured, true);
+  assert.equal(restarted.revision, 8);
+  assert.equal(state.restart_backup, initialDocument);
+  assert.deepEqual(restarted.document.plans[0].restart, { version: 1, date, transactionId: 13,
+    balances: [
+      { accountId: 1, currency: "USD", type: "checking", balance: 1252.13 },
+      { accountId: 2, currency: "USD", type: "cash", balance: 67 },
+      { accountId: 3, currency: "USD", type: "credit", balance: 120 },
+      { accountId: 4, currency: "USD", type: "checking", balance: null },
+    ], coveredEntryIds: ["old", "daily"] });
+  assert.ok(lifecycle.indexOf("freeze-write") < lifecycle.indexOf("balances"));
+  assert.equal(lifecycle.includes("synchronize"), false, "old posting rules never run before the restart is committed");
+  for (let index = 0; index < 3; index++) assert.equal((await isolated.getFinancePlanner()).revision, 8);
+  assert.equal(JSON.parse(receipts.find((row) => row.id === 13).plan_record_json).resetHistory, true,
+    "secondary-plan receipts are frozen in the same current account baseline");
+  await assert.rejects(() => isolated.saveFinancePlanner(original, 7), (error) => error.status === 409);
+  const edited = structuredClone(restarted.document);
+  delete edited.plans[0].restart;
+  edited.plans[0].id = "untrusted-client-id";
+  edited.salary.amount += 1;
+  const saved = await isolated.saveFinancePlanner(edited, 8);
+  assert.equal(saved.document.plans[0].id, "plan-1");
+  assert.deepEqual(saved.document.plans[0].restart, restarted.document.plans[0].restart);
+  const tampered = structuredClone(saved.document);
+  tampered.plans[0].restart = { version: 99, date: "invalid", transactionId: -1 };
+  const preserved = await isolated.saveFinancePlanner(tampered, 9);
+  assert.deepEqual(preserved.document.plans[0].restart, restarted.document.plans[0].restart);
+  assert.equal(state.restart_backup, initialDocument);
+  assert.deepEqual(financialRows(), initialFinancial);
+  assert.deepEqual(accounts, initialAccounts);
+});
+
 test("default personal planner automatically includes one ongoing live workspace", () => {
   const planner = createDefaultFinancePlanner();
   assert.equal(planner.salary.amount, 0);
@@ -305,6 +459,115 @@ test("primary migration preserves saved identities, history and legacy plans whi
   assert.deepEqual(planner, before);
   assert.deepEqual(ensurePrimaryFinancePlanner(normalized, "2026-11-18"), normalized, "repeated reads do not change the document again");
   assert.equal(ensurePrimaryFinancePlanner({ ...planner, plans: [] }, "2026-11-18").plans[0].id, "live-planner");
+});
+
+test("a planner restart retains schedules and future exceptions while capturing only known active native accounts", () => {
+  const planner = validateFinancePlanner(document());
+  Object.assign(planner.plans[0], { continuous: true, startDate: "2026-10-01", endDate: "2027-11-20",
+    includeIncome: false, includeTransactions: false, includeAllocations: false, includeAnnualReserve: false,
+    startingAccounts: [{ accountId: 1, percentage: 80 }], accountOpeningBalances: [{ accountId: 1, balance: 9999 }],
+    accountLinks: { availableUsdAccountId: 1 }, openingReserveUsd: 250,
+    entries: [
+      { id: "old", date: "2026-11-19", kind: "expense", amount: 10, currency: "USD" },
+      { id: "future", date: "2026-11-21", kind: "expense", amount: 20, currency: "USD" },
+      { id: "oneoff-moved", date: "2026-11-18", kind: "expense", amount: 15, currency: "USD" },
+      { id: "daily", date: "2026-11-01", kind: "expense", amount: 1, currency: "USD", recurrence: "daily", repeatUntil: null },
+      { id: "moved", date: "2026-10-01", kind: "expense", amount: 2, currency: "USD", recurrence: "monthly", repeatUntil: "2026-11-01" },
+      { id: "ended", date: "2026-10-01", kind: "expense", amount: 3, currency: "USD", recurrence: "daily", repeatUntil: "2026-11-01" },
+    ],
+    rowOverrides: [
+      { rowId: "entry:daily:2026-11-19", date: "2026-11-19", description: "Old exception", amount: 2 },
+      { rowId: "entry:moved:2026-11-01", date: "2026-11-22", description: "Moved future exception", amount: 4 },
+      { rowId: "entry:oneoff-moved", date: "2026-11-22", description: "Moved one-off", amount: 15 },
+      { rowId: "entry:deleted", date: "2026-11-22", description: "Orphan exception", amount: 15 },
+    ], completedRows: [
+      { rowId: "entry:old", completedAt: "2026-11-19T12:00:00.000Z" },
+      { rowId: "entry:future", completedAt: "2026-11-19T12:00:00.000Z" },
+      { rowId: "entry:daily:2026-11-19", completedAt: "2026-11-19T12:00:00.000Z" },
+      { rowId: "entry:moved:2026-11-01", completedAt: "2026-11-19T12:00:00.000Z" },
+    ] });
+  const accounts = [
+    { id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 1252.13 },
+    { id: 2, type: "credit", currency: "PHP", nativeCurrentBalance: -125 },
+    { id: 3, type: "checking", currency: "USD", nativeCurrentBalance: null },
+    { id: 4, type: "cash", currency: "PHP", nativeCurrentBalance: 0 },
+    { id: 5, type: "checking", currency: "USD", nativeCurrentBalance: 100, isArchived: true },
+    { id: 6, type: "savings", currency: "USD", nativeCurrentBalance: 100, isSyncExcluded: true },
+    { id: 7, type: "checking", currency: "EUR", nativeCurrentBalance: 100 },
+  ];
+  const before = structuredClone({ planner, accounts });
+  const restarted = createRestartedFinancePlanner(planner, accounts, { date: "2026-11-20", transactionId: 77 });
+  const primary = restarted.plans[0];
+  assert.deepEqual(primary.restart, { version: 1, date: "2026-11-20", transactionId: 77,
+    balances: [
+      { accountId: 1, type: "checking", currency: "USD", balance: 1252.13 },
+      { accountId: 2, type: "credit", currency: "PHP", balance: -125 },
+      { accountId: 3, type: "checking", currency: "USD", balance: null },
+      { accountId: 4, type: "cash", currency: "PHP", balance: 0 },
+    ], coveredEntryIds: ["old", "oneoff-moved", "daily", "moved", "ended"] });
+  assert.equal(primary.id, planner.plans[0].id);
+  for (const field of ["salary", "bills", "allocations"]) assert.deepEqual(restarted[field], planner[field]);
+  for (const field of ["accountLinks", "includeIncome", "includeTransactions", "includeAllocations", "includeAnnualReserve"])
+    assert.deepEqual(primary[field], planner.plans[0][field]);
+  assert.deepEqual(primary.entries.map((entry) => entry.id), ["future", "oneoff-moved", "daily", "moved"]);
+  assert.equal(primary.entries.find((entry) => entry.id === "daily").date, "2026-11-01");
+  assert.deepEqual(primary.rowOverrides.map((row) => row.rowId), ["entry:moved:2026-11-01", "entry:oneoff-moved"]);
+  assert.deepEqual(primary.completedRows.map((row) => row.rowId), ["entry:future", "entry:moved:2026-11-01"]);
+  for (const field of ["openingUsd", "openingPhp", "openingReserveUsd", "openingReservePhp"]) assert.equal(primary[field], 0);
+  assert.deepEqual(primary.startingAccounts, []);
+  assert.deepEqual(primary.accountOpeningBalances, []);
+  const refreshed = ensurePrimaryFinancePlanner(restarted, "2026-11-21");
+  assert.deepEqual(refreshed.plans[0].restart, primary.restart);
+  assert.equal(refreshed.plans[0].includeTransactions, false);
+  assert.deepEqual({ planner, accounts }, before);
+});
+
+test("restart markers validate signed, zero and unknown balances without accepting malformed cutover metadata", () => {
+  const planner = createRestartedFinancePlanner(validateFinancePlanner(document()), [],
+    { date: "2026-11-20", transactionId: 0 });
+  assert.deepEqual(validateFinancePlanner(planner).plans[0].restart,
+    { version: 1, date: "2026-11-20", transactionId: 0, balances: [], coveredEntryIds: ["conversion-1"] });
+  for (const patch of [
+    { version: 2 }, { date: "2026-02-30" }, { transactionId: -1 }, { transactionId: Number.MAX_SAFE_INTEGER + 1 },
+    { balances: null }, { balances: [{ accountId: 1, currency: "USD", type: "checking", balance: "10" }] },
+    { balances: [{ accountId: 1, currency: "EUR", type: "checking", balance: 10 }] },
+    { balances: [{ accountId: 1, currency: "USD", type: "checking", balance: NaN }] },
+    { coveredEntryIds: ["bad:id"] },
+  ]) {
+    const changed = structuredClone(planner);
+    Object.assign(changed.plans[0].restart, patch);
+    assert.throws(() => validateFinancePlanner(changed), /restart/i);
+  }
+  const fresh = createRestartedFinancePlanner({ ...createDefaultFinancePlanner(), plans: [] }, [],
+    { date: "2026-11-20", transactionId: 0 });
+  assert.equal(fresh.plans[0].id, "live-planner");
+  assert.deepEqual(validateFinancePlanner(fresh).plans[0].restart,
+    { version: 1, date: "2026-11-20", transactionId: 0, balances: [], coveredEntryIds: [] });
+  assert.deepEqual(createRestartedFinancePlanner(fresh, [{ id: 1, currency: "USD", type: "cash", nativeCurrentBalance: 100 }],
+    { date: "2026-11-21", transactionId: 99 }).plans[0].restart, fresh.plans[0].restart,
+  "an already restarted workspace cannot silently capture a second opening");
+});
+
+test("restart retains past-effective exclusions so already-covered future occurrences cannot reappear", () => {
+  const planner = document();
+  planner.bills = [];
+  planner.allocations = [];
+  Object.assign(planner.plans[0], { includeIncome: false, entries: [
+    { id: "daily", date: "2026-11-21", description: "Daily expense", kind: "expense", amount: 5,
+      currency: "USD", recurrence: "daily", repeatUntil: "2026-11-22" },
+    { id: "once", date: "2026-11-21", description: "Already moved one-off", kind: "expense", amount: 7, currency: "USD" },
+  ], rowOverrides: [
+    { rowId: "entry:daily:2026-11-21", date: "2026-11-10", description: "Already paid early", amount: 5 },
+    { rowId: "entry:once", date: "2026-11-10", description: "Already paid one-off", amount: 7 },
+  ] });
+  const clean = validateFinancePlanner(planner);
+  const restarted = validateFinancePlanner(createRestartedFinancePlanner(clean, [], { date: "2026-11-20", transactionId: 99 }));
+  const primary = restarted.plans[0];
+  assert.deepEqual(primary.entries.map((entry) => entry.id), ["daily"]);
+  assert.deepEqual(primary.rowOverrides.map((row) => row.rowId), ["entry:daily:2026-11-21"]);
+  assert.equal(primary.startDate, "2026-11-10", "storage retains the exclusion date while the display floor remains the restart date");
+  const rows = buildPlanRows({ ...primary, startDate: "2026-11-20", endDate: "2026-11-22" }, restarted, 58, { today: "2026-11-20" });
+  assert.deepEqual(rows.map((row) => [row.id, row.amount]), [["entry:daily:2026-11-22", 5]]);
 });
 
 test("continuous storage retains decades of entries without expanding all recurring forecasts", () => {
@@ -1056,7 +1319,7 @@ test("scheduled row overrides round trip per plan without changing recurring val
 test("row overrides reject duplicate or non-scheduled identifiers and invalid original dates", () => {
   const override = { rowId: "allocation:saving-1:2026-11-06", date: "2026-11-06", description: "Savings", amount: 250 };
   for (const rowId of [
-    "entry:conversion-1", "transaction:123", "reserve:EUR:2026-11-06",
+    "transaction:123", "reserve:EUR:2026-11-06",
     "allocation:saving-1:2026-02-30", "salary:2026-13-01", "salary:1899-12-31",
     "bill:bad/id:2026-11-06", "allocation::2026-11-06", "unknown:2026-11-06",
   ]) {
@@ -1067,6 +1330,16 @@ test("row overrides reject duplicate or non-scheduled identifiers and invalid or
   const planner = document();
   planner.plans[0].rowOverrides = [override, { ...override, amount: 100 }];
   assert.throws(() => validateFinancePlanner(planner), /unique scheduled/);
+});
+
+test("a one-off entry moved into the future retains its override through restart normalization", () => {
+  const planner = document();
+  planner.plans[0].rowOverrides = [{ rowId: "entry:conversion-1", date: "2026-11-25", description: "Future conversion", amount: 300 }];
+  const clean = validateFinancePlanner(planner);
+  const restarted = validateFinancePlanner(createRestartedFinancePlanner(clean, [], { date: "2026-11-20", transactionId: 0 }));
+  assert.equal(restarted.plans[0].entries[0].id, "conversion-1");
+  assert.deepEqual(restarted.plans[0].rowOverrides, clean.plans[0].rowOverrides);
+  assert.equal(restarted.plans[0].restart.date, "2026-11-20");
 });
 
 test("occurrence descriptions preserve prefixed allocation labels at the recurring name limit", () => {

@@ -146,6 +146,147 @@ const table = (props) => findElement(workspaceHarness(props)(), (node) => node.t
 const analytics = (props) => findElement(workspaceHarness(props)(), (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
 const rowsFor = (savedAmount, documentOverrides = {}, activityOverrides = {}) => table(fixture("plans", savedAmount, documentOverrides, activityOverrides)).rows;
 
+function restartedWorkspaceFixture() {
+  const date = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const restart = { version: 1, date, transactionId: 100, coveredEntryIds: ["old-custom", "old-today", "daily-card"],
+    balances: [{ accountId: 1, currency: "USD", type: "checking", balance: 1252.13 },
+      { accountId: 37, currency: "PHP", type: "credit", balance: 10824.12 }] };
+  const plan = { ...base, continuous: true, balanceMode: "live", startDate: "2026-11-01", endDate: "2026-11-22",
+    includeIncome: true, includeTransactions: true, includeAllocations: true, includeAnnualReserve: true,
+    openingUsd: 9999, openingPhp: 9999, openingReserveUsd: 9999, openingReservePhp: 9999,
+    accountOpeningBalances: [{ accountId: 1, balance: 9999 }, { accountId: 37, balance: 9999 }],
+    startingAccounts: [{ accountId: 1, percentage: 50 }], restart, completedRows: [{ rowId: "entry:old-today", completedAt: `${date}T12:00:00.000Z` }],
+    entries: [
+      { id: "old-custom", date: "2026-11-19", description: "Obsolete old custom", kind: "expense", accountId: 1, amount: 9999, currency: "USD" },
+      { id: "old-today", date, description: "Obsolete same-day custom", kind: "expense", accountId: 1, amount: 9999, currency: "USD" },
+      { id: "daily-card", date: "2026-11-18", description: "Daily card expense", kind: "expense", accountId: 37,
+        amount: 5, currency: "PHP", recurrence: "daily", repeatUntil: "2026-11-22" },
+      { id: "future", date: "2026-11-22", description: "Future custom expense", kind: "expense", accountId: 1, amount: 25, currency: "USD" },
+    ] };
+  const oldReceipts = [{ id: 89, date: "2026-11-19", kind: "income", accountId: 1, amount: 9999,
+    currency: "USD", merchant: "Preserved old history", provider: "plaid" },
+  { id: 90, date, kind: "expense", accountId: 1, amount: 9999, currency: "USD", merchant: "Obsolete same-day custom",
+    planId: base.id, planRowId: "entry:old-today", planGenerated: true }];
+  const props = fixture("plans", 0, { plans: [plan],
+    salary: { amount: 2600, currency: "USD", payFrequency: "biweekly", firstPayDate: "2026-11-07", accountId: 1 },
+    bills: [{ id: "internet", name: "Internet", cadence: "monthly", dueDay: 21, amount: 100, currency: "USD", accountId: 1 },
+      { id: "card-service", name: "Card service", cadence: "monthly", dueDay: 21, amount: 50, currency: "PHP", accountId: 37 },
+      { id: "annual", name: "Saved annual renewal", cadence: "annual", dueDay: 31, dueMonths: [12], amount: 100,
+        savedAmount: 100, currency: "USD", accountId: 1, sourceAccountId: 1, reserveAccountId: 1 }],
+    allocations: [{ id: "payday-expense", name: "Payday expense", kind: "expense", amount: 20, currency: "USD", accountId: 1 }],
+  }, { balanceAsOf: date, accounts: [
+    { id: 1, name: "Bank checking", type: "checking", currency: "USD", isLinked: true, nativeCurrentBalance: 1252.13 },
+    { id: 37, name: "Manual JCB", type: "credit", currency: "PHP", nativeCurrentBalance: 10824.12 },
+  ], transactions: oldReceipts });
+  Object.assign(props, { today: date, legacyRange: false, initialPlannerRange: { startDate: "2026-11-01", endDate: "2026-11-22" },
+    initialPlanActivity: { configured: true, from: date, to: "2026-11-22", transactions: oldReceipts,
+      balanceTransactions: oldReceipts, balanceHistoryFrom: "2026-11-01", balanceHistoryThrough: date, balanceHistoryComplete: true } });
+  return props;
+}
+
+function restartTableHarness(props) {
+  const slots = [];
+  let cursor = 0;
+  const useState = (initial) => {
+    const index = cursor++;
+    if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
+    return [slots[index], (value) => { slots[index] = typeof value === "function" ? value(slots[index]) : value; }];
+  };
+  const Table = loadComponent(fileURLToPath(new URL("../app/finance/FinancePlannerTable.js", import.meta.url)), {
+    ...require("react"), useState, useEffect() {}, useRef: (initial) => useState(() => ({ current: initial }))[0],
+  }).default;
+  const render = () => { cursor = 0; return Table(props); };
+  return { render, rows: () => new Map([...renderToStaticMarkup(render()).matchAll(/<tr\b[^>]*data-row-id="([^"]+)"[^>]*>([\s\S]*?)<\/tr>/g)]
+    .map((match) => [match[1], match[2]])) };
+}
+
+test("a restarted live workspace opens from known balances and retains future salary, bills and recurring flows once", () => {
+  const props = restartedWorkspaceFixture();
+  const before = structuredClone(props);
+  const tree = workspaceHarness(props)();
+  const ledger = findElement(tree, (node) => node.type?.name === "FinancePlannerTable");
+  assert.ok(ledger, "a restart clamps its initial history range before requesting matching records");
+  const { rows } = ledger.props;
+  const opening = rows[0];
+  assert.equal(opening.isOpeningBalance, true);
+  assert.equal(opening.source, "opening");
+  assert.equal(opening.description, "Starting balances");
+  assert.equal(opening.date, "2026-11-20");
+  assert.deepEqual(opening.accountBalanceSnapshot.map((account) => [account.accountId, account.balance]), [[1, 1252.13], [37, 10824.12]]);
+  assert.equal(opening.projectedBalanceUsd, 1252.13);
+  assert.ok(rows.every((row) => row.date >= "2026-11-20"));
+  assert.ok(!rows.some((row) => ["old-custom", "old-today"].includes(row.entryId) || row.source === "transaction"));
+  assert.deepEqual(rows.filter((row) => row.entryId === "daily-card").map((row) => row.date), ["2026-11-21", "2026-11-22"]);
+  assert.equal(rows.filter((row) => row.source === "salary").length, 1);
+  assert.equal(rows.find((row) => row.source === "salary").amount, 1200);
+  assert.equal(rows.filter((row) => row.billId === "internet").length, 1);
+  assert.equal(rows.filter((row) => row.billId === "card-service").length, 1);
+  assert.equal(rows.filter((row) => row.allocationId === "payday-expense").length, 1);
+  const current = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+  assert.equal(current.assets.USD.current, 1252.13);
+  assert.equal(current.assets.USD.projected, 2307.13);
+  assert.equal(current.debt.PHP.current, 10824.12);
+  assert.equal(current.debt.PHP.projected, 10884.12);
+  const range = findElement(tree, (node) => node.type?.name === "FinancePlannerRange").props;
+  assert.equal(range.minDate, "2026-11-20");
+  const rendered = restartTableHarness(ledger.props);
+  const compactOpening = rendered.rows().get(opening.id);
+  assert.match(plain(compactOpening), /Starting balances/);
+  assert.match(plain(compactOpening), /\$1,252\.13/);
+  assert.match(plain(compactOpening), /₱10,824\.12/);
+  assert.doesNotMatch(compactOpening, /fpt-status-done|<button\b/);
+  findElement(rendered.render(), (node) => node.type === "button" && node.props.children === "Expand accounts").props.onClick();
+  const expandedOpening = rendered.rows().get(opening.id);
+  assert.match(expandedOpening, /data-account-id="1"[^>]*>[\s\S]*?<span>\$1,252\.13<\/span>/);
+  assert.match(expandedOpening, /data-account-id="37"[^>]*>[\s\S]*?<span>₱10,824\.12<\/span>/);
+  assert.doesNotMatch(expandedOpening, /fpt-status-done|fpt-change-tag|<button\b/);
+  assert.deepEqual(props, before, "reset views cannot rewrite captured balances, saved schedules or account history");
+});
+
+test("new same-day entries work after restart without replaying the covered old entries", () => {
+  const props = restartedWorkspaceFixture();
+  props.snapshot.document.plans[0].entries.push({ id: "new-today", date: "2026-11-20", description: "New after restart",
+    kind: "expense", accountId: 1, amount: 10, currency: "USD" });
+  const rows = table(props).rows;
+  assert.equal(rows.filter((row) => row.entryId === "new-today").length, 1);
+  assert.equal(rows.find((row) => row.entryId === "new-today").projectedBalanceUsd, 1242.13);
+  assert.equal(rows.find((row) => row.entryId === "future").projectedBalanceUsd, 2297.13);
+  assert.equal(rows[0].projectedBalanceUsd, 1252.13, "the saved opening does not absorb a newly added expense");
+  assert.ok(!rows.some((row) => ["old-custom", "old-today"].includes(row.entryId)));
+});
+
+test("refreshing a restarted workspace keeps its captured opening while future rows use refreshed accounts", async () => {
+  const props = restartedWorkspaceFixture();
+  const original = structuredClone(props);
+  const renderWorkspace = workspaceHarness(props);
+  let tree = renderWorkspace();
+  const refreshedAccounts = props.initialActivity.accounts.map((account) => ({ ...account,
+    nativeCurrentBalance: account.id === 1 ? 1300 : 11000 }));
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, method: options?.method || "GET" });
+    if (url === "/api/finance") return { ok: true, json: async () => ({ result: { errors: [], refreshedAt: "2026-11-20T20:00:00.000Z" } }) };
+    if (url.startsWith("/api/finance/activity")) return { ok: true, json: async () => ({ ...props.initialActivity, accounts: refreshedAccounts }) };
+    if (url.startsWith("/api/finance/plan-activity")) return { ok: true, json: async () => props.initialPlanActivity };
+    throw new Error(`Unexpected refresh request: ${url}`);
+  };
+  try {
+    await findElement(tree, (node) => node.type?.name === "Button" && node.props.children === "Refresh").props.onClick();
+    tree = renderWorkspace();
+    const rows = findElement(tree, (node) => node.type?.name === "FinancePlannerTable").props.rows;
+    assert.deepEqual(rows[0].accountBalanceSnapshot.map((account) => account.balance), [1252.13, 10824.12]);
+    const current = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+    assert.equal(current.assets.USD.current, 1300);
+    assert.equal(current.assets.USD.projected, 2355);
+    assert.equal(current.debt.PHP.current, 11000);
+    assert.equal(current.debt.PHP.projected, 11060);
+    assert.ok(!requests.some((request) => request.method === "PUT"), "refresh cannot persist a new reset baseline");
+    assert.deepEqual(props, original);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("an early posted bank payment appears once across the history and future projection boundary", () => {
   const today = "2026-11-20";
   const base = fixture("plans", 0).snapshot.document.plans[0];

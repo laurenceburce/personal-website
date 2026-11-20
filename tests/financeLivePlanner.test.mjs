@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerComputationRange, getLivePlannerRange, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../app/lib/financeLivePlanner.mjs";
+import { filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerComputationRange, getLivePlannerRange, getLivePlannerOpeningRow, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../app/lib/financeLivePlanner.mjs";
 import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
 
 const today = "2026-11-18";
@@ -24,6 +24,37 @@ test("a view filter preserves computed running balances and never mutates or sav
   const before = structuredClone(rows);
   assert.deepEqual(filterLivePlannerRows(rows, { startDate: "2026-12-01", endDate: "2027-01-01" }), [rows[1]]);
   assert.deepEqual(rows, before);
+});
+
+test("a restarted timeline clamps stale history URLs to its known starting day", () => {
+  const date = "2026-11-20";
+  assert.deepEqual(getLivePlannerRange({ today: date, minDate: date }), { startDate: date, endDate: "2027-02-18" });
+  assert.deepEqual(getLivePlannerRange({ today: date, minDate: date, startDate: "2026-11-01", endDate: "2026-11-15" }),
+    { startDate: date, endDate: "2027-02-18" });
+  assert.deepEqual(getLivePlannerRange({ today: date, minDate: date, startDate: "2026-11-25", endDate: "2026-11-30" }),
+    { startDate: "2026-11-25", endDate: "2026-11-30" });
+});
+
+test("a reset opening retains captured native values when current accounts later refresh", () => {
+  const plan = { restart: { version: 1, date: "2026-11-20", transactionId: 100, balances: [
+    { accountId: 1, type: "checking", currency: "USD", balance: 1252.13 },
+    { accountId: 2, type: "credit", currency: "PHP", balance: 10824.12 },
+  ] } };
+  const accounts = [account(1, "checking", 9999), account(2, "credit", 9999, "PHP")];
+  const before = structuredClone({ plan, accounts });
+  const opening = getLivePlannerOpeningRow(plan, { accounts });
+  assert.equal(opening.description, "Starting balances");
+  assert.equal(opening.date, "2026-11-20");
+  assert.equal(opening.isOpeningBalance, true);
+  assert.deepEqual(opening.accountBalanceSnapshot.map((item) => item.balance), [1252.13, 10824.12]);
+  assert.equal(opening.projectedBalanceUsd, 1252.13);
+  assert.equal(opening.projectedBalancePhp, 0, "card debt stays separate from native account funds");
+  assert.equal(opening.accountMovements, undefined, "an opening must not move money or become another posting");
+  assert.equal(getLivePlannerOpeningRow(plan, { accounts: [{ ...accounts[0], nativeCurrentBalance: 700 }, accounts[1]] })
+    .accountBalanceSnapshot[0].balance, 1252.13);
+  const unknown = getLivePlannerOpeningRow({ restart: { ...plan.restart, balances: [] } }, { accounts });
+  assert.ok(unknown.accountBalanceSnapshot.every((item) => item.balance === null), "missing reset values never use today's newer balances");
+  assert.deepEqual({ plan, accounts }, before);
 });
 
 test("analytics start with real native balances and apply future movements once, including hidden earlier future flows", () => {

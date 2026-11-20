@@ -226,6 +226,8 @@ export default function FinancePlannerTable({
     index = end;
   }
   const filtered = query || status !== "all";
+  const transactionCount = visible.filter((row) => !row.isOpeningBalance).length;
+  const totalTransactionCount = rows.filter((row) => !row.isOpeningBalance).length;
   const clear = () => { setSearch(""); setStatus("all"); };
   useEffect(() => {
     if (loading || currentId == null || positionedView.current === windowKey) return;
@@ -280,7 +282,7 @@ export default function FinancePlannerTable({
         aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
         {expanded ? "Collapse accounts" : "Expand accounts"}
       </button>}
-      <span className="fpt-count" aria-live="polite">{visible.length}{filtered ? ` of ${rows.length}` : ""} {visible.length === 1 ? "transaction" : "transactions"}</span>
+      <span className="fpt-count" aria-live="polite">{transactionCount}{filtered ? ` of ${totalTransactionCount}` : ""} {transactionCount === 1 ? "transaction" : "transactions"}</span>
     </div>
     {!visible.length ? <div className="fpt-empty" role="status">
       <strong>{loading ? "Loading transactions…" : filtered ? "No transactions match your filters" : "No transactions in this date range"}</strong>
@@ -289,7 +291,7 @@ export default function FinancePlannerTable({
     </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
       <table className="fpt-table" style={expanded ? { width: `${970 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
-        <caption className="fp-sr-only">Recorded and planned transactions in date order. Running balances show account funds and credit cards side by side in USD and PHP. Expand to show individual account columns grouped by currency to the right.</caption>
+        <caption className="fp-sr-only">Opening balances and recorded and planned transactions in date order. Running balances show account funds and credit cards side by side in USD and PHP. Expand to show individual account columns grouped by currency to the right.</caption>
         <colgroup><col style={{ width: expanded ? "90px" : "7%" }}/><col style={{ width: expanded ? "240px" : "27%" }}/>
           <col style={{ width: expanded ? "120px" : "10%" }}/><col style={{ width: expanded ? "120px" : "10%" }}/>
           <col style={{ width: expanded ? "400px" : "46%" }}/></colgroup>
@@ -353,15 +355,16 @@ export default function FinancePlannerTable({
                     aria-label={`Delete ${row.description}`} onClick={() => !busy && onDelete?.(manualEntry)}>Delete{row.recurring ? " recurring entry" : ""}</button>}
                 </div></details>}
               </div>
-                {done ? <span className="fpt-status-pill fpt-status-done">Done</span>
+                {row.isOpeningBalance ? <span className="fpt-status-pill">Start</span>
+                  : done ? <span className="fpt-status-pill fpt-status-done">Done</span>
                   : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span>
                     : <span className="fpt-status-pill">Planned</span>}
               </div>
-              {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
+              {!row.isOpeningBalance && (isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
             {["USD", "PHP"].map((currency) => {
               const value = transactionAmount(row, currency);
-              return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{money(value, currency)}</td>;
+              return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{row.isOpeningBalance ? "—" : money(value, currency)}</td>;
             })}
             <td className="fpt-projection" data-label="Running balance" title={row.accountBalanceSnapshotNote}><div className="fpt-running-sections"><div>{!hasRowBalances && inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
                 : !hasRowBalances && plan.continuous && row.date < today ? <small className="fpt-balance-note">{done ? "Marked done · no account record" : "Past due · review payment"}</small>

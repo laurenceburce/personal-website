@@ -157,8 +157,16 @@ The finance workspace separates recorded activity from your plans:
   two weeks, anchored exactly 14 days from the first payday. Twice-monthly pay
   deliberately uses two fixed calendar dates instead.
 - **Live planner:** one ongoing planner is available automatically, with no plan
-  creation, switching, or deletion step. Existing entry and receipt IDs stay intact.
-  Use date presets or custom **From / Through** dates to browse past activity and
+  creation, switching, or deletion step. The requested reset runs once on the
+  next authorized load: it captures known native account balances as a dated
+  **Starting balances** row and retains a backup of the previous planner.
+  Existing bank and manual transaction history stays in **Transactions**.
+  Future entries, active recurring schedules, bills, salary, allocations, and
+  account assignments are retained. Automatic schedules resume after the start
+  day so activity already covered by the opening balances is not replayed.
+  New transactions entered on the start day still work normally. Refreshes and
+  later days do not repeat the reset or replace its captured opening values.
+  Use date presets or custom **From / Through** dates to browse activity since that start and
   upcoming payments. These dates change only the view and can be shared in the URL;
   they never trim saved entries, change account balances, or record a payment.
   Projection ranges can extend up to two years. New transactions can be dated
@@ -198,9 +206,9 @@ The finance workspace separates recorded activity from your plans:
   future projections once. Compact totals use the expanded account balances.
   Incomplete history stays unavailable. Text, status chips, and amount colors use
   stronger contrast, with labels as well as color to distinguish states.
-  Manual accounts use the live planner as their source of truth: the saved starting
-  balance and existing independent transactions form the baseline, and assigned
-  planner activity through today updates the balance automatically. This includes
+  Manual accounts retain their known values at the new starting point. Assigned
+  planner activity after the cutover updates the balance automatically through
+  today. This includes
   existing entries, recurring occurrences, salary, bills, savings, and annual reserves.
   Future activity stays projected. Editing, deleting, or moving a planner entry corrects
   its generated account movements without duplicating them on refresh. Manual-only
