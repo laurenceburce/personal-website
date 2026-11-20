@@ -290,7 +290,8 @@ export default function FinancePlannerTable({
           const editableOccurrence = row.editable && (["salary", "bill", "allocation", "reserve"].includes(row.source) || (row.source === "manual" && row.recurring));
           const canRecord = !recorded(row, today) && onRecord && (['salary', 'bill', 'creditCardDue'].includes(row.source) ||
             (row.source === "manual" && row.kind === "transfer" && row.amountMode === "cardBalance"));
-          const canToggle = onToggleComplete && row.completionSource !== "transaction";
+          const canToggle = onToggleComplete && row.completionSource !== "transaction" &&
+            !(row.manualPlannerSource && recorded(row, today));
           const canEdit = manualEntry || editableOccurrence;
           const actions = canEdit || canToggle || (row.isOverride && onResetOccurrence);
           const inCurrentBalance = plan.balanceMode !== "snapshot" && accountRecorded(row, today) && row.date <= today;

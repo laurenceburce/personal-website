@@ -164,6 +164,8 @@ export function mapFinanceActivityAccount(row) {
       ? null
       : Math.round(Number(value) * 100) / 100;
   const isLinked = Boolean(row.external_provider && row.external_account_id);
+  const isActiveManual = !row.external_provider && !row.external_account_id && !row.connection_id &&
+    !row.is_archived && !row.is_sync_excluded && !row.merged_into_account_id;
   const liability = ["credit", "loan"].includes(row.account_type);
   const opening = Number(row.opening_balance || 0);
   const movement = Number(row.native_movement || 0);
@@ -177,6 +179,8 @@ export function mapFinanceActivityAccount(row) {
     name: row.name,
     type: row.account_type,
     currency,
+    openingBalance: money(opening),
+    balanceSource: isLinked ? "bank" : isActiveManual ? "livePlanner" : "ledger",
     nativeCurrentBalance: isLinked
       ? bankBalance === null ? null : money(bankBalance + (liability ? -pendingMovement : pendingMovement))
       : money(opening + (liability ? -movement : movement)),

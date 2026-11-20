@@ -31,7 +31,7 @@ export default function FinancePlanEntryForm({
   disabled,
   rate,
   completed = false,
-  autoRecordManualAccounts = false,
+  manualAccountsFromPlanner = false,
   today = localDate(),
 }) {
   const [draft, setDraft] = useState(() => ({
@@ -43,7 +43,7 @@ export default function FinancePlanEntryForm({
     ...entry,
     kind: entry?.kind === "transfer" && accounts.some((account) => Number(account.id) === Number(entry.toAccountId) && account.type === "credit")
       ? "cardPayment" : entry?.kind || "expense",
-    recordNow: entry || completed ? completed : null,
+    recordNow: completed,
     recurrence: entry?.recurrence || "once",
     repeatUntil: entry?.repeatUntil || "",
   }));
@@ -52,12 +52,23 @@ export default function FinancePlanEntryForm({
   const recurring = draft.recurrence !== "once";
   const cardPayment = draft.kind === "cardPayment";
   const transfer = draft.kind === "transfer" || cardPayment;
-  const selectedAccountIds = transfer || draft.kind === "conversion"
-    ? [draft.fromAccountId, draft.toAccountId] : [draft.accountId];
-  const automaticRecording = autoRecordManualAccounts && !entry && formatDate(draft.date) !== "—" && draft.date <= today &&
-    selectedAccountIds.some((id) => accounts.some((account) => Number(account.id) === Number(id) && activeManualAccount(account)));
-  const recording = !recurring && (draft.recordNow ?? automaticRecording);
-  const liveCardBalance = cardPayment && !recording && draft.amountMode === "cardBalance";
+  const availableAccountId = (currency) => plan.accountLinks?.[`available${currency === "USD" ? "Usd" : "Php"}AccountId`];
+  const defaultAccountLabel = (currency) => {
+    const account = accounts.find((account) => Number(account.id) === Number(availableAccountId(currency)));
+    return account ? `Planner default · ${account.name}` : "Unassigned";
+  };
+  const oppositeCurrency = draft.currency === "USD" ? "PHP" : "USD";
+  const selectedAccountIds = transfer ? [draft.fromAccountId, draft.toAccountId]
+    : draft.kind === "conversion" ? [draft.fromAccountId || availableAccountId(draft.currency), draft.toAccountId || availableAccountId(oppositeCurrency)]
+    : [draft.accountId || availableAccountId(draft.currency)];
+  const manualAccounts = selectedAccountIds.map((id) => accounts.find((account) => Number(account.id) === Number(id)))
+    .filter(activeManualAccount);
+  const hasPlannerManual = manualAccountsFromPlanner && manualAccounts.length > 0;
+  const manualOnly = hasPlannerManual && manualAccounts.length === selectedAccountIds.length;
+  const manualIncluded = manualOnly && formatDate(draft.date) !== "—" && draft.date <= today;
+  const recording = !recurring && !manualOnly && draft.recordNow;
+  const actualAmount = recording || (!recurring && manualIncluded);
+  const liveCardBalance = cardPayment && !actualAmount && draft.amountMode === "cardBalance";
   const card = accounts.find((account) => Number(account.id) === Number(draft.toAccountId));
   const currentDebt = card?.nativeCurrentBalance;
   const knownDebt = currentDebt !== null && currentDebt !== undefined && Number.isFinite(Number(currentDebt));
@@ -134,7 +145,12 @@ export default function FinancePlanEntryForm({
           onChange={(event) => set("description", event.target.value)}
         />
       </Field>
-      {!recurring && <Field label="Status" hint={recording
+      {!recurring && manualOnly ? <Field label="Balance source"
+        hint="Manual balances follow this entry automatically. Edit the amount or date, or delete the entry, to correct the balance.">
+        <p className="fp-inline-note">Live planner · {manualIncluded ? "Included in balances through today" : "Projected until its date"}</p>
+      </Field> : !recurring && <Field label="Status" hint={hasPlannerManual
+        ? "Manual balances follow this entry's date automatically. Choose Recorded when the linked-account transaction has happened too."
+        : recording
         ? "Saving records this transaction and updates your account balances. Matching bank transactions replace these records when they arrive."
         : "Planned rows affect projections. Choose Recorded after a transaction happens to update your account balances."}>
         <select value={recording ? "recorded" : "planned"} onChange={(event) => {
@@ -174,6 +190,7 @@ export default function FinancePlanEntryForm({
               ? "Repeats on the start date’s day each month. Shorter months use their last day."
               : "Dates follow your salary payday schedule, even when scheduled income is hidden in this plan."}
           {" "}Each occurrence appears as its own budget row.
+          {hasPlannerManual && " Manual balances include occurrences through today; later occurrences remain projections."}
         </p>
       )}
       {missingPaydaySchedule && (
@@ -189,7 +206,7 @@ export default function FinancePlanEntryForm({
         </p>
       )}
       {dateError && <p className="fp-alert fp-alert-warning" role="status">{dateError}</p>}
-      {cardPayment && !recording && <Field label="Payment amount">
+      {cardPayment && !actualAmount && <Field label="Payment amount">
         <select value={draft.amountMode || "fixed"} onChange={(event) => set("amountMode", event.target.value)}>
           <option value="cardBalance">Live remaining card balance</option>
           <option value="fixed">Fixed amount</option>
@@ -230,6 +247,7 @@ export default function FinancePlanEntryForm({
               accounts={cardPayment ? accounts.filter((account) => !["credit", "loan"].includes(account.type)) : accounts}
               currency={draft.currency}
               value={draft.fromAccountId}
+              emptyLabel={defaultAccountLabel(draft.currency)}
               onChange={(value) => set("fromAccountId", value)}
               allowNone={!transfer && !recording}
               required={transfer || recording}
@@ -240,6 +258,7 @@ export default function FinancePlanEntryForm({
               accounts={accounts.filter((account) => Number(account.id) !== Number(draft.fromAccountId) && (!cardPayment || account.type === "credit"))}
               currency={draft.kind === "conversion" ? draft.currency === "USD" ? "PHP" : "USD" : draft.currency}
               value={draft.toAccountId}
+              emptyLabel={defaultAccountLabel(oppositeCurrency)}
               onChange={(value) => set("toAccountId", value)}
               allowNone={!transfer && !recording}
               required={transfer || recording}
@@ -252,6 +271,7 @@ export default function FinancePlanEntryForm({
             accounts={accounts}
             currency={draft.currency}
             value={draft.accountId}
+            emptyLabel={defaultAccountLabel(draft.currency)}
             required={recording}
             allowNone={!recording}
             onChange={(value) => set("accountId", value)}
@@ -259,14 +279,14 @@ export default function FinancePlanEntryForm({
         </Field>
       )}
       {cardPayment && <p className="fp-inline-note">
-        {recording ? "Recording reduces the funding account and the card balance owed."
+        {actualAmount ? "Saving reduces the funding account and the card balance owed."
           : liveCardBalance ? "This payment follows the card’s live remaining balance. Early payments reduce it and new card transactions update it."
             : "This schedules a fixed payment from the funding account to the credit card."}
-        {" "}Record the actual amount after paying. No bank payment is sent.
+        {" "}Enter the actual amount after paying. No bank payment is sent.
       </p>}
       {draft.kind === "transfer" && (
         <p className="fp-inline-note">
-          {recording ? "Recording updates both account balances and leaves your total funds unchanged."
+          {actualAmount ? "Saving updates both account balances and leaves your total funds unchanged."
             : "This planned transfer moves money between accounts and leaves your total funds unchanged."}
           Moving linked savings into a spending account increases available funds; moving money into savings sets it aside.
           No bank transfer is initiated.

@@ -701,11 +701,12 @@ export default function FinanceAppClient({
   initialActivity,
   initialPlanActivity = null,
   initialPlannerRange,
-  today = localDate(),
+  today: initialToday = localDate(),
 }) {
-  const [state, setState] = useState(() => ({ ...snapshot, document: ensurePrimaryFinancePlanner(snapshot.document, today) }));
+  const [state, setState] = useState(() => ({ ...snapshot, document: ensurePrimaryFinancePlanner(snapshot.document, initialToday) }));
   const [tab, setTab] = useState(normalizeTab(initialTab));
   const [activity, setActivity] = useState(initialActivity);
+  const today = /^\d{4}-\d{2}-\d{2}$/.test(activity.balanceAsOf || "") ? activity.balanceAsOf : initialToday;
   const [selectedMonth, setSelectedMonth] = useState(initialActivity.month);
   const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [activityLoading, setActivityLoading] = useState(false);
@@ -739,25 +740,20 @@ export default function FinanceAppClient({
   const computationRange = getLivePlannerComputationRange(plannerRange, today);
   const projectionPlan = useMemo(() => ({ ...plan, ...computationRange, balanceMode: "live", includeTransactions: true }),
     [plan, computationRange.startDate, computationRange.endDate]);
+  const recordsDateMatches = !activity.balanceAsOf || planActivity?.balanceHistoryThrough >= today;
+  const planRecordsMatch = Boolean(plan && planActivity?.configured && recordsDateMatches &&
+    planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate);
   const planRows = useMemo(
     () =>
       plan
         ? buildPlanRows(projectionPlan, document, rate, {
             today,
             accounts,
-            transactions:
-              planActivity?.from === projectionPlan.startDate &&
-              planActivity?.to === projectionPlan.endDate
-                ? planActivity.transactions
-                : [],
-            creditCardPaymentTransactions:
-              planActivity?.from === projectionPlan.startDate &&
-              planActivity?.to === projectionPlan.endDate
-                ? planActivity.creditCardPaymentTransactions || []
-                : [],
+            transactions: planRecordsMatch ? planActivity.transactions : [],
+            creditCardPaymentTransactions: planRecordsMatch ? planActivity.creditCardPaymentTransactions || [] : [],
           })
         : [],
-    [projectionPlan, document, rate, planActivity, accounts, today],
+    [projectionPlan, document, rate, planActivity, accounts, today, planRecordsMatch],
   );
   const accountPlan = useMemo(
     () =>
@@ -773,26 +769,21 @@ export default function FinanceAppClient({
   const futurePlan = useMemo(() => ({ ...projectionPlan, startDate: today,
     endDate: plannerRange.endDate < today ? today : plannerRange.endDate }), [projectionPlan, today, plannerRange.endDate]);
   const futurePlanRows = useMemo(() => buildPlanRows(futurePlan, document, rate, { today, accounts,
-    transactions: planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate ? planActivity.transactions : [],
-    creditCardPaymentTransactions: planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate ? planActivity.creditCardPaymentTransactions || [] : [],
-  }), [futurePlan, document, rate, today, accounts, planActivity, projectionPlan]);
+    transactions: planRecordsMatch ? planActivity.transactions : [],
+    creditCardPaymentTransactions: planRecordsMatch ? planActivity.creditCardPaymentTransactions || [] : [],
+  }), [futurePlan, document, rate, today, accounts, planActivity, planRecordsMatch]);
   const futureAccountPlan = useMemo(() => buildAccountPlan(futurePlan, document, rate, { accounts, rows: futurePlanRows, today }),
     [futurePlan, document, rate, accounts, futurePlanRows, today]);
   const rowsWithBalances = withLivePlannerBalances({ accounts, today,
     rows: [...(accountPlan?.rows || planRows).filter((row) => row.date < today), ...futureAccountPlan.rows]
       .filter((row) => row.source !== "salary" || Number(row.amount) > 0) });
-  const balanceHistoryMatches = planActivity?.from === projectionPlan.startDate && planActivity?.to === projectionPlan.endDate;
+  const balanceHistoryMatches = planRecordsMatch;
   const displayedPlanRows = withLivePlannerAccountSnapshots({ accounts, rows: rowsWithBalances, today,
     historyTransactions: balanceHistoryMatches ? planActivity.balanceTransactions || [] : [],
     historyFrom: planActivity?.balanceHistoryFrom, historyThrough: planActivity?.balanceHistoryThrough,
     historyComplete: Boolean(balanceHistoryMatches && planActivity?.balanceHistoryComplete) });
   const visiblePlanRows = filterLivePlannerRows(displayedPlanRows, plannerRange);
   const plannerAnalytics = getLivePlannerAnalytics({ accounts, rows: displayedPlanRows, range: plannerRange, today });
-  const planRecordsMatch = Boolean(
-    plan &&
-    planActivity?.from === projectionPlan.startDate &&
-    planActivity?.to === projectionPlan.endDate,
-  );
   const creditCardObligations = useMemo(
     () => getCreditCardObligations(accounts, {
       today,
@@ -806,7 +797,7 @@ export default function FinanceAppClient({
     plan &&
     plan.includeTransactions !== false &&
     !planRecordsMatch &&
-    !planActivityError,
+    (!planActivityError || !recordsDateMatches || accounts.some((account) => account.balanceSource === "livePlanner")),
   );
   const isBiweekly = document.salary.payFrequency === "biweekly";
   const activeNav = NAV.find((item) => item.id === tab);
@@ -829,8 +820,7 @@ export default function FinanceAppClient({
     if (
       recordRefreshVersion === 0 &&
       planActivity?.configured &&
-      planActivity.from === projectionPlan.startDate &&
-      planActivity.to === projectionPlan.endDate
+      planRecordsMatch
     )
       return;
     loadPlanActivity(projectionPlan);
@@ -841,6 +831,7 @@ export default function FinanceAppClient({
     projectionPlan.endDate,
     plan?.includeTransactions,
     recordRefreshVersion,
+    today,
   ]);
 
   useEffect(() => {
@@ -1943,7 +1934,8 @@ export default function FinanceAppClient({
                 <div className="fp-live-section-heading">
                   <div><h2>Transactions & payments</h2><p>Recorded activity and upcoming commitments, together.</p></div>
                 </div>
-                {planWaitingForRecords ? <div className="fp-loading-state" role="status">Loading transactions for these dates…</div> : (
+                {planWaitingForRecords ? <div className="fp-loading-state" role="status">{planActivityError
+                  ? "Refresh transactions to show balances for the current date." : "Loading transactions for these dates…"}</div> : (
                   <Ledger today={today} plan={plan} accounts={accounts} rows={visiblePlanRows}
                     viewKey={`${plannerRange.startDate}:${plannerRange.endDate}`}
                     busy={busy} onToggleComplete={togglePlanCompletion} onRecord={recordScheduledRow}
@@ -1970,7 +1962,7 @@ export default function FinanceAppClient({
                     onChangeRange={(next) => { try { changePlannerRange(next); } catch (reason) { setError(reason.message); } }}
                     paymentHistoryWarning={planRecordsMatch ? planActivity?.creditCardPaymentWarning : ""} />
                   {undated.length > 0 && <p className="fp-plan-warning">{undated.map((bill) => bill.name).join(", ")} {undated.length === 1 ? "needs a due date" : "need due dates"} to appear in the projection. <button onClick={() => navigate("bills")}>Edit bills</button></p>}
-                  <p className="fp-inline-note">Balances refresh when you open this planner, return to it, and every five minutes while visible. Recorded rows update accounts; matching bank imports replace them. Future payments stay planned until recorded.</p>
+                  <p className="fp-inline-note">Balances refresh when you open this planner, return to it, and every five minutes while visible. Manual accounts follow planner activity through today. Linked accounts follow recorded transactions and bank imports. Future payments stay projected.</p>
                 </details>
               </div>
             </section>
@@ -2126,7 +2118,7 @@ export default function FinanceAppClient({
               disabled={!state.configured}
               rate={rate}
               today={today}
-              autoRecordManualAccounts
+              manualAccountsFromPlanner
               completed={Boolean(modal.recording || (modal.entry && plan.completedRows?.some((row) => row.rowId === `entry:${modal.entry.id}`)))}
             />
           )}

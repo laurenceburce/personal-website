@@ -364,6 +364,18 @@ test("transaction menu and recording controls sit beside the description title",
   assert.equal(find(get(), (node) => node.props?.className === "fpt-actions"), undefined);
 });
 
+test("planner-owned manual receipts keep correction controls without offering an ineffective reopen", () => {
+  const html = render([row({ id: "entry:coffee", entryId: "coffee", source: "manual", description: "Coffee", date: today,
+    completed: true, completionSource: "plan", manualPlannerSource: true,
+  })], { onEdit() {}, onDelete() {}, onToggleComplete() {} });
+  assert.match(html, /fpt-status-done">Done/);
+  assert.match(html, /aria-label="Edit Coffee"/);
+  assert.match(html, /aria-label="Delete Coffee"/);
+  assert.doesNotMatch(html, /aria-label="Reopen|>Reopen</);
+  const partial = render([row({ date: today, completed: false, manualPlannerSource: true })], { onToggleComplete() {} });
+  assert.match(partial, />Mark done</);
+});
+
 test("status and search filters preserve precomputed balances and source rows", () => {
   const rows = [row({ id: "old", date: "2026-11-17", description: "Overdue rent", balanceUsd: 500 }),
     row({ id: "recorded", date: today, description: "Paid coffee", completed: true, recordedInAccounts: true, balanceUsd: 450 }),

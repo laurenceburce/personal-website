@@ -181,10 +181,15 @@ The finance workspace separates recorded activity from your plans:
   current values and later posted activity, using saved order within a day.
   Incomplete history stays unavailable. Text, status chips, and amount colors use
   stronger contrast, with labels as well as color to distinguish states.
-  Add a one-time row as **Planned** or **Recorded · already happened**. Recording
-  creates account transactions; completing a custom row records its assigned accounts
-  too. Transfers create both native account legs. Manual balances update immediately.
-  Linked accounts include recorded amounts while awaiting a unique posted bank match,
+  Manual accounts use the live planner as their source of truth: the saved starting
+  balance and existing independent transactions form the baseline, and assigned
+  planner activity through today updates the balance automatically. This includes
+  existing entries, recurring occurrences, salary, bills, savings, and annual reserves.
+  Future activity stays projected. Editing, deleting, or moving a planner entry corrects
+  its generated account movements without duplicating them on refresh. Manual-only
+  entries show their balance source instead of a separate recording choice.
+  Linked-account entries can be **Planned** or **Recorded · already happened**.
+  Linked accounts include explicitly recorded amounts while awaiting a unique posted bank match,
   which replaces the generated record once. Use **Record payment** or **Record receipt**
   to enter the actual date and amount, including early or partial payments.
   **Credit card payment / Live remaining card balance** follows new charges and earlier
@@ -213,9 +218,9 @@ The finance workspace separates recorded activity from your plans:
   rows. Removing an account hides it from active tracking and future syncs;
   unlinking a connection revokes access and retains its historical transactions.
   Add a manual USD/PHP account for cash or a bank without a connected provider;
-  its native opening balance and recorded movements are tracked in the app.
+  its native starting balance and live planner activity are tracked in the app.
   Use **Edit account** on a manual account or card to change its name, type,
-  or current native balance. Balance corrections retain transaction history;
+  or current native balance. Balance corrections adjust the starting balance and retain transaction history;
   card statement details and automatic payment settings stay separate.
 - **Salary & settings:** monthly salary with instant USD/PHP conversion and
   the first payday used by forecasts.

@@ -1123,6 +1123,7 @@ export async function getFinanceActivity({ month } = {}) {
   const empty = {
     configured: false,
     month: window.month,
+    balanceAsOf: window.today,
     historyStart: window.historyStart,
     historyEnd: window.historyEnd,
     accounts: [],

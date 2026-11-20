@@ -542,7 +542,7 @@ function scheduledPlanTransaction(forecast, transaction) {
     String(forecast.planId) === String(transaction.planId) && String(forecast.id) === String(transaction.planScheduledRowId);
 }
 
-function forecastMatchesTransaction(forecast, transaction) {
+export function forecastMatchesTransaction(forecast, transaction) {
   if (forecast.partialPayment && scheduledPlanTransaction(forecast, transaction)) return false;
   if (
     ["conversion", "transfer"].includes(forecast.kind) ||
@@ -1089,6 +1089,7 @@ function planCompletion(rows, plan, actual, document, rate, today) {
       ...(completedAt ? { completedAt } : {}),
       ...(recordedByPlan ? { planGenerated: true, recordedInAccounts: true,
         awaitingBankSync: matches.some((match) => match.awaitingBankSync) } : {}),
+      ...(matches.length && matches.every((match) => match.manualPlannerSource) ? { manualPlannerSource: true } : {}),
       matchedTransactionIds: row.source === "creditCardDue" ? row.paymentTransactionIds || [] : matches.map((match) => match.transactionId).filter((id) => id != null),
     };
   });
@@ -1189,6 +1190,7 @@ function linkedPlanTransactions(rows, plan, actual, accounts, rate, today) {
       } : {}),
       ...(complete && plan.includeTransactions !== false ? { date: recordedDate, scheduledDate: row.date } : {}),
       recordedTransactions: evidence.map((transaction) => ({ ...transaction })),
+      ...(evidence.every((transaction) => transaction.manualPlannerSource) ? { manualPlannerSource: true } : {}),
       recordedTransactionsIncluded: plan.includeTransactions !== false,
       matchedTransactionIds: evidence.map((transaction) => transaction.transactionId),
       postedTransferAccountIds: [...new Set(evidence.map((transaction) => Number(transaction.accountId)))],
@@ -1580,6 +1582,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         accountType: transaction.accountType || "",
         accountId: transaction.accountId ?? null,
         ...(transaction.planId != null ? { planId: transaction.planId } : {}),
+        ...(transaction.manualPlannerSource ? { manualPlannerSource: true } : {}),
         ...(transaction.planRowId != null ? {
           planRowId: transaction.planRowId,
           planGenerated: transaction.planGenerated ?? !transaction.provider,

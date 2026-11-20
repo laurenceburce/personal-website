@@ -285,7 +285,7 @@ export function ManualAccountEditForm({ account, disabled = false, saving = fals
               : "Enter the account’s current balance in its original currency."}</small>
           </label>
         </div>
-        <p>Saving updates the tracked balance and keeps your transaction history. Future transactions continue to adjust this balance.</p>
+        <p>The Live planner updates this balance through today. Saving a correction adjusts the starting balance and keeps your transaction history.</p>
         {error && <p className="fa-form-error fa-negative" role="alert">{error}</p>}
         <div className="fa-button-row">
           <button type="submit" className="fa-button fa-primary" disabled={disabled || saving}>
@@ -1707,6 +1707,7 @@ export function BankAccountsPanel({
           <p>
             Track an existing cash or bank account in this app, including PHP
             accounts. This does not open a bank account or connect to a bank.
+            {" "}Set its starting balance; the Live planner updates it through today.
           </p>
           <fieldset disabled={working || unavailable}>
             <legend className="fa-sr-only">Manual account details</legend>
@@ -1762,7 +1763,7 @@ export function BankAccountsPanel({
                 </select>
               </label>
               <label className="fa-field fa-wide">
-                <span>Opening balance · {manualAccount.currency}</span>
+                <span>Starting balance · {manualAccount.currency}</span>
                 <FinanceNumberInput
                   required
                   step="0.01"
@@ -1779,8 +1780,8 @@ export function BankAccountsPanel({
                   }}
                 />
                 <small>
-                  Use the account’s native currency. Manual transactions update
-                  this tracked balance; credit accounts use a positive amount
+                  Use the account’s native currency. The Live planner adds activity
+                  to this starting balance; credit accounts use a positive amount
                   for money owed.
                 </small>
               </label>
@@ -2000,6 +2001,7 @@ export function BankAccountsPanel({
                           (item) => String(item.accountId) === String(account.id),
                         );
                         const liability = ["credit", "loan"].includes(account.type);
+                        const plannerBalance = account.balanceSource === "livePlanner";
                         const balance = account.nativeCurrentBalance;
                         const hasBalance =
                           balance !== null &&
@@ -2018,7 +2020,7 @@ export function BankAccountsPanel({
                               : "Balance owed"
                             : Number(balance) < 0
                               ? "Overdrawn balance"
-                              : "Current balance";
+                              : plannerBalance ? "Live planner balance" : "Current balance";
                         const supported = ["USD", "PHP"].includes(account.currency);
                         return (
                           <article className="fa-account-card" key={account.id}>
@@ -2198,8 +2200,12 @@ export function BankAccountsPanel({
                               <span
                                 className={`fa-account-source ${account.isLinked ? "fa-is-linked" : ""}`}
                               >
-                                {account.isLinked ? "Bank synced" : "Manual account"}
+                                {account.isLinked ? "Bank synced" : plannerBalance ? "Live planner" : "Manual account"}
                               </span>
+                              {plannerBalance && account.openingBalance !== null && account.openingBalance !== undefined &&
+                                Number.isFinite(Number(account.openingBalance)) && (
+                                  <small>Starting balance <NativeMoney value={account.openingBalance} currency={account.currency} /></small>
+                                )}
                               {account.nativeAvailableBalance !== null &&
                                 account.nativeAvailableBalance !== undefined && (
                                   <small>

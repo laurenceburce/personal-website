@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as planner from "../app/lib/financePlanner.mjs";
 import * as insights from "../app/lib/financeInsights.mjs";
+import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
 // Render real JSX with Next's compiler. Effects never run in these server
 // renders, so no bank windows, provider calls, or personal records are touched.
@@ -387,6 +388,26 @@ test("account categories keep linked checking, savings and credit cards separate
   assert.match(group("other"), /Others[\s\S]*Brokerage[\s\S]*Auto loan[\s\S]*Pocket cash/);
   assert.doesNotMatch(group("checking"), /Emergency savings|Rewards card|Brokerage/);
   assert.match(group("other"), /fa-count">3</);
+});
+
+test("manual account cards show Live planner balances and native starting balances while linked accounts retain bank provenance", () => {
+  const manual = mapFinanceActivityAccount({ id: 34, name: "PHP savings", account_type: "savings", currency: "PHP",
+    opening_balance: 100000, native_movement: -10457.95 });
+  const card = mapFinanceActivityAccount({ id: 37, name: "PHP card", account_type: "credit", currency: "PHP",
+    opening_balance: 25000, native_movement: -10457.95 });
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [manual, card, bankAccounts[0]] }, rate: 63 });
+  const articles = [...html.matchAll(/<article class="fa-account-card">([\s\S]*?)<\/article>/g)].map((match) => match[1]);
+  const savings = articles.find((article) => article.includes("PHP savings"));
+  assert.match(savings, /Live planner balance[\s\S]*?₱89,542\.05/);
+  assert.match(savings, /fa-account-source[^>]*>Live planner</);
+  assert.match(savings, /Starting balance ₱100,000\.00/);
+  const debt = articles.find((article) => article.includes("PHP card"));
+  assert.match(debt, /Balance owed[\s\S]*?₱35,457\.95/);
+  assert.match(debt, /Starting balance ₱25,000\.00/);
+  const linked = articles.find((article) => article.includes("Example Bank"));
+  assert.match(linked, /Current balance[\s\S]*?\$1,000\.00/);
+  assert.match(linked, /Bank synced/);
+  assert.doesNotMatch(linked, /Live planner balance|Starting balance/);
 });
 
 test("credit cards show full statement amounts and dated dues separately from current balances", () => {
@@ -1137,6 +1158,7 @@ test("manual account editing starts from the native current balance and preserve
   const manual = { ...account, name: "PHP savings", type: "savings", nativeCurrentBalance: 1234.56 };
   const before = structuredClone(manual);
   const harness = manualAccountEditHarness({ account: manual });
+  assert.match(renderToStaticMarkup(harness.render()), /Saving a correction adjusts the starting balance and keeps your transaction history/);
   assert.equal(harness.field("name").props.value, "PHP savings");
   assert.equal(Number(harness.field("currentBalance").props.value), 1234.56);
   assert.match(renderToStaticMarkup(harness.render()), /PHP/);
@@ -1262,6 +1284,8 @@ test("manual PHP accounts preserve their native opening balance and refresh avai
   const harness = bankHarness();
   actionButton(harness.render(), "Add manual account").props.onClick();
   let tree = harness.render();
+  assert.match(renderToStaticMarkup(tree), /Starting balance/);
+  assert.match(renderToStaticMarkup(tree), /Live planner updates it through today/);
   assert.match(
     renderToStaticMarkup(tree),
     /does not open a bank account or connect to a bank/,
@@ -1290,7 +1314,7 @@ test("manual PHP accounts preserve their native opening balance and refresh avai
       node.props.min === "-999999999",
   ).props.onChange({ target: { value: "1234.56" } });
   tree = harness.render();
-  assert.match(renderToStaticMarkup(tree), /Opening balance · PHP/);
+  assert.match(renderToStaticMarkup(tree), /Starting balance · PHP/);
   await findElement(
     tree,
     (node) =>

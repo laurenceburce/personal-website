@@ -116,6 +116,25 @@ test("PHP cash balances use native movement and credit accounts increase debt on
   assert.equal(mapFinanceActivityAccount({ ...row, currency: "EUR" }), null);
 });
 
+test("active manual accounts expose their native starting balance and Live planner provenance", () => {
+  const row = { id: 34, name: "PHP savings", account_type: "savings", currency: "PHP",
+    opening_balance: "100000.25", native_movement: "-10457.95" };
+  const before = structuredClone(row);
+  const asset = mapFinanceActivityAccount(row);
+  assert.equal(asset.balanceSource, "livePlanner");
+  assert.equal(asset.openingBalance, 100000.25);
+  assert.equal(asset.nativeCurrentBalance, 89542.3);
+  const debt = mapFinanceActivityAccount({ ...row, account_type: "credit", opening_balance: "25000" });
+  assert.equal(debt.balanceSource, "livePlanner");
+  assert.equal(debt.openingBalance, 25000);
+  assert.equal(debt.nativeCurrentBalance, 35457.95);
+  assert.equal(mapFinanceActivityAccount({ ...row, opening_balance: 0, native_movement: 50 }).openingBalance, 0);
+  assert.deepEqual(row, before);
+  for (const flags of [{ is_archived: 1 }, { is_sync_excluded: 1 }, { merged_into_account_id: 99 },
+    { connection_id: 7 }, { external_provider: "plaid" }, { external_account_id: "bank-34" }])
+    assert.equal(mapFinanceActivityAccount({ ...row, ...flags }).balanceSource, "ledger", JSON.stringify(flags));
+});
+
 test("linked balances remain provider balances and unknown balances remain unknown", () => {
   const row = {
     id: 2,
@@ -133,6 +152,8 @@ test("linked balances remain provider balances and unknown balances remain unkno
   assert.equal(mapFinanceActivityAccount(row).nativeCurrentBalance, 125.75);
   assert.equal(mapFinanceActivityAccount(row).nativeAvailableBalance, 120.1);
   assert.equal(mapFinanceActivityAccount(row).isLinked, true);
+  assert.equal(mapFinanceActivityAccount(row).balanceSource, "bank");
+  assert.equal(mapFinanceActivityAccount(row).openingBalance, 200);
   assert.equal(
     mapFinanceActivityAccount({ ...row, current_balance: null })
       .nativeCurrentBalance,
