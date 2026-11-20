@@ -114,7 +114,7 @@
 .fp-app .fpt-row > .fpt-flow-zero { background: #eceeed; color: #526058; }
 .fp-app .fpt-money-stack { font-weight: 400; gap: 2px; }
 .fp-app .fpt-projection .fpt-money-stack > span { justify-content: space-between; }
-.fp-app .fpt-account-columns-toggle { display: block; margin: 4px auto 0; padding: 4px 6px; border: 1px solid #9db7a8; border-radius: 3px; background: #fff; color: #1b593e; font: inherit; font-size: 12px; cursor: pointer; }
+.fp-app .fpt-account-columns-toggle, .fp-app .fpt-account-columns-toggle-mobile { display: block; margin: 4px auto 0; padding: 4px 6px; border: 1px solid #9db7a8; border-radius: 3px; background: #fff; color: #1b593e; font: inherit; font-size: 12px; cursor: pointer; }
 .fp-app .fpt-account-columns-toggle-mobile { display: none; }
 .fp-app .fpt-account-list { margin: 6px 0 0; padding-top: 4px; border-top: 1px solid #a9beb0; }
 .fp-app .fpt-account-list > div { padding: 4px 0; border-bottom: 1px solid #d5e0d8; }
@@ -130,10 +130,10 @@
   .fp-app .fpt-filter-tabs button { flex: 1; padding: 7px 5px; }
   .fp-app .fpt-count { margin-left: 0; }
   .fp-app .fpt-table { font-size: 11px; }
-  .fp-app .fpt-table col:nth-child(1) { width: 10% !important; }
-  .fp-app .fpt-table col:nth-child(2) { width: 22% !important; }
-  .fp-app .fpt-table col:nth-child(3), .fp-app .fpt-table col:nth-child(4) { width: 19% !important; }
-  .fp-app .fpt-table col:nth-child(5) { width: 30% !important; }
+  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(1) { width: 10% !important; }
+  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(2) { width: 22% !important; }
+  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(3), .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(4) { width: 19% !important; }
+  .fp-app .fpt-planner-table:not(.fpt-accounts-expanded) .fpt-table col:nth-child(5) { width: 30% !important; }
   .fp-app .fpt-table th, .fp-app .fpt-table td { padding: 5px 2px; }
   .fp-app .fpt-table thead th, .fp-app .fpt-transaction > strong { font-size: 11px; }
   .fp-app .fpt-table .fpt-date { font-size: 10px; }
@@ -145,3 +145,19 @@
   .fp-app .fpt-table-wrap { max-height: 80dvh; }
 }
 @media (prefers-reduced-motion: reduce) { .fp-app .fpt-planner-table * { scroll-behavior: auto !important; } }
+
+/* Expanded accounts remain actual columns in the shared horizontal viewport. */
+.fp-app .fpt-description-line { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; }
+.fp-app .fpt-description-line > strong { font-weight: 500; line-height: 1.4; min-width: 0; }
+.fp-app .fpt-description-line .fpt-status-pill { flex-shrink: 0; margin-left: auto; padding: 2px 5px; }
+.fp-app .fpt-description-line .fpt-status-done { color: #155e3e; background: #def0e5; border-color: #acd1b9; }
+.fp-app .fpt-actions:empty { display: none; }
+.fp-app .fpt-accounts-expanded .fpt-account-columns-toggle-mobile { display: inline-flex; margin: 0; }
+.fp-app .fpt-account-tags { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; margin-top: 5px; }
+.fp-app .fpt-account-tags .fpt-info-tag { display: inline-block; padding: 2px 5px; border: 1px solid #c5d5cd; border-radius: 4px; background: #edf4ef; color: #375d47; font-size: 11px; line-height: 1.4; }
+.fp-app .fpt-table .fpt-account-balance { text-align: center; }
+.fp-app .fpt-table .fpt-row-overdue > td:not(.fpt-date),
+.fp-app .fpt-table .fpt-row-overdue:hover > td:not(.fpt-date) { background: #fce4e1; border-bottom-color: #e3b2ab; }
+.fp-app .fpt-row-overdue .fpt-description-line > strong { color: #8f2e20; }
+.fp-app .fpt-row-overdue.fpt-row-current > .fpt-transaction { box-shadow: inset 4px 0 #ae4035; }
+.fp-app .fpt-row-overdue .fpt-account-tags .fpt-info-tag { background: #fff1ee; border-color: #e3b2ab; color: #8f2e20; }

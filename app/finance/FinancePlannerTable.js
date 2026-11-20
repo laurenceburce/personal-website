@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Children, isValidElement, useEffect, useRef, useState } from "react";
 import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
 import { getPlanRowCategory } from "../lib/financePlanPresentation.mjs";
 import { SourceLabel } from "./FinancePlanLedger";
 import "./finance-planner-table.css";
 
-const recorded = (row, today) => Boolean(row.completed ||
+const recorded = (row, today) => Boolean(row.completed || row.recordedInAccounts ||
   (row.source === "transaction" && !row.scheduled && row.date <= today));
 const accountRecorded = (row, today) => Boolean(row.recordedInAccounts ||
   ["plan", "transaction"].includes(row.completionSource) ||
@@ -48,36 +48,59 @@ function rowAccounts(row, accounts, plan) {
   return { names: names.length ? names : [row.accountName || "Not assigned"] };
 }
 
-function NativeAmount({ row }) {
-  if (row.kind === "conversion") return <div className="fpt-money-stack">
-    {[['USD', row.usd], ['PHP', row.php]].map(([currency, value]) => <span key={currency}
-      className={value < 0 ? "fpt-negative" : "fpt-positive"}>{signed(Number(value) || 0, currency)}</span>)}
-  </div>;
-  const hasNative = ["USD", "PHP"].includes(row.currency) && Number.isFinite(row.grossAmount ?? row.amount);
-  if (hasNative) {
-    const amount = row.grossAmount ?? row.amount;
-    const internal = row.kind === "transfer" && !row.creditCardPaymentFor;
-    const value = internal ? amount : (row.kind === "income" ? 1 : -1) * amount;
-    return <div className="fpt-money-stack">
-      <span className={internal ? "" : value < 0 ? "fpt-negative" : "fpt-positive"}>
-        {internal ? money(value, row.currency) : signed(value, row.currency)}
-      </span>
-      {row.cardCreditActivity ? <small>Card balance</small> : row.kind === "transfer" ? <small>{row.creditCardPaymentFor ? "Card payment" : "Transfer"}</small> : null}
-    </div>;
-  }
-  const flows = [["USD", row.usd], ["PHP", row.php]].filter(([, value]) => Number.isFinite(value) && value !== 0);
-  return <div className="fpt-money-stack">{flows.length ? flows.map(([currency, value]) =>
-    <span key={currency} className={value < 0 ? "fpt-negative" : "fpt-positive"}>{signed(value, currency)}</span>) : <span>—</span>}</div>;
+function accountInvolved(row, account, accounts, plan) {
+  const ids = [row.accountId, row.fromAccountId, row.toAccountId, row.creditAccountId,
+    row.sourceAccountId, row.creditCardPaymentFor, ...(row.accountMovements || []).map((move) => move.accountId),
+    ...(row.recordedTransactions || []).map((item) => item.accountId)];
+  if (ids.some((id) => id != null && Number(id) === Number(account.id))) return true;
+  const assigned = rowAccounts(row, accounts, plan);
+  const names = [assigned.from, assigned.to, ...(assigned.names || []),
+    ...(row.recordedTransactions || []).map((item) => item.accountName)];
+  return names.includes(accountName(account)) || names.includes(account.name);
 }
 
-function Status({ row, today }) {
-  const done = recorded(row, today);
-  const label = done ? row.recordedInAccounts || row.source === "transaction" || row.completionSource === "transaction" ? "Recorded" : "Done"
-    : row.date < today ? "Overdue" : "Planned";
-  return <div className="fpt-status"><span className={`fpt-status-pill fpt-status-${label.toLowerCase()}`}>{label}</span>
-    {row.awaitingBankSync && <small>Awaiting bank match</small>}
-    {done && row.completionSource === "transaction" && (row.matchedForecast || row.recordedTransactions?.length > 0) && <small>Matched to account</small>}
-  </div>;
+// Reuse financial provenance without the ledger's expandable detail controls.
+function SourceTags({ row }) {
+  const textContent = (node) => isValidElement(node)
+    ? Children.map(node.props.children, textContent) : node;
+  return Children.map(SourceLabel({ row }).props.children, (child) => child &&
+    <span className="fpt-info-tag">{textContent(child)}</span>);
+}
+
+function AccountCell({ row, account, accounts, plan, today }) {
+  const snapshot = row.accountBalanceSnapshot?.find((item) => Number(item.accountId) === Number(account.id));
+  const value = row.accountBalanceSnapshotKind === "unavailable" ? null : snapshot?.balance;
+  const involved = accountInvolved(row, account, accounts, plan);
+  const from = Number(row.fromAccountId) === Number(account.id);
+  const to = Number(row.toAccountId || row.creditAccountId) === Number(account.id);
+  const moves = (row.accountMovements || []).filter((move) => Number(move.accountId) === Number(account.id));
+  const debt = ["credit", "loan"].includes(account.type);
+  const negative = Number.isFinite(value) && (debt ? value > 0 : value < 0);
+  return <td className={`fpt-account-balance${negative ? " fpt-negative" : ""}`} data-account-id={account.id}
+    title={row.accountBalanceSnapshotNote || "Account balance after this transaction"}>
+    <span>{Number.isFinite(value) ? money(value, account.currency) : "\u2014"}</span>
+    {Number.isFinite(value) && debt && <small>{value < 0 ? "Credit balance" : "Balance owed"}</small>}
+    {involved && <div className="fpt-account-tags" aria-label={`Activity in ${accountName(account)} for ${row.description}`}>
+      <span className="fpt-info-tag">{row.creditCardPaymentFor ? "Card payment" : from ? "Sent" : to ? "Received" : getPlanRowCategory(row).label}</span>
+      {moves.length ? moves.map((move, index) => <span key={index} className="fpt-info-tag">{signed(Number(move.amount) || 0, move.currency || account.currency)}</span>)
+        : <span className="fpt-info-tag">{["USD", "PHP"].includes(row.currency) && row.currency === account.currency && Number.isFinite(row.grossAmount ?? row.amount)
+          ? money(row.grossAmount ?? row.amount, account.currency) : money(Number(account.currency === "USD" ? row.usd : row.php) || 0, account.currency)}</span>}
+      <SourceTags row={{ ...row, accountMovements: [], accountNames: [], recordedTransactions: [] }}/>
+      {from && row.toAccountId && <span className="fpt-info-tag">to {accountName(accounts.find((item) => Number(item.id) === Number(row.toAccountId)))}</span>}
+      {to && row.fromAccountId && <span className="fpt-info-tag">from {accountName(accounts.find((item) => Number(item.id) === Number(row.fromAccountId)))}</span>}
+      {row.notes && <span className="fpt-info-tag">{row.notes}</span>}
+      {row.cardCreditActivity && <span className="fpt-info-tag">Card balance</span>}
+      {row.estimated && <span className="fpt-info-tag">Estimated</span>}
+      {row.recurring && <span className="fpt-info-tag">Repeats</span>}
+      {row.awaitingBankSync && <span className="fpt-info-tag">Awaiting bank match</span>}
+      {recorded(row, today) && row.completionSource === "transaction" && (row.matchedForecast || row.recordedTransactions?.length > 0) && <span className="fpt-info-tag">Matched to account</span>}
+      {(row.recordedTransactions || []).filter((item) => Number(item.accountId) === Number(account.id) || item.accountName === account.name)
+        .map((item, index) => <span key={index} className="fpt-info-tag">{item.description} {money(item.amount, item.currency || account.currency)}</span>)}
+      {[["Annual reserve", account.currency === "USD" ? row.reserveUsd : row.reservePhp],
+        ["Savings", account.currency === "USD" ? row.savingsUsd : row.savingsPhp]].filter(([, amount]) => Number.isFinite(amount))
+        .map(([label, amount]) => <span key={label} className="fpt-info-tag">{label} · {account.currency} {money(amount, account.currency)}</span>)}
+    </div>}
+  </td>;
 }
 
 /** Display filters never alter stored entries, row order, or projected balances. */
@@ -184,17 +207,22 @@ export default function FinancePlannerTable({
       {filtered && <button type="button" className="fp-button fp-secondary" onClick={clear}>Clear filters</button>}
     </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
-      <table className="fpt-table">
-        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show the account list beneath the totals.</caption>
-        <colgroup><col style={{ width: "12%" }}/><col style={{ width: "24%" }}/><col style={{ width: "16%" }}/><col style={{ width: "16%" }}/><col style={{ width: "32%" }}/></colgroup>
+      <table className="fpt-table" style={expanded ? { width: `${760 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
+        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show separate account columns to the right.</caption>
+        <colgroup><col style={{ width: expanded ? "90px" : "12%" }}/><col style={{ width: expanded ? "240px" : "24%" }}/>
+          <col style={{ width: expanded ? "120px" : "16%" }}/><col style={{ width: expanded ? "120px" : "16%" }}/>
+          <col style={{ width: expanded ? "190px" : "32%" }}/>
+          {expanded && accountColumns.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>
         <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">USD</th><th scope="col">PHP</th>
           <th scope="col" className="fpt-projection-heading"><span>Running balance</span>
             <button type="button" className="fpt-account-columns-toggle" aria-expanded={expanded} aria-controls={tableId}
               disabled={loading || !accountColumns.length} onClick={toggleAccountColumns}>{expanded ? "Collapse accounts" : "Expand accounts"}</button>
-          </th></tr></thead>
+          </th>
+          {expanded && accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
+            <strong>{accountName(account)}</strong><small>{account.currency}{["credit", "loan"].includes(account.type) ? " · Balance owed" : ""}</small>
+          </th>)}</tr></thead>
         <tbody>{visible.map((row, index) => {
           const category = getPlanRowCategory(row);
-          const assigned = rowAccounts(row, accounts, plan);
           const manualEntry = (row.source === "manual" || row.planGenerated) && plan.entries?.find((entry) => entry.id === row.entryId);
           const editableOccurrence = row.editable && (["salary", "bill", "allocation", "reserve"].includes(row.source) || (row.source === "manual" && row.recurring));
           const canRecord = !recorded(row, today) && onRecord && (['salary', 'bill', 'creditCardDue'].includes(row.source) ||
@@ -205,25 +233,21 @@ export default function FinancePlannerTable({
           const inCurrentBalance = plan.balanceMode !== "snapshot" && accountRecorded(row, today) && row.date <= today;
           const currentRow = String(row.id) === currentId;
           const isToday = row.date === today;
+          const done = recorded(row, today);
+          const overdue = !done && row.date < today;
           return <tr key={row.id} ref={(node) => {
             if (node) rowRefs.current.set(String(row.id), node); else rowRefs.current.delete(String(row.id));
           }} aria-current={currentRow ? "true" : undefined} data-row-id={row.id}
-            className={`fpt-row fpt-category-${category.key}${dateSpans.has(index) ? " fpt-date-start" : ""}${recorded(row, today) ? " fpt-row-recorded" : ""}${isToday ? " fpt-row-today" : ""}${currentRow ? " fpt-row-current" : ""}`}>
+            className={`fpt-row fpt-category-${category.key}${dateSpans.has(index) ? " fpt-date-start" : ""}${recorded(row, today) ? " fpt-row-recorded" : ""}${overdue ? " fpt-row-overdue" : ""}${isToday ? " fpt-row-today" : ""}${currentRow ? " fpt-row-current" : ""}`}>
             {dateSpans.has(index) && <td className="fpt-date" rowSpan={dateSpans.get(index)}>
               <time dateTime={row.date} title={formatDate(row.date, { year: "numeric" })}>{formatDate(row.date, { month: "short", day: "numeric" })}</time>
             </td>}
             <td className="fpt-transaction">
-              <strong>{row.description}</strong>
+              <div className="fpt-description-line"><strong>{row.description}</strong>
+                {done ? <span className="fpt-status-pill fpt-status-done">Done</span>
+                  : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span> : null}
+              </div>
               {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
-              <div className="fpt-row-meta"><span className="fpt-category">{category.label}</span>{row.estimated && <span>Estimated</span>}
-                {row.recurring && <span>Repeats</span>}
-                <details className="fpt-details"><summary aria-label={`Details for ${row.description}`}>Details</summary>
-                  <div className="fpt-detail-body"><SourceLabel row={row}/>
-                    <div className="fpt-account" data-label="Account">{assigned.from || assigned.to ?
-              <span className="fpt-account-pair"><span>{assigned.from}</span><small>to {assigned.to}</small></span> :
-              <span>{assigned.names.slice(0, 2).join(" · ")}{assigned.names.length > 2 ? ` +${assigned.names.length - 2}` : ""}</span>}</div>
-                    <NativeAmount row={row}/>
-                    <div className="fpt-status-cell"><Status row={row} today={today}/>
               <div className="fpt-actions">
                 {canRecord && <button type="button" className="fpt-record" disabled={busy}
                   aria-label={`Record ${row.kind === "income" ? "receipt" : "payment"}: ${row.description}`} onClick={() => !busy && onRecord(row)}>
@@ -241,15 +265,6 @@ export default function FinancePlannerTable({
                     aria-label={`Delete ${row.description}`} onClick={() => !busy && onDelete?.(manualEntry)}>Delete{row.recurring ? " recurring entry" : ""}</button>}
                 </div></details>}
               </div>
-            </div>
-                    <dl className="fpt-extra-balances">
-                      {[["Annual reserve · USD", row.reserveUsd, "USD"], ["Annual reserve · PHP", row.reservePhp, "PHP"],
-                        ["Savings · USD", row.savingsUsd, "USD"], ["Savings · PHP", row.savingsPhp, "PHP"]].filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
-                          <div key={label}><dt>{label}</dt><dd>{money(value, currency)}</dd></div>)}
-                    </dl>
-                  </div>
-                </details>
-              </div>
             </td>
             {["USD", "PHP"].map((currency) => {
               const value = Number(currency === "USD" ? row.usd : row.php) || 0;
@@ -259,23 +274,24 @@ export default function FinancePlannerTable({
                 : plan.continuous && row.date < today ? <small>Past due · review payment</small>
                   : <div className="fpt-money-stack">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
                     ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
-                    <span key={currency} className={value < 0 ? "fpt-negative" : ""}><small>{currency}</small>{balance(value, currency)}</span>)}</div>}{expanded && <dl className="fpt-account-list" aria-label={`Account balances for ${row.description}`}>
-                {accountColumns.map((account) => {
-                  const snapshot = row.accountBalanceSnapshot?.find((item) => Number(item.accountId) === Number(account.id));
-                  const value = row.accountBalanceSnapshotKind === "unavailable" ? null : snapshot?.balance;
-                  return <div key={account.id} data-account-id={account.id} title={row.accountBalanceSnapshotNote}>
-                    <dt>{accountName(account)}</dt><dd>{Number.isFinite(value) ? money(value, account.currency) : "\u2014"}
-                    {Number.isFinite(value) && ["credit", "loan"].includes(account.type) && <small>{value < 0 ? "Credit balance" : "Balance owed"}</small>}</dd>
-                  </div>;
-                })}
-              </dl>}</td>
+                    <span key={currency} className={value < 0 ? "fpt-negative" : ""}><small>{currency}</small>{balance(value, currency)}</span>)}</div>}
+              {(!expanded || !accountColumns.some((account) => accountInvolved(row, account, accounts, plan))) &&
+                <div className="fpt-account-tags"><SourceTags row={row}/>
+                  {[["Annual reserve", row.reserveUsd, "USD"], ["Annual reserve", row.reservePhp, "PHP"],
+                    ["Savings", row.savingsUsd, "USD"], ["Savings", row.savingsPhp, "PHP"]]
+                    .filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
+                      <span key={`${label}-${currency}`} className="fpt-info-tag">{label}{" \u00b7 "}{currency}{money(value, currency)}</span>)}
+                </div>}
+            </td>
+            {expanded && accountColumns.map((account) => <AccountCell key={account.id} row={row} account={account}
+              accounts={accounts} plan={plan} today={today}/>)}
 
           </tr>;
         })}</tbody>
       </table>
     </div>}
     <p className="fpt-footnote" id={`${tableId}-hint`}>{expanded
-      ? "Account balances are listed beneath the totals. Unavailable history is shown as an em dash. Future balances are projected."
-      : "Recorded activity is included in current balances. Expand accounts to see the account list. Rotate your phone for a wider landscape view."}</p>
+      ? "Scroll sideways to view each account balance and activity tags. Unavailable history is shown as an em dash. Future balances are projected."
+      : "Recorded activity is included in current balances. Expand accounts to see account balances and activity tags. Rotate your phone for a wider landscape view."}</p>
   </section>;
 }

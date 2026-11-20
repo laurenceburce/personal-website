@@ -68,8 +68,8 @@ function harness(props) {
   return () => { cursor = 0; return Component({ plan, accounts, today, ...props }); };
 }
 const button = (tree, text) => find(tree, (node) => node.type === "button" && node.props.children === text);
-const accountColumns = (html) => [...new Set([...html.matchAll(/<div\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]))];
-const accountCell = (html, id) => html.match(new RegExp(`<div\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/div>`))?.[1];
+const accountColumns = (html) => [...new Set([...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]))];
+const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
 const renderExpanded = (rows, extra = {}) => {
   const get = harness({ rows, ...extra });
   button(get(), "Expand accounts").props.onClick();
@@ -88,7 +88,7 @@ test("shared dates span consecutive visible rows while current activity stays on
   assert.match(html, /class="fpt-date" rowSpan="3"/);
   const current = html.match(/<tr\b[^>]*data-row-id="current"[^>]*>([\s\S]*?)<\/tr>/)?.[1];
   assert.doesNotMatch(current, /class="fpt-date"/);
-  assert.match(current, /Savings<\/strong><span class="fpt-today-tag">Latest today/);
+  assert.match(current, /Savings<\/strong><\/div><span class="fpt-today-tag">Latest today/);
   assert.equal((current.match(/<td\b/g) || []).length, 4);
 
   find(get(), (node) => node.type === "input" && node.props.type === "search")
@@ -99,7 +99,7 @@ test("shared dates span consecutive visible rows while current activity stays on
   assert.match(filtered, /aria-current="true"/);
 });
 
-test("planner table defaults to its compact summary and expands the account list beneath running totals", () => {
+test("planner table defaults to its compact summary and expands accounts into horizontal columns", () => {
   const html = render([row()]);
   assert.equal((html.match(/<th\b/g) || []).length, 5);
   assert.deepEqual(accountColumns(html), []);
@@ -113,18 +113,18 @@ test("planner table defaults to its compact summary and expands the account list
   assert.equal(expand.props["aria-expanded"], false);
   expand.props.onClick();
   const expanded = renderToStaticMarkup(get());
-  assert.equal((expanded.match(/<th\b/g) || []).length, 5);
+  assert.equal((expanded.match(/<th\b/g) || []).length, 5 + accounts.length);
   assert.match(expanded, /fpt-accounts-expanded/);
-  assert.match(expanded, /fpt-account-list/);
-  assert.match(expanded, /Account balances for Internet/);
-  for (const label of ["Date", "Description", "USD", "PHP", "Recorded", "Balance owed"]) assert.ok(expanded.includes(label));
+  assert.match(expanded, /fpt-account-balance-heading/);
+  assert.match(expanded, /Activity in Daily checking/);
+  for (const label of ["Date", "Description", "USD", "PHP", "Scheduled bill", "Balance owed"]) assert.ok(expanded.includes(label));
   assert.deepEqual(accountColumns(expanded), ["1", "34", "37"]);
   assert.match(expanded, /Daily checking · ••1234/);
   assert.match(expanded, /-\$25\.00/);
   assert.match(accountCell(expanded, 1), /\$175\.00/);
   assert.match(accountCell(expanded, 34), /₱2,000\.00/);
   assert.match(accountCell(expanded, 37), /₱600\.00/);
-  assert.match(expanded, /aria-label="Details for Internet"/);
+  assert.doesNotMatch(expanded, /Details for Internet|fpt-details|fpt-account-list/);
   assert.doesNotMatch(expanded, /Starting balances|Show columns|fpt-balances-row/);
   const collapse = button(get(), "Collapse accounts");
   assert.equal(collapse.props["aria-expanded"], true);
@@ -155,10 +155,44 @@ test("planner keeps the compact balance summary when no supported active account
   }
 });
 
+test("horizontal account columns retain row count and put movement tags only on involved accounts", () => {
+  const transfer = row({ fromAccountId: 1, toAccountId: 34, accountId: null, kind: "conversion",
+    accountMovements: [{ accountId: 1, amount: -25, currency: "USD" },
+      { accountId: 34, amount: 1400, currency: "PHP" }], recurring: true });
+  const compact = render([transfer]);
+  const expanded = renderExpanded([transfer]);
+  assert.equal((expanded.match(/<tr\b/g) || []).length, (compact.match(/<tr\b/g) || []).length);
+  assert.equal((expanded.match(/<td\b/g) || []).length, 5 + accounts.length);
+  assert.match(expanded, /width:1330px/);
+  assert.match(accountCell(expanded, 1), /Sent/);
+  assert.match(accountCell(expanded, 1), /-\$25\.00/);
+  assert.match(accountCell(expanded, 34), /Received/);
+  assert.match(accountCell(expanded, 34), /₱1,400\.00/);
+  assert.doesNotMatch(accountCell(expanded, 37), /fpt-account-tags|Repeats/);
+  assert.doesNotMatch(expanded, /fpt-details|Details for|fpt-account-list/);
+});
+
+test("completed transactions get Done tags while only unfinished past rows are marked overdue", () => {
+  const rows = [row({ id: "missed", date: "2026-11-17" }),
+    row({ id: "completed", date: "2026-11-17", completed: true }),
+    row({ id: "recorded", date: "2026-11-17", recordedInAccounts: true }),
+    row({ id: "today", date: today }), row({ id: "future" })];
+  const html = render(rows);
+  const markup = (id) => html.match(new RegExp(`<tr\\b[^>]*data-row-id="${id}"[^>]*>[\\s\\S]*?<\\/tr>`))?.[0];
+  assert.match(markup("missed"), /fpt-row-overdue/);
+  assert.match(markup("missed"), />Past due</);
+  for (const id of ["completed", "recorded"]) {
+    assert.match(markup(id), /fpt-status-done">Done/);
+    assert.doesNotMatch(markup(id), /fpt-row-overdue|>Past due</);
+  }
+  for (const id of ["today", "future"]) assert.doesNotMatch(markup(id), /fpt-row-overdue|fpt-status-done/);
+});
+
 test("transfer rows show source and card destination rather than a misleading zero cash amount", () => {
-  const html = render([row({ id: "entry:card", source: "manual", kind: "transfer", currency: "PHP", amount: 300,
+  const html = renderExpanded([row({ id: "entry:card", source: "manual", kind: "transfer", currency: "PHP", amount: 300,
     fromAccountId: 34, toAccountId: 37, accountId: null, creditCardPaymentFor: 37, usd: 0, php: -300 })]);
-  assert.match(plain(html), /Peso savingsto RCBC JCB/);
+  assert.match(plain(html), /Peso savings/);
+  assert.match(plain(html), /to RCBC JCB/);
   assert.match(html, /-₱300\.00/);
   assert.match(html, /Card payment/);
 });
@@ -173,7 +207,7 @@ test("recorded history displays its per-account balances and retains financial d
   assert.match(html, /Awaiting bank match/);
   assert.match(html, /Bank receipt/);
   assert.match(html, /Annual reserve · USD/);
-  assert.match(html, /Savings · PHP/);
+  assert.match(html, /Annual reserve · USD/);
   assert.match(html, /aria-label="Reopen Internet"/);
 
 });
