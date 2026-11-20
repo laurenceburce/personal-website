@@ -161,6 +161,24 @@ test("linked balances remain provider balances and unknown balances remain unkno
   );
 });
 
+test("recorded planner entries awaiting a bank match never adjust a connected balance", () => {
+  for (const currency of ["USD", "PHP"]) for (const type of ["checking", "savings", "credit", "loan"])
+    for (const pending of [-40, 40]) {
+      const row = { id: 2, account_type: type, currency, external_provider: "plaid", external_account_id: "bank-id",
+        current_balance: "125.75", available_balance: "120.10", opening_balance: 999,
+        native_movement: 10000, plan_pending_movement: pending };
+      const before = structuredClone(row);
+      const account = mapFinanceActivityAccount(row);
+      assert.equal(account.nativeCurrentBalance, 125.75, `${currency} ${type} ${pending}`);
+      assert.equal(account.nativeAvailableBalance, 120.1);
+      assert.equal(account.bankReportedBalance, 125.75);
+      assert.equal(account.planPendingMovement, pending, "retain matching evidence without changing the bank balance");
+      assert.equal(account.awaitingBankSync, true);
+      assert.equal(mapFinanceActivityAccount({ ...row, current_balance: null }).nativeCurrentBalance, null);
+      assert.deepEqual(row, before);
+    }
+});
+
 test("credit statement dues preserve unknown fields and never use the revolving balance", () => {
   const row = {
     id: 2, name: "Credit card", account_type: "credit", currency: "USD",

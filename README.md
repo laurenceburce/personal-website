@@ -207,8 +207,10 @@ The finance workspace separates recorded activity from your plans:
   entry too: edits update the same movement, and deleting it or moving it into the
   future removes its current balance effect. Unrelated transaction history is retained.
   Linked-account entries can be **Planned** or **Recorded · already happened**.
-  Linked accounts include explicitly recorded amounts while awaiting a unique posted bank match,
-  which replaces the generated record once. Use **Record payment** or **Record receipt**
+  Connected account balances come directly from the bank. Recorded planner entries
+  awaiting a bank match do not adjust those reported balances; a unique posted match
+  replaces the generated record once. Unconfirmed bank receipts cannot reconstruct
+  historical account balances. Use **Record payment** or **Record receipt**
   to enter the actual date and amount, including early or partial payments.
   Matching bills use a one-cent rounding tolerance consistently: a $1.99 posted
   charge can complete a $2 bill without creating another $0.01 payment or adding
@@ -216,6 +218,8 @@ The finance workspace separates recorded activity from your plans:
   Posted bill charges up to three days outside the selected dates can still
   complete their matching occurrence. Those receipts remain matching evidence;
   their money is not counted again inside the viewing window.
+  Early payments stay attached to the same bill when the viewing dates change,
+  and appear once across the history and future sections of the planner.
   **Credit card payment / Live remaining card balance** follows new charges and earlier
   payments, while recorded payments keep their actual amounts. Statement balances and
   optional autopay timing remain configurable under **Bank accounts**. No action sends

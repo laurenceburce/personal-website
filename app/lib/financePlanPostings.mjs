@@ -106,7 +106,7 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
   const nativeBalance = (account) => {
     const liability = ["credit", "loan"].includes(account.account_type || account.type);
     if (account.external_provider && account.external_account_id)
-      return money(Number(account.current_balance || 0) + (liability ? -1 : 1) * Number(account.plan_pending_movement || 0));
+      return money(Number(account.current_balance || 0));
     return money(Number(account.opening_balance || 0) + (liability ? -1 : 1) * Number(account.native_movement || 0));
   };
   for (const plan of document.plans || []) {

@@ -1316,7 +1316,9 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
 async function getFinancePlanMatchingActivity(database, range, currentDate) {
   const empty = { matchingTransactions: [], matchingLimitHit: false, matchingWarning: "" };
   const shifted = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
-  const from = ["1900-01-01", shifted(range.from, -3)].sort().at(-1);
+  // Nearby prior bill occurrences can own an early receipt. Include their
+  // three-day receipt window too so a date filter cannot reassign that payment.
+  const from = ["1900-01-01", shifted(range.from, -6)].sort().at(-1);
   const to = ["2200-12-31", shifted(range.to, 3), currentDate].sort()[0];
   if (from > to) return empty;
   try {

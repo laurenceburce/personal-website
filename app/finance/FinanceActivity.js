@@ -2092,7 +2092,7 @@ export function BankAccountsPanel({
                                 )}
                             </div>
                             {account.awaitingBankSync && <p className="fa-provider-setup">
-                              Includes recorded plan transactions awaiting a bank match.
+                              Bank balance shown. Recorded planner transactions are awaiting a bank match.
                             </p>}
                             {account.type === "credit" && (
                               <>

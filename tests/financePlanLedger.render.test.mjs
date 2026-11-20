@@ -1461,7 +1461,7 @@ test("recorded plan rows retain their entry controls and show account recording 
   const html = render([row({ id: "transaction:99", source: "transaction", entryId: "manual", planGenerated: true,
     description: "Extra expense", completed: true, completionSource: "plan", recordedInAccounts: true, awaitingBankSync: true })],
     { onToggleComplete() {} });
-  assert.match(html, /Recorded in accounts · awaiting bank match/);
+  assert.match(html, /Recorded · awaiting bank match/);
   assert.match(html, /aria-label="Edit Extra expense"/);
   assert.match(html, /aria-label="Reopen Extra expense"/);
   const scheduled = render([row({ description: "Internet" })], { onRecord() {} });

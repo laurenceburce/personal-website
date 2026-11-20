@@ -63,6 +63,9 @@ const normalizeTab = (value) => {
   const tab = TAB_ALIASES[value] || value;
   return NAV.some((item) => item.id === tab) ? tab : "home";
 };
+const rowReceiptIds = (row) => [...new Set([row.transactionId, ...(row.matchedTransactionIds || []),
+  ...(row.recordedTransactions || []).map((transaction) => transaction.transactionId ?? transaction.id)]
+  .filter((value) => value != null).map((value) => String(value).replace(/^transaction:/, "")))];
 const PAGE_COPY = {
   home: [
     "Your financial overview",
@@ -769,15 +772,35 @@ export default function FinanceAppClient({
   );
   const futurePlan = useMemo(() => ({ ...projectionPlan, startDate: today,
     endDate: plannerRange.endDate < today ? today : plannerRange.endDate }), [projectionPlan, today, plannerRange.endDate]);
+  const billMatchAssignments = useMemo(() => {
+    const assignments = new Map();
+    for (const row of planRows) {
+      const billRowId = row.source === "bill" ? row.id : row.matchedForecast?.source === "bill" ? row.matchedForecast.id : null;
+      if (billRowId == null) continue;
+      for (const id of [...rowReceiptIds(row), ...(row.source === "bill" ? row.paymentTransactionIds || [] : []).map(String)])
+        assignments.set(id, String(billRowId));
+    }
+    return assignments;
+  }, [planRows]);
   const futurePlanRows = useMemo(() => buildPlanRows(futurePlan, document, rate, { today, accounts,
     transactions: planRecordsMatch ? planActivity.transactions : [],
     matchingTransactions: planRecordsMatch ? planActivity.matchingTransactions || [] : [],
     creditCardPaymentTransactions: planRecordsMatch ? planActivity.creditCardPaymentTransactions || [] : [],
-  }), [futurePlan, document, rate, today, accounts, planActivity, planRecordsMatch]);
+    billMatchAssignments,
+  }), [futurePlan, document, rate, today, accounts, planActivity, planRecordsMatch, billMatchAssignments]);
   const futureAccountPlan = useMemo(() => buildAccountPlan(futurePlan, document, rate, { accounts, rows: futurePlanRows, today }),
     [futurePlan, document, rate, accounts, futurePlanRows, today]);
+  const pastPlanRows = (accountPlan?.rows || planRows).filter((row) => row.date < today);
+  const pastReceiptIds = new Set(pastPlanRows.filter((row) => row.source !== "creditCardDue").flatMap(rowReceiptIds));
+  // A paid bill's boundary evidence may already have its own visible history row.
+  // Keep one owner for those receipts while retaining genuinely unpaid remainders.
+  const futureDisplayRows = futureAccountPlan.rows.filter((row) => {
+    const receipts = rowReceiptIds(row);
+    return !(row.source === "bill" && row.completed && row.matchedOutsideWindow && receipts.length &&
+      receipts.every((id) => pastReceiptIds.has(id)));
+  });
   const rowsWithBalances = withLivePlannerBalances({ accounts, today,
-    rows: [...(accountPlan?.rows || planRows).filter((row) => row.date < today), ...futureAccountPlan.rows]
+    rows: [...pastPlanRows, ...futureDisplayRows]
       .filter((row) => row.source !== "salary" || Number(row.amount) > 0) });
   const balanceHistoryMatches = planRecordsMatch;
   const displayedPlanRows = withLivePlannerAccountSnapshots({ accounts, rows: rowsWithBalances, today,

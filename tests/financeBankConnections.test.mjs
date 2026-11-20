@@ -497,7 +497,7 @@ test("dashboard reads materialize live planner activity before returning manual 
   assert.ok(insert >= 0 && read > insert);
 });
 
-test("dashboard account balances share native asset, debt, credit and pending-bank math with activity", async (t) => {
+test("dashboard account balances share manual math and reported bank balances with activity", async (t) => {
   bankEnvironment(t);
   const rows = [
     { id: 1, account_type: "checking", currency: "USD", opening_balance: 100, native_movement: 50 },
@@ -516,10 +516,10 @@ test("dashboard account balances share native asset, debt, credit and pending-ba
     ];
   });
   const dashboard = await store.api.getFinanceDashboard();
-  assert.deepEqual(dashboard.accounts.map((account) => account.nativeCurrentBalance), [150, 120, 1100, 1100, -25, 5220]);
-  assert.deepEqual(dashboard.accounts.map((account) => account.currentBalance), [150, -120, 18.97, -18.97, 0.43, 90]);
+  assert.deepEqual(dashboard.accounts.map((account) => account.nativeCurrentBalance), [150, 120, 1100, 1100, -25, 5800]);
+  assert.deepEqual(dashboard.accounts.map((account) => account.currentBalance), [150, -120, 18.97, -18.97, 0.43, 100]);
   assert.deepEqual(dashboard.accounts.map((account) => account.nativeCurrentBalance), rows.map(activity.mapFinanceActivityAccount).map((account) => account.nativeCurrentBalance));
-  assert.equal(dashboard.summary.totalBalanceUsd, 120.43);
+  assert.equal(dashboard.summary.totalBalanceUsd, 130.43);
   assert.equal(dashboard.accounts[5].bankReportedBalance, 5800);
   const query = store.queries.find(({ sql }) => sql.startsWith("SELECT a.*") && sql.includes("c.institution_name"));
   assert.match(query.sql, /t\.account_id = a\.id AND t\.currency = a\.currency/);
@@ -1671,7 +1671,7 @@ test("bill boundary receipts stay separate from visible flows and extend native 
   assert.equal(result.matchingLimitHit, false);
   assert.equal(result.balanceHistoryFrom, "2026-11-14");
   const matching = queries.find(({ sql }) => sql.includes("t.transaction_date < ? OR t.transaction_date > ?"));
-  assert.deepEqual(matching.params, ["2026-11-12", "2026-11-18", "2026-11-15", "2026-11-15"]);
+  assert.deepEqual(matching.params, ["2026-11-09", "2026-11-18", "2026-11-15", "2026-11-15"]);
   assert.match(matching.sql, /duplicate_of_id IS NULL AND t.is_provider_removed = 0/);
   assert.match(matching.sql, /t.currency IN \('USD', 'PHP'\) AND t.pending = 0/);
   const balances = queries.find(({ sql }) => sql.startsWith("SELECT t.id, DATE_FORMAT"));

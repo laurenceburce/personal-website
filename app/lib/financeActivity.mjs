@@ -182,7 +182,7 @@ export function mapFinanceActivityAccount(row) {
     openingBalance: money(opening),
     balanceSource: isLinked ? "bank" : isActiveManual ? "livePlanner" : "ledger",
     nativeCurrentBalance: isLinked
-      ? bankBalance === null ? null : money(bankBalance + (liability ? -pendingMovement : pendingMovement))
+      ? bankBalance
       : money(opening + (liability ? -movement : movement)),
     ...(isLinked && pendingMovement ? { bankReportedBalance: bankBalance, planPendingMovement: pendingMovement,
       awaitingBankSync: true } : {}),

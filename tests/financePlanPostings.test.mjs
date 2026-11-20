@@ -100,12 +100,12 @@ test("completed Fill and Card Payment post to their native manual accounts exact
   assert.equal(store.rows().length, 0);
 });
 
-test("linked-account provisional activity changes effective balances until a unique bank import replaces it", async () => {
+test("linked-account recorded activity keeps the bank balance until a unique bank import replaces it", async () => {
   const account = bank(1);
   const document = planner([entry({ accountId: 1 })]);
   const store = ledger([account], document);
   await store.refresh();
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 980);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 1000);
   assert.equal(store.accounts()[0].bankReportedBalance, 1000);
   assert.equal(store.accounts()[0].awaitingBankSync, true);
   const generatedId = store.rows()[0].id;
@@ -123,6 +123,29 @@ test("linked-account provisional activity changes effective balances until a uni
   await store.refresh();
   assert.equal(store.rows().length, 1, "reopening retains imported bank history");
   assert.equal(store.rows()[0].source_plan_id, null);
+});
+
+test("live full-balance payments use the connected card's reported debt without pending planner adjustments", async () => {
+  const document = planner([entry({ accountId: 37, amount: 100 })]);
+  const card = { ...bank(37, 500), account_type: "credit" };
+  const store = ledger([manual(1, "checking", 1000), card], document);
+  await store.refresh();
+  document.plans = [];
+  await store.refresh();
+  document.plans = livePlanner([entry({ id: "payment", kind: "transfer", accountId: null,
+    fromAccountId: 1, toAccountId: 37, amount: 0, amountMode: "cardBalance" })]).plans;
+  for (let index = 0; index < 3; index++) await store.refresh();
+  const payment = store.rows().find((row) => row.source_plan_row_id === "entry:payment");
+  assert.equal(payment.amount, 500, "an unimported planner charge cannot increase the reported card debt");
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [500, 500]);
+  assert.equal(store.rows().length, 2);
+  card.current_balance = 600;
+  store.add({ id: 9, account_id: 37, transaction_date: today, kind: "expense", currency: "PHP", amount: 100,
+    external_provider: "plaid", external_transaction_id: "reported-card-charge" });
+  await store.refresh(); await store.refresh();
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [500, 600]);
+  assert.equal(store.rows().length, 2, "the bank import replaces the provisional charge without another manual withdrawal");
+  assert.equal(store.rows().find((row) => row.source_plan_row_id === "entry:payment").amount, 500);
 });
 
 test("ambiguous bank imports and competing same-amount plan rows cannot be merged automatically", async () => {
@@ -312,7 +335,7 @@ test("archiving a linked account retains its recorded provisional receipt and st
   assert.equal(store.rows().length, 1);
   assert.equal(store.rows()[0].id, recordedId);
   assert.equal(store.rows()[0].amount, 20);
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 980);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 1000);
   document.plans[0].entries = [];
   document.plans[0].completedRows = [];
   await store.refresh();
@@ -503,7 +526,7 @@ test("automatic mixed transfers change manual legs only while explicit recording
   document.plans[0].completedRows = [completion("pay")];
   await store.refresh();
   assert.equal(store.rows().length, 2);
-  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [950, 450]);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [1000, 450]);
   assert.equal(store.rows().find((row) => row.account_id === 1).plan_provisional, 1);
 });
 
@@ -738,12 +761,12 @@ test("deleting a whole plan retains recorded manual history and its corrected de
   assert.equal(corrected.rows()[0].merchant, "Corrected receipt");
 });
 
-test("detached linked receipts keep effective movement and reconcile a later bank import", async () => {
+test("detached linked receipts preserve reported bank balances and reconcile a later import", async () => {
   const account = bank(1);
   const document = planner([entry({ accountId: 1, amount: 100 })]);
   const store = ledger([account], document);
   await store.refresh(); document.plans = []; await store.refresh();
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 900);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 1000);
   assert.equal(financePlanTransactionMetadata(store.rows()[0]).planDetached, true);
   account.current_balance = 900;
   store.add({ id: 9, account_id: 1, transaction_date: today, kind: "expense", currency: "PHP", amount: 100,

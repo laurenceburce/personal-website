@@ -146,6 +146,93 @@ const table = (props) => findElement(workspaceHarness(props)(), (node) => node.t
 const analytics = (props) => findElement(workspaceHarness(props)(), (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
 const rowsFor = (savedAmount, documentOverrides = {}, activityOverrides = {}) => table(fixture("plans", savedAmount, documentOverrides, activityOverrides)).rows;
 
+test("an early posted bank payment appears once across the history and future projection boundary", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const props = fixture("plans", 0, { bills: [{ id: "google", name: "Google", amount: 100, currency: "USD",
+    cadence: "monthly", dueDay: 20, accountId: 1 }], plans: [{ ...base, continuous: true, balanceMode: "live",
+    startDate: "2026-11-15", endDate: "2026-11-25", entries: [
+      { id: "future", date: "2026-11-21", description: "Upcoming expense", kind: "expense", amount: 50, currency: "USD", accountId: 1 },
+    ] }] }, { balanceAsOf: today, accounts: [{ id: 1, name: "Bank checking", type: "checking", currency: "USD",
+      isLinked: true, nativeCurrentBalance: 800 }] });
+  props.today = today;
+  const receipt = { id: 10, date: "2026-11-18", kind: "expense", amount: 100, currency: "USD", accountId: 1,
+    merchant: "GOOGLE", provider: "plaid" };
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions: [receipt], balanceTransactions: [receipt],
+    balanceHistoryFrom: "2026-11-15", balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const rows = table(props).rows;
+  assert.equal(rows.filter((row) => row.source === "transaction" || row.billId === "google").length, 1,
+    "the posted payment and its already-paid future bill cannot both claim the same bank movement");
+  assert.deepEqual(rows.map((row) => row.projectedBalanceUsd), [800, 750]);
+  assert.ok(rows.every((row) => row.accountBalanceSnapshotKind !== "unavailable"));
+  assert.equal(analytics(props).assets.USD.current, 800);
+  assert.equal(analytics(props).assets.USD.projected, 750);
+  assert.deepEqual(props, before);
+});
+
+test("future running balances retain the correct paid and unpaid bill occurrences when the view narrows", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  for (const paidBoth of [false, true]) for (const startDate of ["2026-11-15", "2026-11-18", today]) {
+    const bankBalance = paidBoth ? 800 : 900;
+    const props = fixture("plans", 0, { bills: [{ id: "google", name: "Google", amount: 200, currency: "USD",
+      cadence: "monthly", dueDays: [18, 20], accountId: 1 }], plans: [{ ...base, continuous: true, balanceMode: "live",
+      startDate, endDate: "2026-11-25", entries: [
+        { id: "future", date: "2026-11-21", description: "Upcoming expense", kind: "expense", amount: 50, currency: "USD", accountId: 1 },
+      ] }] }, { balanceAsOf: today, accounts: [{ id: 1, name: "Bank checking", type: "checking", currency: "USD",
+        isLinked: true, nativeCurrentBalance: bankBalance }] });
+    props.today = today;
+    const receipts = [{ id: 12, date: "2026-11-18", kind: "expense", amount: 100, currency: "USD", accountId: 1,
+      merchant: "Google", provider: "plaid" }, ...(paidBoth ? [{ id: 11, date: "2026-11-16", kind: "expense", amount: 100,
+        currency: "USD", accountId: 1, merchant: "Google", provider: "plaid" }] : [])];
+    props.initialPlanActivity = { ...props.initialPlanActivity,
+      transactions: receipts.filter((receipt) => receipt.date >= startDate),
+      matchingTransactions: receipts.filter((receipt) => receipt.date < startDate), balanceTransactions: receipts,
+      balanceHistoryFrom: "2026-11-14", balanceHistoryThrough: today, balanceHistoryComplete: true };
+    const rows = table(props).rows;
+    const currentBill = rows.find((row) => row.billId === "google" && row.date === today);
+    if (paidBoth) assert.ok(!currentBill || currentBill.completed, "two receipts complete both occurrences");
+    else {
+      assert.ok(currentBill && !currentBill.completed, `${startDate}: the Nov 18 receipt cannot also pay the Nov 20 occurrence`);
+      assert.equal(currentBill.amount, 100);
+    }
+    assert.equal(rows.find((row) => row.entryId === "future").projectedBalanceUsd, 750,
+      `${startDate}: every later balance includes only the genuinely unpaid bill and upcoming expense`);
+    assert.equal(analytics(props).assets.USD.current, bankBalance);
+    assert.equal(analytics(props).assets.USD.projected, 750);
+  }
+});
+
+test("connected reported balances anchor projections while unconfirmed planner receipts and manual balances remain separate", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const accounts = [
+    { id: 1, name: "Bank checking", account_type: "checking", currency: "USD", current_balance: 1250,
+      external_provider: "plaid", external_account_id: "bank", plan_pending_movement: -200 },
+    { id: 2, name: "Manual savings", account_type: "savings", currency: "USD", opening_balance: 75, native_movement: -5 },
+  ].map(mapFinanceActivityAccount);
+  const props = fixture("plans", 0, { bills: [], plans: [{ ...base, continuous: true, balanceMode: "live", entries: [
+    { id: "recorded", date: today, description: "Recorded expense", kind: "expense", amount: 200, currency: "USD", accountId: 1 },
+    { id: "future", date: "2026-11-21", description: "Future expense", kind: "expense", amount: 25, currency: "USD", accountId: 1 },
+  ] }] }, { balanceAsOf: today, accounts });
+  props.today = today;
+  const receipt = { id: 10, date: today, kind: "expense", amount: 200, currency: "USD", accountId: 1,
+    merchant: "Recorded expense", planId: base.id, planRowId: "entry:recorded", planGenerated: true, awaitingBankSync: true };
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions: [receipt], balanceTransactions: [receipt],
+    balanceHistoryFrom: base.startDate, balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const rows = table(props).rows;
+  const current = analytics(props);
+  assert.equal(current.assets.USD.current, 1320, "provider 1250 plus the existing manual 70, without the unconfirmed debit");
+  assert.equal(current.assets.USD.projected, 1295, "only the future 25 is projected from the reported bank balance");
+  const recorded = rows.find((row) => row.entryId === "recorded" || row.planRowId === "entry:recorded");
+  assert.equal(recorded.accountBalanceSnapshot.find((account) => account.accountId === 1).balance, null);
+  assert.equal(recorded.accountBalanceSnapshot.find((account) => account.accountId === 2).balance, 70);
+  assert.equal(rows.find((row) => row.entryId === "future").accountBalanceSnapshot.find((account) => account.accountId === 1).balance, 1225);
+  assert.deepEqual(props, before);
+});
+
 test("budget plans automatically include full card statements on their due dates", () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const html = render("plans", 0, { bills: [], plans: [{ ...base, accountLinks: { availableUsdAccountId: 1 } }] }, {

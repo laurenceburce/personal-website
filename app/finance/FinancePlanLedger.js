@@ -158,7 +158,7 @@ export function SourceLabel({ row, asTags = false, omitMovementDetails = false }
         {row.source === "transaction" && row.scheduled ? " · future date" : ""}
       </small>
       {row.recordedInAccounts && <small className="fpl-match-note">
-        {row.awaitingBankSync ? "Recorded in accounts · awaiting bank match" : "Recorded in accounts"}
+        {row.awaitingBankSync ? "Recorded · awaiting bank match" : "Recorded in accounts"}
       </small>}
       {row.amountMode === "cardBalance" && <small className="fpl-credit-card-due-detail">Uses the card’s live remaining balance</small>}
       {row.isOverride && (

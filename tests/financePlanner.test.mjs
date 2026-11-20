@@ -818,6 +818,116 @@ test("bill rounding does not forgive a linked salary or manual-entry cent remain
   }
 });
 
+test("posted bills match chronologically regardless of the API transaction order", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDays: [18, 20], amount: 200, currency: "USD", accountId: 1 }] };
+  const plan = { id: "live", startDate: "2026-11-15", endDate: "2026-11-25", openingUsd: 1000,
+    includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const transactions = [
+    { id: 1, date: "2026-11-16", kind: "expense", accountId: 1, amount: 100, currency: "USD", merchant: "Google", provider: "plaid" },
+    { id: 2, date: "2026-11-18", kind: "expense", accountId: 1, amount: 100, currency: "USD", merchant: "Google", provider: "plaid" },
+  ];
+  for (const receipts of [transactions, [...transactions].reverse()]) {
+    const before = structuredClone({ document, plan, receipts });
+    const rows = buildPlanRows(plan, document, 58, { transactions: receipts, today: "2026-11-25" });
+    assert.equal(rows.length, 2, "both posted payments replace their bills without an extra forecast expense");
+    assert.deepEqual(rows.map((row) => row.matchedForecast?.id), ["bill:google:2026-11-18", "bill:google:2026-11-20"]);
+    assert.ok(rows.every((row) => row.source === "transaction" && row.completed));
+    assert.deepEqual(rows.map((row) => row.balanceUsd), [900, 800]);
+    assert.deepEqual({ document, plan, receipts }, before);
+  }
+});
+
+test("future bill matching keeps the occurrence assigned by the full viewing window", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDays: [18, 20], amount: 200, currency: "USD", accountId: 1 }] };
+  const plan = { id: "live", startDate: "2026-11-15", endDate: "2026-11-25", openingUsd: 1000,
+    includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const receipt = { id: 101, date: "2026-11-18", kind: "expense", accountId: 1, amount: 100,
+    currency: "USD", merchant: "Google", provider: "plaid" };
+  for (const singleBill of [false, true]) {
+    const source = singleBill ? { ...document, bills: [{ ...document.bills[0], dueDays: [20], amount: 100 }] } : document;
+    const full = buildPlanRows(plan, source, 58, { transactions: [receipt], today: "2026-11-20" });
+    const assigned = full.find((row) => row.transactionId === receipt.id).matchedForecast.id;
+    assert.equal(assigned, `bill:google:2026-11-${singleBill ? "20" : "18"}`);
+    const billMatchAssignments = new Map([[String(receipt.id), assigned]]);
+    const before = structuredClone({ plan, source, receipt, billMatchAssignments });
+    const future = buildPlanRows({ ...plan, startDate: "2026-11-20", openingUsd: 900 }, source, 58, {
+      transactions: [receipt], billMatchAssignments, today: "2026-11-20",
+    });
+    assert.equal(future.length, 1);
+    assert.equal(future[0].id, "bill:google:2026-11-20");
+    assert.equal(future[0].completed, singleBill, "the earlier payment cannot settle another bill occurrence");
+    assert.equal(future[0].amount, 100);
+    assert.equal(future[0].balanceUsd, singleBill ? 900 : 800);
+    assert.deepEqual({ plan, source, receipt, billMatchAssignments }, before);
+  }
+});
+
+test("future card payment targets include bills whose earlier receipt belongs to another occurrence", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDays: [18, 20], amount: 200, currency: "USD", accountId: 2 }] };
+  const plan = { id: "live", continuous: true, startDate: "2026-11-15", endDate: "2026-11-25", openingUsd: 1000,
+    includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false,
+    entries: [{ id: "pay", date: "2026-11-21", description: "Pay card", kind: "transfer", fromAccountId: 1,
+      toAccountId: 2, amount: 0, amountMode: "cardBalance", currency: "USD" }] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 500 }];
+  const receipt = { id: 101, date: "2026-11-18", kind: "expense", accountId: 2, amount: 100,
+    currency: "USD", merchant: "Google", provider: "plaid" };
+  const full = buildPlanRows(plan, document, 58, { accounts, transactions: [receipt], today: "2026-11-20" });
+  const assigned = full.find((row) => row.transactionId === receipt.id).matchedForecast.id;
+  const billMatchAssignments = new Map([[String(receipt.id), assigned]]);
+  const before = structuredClone({ plan, document, accounts, receipt, billMatchAssignments });
+  const future = buildPlanRows({ ...plan, startDate: "2026-11-20" }, document, 58, {
+    accounts, transactions: [receipt], billMatchAssignments, today: "2026-11-20",
+  });
+  assert.equal(future.find((row) => row.id === "bill:google:2026-11-20").completed, false);
+  assert.equal(future.find((row) => row.entryId === "pay").amount, 600,
+    "the later payment includes reported debt plus the separate unpaid card charge");
+  assert.deepEqual({ plan, document, accounts, receipt, billMatchAssignments }, before);
+});
+
+test("narrow bill views retain earlier occurrence ownership and receipt context", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDays: [18, 20], amount: 200, currency: "USD", accountId: 1 }] };
+  const plan = { id: "live", startDate: "2026-11-15", endDate: "2026-11-25", openingUsd: 1000,
+    includeIncome: false, includeTransactions: true, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const receipt = { id: 101, date: "2026-11-18", kind: "expense", accountId: 1, amount: 100,
+    currency: "USD", merchant: "Google", provider: "plaid" };
+  for (const paidBoth of [false, true]) {
+    const receipts = [receipt, ...(paidBoth ? [{ ...receipt, id: 100, date: "2026-11-16" }] : [])];
+    for (const receiptsInOrder of [receipts, [...receipts].reverse()]) {
+      for (const startDate of ["2026-11-18", "2026-11-20"]) {
+        const before = structuredClone({ plan, document, receiptsInOrder });
+        const full = buildPlanRows(plan, document, 58, { transactions: receiptsInOrder, today: "2026-11-20" });
+        const transactions = receiptsInOrder.filter((row) => row.date >= startDate);
+        const matchingTransactions = receiptsInOrder.filter((row) => row.date < startDate);
+        const openingUsd = 1000 - matchingTransactions.length * 100;
+        const narrow = buildPlanRows({ ...plan, startDate, openingUsd }, document, 58, {
+          transactions, matchingTransactions, today: "2026-11-20",
+        });
+        const currentBill = narrow.find((row) => row.id === "bill:google:2026-11-20" || row.matchedForecast?.id === "bill:google:2026-11-20");
+        assert.ok(currentBill);
+        assert.equal(currentBill.completed, paidBoth);
+        assert.equal(currentBill.amount, 100);
+        assert.equal(narrow.filter((row) => row.source === "transaction").length, transactions.length,
+          "outside context receipts never become independent visible cash flows");
+        assert.equal(narrow.at(-1).balanceUsd, full.at(-1).balanceUsd);
+        assert.equal(narrow.at(-1).balanceUsd, 800);
+        if (paidBoth) assert.deepEqual(currentBill.matchedTransactionIds, [receipt.id]);
+        assert.deepEqual({ plan, document, receiptsInOrder }, before);
+      }
+    }
+  }
+  const single = { ...document, bills: [{ ...document.bills[0], dueDays: [20], amount: 100 }] };
+  const narrow = buildPlanRows({ ...plan, startDate: "2026-11-20", openingUsd: 900 }, single, 58, {
+    matchingTransactions: [receipt], today: "2026-11-20",
+  });
+  assert.equal(narrow[0].completed, true, "an early payment still completes the sole bill occurrence");
+  assert.equal(narrow[0].balanceUsd, 900);
+});
+
 test("posted bill evidence just outside a viewing window completes the occurrence without adding outside cash flows", () => {
   const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
     dueDay: 18, amount: 2, currency: "USD", accountId: 1 }] };

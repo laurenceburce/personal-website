@@ -60,7 +60,7 @@ export default function FinancePlannerAnalytics({ analytics, loading = false, on
       {onReviewAccounts && <button type="button" className="fp-button fp-text" onClick={onReviewAccounts}>Review accounts →</button>}
     </div>
     {analytics.unassignedCount > 0 && <p className="fpla-note" role="status">{analytics.unassignedCount} upcoming {analytics.unassignedCount === 1 ? "row needs an account" : "rows need accounts"} before {analytics.unassignedCount === 1 ? "it can" : "they can"} update projected balances.</p>}
-    {analytics.awaitingBankSyncCount > 0 && <p className="fpla-note">Current balances include recorded payments awaiting a bank match.</p>}
+    {analytics.awaitingBankSyncCount > 0 && <p className="fpla-note">Connected balances stay bank-reported. Some recorded entries are awaiting a bank match.</p>}
     {hasProjection && analytics.overdueCount > 0 && <p className="fpla-note">Past planned rows remain in the table for review. Projections start from today’s live balances.</p>}
     {!hasProjection && <p className="fpla-note">Current balances remain live. This date range contains past activity, so it has no future balance projection.</p>}
     {!!accounts.length && <details className="fpla-account-details"><summary>Balances by account <span>{accounts.length}</span></summary>

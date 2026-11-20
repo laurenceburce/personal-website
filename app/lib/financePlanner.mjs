@@ -531,6 +531,11 @@ function normalizedDescription(value) {
   ).join(" ");
 }
 
+function billMatchAssignmentAllows(forecast, transaction) {
+  const assigned = transaction.billMatchRowId ?? transaction.matchingOnlyForecastId;
+  return assigned == null || String(forecast.id) === String(assigned);
+}
+
 function exactPlanTransaction(forecast, transaction) {
   return forecast.source === "manual" && forecast.planId != null && transaction.planId != null &&
     transaction.planRowId != null && String(forecast.planId) === String(transaction.planId) &&
@@ -538,7 +543,7 @@ function exactPlanTransaction(forecast, transaction) {
 }
 
 function scheduledPlanTransaction(forecast, transaction) {
-  return forecast.planId != null && transaction.planId != null && transaction.planScheduledRowId != null &&
+  return billMatchAssignmentAllows(forecast, transaction) && forecast.planId != null && transaction.planId != null && transaction.planScheduledRowId != null &&
     String(forecast.planId) === String(transaction.planId) && String(forecast.id) === String(transaction.planScheduledRowId);
 }
 
@@ -550,6 +555,7 @@ function unpaidForecastAmount(forecast, paid, amount = forecast.amount) {
 }
 
 export function forecastMatchesTransaction(forecast, transaction) {
+  if (!billMatchAssignmentAllows(forecast, transaction)) return false;
   if (forecast.partialPayment && scheduledPlanTransaction(forecast, transaction)) return false;
   if (
     ["conversion", "transfer"].includes(forecast.kind) ||
@@ -744,7 +750,8 @@ const transferTransaction = (row) =>
 
 function matchesTransferLeg(row, transaction, leg) {
   const exact = exactPlanTransaction(row, transaction);
-  return (exact || transferTransaction(transaction) || Number(transaction.creditCardPaymentFor) === Number(row.toAccountId)) &&
+  return billMatchAssignmentAllows(row, transaction) &&
+    (exact || transferTransaction(transaction) || Number(transaction.creditCardPaymentFor) === Number(row.toAccountId)) &&
     Number(transaction.accountId) === Number(leg.accountId) && transaction.currency === leg.currency &&
     (transaction.kind === "income" ? 1 : -1) === Math.sign(leg.amount) &&
     (exact || (Math.abs(Number(transaction.amount) - Math.abs(leg.amount)) < 0.005 &&
@@ -1059,7 +1066,7 @@ function planCompletion(rows, plan, actual, document, rate, today) {
     if (!matches.length && row.source !== "transaction") {
       if (["salary", "bill", "manual"].includes(row.source)) {
         const match = posted.find((transaction) =>
-          !consumed.has(transaction.id) && (row.matchedOutsideWindow
+          !consumed.has(transaction.id) && billMatchAssignmentAllows(row, transaction) && (row.matchedOutsideWindow
             ? transaction.matchingOnlyForecastId === row.id
             : !transaction.matchingOnly || transaction.matchingOnlyForecastId === row.id) && (forecastMatchesTransaction(row, transaction) ||
             (row.deferReserveToCardDue && row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.transactionId))),
@@ -1128,7 +1135,7 @@ function linkedFundingPair(row, expectedAmount, rows, actual, today, document) {
   if (rows.some((other) => other.id !== row.id && other.currency === row.currency &&
       Math.abs(dateTime(other.date) - dateTime(row.date)) <= 3 * DAY_MS &&
       fundingAccounts(other).some(([from, to]) => Number(from) === source && Number(to) === destination))) return null;
-  const posted = actual.filter((transaction) => !transaction.scheduled && transaction.date <= today &&
+  const posted = actual.filter((transaction) => billMatchAssignmentAllows(row, transaction) && !transaction.scheduled && transaction.date <= today &&
     transaction.date === row.date && transaction.currency === row.currency && transferTransaction(transaction) &&
     !transaction.matchedForecast &&
     !rows.some((other) => other.id !== row.id && other.source === "allocation" && other.allocationKind === "expense" &&
@@ -1291,6 +1298,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     .filter((date) => Number.isFinite(dateTime(date)) &&
       date >= addDays(plan.startDate, -731) && date <= addDays(plan.endDate, 731));
   const matchingStart = [addDays(plan.startDate, -3), ...originalDates].sort()[0];
+  // Earlier receipts can settle the preceding halo occurrence before another
+  // receipt is considered for a bill inside this window.
+  const matchingTransactionStart = [addDays(plan.startDate, -6), ...originalDates].sort()[0];
   const matchingEnd = [addDays(plan.endDate, 3), ...originalDates].sort().at(-1);
   const applyOverride = (row) => {
     const override = overrides.get(row.id);
@@ -1427,6 +1437,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     if (postedIds.has(key)) return false;
     postedIds.add(key);
     return !transaction.pending && transaction.date <= today;
+  }).map((transaction) => {
+    const billMatchRowId = options.billMatchAssignments?.get(String(transaction.transactionId ?? transaction.id));
+    return billMatchRowId == null ? transaction : { ...transaction, billMatchRowId: String(billMatchRowId) };
   });
   const completedForecasts = new Set((plan.completedRows || []).map((row) => row.rowId));
   const claimedCardRecords = new Set();
@@ -1434,7 +1447,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     if (completedForecasts.has(row.id)) return 0;
     const sameLeg = (transaction) => Number(transaction.accountId) === Number(leg.accountId) &&
       transaction.currency === leg.currency && transaction.kind === (leg.amount > 0 ? "income" : "expense");
-    const exact = postedCardActivity.filter((transaction) => sameLeg(transaction) &&
+    const exact = postedCardActivity.filter((transaction) => sameLeg(transaction) && billMatchAssignmentAllows(row, transaction) &&
       (exactPlanTransaction(row, transaction) || scheduledPlanTransaction(row, transaction) ||
         (row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.id))));
     if (exact.length) return unpaidForecastAmount(row, exact.reduce((sum, transaction) => sum + Number(transaction.amount), 0), Math.abs(leg.amount));
@@ -1574,7 +1587,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       const matchingOnly = evidenceOnly || transaction.date < plan.startDate || transaction.date > plan.endDate;
       if (
         !Number.isFinite(dateTime(transaction.date)) ||
-        transaction.date < matchingStart ||
+        transaction.date < matchingTransactionStart ||
         transaction.date > matchingEnd ||
         (matchingOnly && transaction.date > today) ||
         transaction.pending
@@ -1633,6 +1646,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     }
   }
   for (const transaction of actual) {
+    const billMatchRowId = options.billMatchAssignments?.get(String(transaction.transactionId));
+    if (billMatchRowId != null) transaction.billMatchRowId = String(billMatchRowId);
     const accountId = recordedEntryPayments.get(String(transaction.transactionId));
     if (accountId) {
       transaction.creditCardPaymentFor = accountId;
@@ -1647,6 +1662,13 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       transaction.matchedForecast = { id: statement.id, source: statement.source, date: statement.date, description: statement.description };
     }
   }
+  // Match posted receipts in date order before separating boundary evidence.
+  // The API may return newest first; a filtered copy must retain this order too.
+  actual.sort(
+    (first, second) =>
+      first.date.localeCompare(second.date) ||
+      first.id.localeCompare(second.id),
+  );
   // Completion checks always see posted records, even when their cash flows are
   // excluded from this hypothetical ledger by the plan's display setting.
   const completionActual = actual;
@@ -1676,16 +1698,13 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const actualPayDates = new Map();
   const forecastPriority = (row) =>
     row.source === "bill" ? 0 : row.source === "salary" ? 1 : 2;
-  actual.sort(
-    (first, second) =>
-      first.date.localeCompare(second.date) ||
-      first.id.localeCompare(second.id),
-  );
+  const visibleForecastMatches = new Map();
   for (const transaction of visibleActual) {
     if (transaction.creditCardPaymentFor) continue;
     const candidates = forecasts.filter(
       (forecast) =>
-        !usedForecasts.has(forecast.id) &&
+        !usedForecasts.has(forecast.id) && billMatchAssignmentAllows(forecast, transaction) &&
+        (forecast.source !== "bill" || transaction.planScheduledRowId == null || scheduledPlanTransaction(forecast, transaction)) &&
         (forecastMatchesTransaction(forecast, transaction) ||
           (forecast.deferReserveToCardDue && forecast.annualChargeTransactionId != null && String(forecast.annualChargeTransactionId) === String(transaction.transactionId))),
     );
@@ -1700,6 +1719,57 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const matched = candidates[0];
     if (!matched) continue;
     usedForecasts.add(matched.id);
+    visibleForecastMatches.set(transaction, matched);
+  }
+  // Keep visible receipts preferred, but let earlier boundary receipts claim a
+  // bill when its current owner can move to another eligible, unclaimed bill.
+  const billOwners = new Map([...visibleForecastMatches]
+    .filter(([transaction, forecast]) => !transaction.scheduled && forecast.source === "bill")
+    .map(([transaction, forecast]) => [forecast.id, transaction]));
+  const boundaryForecastMatches = new Map();
+  const billCandidates = new Map();
+  const candidatesFor = (transaction) => {
+    if (billCandidates.has(transaction)) return billCandidates.get(transaction);
+    const candidates = forecasts.filter((forecast) => forecast.source === "bill" &&
+      (!transaction.matchingOnly || (forecast.date >= matchingStart && forecast.date <= plan.endDate)) &&
+      (transaction.planScheduledRowId == null || scheduledPlanTransaction(forecast, transaction)) &&
+      forecastMatchesTransaction(forecast, transaction) &&
+      !actual.some((other) => !other.matchingOnly && !other.scheduled &&
+        visibleForecastMatches.get(other)?.source !== "bill" && forecastMatchesTransaction(forecast, other)));
+    candidates.sort((first, second) => Math.abs(dateTime(first.date) - dateTime(transaction.date)) -
+      Math.abs(dateTime(second.date) - dateTime(transaction.date)) || first.id.localeCompare(second.id));
+    billCandidates.set(transaction, candidates);
+    return candidates;
+  };
+  for (const transaction of actual.filter((row) => row.matchingOnly && row.matchingOnlyForecastId == null)) {
+    const queue = [transaction];
+    const seenReceipts = new Set(queue);
+    const predecessor = new Map();
+    let free = null;
+    for (let index = 0; index < queue.length && !free; index++) {
+      const receipt = queue[index];
+      for (const forecast of candidatesFor(receipt)) {
+        if (predecessor.has(forecast.id)) continue;
+        predecessor.set(forecast.id, receipt);
+        if (!usedForecasts.has(forecast.id)) { free = forecast; break; }
+        const owner = billOwners.get(forecast.id);
+        if (owner && !seenReceipts.has(owner)) { seenReceipts.add(owner); queue.push(owner); }
+      }
+    }
+    // Commit only a complete path to a free bill. A lone visible receipt keeps
+    // its bill when there is no second occurrence for it to move to.
+    while (free) {
+      const receipt = predecessor.get(free.id);
+      const assignments = receipt.matchingOnly ? boundaryForecastMatches : visibleForecastMatches;
+      const previous = assignments.get(receipt);
+      assignments.set(receipt, free);
+      billOwners.set(free.id, receipt);
+      usedForecasts.add(free.id);
+      free = previous;
+    }
+  }
+  // Apply metadata after ownership is final, including annual reserve details.
+  for (const [transaction, matched] of visibleForecastMatches) {
     transaction.scheduledSource = matched.source;
     transaction.scheduledDate = matched.date;
     transaction.matchedForecast = {
@@ -1734,19 +1804,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     if (matched.source === "salary")
       actualPayDates.set(matched.paydayDate || matched.originalDate || matched.date, transaction.date);
   }
-  // Boundary receipts prove an in-window bill was paid, but never become a
-  // second cash flow inside the requested window or consume another forecast.
-  for (const transaction of actual.filter((row) => row.matchingOnly && row.matchingOnlyForecastId == null)) {
-    const candidates = forecasts.filter((forecast) => forecast.source === "bill" &&
-      forecast.date >= plan.startDate && forecast.date <= plan.endDate && !usedForecasts.has(forecast.id) &&
-      !actual.some((other) => !other.matchingOnly && !other.scheduled && forecastMatchesTransaction(forecast, other)) &&
-      (transaction.planScheduledRowId == null || scheduledPlanTransaction(forecast, transaction)) && forecastMatchesTransaction(forecast, transaction));
-    candidates.sort((first, second) => Math.abs(dateTime(first.date) - dateTime(transaction.date)) -
-      Math.abs(dateTime(second.date) - dateTime(transaction.date)) || first.id.localeCompare(second.id));
-    const matched = candidates[0];
-    if (!matched) continue;
+  for (const [transaction, matched] of boundaryForecastMatches) {
     transaction.matchingOnlyForecastId = matched.id;
-    usedForecasts.add(matched.id);
     Object.assign(matched, { scheduledAmount: matched.amount, matchedOutsideWindow: true },
       nativeFlow(transaction.amount, transaction.currency, transaction.kind));
   }

@@ -297,6 +297,112 @@ test("mixed today rows replay partial actual receipts and cumulative forecasts i
   assert.deepEqual({ accounts, rows, history }, before);
 });
 
+test("unconfirmed linked legs never inflate reported bank balances or hide confirmed manual history", () => {
+  const date = "2026-11-20";
+  for (const flag of [{ awaitingBankSync: true }, { plan_provisional: 1 }]) for (const includeProvisionalHistory of [true, false]) {
+    const accounts = [{ ...account(1, "checking", 1000), isLinked: true }, account(2, "savings", 250),
+      { ...account(3, "checking", 300, "PHP"), isLinked: true }];
+    const bankIncome = { id: 1, date, accountId: 1, kind: "income", amount: 100, currency: "USD" };
+    const bankDebit = { id: 2, date, accountId: 1, kind: "expense", amount: 50, currency: "USD", ...flag };
+    const manualCredit = { id: 3, date, accountId: 2, kind: "income", amount: 50, currency: "USD",
+      manualPlannerSource: true, awaitingBankSync: true };
+    const history = [bankIncome, ...(includeProvisionalHistory ? [bankDebit] : []), manualCredit];
+    const rows = [
+      flow("forecast-before", date, [movement(1, -20)]),
+      { id: "transaction:1", date, source: "transaction", transactionId: 1, completed: true },
+      { id: "entry:transfer", date, kind: "transfer", completed: true, recordedInAccounts: true, awaitingBankSync: true,
+        matchedTransactionIds: [2, 3], recordedTransactions: [bankDebit, manualCredit] },
+      flow("future", "2026-11-21", [movement(1, -10)]),
+    ];
+    const input = { accounts, rows, today: date, historyTransactions: history,
+      historyFrom: date, historyThrough: date, historyComplete: true };
+    const before = structuredClone(input);
+    const result = withLivePlannerAccountSnapshots(input);
+    assert.deepEqual(result.map((row) => row.accountBalanceSnapshot.map((item) => item.balance)),
+      [[880, 200, 300], [980, 200, 300], [null, 250, 300], [970, 250, 300]]);
+    assert.deepEqual(result.map((row) => row.projectedBalanceUsd), [1080, 1180, null, 1220]);
+    assert.ok(result.every((row) => row.projectedBalancePhp === 300));
+    assert.ok(result.every((row) => row.accountBalanceSnapshotKind === "projected"));
+    assert.match(result[2].accountBalanceSnapshotNote, /awaiting a bank match.*unavailable/);
+    const summary = getLivePlannerAnalytics({ ...input, range: { startDate: date, endDate: "2026-11-21" } });
+    assert.equal(summary.assets.USD.current, 1250, "the provider baseline and the manual actual remain authoritative");
+    assert.equal(summary.assets.USD.projected, 1220, "future flows start from the reported bank value once");
+    assert.deepEqual(input, before);
+  }
+});
+
+test("a provisional-only bank row is unavailable only for its account and does not poison today's other rows", () => {
+  const date = "2026-11-20";
+  const accounts = [{ ...account(1, "checking", 1000), balanceSource: "bank" }, account(2, "cash", 250)];
+  const history = [{ id: 1, date, accountId: 1, kind: "income", amount: 100, currency: "USD" }];
+  const rows = [
+    flow("before", date, [movement(1, -20)]),
+    { id: "transaction:1", date, source: "transaction", transactionId: 1, completed: true },
+    { id: "transaction:2", date, source: "transaction", transactionId: 2, accountId: 1, kind: "expense",
+      amount: 50, currency: "USD", completed: true, awaitingBankSync: true },
+    flow("future", "2026-11-21", [movement(1, -10)]),
+  ];
+  const result = withLivePlannerAccountSnapshots({ accounts, rows, today: date, historyTransactions: history,
+    historyFrom: date, historyThrough: date, historyComplete: true });
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot.map((item) => item.balance)),
+    [[880, 250], [980, 250], [null, 250], [970, 250]]);
+  assert.equal(result[2].completed, true, "balance provenance does not rewrite the transaction's completion state");
+});
+
+test("hidden provisional bank receipts are excluded while later imported receipts become real history", () => {
+  const date = "2026-11-20";
+  const income = { id: 1, date, accountId: 1, kind: "income", amount: 100, currency: "USD" };
+  const localDebit = { id: 2, date, accountId: 1, kind: "expense", amount: 50, currency: "USD", awaitingBankSync: true };
+  const rows = [{ id: "transaction:1", date, source: "transaction", transactionId: 1, completed: true },
+    flow("future", "2026-11-21", [movement(1, -10)])];
+  const input = { rows, today: date, historyFrom: date, historyThrough: date, historyComplete: true };
+  const unconfirmed = withLivePlannerAccountSnapshots({ ...input, accounts: [{ ...account(1, "checking", 1000), isLinked: true }],
+    historyTransactions: [income, localDebit] });
+  assert.deepEqual(unconfirmed.map((row) => row.accountBalanceSnapshot[0].balance), [1000, 990]);
+  const imported = withLivePlannerAccountSnapshots({ ...input, accounts: [{ ...account(1, "checking", 950), isLinked: true }],
+    historyTransactions: [income, { ...localDebit, awaitingBankSync: false, provider: "plaid", planGenerated: false }] });
+  assert.deepEqual(imported.map((row) => row.accountBalanceSnapshot[0].balance), [1000, 940],
+    "real imported history is reversed only where it lies after the displayed row");
+});
+
+test("an imported bank receipt overrides stale provisional row metadata after reconciliation", () => {
+  const date = "2026-11-20";
+  const accounts = [{ ...account(1, "checking", 950), isLinked: true }];
+  const history = [{ id: 1, date, accountId: 1, kind: "expense", amount: 50, currency: "USD", awaitingBankSync: false }];
+  const rows = [{ id: "transaction:1", date, source: "transaction", transactionId: 1, accountId: 1,
+    completed: true, awaitingBankSync: true }, flow("future", "2026-11-21", [movement(1, -10)])];
+  const result = withLivePlannerAccountSnapshots({ accounts, rows, today: date, historyTransactions: history,
+    historyFrom: date, historyThrough: date, historyComplete: true });
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot[0].balance), [950, 940]);
+  assert.equal(result[0].accountBalanceSnapshotKind, "recorded");
+});
+
+test("connected card charges and payments await the bank while manual card actuals remain recorded", () => {
+  const date = "2026-11-20";
+  for (const kind of ["expense", "income"]) {
+    const accounts = [{ ...account(1, "credit", 500), isLinked: true }, account(2, "credit", 100)];
+    const history = [
+      { id: 1, date, accountId: 1, kind, amount: 40, currency: "USD", awaitingBankSync: true },
+      { id: 2, date, accountId: 2, kind: "expense", amount: 20, currency: "USD", awaitingBankSync: true, manualPlannerSource: true },
+      { id: 3, date, accountId: 1, kind: "expense", amount: 10, currency: "USD", provider: "plaid" },
+    ];
+    const rows = [
+      { id: "transaction:2", date, source: "transaction", transactionId: 2, completed: true },
+      { id: "transaction:1", date, source: "transaction", transactionId: 1, completed: true },
+      { id: "transaction:3", date, source: "transaction", transactionId: 3, completed: true },
+      flow("future-charge", "2026-11-21", [movement(1, -30, "USD", { balanceDelta: 30 })]),
+    ];
+    const input = { accounts, rows, today: date, historyTransactions: history,
+      historyFrom: date, historyThrough: date, historyComplete: true };
+    const result = withLivePlannerAccountSnapshots(input);
+    assert.deepEqual(result.map((row) => row.accountBalanceSnapshot.map((item) => item.balance)),
+      [[490, 100], [null, 100], [500, 100], [530, 100]]);
+    const summary = getLivePlannerAnalytics({ ...input, range: { startDate: date, endDate: "2026-11-21" } });
+    assert.equal(summary.debt.USD.current, 600);
+    assert.equal(summary.debt.USD.projected, 630);
+  }
+});
+
 test("today forecasts preserve hidden actual slots and remain cumulative through later recorded rows", () => {
   const date = "2026-11-20";
   const accounts = [account(1, "checking", 85)];
