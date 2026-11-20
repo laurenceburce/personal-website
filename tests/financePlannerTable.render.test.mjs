@@ -136,6 +136,24 @@ test("planner table defaults to its compact summary and expands accounts into ho
   assert.match(restored, /\$175\.00/);
 });
 
+test("running balances stay numeric while reserves and explanations remain in the notes disclosure", () => {
+  const html = render([row({ reserveUsd: 551.99, reservePhp: 0, savingsUsd: 50, savingsPhp: 0,
+    accountMovements: [{ accountId: 1, accountName: "Daily checking", amount: -25, currency: "USD" }],
+  })]);
+  const projection = html.match(/<td class="fpt-projection"[^>]*>([\s\S]*?)<\/td>/)?.[1];
+  assert.match(projection, /fpt-running-totals/);
+  assert.match(projection, /<dt>USD<\/dt><dd[^>]*>\$175\.00/);
+  assert.match(projection, /<dt>PHP<\/dt><dd[^>]*>₱2,000\.00/);
+  assert.doesNotMatch(projection, /fpt-info-tag|Annual reserve|Savings|Scheduled bill|Account movements/);
+  const notes = html.match(/<details class="fpt-notes">([\s\S]*)<\/details>/)?.[1];
+  assert.match(notes, /Reserves &amp; planning notes/);
+  assert.match(notes, /Annual reserve · USD/);
+  assert.match(notes, /\$551\.99/);
+  assert.match(notes, /Scheduled bill/);
+  assert.match(notes, /Account movements/);
+  assert.doesNotMatch(html, /<details class="fpt-notes" open/);
+});
+
 test("planner keeps the compact balance summary when no supported active accounts can expand", () => {
   for (const inactive of [[], [
     { id: 90, name: "Archived", currency: "USD", type: "checking", isArchived: true },

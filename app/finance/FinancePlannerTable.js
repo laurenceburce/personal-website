@@ -124,7 +124,7 @@ function AccountCell({ row, account, accounts, plan, today }) {
           <> · Balance owed {signed(move.balanceDelta, move.currency || account.currency)}</>}
       </span>) : !receipts.length && fallbackAmount != null &&
         <span className="fpt-info-tag">{signed(fallbackAmount, account.currency)}</span>}
-      <SourceLabel row={row} asTags omitMovementDetails/>
+      <div className="fpt-account-context"><SourceLabel row={row} asTags omitMovementDetails/></div>
       {from && row.toAccountId && <span className="fpt-info-tag">to {accountName(accounts.find((item) => Number(item.id) === Number(row.toAccountId)))}</span>}
       {to && row.fromAccountId && <span className="fpt-info-tag">from {accountName(accounts.find((item) => Number(item.id) === Number(row.fromAccountId)))}</span>}
       {row.notes && <span className="fpt-info-tag">{row.notes}</span>}
@@ -232,7 +232,7 @@ export default function FinancePlannerTable({
       </div>
       <button type="button" className="fpt-jump-current" disabled={loading || currentId == null}
         aria-controls={tableId} onClick={jumpToCurrent}>Jump to current</button>
-      <button type="button" className="fpt-account-columns-toggle-mobile" disabled={loading || !accountColumns.length}
+      <button type="button" className="fpt-account-columns-toggle" disabled={loading || !accountColumns.length}
         aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
         {expanded ? "Collapse accounts" : "Expand accounts"}
       </button>
@@ -246,15 +246,12 @@ export default function FinancePlannerTable({
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
       <table className="fpt-table" style={expanded ? { width: `${760 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
         <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show separate account columns to the right.</caption>
-        <colgroup><col style={{ width: expanded ? "90px" : "12%" }}/><col style={{ width: expanded ? "240px" : "24%" }}/>
-          <col style={{ width: expanded ? "120px" : "16%" }}/><col style={{ width: expanded ? "120px" : "16%" }}/>
-          <col style={{ width: expanded ? "190px" : "32%" }}/>
+        <colgroup><col style={{ width: expanded ? "90px" : "9%" }}/><col style={{ width: expanded ? "240px" : "31%" }}/>
+          <col style={{ width: expanded ? "120px" : "15%" }}/><col style={{ width: expanded ? "120px" : "15%" }}/>
+          <col style={{ width: expanded ? "190px" : "30%" }}/>
           {expanded && accountColumns.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>
         <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">USD</th><th scope="col">PHP</th>
-          <th scope="col" className="fpt-projection-heading"><span>Running balance</span>
-            <button type="button" className="fpt-account-columns-toggle" aria-expanded={expanded} aria-controls={tableId}
-              disabled={loading || !accountColumns.length} onClick={toggleAccountColumns}>{expanded ? "Collapse accounts" : "Expand accounts"}</button>
-          </th>
+          <th scope="col" className="fpt-projection-heading"><span>Running balance</span><small>After each transaction</small></th>
           {expanded && accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
             <strong>{accountName(account)}</strong><small>{account.currency}{["credit", "loan"].includes(account.type) ? " · Balance owed" : ""}</small>
           </th>)}</tr></thead>
@@ -307,19 +304,11 @@ export default function FinancePlannerTable({
               const value = Number(currency === "USD" ? row.usd : row.php) || 0;
               return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{money(value, currency)}</td>;
             })}
-            <td className="fpt-projection" data-label="Running balance">{inCurrentBalance ? <small>Included in current balance</small>
-                : plan.continuous && row.date < today ? <small>Past due · review payment</small>
-                  : <div className="fpt-money-stack">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
+            <td className="fpt-projection" data-label="Running balance">{inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
+                : plan.continuous && row.date < today ? <small className="fpt-balance-note">Past due · review payment</small>
+                  : <dl className="fpt-running-totals">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
                     ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
-                    <span key={currency} className={value < 0 ? "fpt-negative" : ""}><small>{currency}</small>{balance(value, currency)}</span>)}</div>}
-              <div className="fpt-account-tags">
-                {(!expanded || !accountColumns.some((account) => accountInvolved(row, account, accounts, plan))) &&
-                  <SourceLabel row={row} asTags/>}
-                {[["Annual reserve", row.reserveUsd, "USD"], ["Annual reserve", row.reservePhp, "PHP"],
-                  ["Savings", row.savingsUsd, "USD"], ["Savings", row.savingsPhp, "PHP"]]
-                  .filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
-                    <span key={`${label}-${currency}`} className="fpt-info-tag">{label}{" · "}{currency}{money(value, currency)}</span>)}
-              </div>
+                    <div key={currency}><dt>{currency}</dt><dd className={value < 0 ? "fpt-negative" : ""}>{balance(value, currency)}</dd></div>)}</dl>}
             </td>
             {expanded && accountColumns.map((account) => <AccountCell key={account.id} row={row} account={account}
               accounts={accounts} plan={plan} today={today}/>)}
@@ -330,6 +319,19 @@ export default function FinancePlannerTable({
     </div>}
     <p className="fpt-footnote" id={`${tableId}-hint`}>{expanded
       ? "Scroll sideways to view each account balance and activity tags. Unavailable history is shown as an em dash. Future balances are projected."
-      : "Recorded activity is included in current balances. Expand accounts to see account balances and activity tags. Rotate your phone for a wider landscape view."}</p>
+      : "Expand accounts to see individual balances and activity. Rotate your phone for a wider landscape view."}</p>
+    {visible.length > 0 && <details className="fpt-notes">
+      <summary>Reserves &amp; planning notes</summary>
+      <div className="fpt-notes-list">{visible.map((row) => <article key={row.id} data-notes-for={row.id}>
+        <header><time dateTime={row.date}>{formatDate(row.date, { year: "numeric" })}</time><strong>{row.description}</strong></header>
+        <dl className="fpt-note-balances">
+          {[["Annual reserve", row.reserveUsd, "USD"], ["Annual reserve", row.reservePhp, "PHP"],
+            ["Savings", row.savingsUsd, "USD"], ["Savings", row.savingsPhp, "PHP"]]
+            .filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
+              <div key={`${label}-${currency}`}><dt>{label} · {currency}</dt><dd>{money(value, currency)}</dd></div>)}
+        </dl>
+        <div className="fpt-note-content"><SourceLabel row={row}/>{row.notes && <p>{row.notes}</p>}</div>
+      </article>)}</div>
+    </details>}
   </section>;
 }
