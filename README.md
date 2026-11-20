@@ -188,6 +188,9 @@ The finance workspace separates recorded activity from your plans:
   Future activity stays projected. Editing, deleting, or moving a planner entry corrects
   its generated account movements without duplicating them on refresh. Manual-only
   entries show their balance source instead of a separate recording choice.
+  An existing manual transaction that uniquely matches a planner entry follows that
+  entry too: edits update the same movement, and deleting it or moving it into the
+  future removes its current balance effect. Unrelated transaction history is retained.
   Linked-account entries can be **Planned** or **Recorded · already happened**.
   Linked accounts include explicitly recorded amounts while awaiting a unique posted bank match,
   which replaces the generated record once. Use **Record payment** or **Record receipt**
@@ -219,6 +222,8 @@ The finance workspace separates recorded activity from your plans:
   unlinking a connection revokes access and retains its historical transactions.
   Add a manual USD/PHP account for cash or a bank without a connected provider;
   its native starting balance and live planner activity are tracked in the app.
+  Balances refresh on open, focus, and every five minutes while visible, including
+  when the Accounts or Overview screen stays open overnight.
   Use **Edit account** on a manual account or card to change its name, type,
   or current native balance. Balance corrections adjust the starting balance and retain transaction history;
   card statement details and automatic payment settings stay separate.

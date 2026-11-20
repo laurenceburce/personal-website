@@ -18,6 +18,11 @@ const manualAccount = (account) => account && Number(account.id) > 0 &&
 const posted = (row, today) => !row.pending && !row.is_provider_removed && row.duplicate_of_id == null &&
   dateOnly(row.posting_date || row.transaction_date) <= today;
 const nativeDelta = (row) => (row.kind === "income" ? 1 : -1) * Number(row.amount);
+const manualReceiptOriginal = (row) => ({
+  id: Number(row.id), date: dateOnly(row.posting_date || row.transaction_date), accountId: Number(row.account_id),
+  kind: row.kind, amount: money(row.amount), currency: row.currency,
+  description: row.merchant || "", category: row.category || "", note: row.note ?? "",
+});
 const tooManyMovements = () => Object.assign(new Error("The live planner contains more than 10,000 manual transactions through today. Shorten recurring schedules before saving."), { status: 400 });
 const ownGenerated = (row, plan) => plan && String(row.source_plan_id) === String(plan.id) && row.plan_generated &&
   !providerRecord(row) && !parse(row.plan_record_json).detached;
@@ -130,11 +135,14 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
           if (!account) return;
           const automatic = authoritative && manualAccount(account);
           if (!explicitlyRecorded && !automatic) return;
+          const originalReceipt = prior.get(keyFor(plan.id, rowId, leg))?.manualReceiptOriginal;
           specs.push({ ...base, leg,
             accountId: Number(account.id), currency: account.currency, kind, amount: money(value),
             transferAccountId: counterpart ? Number(counterpart.id) : null,
             awaitingBankSync: Boolean(account.external_provider && account.external_account_id),
             ...(automatic ? { manualPlannerSource: true } : {}),
+            ...(originalReceipt ? { manualReceiptOriginal: originalReceipt, note: originalReceipt.note,
+              category: transfer ? "Transfer" : originalReceipt.category || base.category } : {}),
           });
           if (automatic) running.set(Number(account.id), money((running.get(Number(account.id)) || 0) +
             (kind === "income" ? 1 : -1) * (["credit", "loan"].includes(account.account_type || account.type) ? -1 : 1) * value));
@@ -200,6 +208,9 @@ function reuseManualReceipts(document, primary, accounts, specs, transactions, t
     if (automatic.filter((other) => possible.get(other).some((row) => Number(row.id) === Number(receipt.id))).length !== 1) continue;
     if (scheduled.some((other) => other.rowId !== spec.planScheduledRowId && matches(other, receipt, other.plannerSource))) continue;
     spec.reusedTransactionId = Number(receipt.id);
+    spec.manualReceiptOriginal = parse(receipt.plan_record_json).manualReceiptOriginal || manualReceiptOriginal(receipt);
+    spec.note = spec.manualReceiptOriginal.note;
+    if (spec.category !== "Transfer") spec.category = spec.manualReceiptOriginal.category || spec.category;
   }
 }
 
@@ -277,13 +288,27 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
   const hasCompleted = (document.plans || []).some((plan) => (plan.completedRows || []).some((row) => row.rowId.startsWith("entry:")));
   const [existing] = await connection.query(`SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS posting_date
     FROM personal_finance_transactions t WHERE t.source_plan_id IS NOT NULL FOR UPDATE`);
+  // Earlier releases associated real manual receipts without adopting their
+  // movement. Promote those associations before calculating the baseline so
+  // source edits and deletions cannot leave the previous amount active too.
+  for (const row of existing) {
+    const saved = parse(row.plan_record_json);
+    if (row.plan_generated || providerRecord(row) || !saved.manualPlannerSource || saved.detached) continue;
+    saved.manualReceiptOriginal ||= manualReceiptOriginal(row);
+    row.plan_generated = 1;
+    row.plan_record_json = JSON.stringify(saved);
+    await connection.query(`UPDATE personal_finance_transactions SET plan_generated = 1, plan_record_json = ?
+      WHERE id = ? AND (external_provider IS NULL OR external_provider = '')
+        AND (external_transaction_id IS NULL OR external_transaction_id = '')`,
+      [row.plan_record_json, Number(row.id)]);
+  }
   const authoritative = document.plans?.[0]?.continuous === true;
   if (!hasCompleted && !existing.length && !authoritative) return { recorded: 0, reconciled: 0 };
   const [accounts] = await connection.query(`SELECT a.*,
     (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
      FROM personal_finance_transactions t WHERE t.account_id = a.id AND t.currency = a.currency
        AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date <= ?) AS native_movement,
-    ${financePlanPendingMovementSql()} AS plan_pending_movement
+    ${financePlanPendingMovementSql("a", today)} AS plan_pending_movement
     FROM personal_finance_accounts a`, [today]);
   let transactions = [];
   if (authoritative && accounts.some(manualAccount)) {
@@ -358,8 +383,9 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
     }
     if (matched) {
       if (previous && Number(previous.id) !== Number(matched.id)) await releasePosting(connection, previous);
+      const adoptManual = Boolean(spec.manualPlannerSource && spec.reusedTransactionId && !providerRecord(matched));
       await connection.query(`UPDATE personal_finance_transactions SET source_plan_id = ?, source_plan_row_id = ?,
-        source_plan_leg = ?, plan_generated = 0, plan_provisional = 0, plan_record_json = ? WHERE id = ?`,
+        source_plan_leg = ?, plan_generated = ${adoptManual ? 1 : 0}, plan_provisional = 0, plan_record_json = ? WHERE id = ?`,
         [spec.planId, spec.rowId, spec.leg, JSON.stringify(spec), Number(matched.id)]);
       reconciled++;
     } else {

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import mysql from "mysql2/promise";
-import { financePlanPendingMovementSql, financePlanTransactionMetadata, refreshFinancePlanPostings } from "./financePlanPostings.mjs";
+import { financePlanPendingMovementSql, financePlanTransactionMetadata, refreshFinancePlanPostings, synchronizeFinancePlanPostings } from "./financePlanPostings.mjs";
 import {
   financeActivityWindow,
   financeProviderStatus,
@@ -1148,7 +1148,7 @@ export async function getFinanceActivity({ month } = {}) {
         database.query(
           `
         SELECT a.*, c.institution_name, c.status AS connection_status,
-          ${financePlanPendingMovementSql()} AS plan_pending_movement,
+          ${financePlanPendingMovementSql("a", window.today)} AS plan_pending_movement,
           (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
            FROM personal_finance_transactions t
            WHERE t.account_id = a.id AND t.currency = a.currency
@@ -1476,6 +1476,8 @@ export async function getFinanceDashboard({ month } = {}) {
   const safeMonth = cleanMonth(month);
   const pool = await ensureFinanceSchema();
   if (!pool) return buildEmptyDashboard(safeMonth);
+  const currentDate = financeActivityWindow().today;
+  await refreshFinancePlanPostings(pool, currentDate);
 
   const monthStart = `${safeMonth}-01`;
   const nextMonthStart = `${addMonths(safeMonth, 1)}-01`;
@@ -1502,66 +1504,18 @@ export async function getFinanceDashboard({ month } = {}) {
       ORDER BY updated_at DESC, id DESC
     `),
     pool.query(`
-      SELECT
-        a.id,
-        a.name,
-        a.account_type,
-        a.opening_balance,
-        a.currency,
-        a.current_balance,
-        a.available_balance,
-        a.credit_card_due_json,
-        a.credit_card_due_status,
-        a.credit_card_autopay_enabled,
-        a.credit_card_autopay_days_before_due,
-        a.external_provider,
-        a.external_account_id,
-        a.connection_id,
-        a.color,
-        a.created_at,
-        a.updated_at,
-        c.institution_name,
-        COALESCE(SUM(
-          CASE
-            WHEN t.kind = 'income' AND t.currency = 'USD' THEN t.amount
-            WHEN t.kind = 'expense' AND t.currency = 'USD' THEN -t.amount
-            ELSE 0
-          END
-        ), 0) AS transaction_usd,
-        COALESCE(SUM(
-          CASE
-            WHEN t.kind = 'income' AND t.currency = 'PHP' THEN t.amount
-            WHEN t.kind = 'expense' AND t.currency = 'PHP' THEN -t.amount
-            ELSE 0
-          END
-        ), 0) AS transaction_php
+      SELECT a.*, c.institution_name, c.status AS connection_status,
+        ${financePlanPendingMovementSql("a", currentDate)} AS plan_pending_movement,
+        (SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
+         FROM personal_finance_transactions t WHERE t.account_id = a.id AND t.currency = a.currency
+           AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+           AND t.transaction_date <= ?) AS native_movement
       FROM personal_finance_accounts a
       LEFT JOIN personal_finance_connections c
         ON c.id = a.connection_id
-      LEFT JOIN personal_finance_transactions t
-        ON t.account_id = a.id AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
       WHERE a.is_archived = 0 AND a.merged_into_account_id IS NULL
-      GROUP BY
-        a.id,
-        a.name,
-        a.account_type,
-        a.opening_balance,
-        a.currency,
-        a.current_balance,
-        a.available_balance,
-        a.credit_card_due_json,
-        a.credit_card_due_status,
-        a.credit_card_autopay_enabled,
-        a.credit_card_autopay_days_before_due,
-        a.external_provider,
-        a.external_account_id,
-        a.connection_id,
-        a.color,
-        a.created_at,
-        a.updated_at,
-        c.institution_name
       ORDER BY a.name ASC
-    `),
+    `, [currentDate]),
     pool.query(
       `
       SELECT
@@ -1732,30 +1686,18 @@ export async function getFinanceDashboard({ month } = {}) {
 
   const connections = connectionRows.map(mapConnection);
   const accounts = accountRows.map((row) => {
+    const native = mapFinanceActivityAccount(row);
+    if (!native) return null;
     const openingBalance = toMoney(row.opening_balance);
-    const transactionTotal = toMoney(
-      toMoney(row.transaction_usd) +
-        toMoney(row.transaction_php) / exchangeRate,
-    );
     const currency = cleanCurrency(row.currency || "USD");
-    const hasLinkedBalance =
-      row.current_balance !== null && row.current_balance !== undefined;
-    const nativeCurrentBalance = hasLinkedBalance
-      ? toMoney(row.current_balance)
-      : toMoney(openingBalance + transactionTotal);
-    const nativeAvailableBalance =
-      row.available_balance !== null && row.available_balance !== undefined
-        ? toMoney(row.available_balance)
-        : null;
+    const transactionTotal = convertToUsd(row.native_movement, currency, exchangeRate);
+    const nativeCurrentBalance = native.nativeCurrentBalance;
+    const nativeAvailableBalance = native.nativeAvailableBalance;
     const isLiability = ["credit", "loan"].includes(row.account_type);
-    const rawCurrentBalance = hasLinkedBalance
-      ? convertToUsd(nativeCurrentBalance, currency, exchangeRate)
-      : toMoney(openingBalance + transactionTotal);
-    const currentBalance = isLiability
-      ? toMoney(-Math.abs(rawCurrentBalance))
-      : toMoney(rawCurrentBalance);
-    const statementDetails = mapFinanceActivityAccount(row);
+    const rawCurrentBalance = nativeCurrentBalance === null ? null : convertToUsd(nativeCurrentBalance, currency, exchangeRate);
+    const currentBalance = rawCurrentBalance === null ? null : toMoney(isLiability ? -rawCurrentBalance : rawCurrentBalance);
     return {
+      ...native,
       id: Number(row.id),
       name: row.name,
       type: row.account_type,
@@ -1774,15 +1716,15 @@ export async function getFinanceDashboard({ month } = {}) {
       connectionId: row.connection_id ? Number(row.connection_id) : null,
       institutionName: row.institution_name || "",
       isLinked: Boolean(row.external_provider && row.external_account_id),
-      creditCardDue: statementDetails?.creditCardDue || null,
-      creditCardDueStatus: statementDetails?.creditCardDueStatus || "unavailable",
+      creditCardDue: native.creditCardDue,
+      creditCardDueStatus: native.creditCardDueStatus,
       creditCardAutopayEnabled: row.account_type === "credit" && Number(row.credit_card_autopay_enabled) === 1,
       creditCardAutopayDaysBeforeDue: row.credit_card_autopay_days_before_due != null &&
         Number.isInteger(Number(row.credit_card_autopay_days_before_due)) && Number(row.credit_card_autopay_days_before_due) >= 0 &&
         Number(row.credit_card_autopay_days_before_due) <= 31 ? Number(row.credit_card_autopay_days_before_due) : 7,
       color: row.color || DEFAULT_COLOR,
     };
-  });
+  }).filter(Boolean);
 
   const transactions = transactionRows.map(mapTransaction);
   const allTransactions = allTransactionRows.map(mapTransaction);
@@ -2298,33 +2240,55 @@ export async function updateFinanceAccount(id, data) {
     throw appError("Choose USD or PHP for this account.");
 
   const pool = requirePool(await ensureFinanceSchema());
-  // Keep recorded activity intact: adjust its opening baseline so the displayed
-  // native balance is exactly the amount entered, including for liabilities.
-  const movementOperator = ["credit", "loan"].includes(accountType) ? "+" : "-";
-  const [result] = await pool.query(
-    `UPDATE personal_finance_accounts a
-     SET name = ?,
-         custom_name = NULL,
-         account_type = ?,
-         opening_balance = ? ${movementOperator} (
-           SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
-           FROM personal_finance_transactions t
-           WHERE t.account_id = a.id AND t.currency = a.currency
-             AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
-             AND t.transaction_date <= ?
-         ),
-         color = COALESCE(?, color),
-         updated_at = ?
-     WHERE a.id = ? AND a.is_archived = 0 AND a.is_sync_excluded = 0
-       AND a.merged_into_account_id IS NULL AND a.connection_id IS NULL
-       AND (a.external_provider IS NULL OR a.external_provider = '')
-       AND (a.external_account_id IS NULL OR a.external_account_id = '')
-       AND a.currency IN ('USD', 'PHP') AND (? IS NULL OR a.currency = ?)`,
-    [name, accountType, Math.round(balance * 100) / 100, financeActivityWindow().today,
-      color, new Date(), accountId, currency, currency],
-  );
-  if (!result.affectedRows) throw appError("An active manual account with this currency was not found.", 404);
-  return { id: accountId };
+  const currentDate = financeActivityWindow().today;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    // Planner saves take this lock first. Materialize today's movements before
+    // calibrating the baseline so a later refresh cannot add them a second time.
+    let planners = [];
+    try {
+      [planners] = await connection.query("SELECT document, exchange_rate FROM personal_finance_planner WHERE id = 1 FOR UPDATE");
+    } catch (error) {
+      if (error?.errno !== 1146) throw error;
+    }
+    if (planners.length) {
+      const document = typeof planners[0].document === "string" ? JSON.parse(planners[0].document) : planners[0].document;
+      const savedRate = typeof planners[0].exchange_rate === "string" ? JSON.parse(planners[0].exchange_rate) : planners[0].exchange_rate;
+      await synchronizeFinancePlanPostings(connection, document, { today: currentDate, rate: Number(savedRate?.rate) || 58 });
+    }
+    // Keep recorded activity intact: adjust its opening baseline so the displayed
+    // native balance is exactly the amount entered, including for liabilities.
+    const movementOperator = ["credit", "loan"].includes(accountType) ? "+" : "-";
+    const [result] = await connection.query(
+      `UPDATE personal_finance_accounts a
+       SET name = ?,
+           custom_name = NULL,
+           account_type = ?,
+           opening_balance = ? ${movementOperator} (
+             SELECT COALESCE(SUM(CASE WHEN t.kind = 'income' THEN t.amount ELSE -t.amount END), 0)
+             FROM personal_finance_transactions t
+             WHERE t.account_id = a.id AND t.currency = a.currency
+               AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+               AND t.transaction_date <= ?
+           ),
+           color = COALESCE(?, color),
+           updated_at = ?
+       WHERE a.id = ? AND a.is_archived = 0 AND a.is_sync_excluded = 0
+         AND a.merged_into_account_id IS NULL AND a.connection_id IS NULL
+         AND (a.external_provider IS NULL OR a.external_provider = '')
+         AND (a.external_account_id IS NULL OR a.external_account_id = '')
+         AND a.currency IN ('USD', 'PHP') AND (? IS NULL OR a.currency = ?)`,
+      [name, accountType, Math.round(balance * 100) / 100, currentDate,
+        color, new Date(), accountId, currency, currency],
+    );
+    if (!result.affectedRows) throw appError("An active manual account with this currency was not found.", 404);
+    await connection.commit();
+    return { id: accountId };
+  } catch (error) {
+    await connection.rollback().catch(() => {});
+    throw error;
+  } finally { connection.release(); }
 }
 
 export async function renameFinanceAccount(id, data) {

@@ -593,7 +593,7 @@ function findElement(node, predicate) {
   return null;
 }
 
-function workspaceHarness(props) {
+function workspaceHarness(props, effects) {
   alignFixture(props);
   const slots = [];
   let cursor = 0;
@@ -616,7 +616,7 @@ function workspaceHarness(props) {
       ...require("react"),
       useState,
       useMemo: (calculate) => calculate(),
-      useEffect() {},
+      useEffect(run, dependencies) { effects?.push({ run, dependencies }); },
       useRef(initial) {
         return useState(() => ({ current: initial }))[0];
       },
@@ -1425,6 +1425,66 @@ test("manual balances wait for planner records from the same day, including fail
     "a failed records refresh must not add today's planner movement to an already updated balance");
   assert.equal(findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.loading, true);
   assert.match(plain(renderToStaticMarkup(tree)), /Refresh transactions to show balances/);
+});
+
+test("manual account balances refresh on focus and periodically outside the planner", async () => {
+  for (const tab of ["accounts", "home"]) {
+    const account = { id: 1, name: "Manual cash", type: "checking", currency: "USD", nativeCurrentBalance: 100,
+      balanceSource: "livePlanner" };
+    const props = fixture(tab, 0, { bills: [] }, { balanceAsOf: "2026-11-02", accounts: [account] });
+    const effects = [];
+    const renderWorkspace = workspaceHarness(props, effects);
+    renderWorkspace();
+    const refreshEffect = effects.find(({ dependencies }) => dependencies?.length === 3 && dependencies[0] === tab && dependencies[2] === true);
+    assert.ok(refreshEffect, `${tab} subscribes to live account refreshes`);
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+    const originalInterval = globalThis.setInterval;
+    const originalClearInterval = globalThis.clearInterval;
+    const listeners = new Map();
+    let periodic;
+    let cleanup;
+    let requests = 0;
+    globalThis.window = { document: { visibilityState: "hidden",
+      addEventListener(name, handler) { listeners.set(name, handler); },
+      removeEventListener(name) { listeners.delete(name); } },
+      addEventListener(name, handler) { listeners.set(name, handler); },
+      removeEventListener(name) { listeners.delete(name); } };
+    globalThis.setInterval = (handler, delay) => { assert.equal(delay, 5 * 60 * 1000); periodic = handler; return 81; };
+    globalThis.clearInterval = (timer) => assert.equal(timer, 81);
+    globalThis.fetch = async (url, options) => {
+      assert.equal(url, "/api/finance/activity?month=2026-11");
+      assert.equal(options?.method, undefined, "refreshing manual balances does not require bank synchronization");
+      requests++;
+      return { ok: true, json: async () => ({ ...props.initialActivity, balanceAsOf: "2026-11-03",
+        accounts: [{ ...account, nativeCurrentBalance: 100 + requests * 20 }] }) };
+    };
+    try {
+      cleanup = refreshEffect.run();
+      assert.equal(requests, 0, "hidden pages do not refresh");
+      window.document.visibilityState = "visible";
+      await listeners.get("focus")();
+      let tree = renderWorkspace();
+      const source = () => findElement(tree, (node) => node.type?.name === (tab === "accounts" ? "BankAccountsPanel" : "FinanceOverview"));
+      assert.equal(source().props.activity.balanceAsOf, "2026-11-03");
+      assert.equal(source().props.activity.accounts[0].nativeCurrentBalance, 120);
+      await periodic();
+      tree = renderWorkspace();
+      assert.equal(source().props.activity.accounts[0].nativeCurrentBalance, 140);
+      window.document.visibilityState = "hidden";
+      await listeners.get("visibilitychange")();
+      assert.equal(requests, 2);
+      cleanup();
+      cleanup = null;
+      assert.equal(listeners.size, 0);
+    } finally {
+      cleanup?.();
+      globalThis.window = originalWindow;
+      globalThis.fetch = originalFetch;
+      globalThis.setInterval = originalInterval;
+      globalThis.clearInterval = originalClearInterval;
+    }
+  }
 });
 
 test("workspace live projections follow refreshed accounts despite legacy captured openings", () => {

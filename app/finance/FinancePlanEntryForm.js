@@ -59,7 +59,7 @@ export default function FinancePlanEntryForm({
   };
   const oppositeCurrency = draft.currency === "USD" ? "PHP" : "USD";
   const selectedAccountIds = transfer ? [draft.fromAccountId, draft.toAccountId]
-    : draft.kind === "conversion" ? [draft.fromAccountId || availableAccountId(draft.currency), draft.toAccountId || availableAccountId(oppositeCurrency)]
+    : draft.kind === "conversion" ? [draft.fromAccountId || availableAccountId(draft.currency), draft.toAccountId || availableAccountId(oppositeCurrency)].filter(Boolean)
     : [draft.accountId || availableAccountId(draft.currency)];
   const manualAccounts = selectedAccountIds.map((id) => accounts.find((account) => Number(account.id) === Number(id)))
     .filter(activeManualAccount);

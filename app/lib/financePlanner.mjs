@@ -1022,11 +1022,15 @@ function planTransferLegs(row, rate) {
     ))) return [];
   } else if (row.source === "allocation" && row.allocationKind === "savings") {
     if (!pair(row.sourceAccountId, row.accountId, row.amount, row.currency)) return [];
-  } else if (row.kind === "transfer" || row.kind === "conversion") {
+  } else if (row.kind === "conversion") {
     const opposite = row.currency === "USD" ? "PHP" : "USD";
-    if (!pair(row.fromAccountId, row.toAccountId, row.amount, row.currency,
-      row.kind === "conversion" ? convert(row.amount, row.currency, opposite, rate) : row.amount,
-      row.kind === "conversion" ? opposite : row.currency)) return [];
+    if (row.fromAccountId != null && row.toAccountId != null && Number(row.fromAccountId) === Number(row.toAccountId)) return [];
+    // A planner-default conversion can track just one native account. Match
+    // that known leg without inventing an account for its other currency.
+    add(row.fromAccountId, -row.amount, row.currency);
+    add(row.toAccountId, convert(row.amount, row.currency, opposite, rate), opposite);
+  } else if (row.kind === "transfer") {
+    if (!pair(row.fromAccountId, row.toAccountId, row.amount, row.currency)) return [];
   }
   const grouped = new Map();
   for (const leg of legs) {
@@ -1376,8 +1380,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         kind: entry.kind,
         source: "manual",
         accountId: entry.accountId ?? null,
-        fromAccountId: entry.fromAccountId ?? null,
-        toAccountId: entry.toAccountId ?? null,
+        fromAccountId: entry.fromAccountId ?? (entry.kind === "conversion" ? linkedAccount("available", entry.currency) : null),
+        toAccountId: entry.toAccountId ?? (entry.kind === "conversion" ? linkedAccount("available", entry.currency === "USD" ? "PHP" : "USD") : null),
         ...(entry.amountMode === "cardBalance" ? { amountMode: "cardBalance" } : {}),
         ...(entry.scheduledRowId ? { scheduledRowId: entry.scheduledRowId } : {}),
         ...(recurring ? { recurring: true, recurrence: entry.recurrence } : {}),

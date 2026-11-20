@@ -51,9 +51,11 @@ function ledger(accounts, document, initial = []) {
       } else if (sql.startsWith("UPDATE") && sql.includes("source_plan_id = NULL")) {
         Object.assign(rows.find((row) => row.id === params[0]), { source_plan_id: null, source_plan_row_id: null,
           source_plan_leg: null, plan_generated: 0, plan_provisional: 0, plan_record_json: null });
+      } else if (sql.startsWith("UPDATE") && sql.includes("SET plan_generated = 1, plan_record_json")) {
+        Object.assign(rows.find((row) => row.id === params[1]), { plan_generated: 1, plan_record_json: params[0] });
       } else if (sql.startsWith("UPDATE")) {
         Object.assign(rows.find((row) => row.id === params[4]), { source_plan_id: params[0], source_plan_row_id: params[1],
-          source_plan_leg: params[2], plan_record_json: params[3], plan_generated: 0, plan_provisional: 0 });
+          source_plan_leg: params[2], plan_record_json: params[3], plan_generated: sql.includes("plan_generated = 1") ? 1 : 0, plan_provisional: 0 });
       } else if (sql.startsWith("INSERT")) {
         if (failure && params[10] === "credit") throw new Error("Second transfer leg failed");
         const old = rows.find((row) => row.source_plan_id === params[8] && row.source_plan_row_id === params[9] && row.source_plan_leg === params[10]);
@@ -236,32 +238,73 @@ test("live manual balances include existing planned Fill and payments, preserve 
   assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [99990, 25000]);
 });
 
-test("a unique independent manual receipt replaces a live custom row without rewriting or duplicating actual history", async () => {
+test("the live planner adopts a unique manual receipt and owns later corrections without duplicating its previous amount", async () => {
   const fill = entry();
   const document = livePlanner([fill]);
   const receipt = { id: 9, transaction_date: today, account_id: 37, currency: "PHP", kind: "expense",
-    amount: 20, merchant: "Fill", category: "Uncategorized", note: "Independent original" };
-  const store = ledger([manual(37, "credit", 100)], document, [receipt]);
+    amount: 20, merchant: "Fill", category: "Fuel", note: "Original note" };
+  const unmatched = { id: 10, transaction_date: today, account_id: 34, currency: "PHP", kind: "expense",
+    amount: 7, merchant: "Unmatched receipt", category: "Other", note: "Independent history" };
+  const imported = { id: 11, transaction_date: today, account_id: 1, currency: "PHP", kind: "expense",
+    amount: 10, merchant: "Bank purchase", category: "Other", external_provider: "plaid", external_transaction_id: "bank-11" };
+  const store = ledger([manual(37, "credit", 100), manual(34, "savings", 500), bank(1, 990)], document, [receipt, unmatched, imported]);
   await store.refresh(); await store.refresh();
-  assert.equal(store.rows().length, 1);
-  assert.equal(store.rows()[0].id, 9);
-  assert.equal(store.rows()[0].plan_generated, 0);
-  assert.equal(store.rows()[0].note, "Independent original");
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 120);
+  assert.equal(store.rows().length, 3);
+  assert.equal(store.rows().find((row) => row.id === 9).plan_generated, 1);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [120, 493, 990]);
+  fill.amount = 30;
+  fill.description = "Corrected Fill";
+  await store.refresh(); await store.refresh();
+  const corrected = store.rows().find((row) => row.id === 9);
+  assert.equal(store.rows().length, 3);
+  assert.equal(corrected.amount, 30);
+  assert.equal(corrected.merchant, "Corrected Fill");
+  assert.equal(corrected.note, "Original note");
+  assert.equal(corrected.category, "Fuel");
+  assert.deepEqual(JSON.parse(corrected.plan_record_json).manualReceiptOriginal, {
+    id: 9, date: today, accountId: 37, kind: "expense", amount: 20, currency: "PHP",
+    description: "Fill", category: "Fuel", note: "Original note",
+  });
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [130, 493, 990]);
   fill.date = "2026-11-19";
   await store.refresh();
-  assert.equal(store.rows().length, 1);
-  assert.equal(store.rows()[0].source_plan_id, null);
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 120);
-  fill.date = today; fill.amount = 30;
-  await store.refresh();
   assert.equal(store.rows().length, 2);
-  assert.equal(store.rows().find((row) => row.id === 9).amount, 20);
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 150);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  fill.date = today;
+  await store.refresh();
+  const restoredId = store.rows().find((row) => row.source_plan_row_id === "entry:purchase").id;
+  await store.refresh();
+  assert.equal(store.rows().find((row) => row.source_plan_row_id === "entry:purchase").id, restoredId);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 130);
   document.plans[0].entries = [];
   await store.refresh();
-  assert.equal(store.rows().length, 1);
-  assert.equal(store.accounts()[0].nativeCurrentBalance, 120);
+  assert.deepEqual(store.rows(), [unmatched, imported]);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [100, 493, 990]);
+});
+
+test("legacy manual receipt associations become planner-owned before their first corrected or removed balance is calculated", async () => {
+  for (const change of ["edit", "future", "delete"]) {
+    const fill = entry();
+    const document = livePlanner([fill]);
+    const prior = financePlanPostingSpecs(document, [manual(37, "credit", 100)], [], { today })[0];
+    const legacy = { id: 9, transaction_date: today, account_id: 37, currency: "PHP", kind: "expense",
+      amount: 20, merchant: "Fill", category: "Fuel", note: "Legacy note", source_plan_id: prior.planId,
+      source_plan_row_id: prior.rowId, source_plan_leg: prior.leg, plan_generated: 0, plan_record_json: JSON.stringify(prior) };
+    if (change === "edit") fill.amount = 30;
+    if (change === "future") fill.date = "2026-11-19";
+    if (change === "delete") document.plans[0].entries = [];
+    const store = ledger([manual(37, "credit", 100)], document, [legacy]);
+    await store.refresh(); await store.refresh();
+    assert.equal(store.accounts()[0].nativeCurrentBalance, change === "edit" ? 130 : 100, change);
+    assert.equal(store.rows().length, change === "edit" ? 1 : 0);
+    if (change === "edit") {
+      assert.equal(store.rows()[0].id, 9);
+      assert.equal(store.rows()[0].plan_generated, 1);
+      assert.equal(store.rows()[0].note, "Legacy note");
+      assert.equal(store.rows()[0].category, "Fuel");
+      assert.equal(JSON.parse(store.rows()[0].plan_record_json).manualReceiptOriginal.amount, 20);
+    }
+  }
 });
 
 test("independent manual matching rejects ambiguity and shares a receipt with its explicit scheduled source once", async () => {

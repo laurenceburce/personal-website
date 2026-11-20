@@ -835,10 +835,10 @@ export default function FinanceAppClient({
   ]);
 
   useEffect(() => {
-    if (tab !== "plans" || !activity.configured) return;
+    if (!activity.configured) return;
     const refreshVisible = () => {
       if (window.document.visibilityState === "visible")
-        refreshPlanBanks(false);
+        return tab === "plans" ? refreshPlanBanks(false) : loadActivity();
     };
     refreshVisible();
     window.addEventListener("focus", refreshVisible);

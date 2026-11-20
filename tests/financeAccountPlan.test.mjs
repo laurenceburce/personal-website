@@ -5,6 +5,8 @@ import {
   getFinanceAccountAllocations,
 } from "../app/lib/financeAccountPlan.mjs";
 import { buildPlanRows } from "../app/lib/financePlanner.mjs";
+import { financePlanPostingSpecs, financePlanTransactionMetadata } from "../app/lib/financePlanPostings.mjs";
+import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
 const accounts = [
   {
@@ -1433,6 +1435,64 @@ test("explicit currency conversions debit and credit their native accounts", () 
       [5, 6300, "PHP"],
     ],
   );
+});
+
+test("manual conversions using planner-default accounts return as one applied row with their frozen native movements", () => {
+  const today = "2026-11-18";
+  for (const accountLinks of [
+    { availableUsdAccountId: 1, availablePhpAccountId: 2 },
+    { availableUsdAccountId: 1, availablePhpAccountId: null },
+    { availableUsdAccountId: null, availablePhpAccountId: 2 },
+  ]) {
+    const planner = {
+      id: "live", continuous: true, balanceMode: "live", startDate: "2026-11-01", endDate: "2026-11-30",
+      openingUsd: 0, openingPhp: 0, includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+      includeTransactions: true, accountLinks, completedRows: [],
+      entries: [{ id: "convert", date: today, description: "Convert", kind: "conversion", amount: 10,
+        currency: "USD", fromAccountId: null, toAccountId: null, recurrence: "once" }],
+    };
+    const document = { plans: [planner], salary: {}, bills: [], allocations: [] };
+    const original = structuredClone(document);
+    const rawAccounts = [
+      { id: 1, name: "USD funds", account_type: "checking", currency: "USD", opening_balance: 100, native_movement: 0 },
+      { id: 2, name: "PHP funds", account_type: "checking", currency: "PHP", opening_balance: 0, native_movement: 0 },
+    ];
+    const specs = financePlanPostingSpecs(document, rawAccounts, [], { today, rate: 58 });
+    const receipts = specs.map((spec, index) => ({
+      id: index + 9000, transaction_date: spec.date, kind: spec.kind, account_id: spec.accountId,
+      amount: spec.amount, currency: spec.currency, merchant: spec.description, category: spec.category,
+      source_plan_id: spec.planId, source_plan_row_id: spec.rowId, source_plan_leg: spec.leg,
+      plan_generated: 1, plan_record_json: JSON.stringify(spec),
+    }));
+    const nativeAccounts = rawAccounts.map((account) => mapFinanceActivityAccount({ ...account,
+      native_movement: receipts.filter((receipt) => receipt.account_id === account.id)
+        .reduce((total, receipt) => total + (receipt.kind === "income" ? 1 : -1) * receipt.amount, 0),
+    }));
+    const transactions = receipts.map((receipt) => ({ ...financePlanTransactionMetadata(receipt),
+      id: receipt.id, date: receipt.transaction_date, kind: receipt.kind, accountId: receipt.account_id,
+      amount: receipt.amount, currency: receipt.currency, merchant: receipt.merchant, category: receipt.category,
+    }));
+    for (const balanceMode of ["live", "snapshot"]) {
+      const result = buildAccountPlan({ ...planner, balanceMode,
+        accountOpeningBalances: rawAccounts.map((account) => ({ accountId: account.id, balance: account.opening_balance })),
+      }, document, 63, { today, accounts: nativeAccounts, transactions });
+      assert.equal(result.rows.length, 1, "the forecast and its generated receipt legs are one event");
+      const conversion = result.rows[0];
+      assert.equal(conversion.id, "entry:convert");
+      assert.equal(conversion.completed, true);
+      assert.equal(conversion.recordedInAccounts, true);
+      assert.equal(conversion.manualPlannerSource, true);
+      assert.equal(conversion.fromAccountId, accountLinks.availableUsdAccountId);
+      assert.equal(conversion.toAccountId, accountLinks.availablePhpAccountId);
+      assert.deepEqual(conversion.matchedTransactionIds, receipts.map((receipt) => receipt.id));
+      assert.equal(conversion.usd, accountLinks.availableUsdAccountId ? -10 : 0);
+      assert.equal(conversion.php, accountLinks.availablePhpAccountId ? 580 : 0, "a later reference rate cannot replace the recorded PHP amount");
+      assert.deepEqual(result.accounts.map((account) => account.endingBalance), nativeAccounts.map((account) => account.nativeCurrentBalance));
+      assert.deepEqual(conversion.accountMovements.map((move) => [move.accountId, move.amount]),
+        balanceMode === "live" ? [] : specs.map((spec) => [spec.accountId, (spec.kind === "income" ? 1 : -1) * spec.amount]));
+    }
+    assert.deepEqual(document, original);
+  }
 });
 
 for (const balanceMode of ["live", "snapshot"]) for (const includeTransactions of [true, false]) {

@@ -65,7 +65,7 @@ function bankEnvironment(t, fetcher) {
         : (process.env[key] = previous[key]);
   });
 }
-function backend(handler) {
+function backend(handler, transactionHooks = {}) {
   const queries = [];
   const lifecycle = [];
   const events = [];
@@ -91,16 +91,19 @@ function backend(handler) {
       lifecycle.push("begin");
       inTransaction = true;
       events.push({ type: "begin" });
+      transactionHooks.begin?.();
     },
     async commit() {
       lifecycle.push("commit");
       inTransaction = false;
       events.push({ type: "commit" });
+      transactionHooks.commit?.();
     },
     async rollback() {
       lifecycle.push("rollback");
       inTransaction = false;
       events.push({ type: "rollback" });
+      transactionHooks.rollback?.();
     },
     release() {
       lifecycle.push("release");
@@ -332,6 +335,116 @@ test("account edit SQL only matches active manual accounts and keeps the stored 
   assert.match(update.sql, /a\.currency IN \('USD', 'PHP'\) AND \(\? IS NULL OR a\.currency = \?\)/);
   assert.equal(update.params[4], "#548564");
   assert.deepEqual(update.params.slice(-2), ["PHP", "PHP"]);
+});
+
+function manualCorrectionBackend({ failCorrection = false } = {}) {
+  const currentDate = activity.financeActivityWindow().today;
+  let account = { id: 9, name: "Cash", account_type: "cash", currency: "PHP", opening_balance: 0 };
+  let transactions = [];
+  let snapshot;
+  const document = { salary: {}, bills: [], allocations: [], plans: [{ id: "live", continuous: true,
+    balanceMode: "live", startDate: currentDate, endDate: currentDate, includeIncome: false,
+    includeAllocations: false, includeAnnualReserve: false, completedRows: [], entries: [{ id: "new-day",
+      date: currentDate, description: "Today's income", kind: "income", amount: 1000, currency: "PHP", accountId: 9 }] }] };
+  const movement = () => transactions.filter((row) => row.transaction_date <= currentDate)
+    .reduce((sum, row) => sum + (row.kind === "income" ? 1 : -1) * row.amount, 0);
+  const harness = backend((sql, params) => {
+    if (sql.startsWith("SELECT document")) return [{ document, exchange_rate: JSON.stringify({ rate: 58 }) }];
+    if (sql.startsWith("SELECT a.*")) return [{ ...account, native_movement: movement() }];
+    if (sql.startsWith("SELECT t.*")) return structuredClone(transactions);
+    if (sql.startsWith("INSERT INTO personal_finance_transactions")) {
+      const previous = transactions.find((row) => row.source_plan_id === params[8] &&
+        row.source_plan_row_id === params[9] && row.source_plan_leg === params[10]);
+      const row = { id: previous?.id || 100, transaction_date: params[0], kind: params[1], account_id: params[2], category: params[3],
+        merchant: params[4], note: params[5], amount: params[6], currency: params[7], source_plan_id: params[8],
+        source_plan_row_id: params[9], source_plan_leg: params[10], plan_generated: 1, plan_provisional: params[11], plan_record_json: params[12] };
+      if (previous) Object.assign(previous, row); else transactions.push(row);
+      return { affectedRows: 1 };
+    }
+    if (sql.startsWith("UPDATE personal_finance_accounts a")) {
+      if (failCorrection) throw new Error("Calibration failed");
+      account.opening_balance = params[2] - movement();
+      return { affectedRows: 1 };
+    }
+  }, {
+    begin() { snapshot = structuredClone({ account, transactions }); },
+    rollback() { ({ account, transactions } = snapshot); },
+  });
+  return { ...harness, currentDate, account: () => structuredClone(account), transactions: () => structuredClone(transactions),
+    balance: () => activity.mapFinanceActivityAccount({ ...account, native_movement: movement() }).nativeCurrentBalance };
+}
+
+test("manual balance correction materializes a new day's planner income inside the same transaction", async (t) => {
+  bankEnvironment(t);
+  const store = manualCorrectionBackend();
+  assert.equal(store.transactions().length, 0);
+  await store.api.updateFinanceAccount(9, { name: "Cash", type: "cash", currency: "PHP", currentBalance: 500 });
+  assert.equal(store.transactions().length, 1);
+  assert.equal(store.transactions()[0].amount, 1000);
+  assert.equal(store.account().opening_balance, -500);
+  assert.equal(store.balance(), 500);
+  assert.deepEqual(store.lifecycle, ["begin", "commit", "release"]);
+  const locked = store.queries.findIndex(({ sql }) => sql.startsWith("SELECT document") && sql.endsWith("FOR UPDATE"));
+  const posted = store.queries.findIndex(({ sql }) => sql.startsWith("INSERT INTO personal_finance_transactions"));
+  const corrected = store.queries.findIndex(({ sql }) => sql.startsWith("UPDATE personal_finance_accounts a"));
+  assert.ok(locked >= 0 && posted > locked && corrected > posted);
+  assert.ok(store.queries.slice(locked, corrected + 1).every((query) => query.inTransaction));
+  assert.equal(store.queries[corrected].params[3], store.currentDate);
+  const refreshed = await store.api.getFinanceActivity();
+  assert.equal(refreshed.accounts[0].nativeCurrentBalance, 500, "refreshing cannot apply today's salary after calibration");
+});
+
+test("failed manual calibration rolls back both the new planner receipt and its opening baseline", async (t) => {
+  bankEnvironment(t);
+  const store = manualCorrectionBackend({ failCorrection: true });
+  await assert.rejects(store.api.updateFinanceAccount(9, { name: "Cash", type: "cash", currentBalance: 500 }), /Calibration failed/);
+  assert.equal(store.account().opening_balance, 0);
+  assert.equal(store.transactions().length, 0);
+  assert.equal(store.balance(), 0);
+  assert.deepEqual(store.lifecycle, ["begin", "rollback", "release"]);
+});
+
+test("dashboard reads materialize live planner activity before returning manual balances", async (t) => {
+  bankEnvironment(t);
+  const store = manualCorrectionBackend();
+  const dashboard = await store.api.getFinanceDashboard();
+  assert.equal(store.transactions().length, 1);
+  assert.equal(dashboard.accounts[0].nativeCurrentBalance, 1000);
+  assert.equal(dashboard.accounts[0].currentBalance, 17.24);
+  const insert = store.queries.findIndex(({ sql }) => sql.startsWith("INSERT INTO personal_finance_transactions"));
+  const read = store.queries.findIndex(({ sql }) => sql.startsWith("SELECT a.*") && sql.includes("c.institution_name"));
+  assert.ok(insert >= 0 && read > insert);
+});
+
+test("dashboard account balances share native asset, debt, credit and pending-bank math with activity", async (t) => {
+  bankEnvironment(t);
+  const rows = [
+    { id: 1, account_type: "checking", currency: "USD", opening_balance: 100, native_movement: 50 },
+    { id: 2, account_type: "credit", currency: "USD", opening_balance: 100, native_movement: -20 },
+    { id: 3, account_type: "savings", currency: "PHP", opening_balance: 1000, native_movement: 100 },
+    { id: 4, account_type: "credit", currency: "PHP", opening_balance: 1000, native_movement: -100 },
+    { id: 5, account_type: "credit", currency: "PHP", opening_balance: 50, native_movement: 75 },
+    { id: 6, account_type: "checking", currency: "PHP", opening_balance: 0, current_balance: 5800,
+      external_provider: "plaid", external_account_id: "bank-6", plan_pending_movement: -580, native_movement: -9999 },
+  ];
+  const store = backend((sql) => {
+    if (sql.startsWith("SELECT a.*") && sql.includes("c.institution_name")) return rows;
+    if (sql.startsWith("SELECT setting_key")) return [
+      { setting_key: "exchangeRate", setting_value: "58" },
+      { setting_key: "exchangeRateUpdatedAt", setting_value: new Date().toISOString() },
+    ];
+  });
+  const dashboard = await store.api.getFinanceDashboard();
+  assert.deepEqual(dashboard.accounts.map((account) => account.nativeCurrentBalance), [150, 120, 1100, 1100, -25, 5220]);
+  assert.deepEqual(dashboard.accounts.map((account) => account.currentBalance), [150, -120, 18.97, -18.97, 0.43, 90]);
+  assert.deepEqual(dashboard.accounts.map((account) => account.nativeCurrentBalance), rows.map(activity.mapFinanceActivityAccount).map((account) => account.nativeCurrentBalance));
+  assert.equal(dashboard.summary.totalBalanceUsd, 120.43);
+  assert.equal(dashboard.accounts[5].bankReportedBalance, 5800);
+  const query = store.queries.find(({ sql }) => sql.startsWith("SELECT a.*") && sql.includes("c.institution_name"));
+  assert.match(query.sql, /t\.account_id = a\.id AND t\.currency = a\.currency/);
+  assert.match(query.sql, /t\.pending = 0 AND t\.duplicate_of_id IS NULL AND t\.is_provider_removed = 0/);
+  assert.match(query.sql, /t\.transaction_date <= \?/);
+  assert.deepEqual(query.params, [activity.financeActivityWindow().today]);
 });
 
 test("removing an account persists the sync exclusion and retains financial history", async (t) => {

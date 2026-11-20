@@ -320,6 +320,21 @@ test("manual planner defaults explain the account used by unassigned entries", (
   assert.equal(form.saved().recordNow, false);
 });
 
+test("a conversion with one tracked manual account shows its automatic balance source", () => {
+  for (const accountLinks of [{ availableUsdAccountId: 1 }, { availablePhpAccountId: 2 }]) {
+    const form = harness({ manualAccountsFromPlanner: true, today: "2026-11-18",
+      accounts: [{ id: 1, name: "USD", type: "checking", currency: "USD" },
+        { id: 2, name: "PHP", type: "checking", currency: "PHP" }],
+      plan: { ...plan, continuous: true, accountLinks },
+      entry: { date: "2026-11-18", kind: "conversion", amount: 10, currency: "USD" } });
+    const tree = form.render();
+    assert.equal(field(tree, "Status"), undefined);
+    assert.ok(plain(renderToStaticMarkup(tree)).includes("Included in balances through today"));
+    tree.props.onSubmit({ preventDefault() {} });
+    assert.equal(form.saved().recordNow, false);
+  }
+});
+
 test("existing manual entries and recurring occurrences use planner dates regardless of their previous status", () => {
   const existing = { id: "manual", date: "2026-11-18", description: "Existing", amount: 20,
     currency: "PHP", kind: "expense", accountId: 34 };
