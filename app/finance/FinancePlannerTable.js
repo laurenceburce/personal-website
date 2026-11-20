@@ -15,6 +15,7 @@ const signed = (amount, currency) => `${amount > 0 ? "+" : ""}${money(amount, cu
 const balance = (value, currency) => Number.isFinite(value) ? money(value, currency) : "Unavailable";
 const accountName = (account) => account
   ? `${account.name || "Account"}${account.mask ? ` · ••${account.mask}` : ""}` : "Choose an account";
+const accountTypeOrder = (account) => ({ checking: 0, savings: 1, credit: 2 }[account.type || account.account_type] ?? 3);
 
 function transactionAmount(row, currency) {
   const amount = row.grossAmount ?? row.amount;
@@ -171,7 +172,9 @@ export default function FinancePlannerTable({
   const current = selectCurrentPlannerRow(rows, today);
   const accountColumns = accounts.filter((account, index) => !account.isArchived && !account.is_archived &&
     !account.mergedIntoAccountId && !account.merged_into_account_id && ["USD", "PHP"].includes(account.currency) &&
-    accounts.findIndex((item) => Number(item.id) === Number(account.id)) === index);
+    accounts.findIndex((item) => Number(item.id) === Number(account.id)) === index)
+    .sort((a, b) => ["USD", "PHP"].indexOf(a.currency) - ["USD", "PHP"].indexOf(b.currency) ||
+      accountTypeOrder(a) - accountTypeOrder(b));
   const expanded = accountsExpanded && accountColumns.length > 0;
   const currentId = current == null ? null : String(current.id);
   const tableId = `planner-transactions-${encodeURIComponent(String(plan.id || "live"))}`;

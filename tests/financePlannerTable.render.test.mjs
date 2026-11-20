@@ -467,7 +467,7 @@ test("expanded account columns show zero, card credits and unavailable values wi
   const rows = [row({ accountBalanceSnapshot: snapshot, accountBalanceSnapshotKind: "projected" })];
   const before = structuredClone(rows);
   const html = renderExpanded(rows, { accounts: [...accounts, { id: 50, name: "Unreported account", type: "checking", currency: "USD", nativeCurrentBalance: 99999 }] });
-  assert.deepEqual(accountColumns(html), ["1", "34", "37", "50"]);
+  assert.deepEqual(accountColumns(html), ["1", "50", "34", "37"]);
   for (const label of ["Daily checking · ••1234", "Peso savings", "RCBC JCB", "Unreported account"]) assert.ok(html.includes(label));
   assert.match(accountCell(html, 1), /\$0\.00/);
   assert.match(accountCell(html, 34), /₱12,000\.00/);
@@ -507,6 +507,28 @@ test("account list order is stable through filters and excludes inactive or unsu
   assert.deepEqual(accountColumns(renderToStaticMarkup(get())), before);
   button(get(), "Recorded").props.onClick();
   assert.deepEqual(accountColumns(renderToStaticMarkup(get())), before);
+});
+
+test("account columns group USD then PHP with checking, savings and credit cards within each currency", () => {
+  const bank = [
+    { id: 1, name: "Peso card", type: "credit", currency: "PHP" },
+    { id: 2, name: "Dollar savings", type: "savings", currency: "USD" },
+    { id: 3, name: "Peso savings", type: "savings", currency: "PHP" },
+    { id: 4, name: "Dollar card", type: "credit", currency: "USD" },
+    { id: 5, name: "Dollar checking", type: "checking", currency: "USD" },
+    { id: 6, name: "Peso checking", type: "checking", currency: "PHP" },
+    { id: 7, name: "Second dollar checking", account_type: "checking", currency: "USD" },
+    { id: 8, name: "Dollar cash", type: "cash", currency: "USD" },
+  ];
+  const before = structuredClone(bank);
+  const html = renderExpanded([row({ accountBalanceSnapshot: bank.map((account) => ({
+    accountId: account.id, currency: account.currency, balance: account.id * 100,
+  })) })], { accounts: bank });
+  const expected = ["5", "7", "2", "4", "8", "6", "3", "1"];
+  assert.deepEqual(accountColumns(html), expected);
+  assert.deepEqual([...html.matchAll(/<td\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]), expected);
+  for (const account of bank) assert.ok(accountCell(html, account.id).includes(planner.money(account.id * 100, account.currency)));
+  assert.deepEqual(bank, before);
 });
 
 function effectHarness(initialProps, geometry = {}) {
