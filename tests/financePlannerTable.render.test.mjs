@@ -88,7 +88,8 @@ test("shared dates span consecutive visible rows while current activity stays on
   assert.match(html, /class="fpt-date" rowSpan="3"/);
   const current = html.match(/<tr\b[^>]*data-row-id="current"[^>]*>([\s\S]*?)<\/tr>/)?.[1];
   assert.doesNotMatch(current, /class="fpt-date"/);
-  assert.match(current, /Savings<\/strong><\/div><span class="fpt-today-tag">Latest today/);
+  assert.match(current, /<strong>Savings<\/strong>/);
+  assert.match(current, /class="fpt-today-tag">Latest today/);
   assert.equal((current.match(/<td\b/g) || []).length, 4);
 
   find(get(), (node) => node.type === "input" && node.props.type === "search")
@@ -105,6 +106,7 @@ test("planner table defaults to its compact summary and expands accounts into ho
   assert.deepEqual(accountColumns(html), []);
   assert.match(html, /Running balance/);
   assert.match(html, /Expand accounts/);
+  assert.match(html, /<th[^>]*class="fpt-projection-heading"[^>]*>[\s\S]*?<button[^>]*aria-expanded="false"[^>]*>Expand accounts<\/button>/);
   assert.match(html, /\$175\.00/);
   assert.match(html, /₱2,000\.00/);
   assert.doesNotMatch(html, /fpt-accounts-expanded|fpt-balances-row/);
@@ -182,9 +184,9 @@ test("horizontal account columns retain row count and put movement tags only on 
   assert.equal((expanded.match(/<tr\b/g) || []).length, (compact.match(/<tr\b/g) || []).length);
   assert.equal((expanded.match(/<td\b/g) || []).length, 5 + accounts.length);
   assert.match(expanded, /width:1330px/);
-  assert.match(accountCell(expanded, 1), /Sent/);
+  assert.match(accountCell(expanded, 1), /Decreased/);
   assert.match(accountCell(expanded, 1), /-\$25\.00/);
-  assert.match(accountCell(expanded, 34), /Received/);
+  assert.match(accountCell(expanded, 34), /Added/);
   assert.match(accountCell(expanded, 34), /₱1,400\.00/);
   assert.doesNotMatch(accountCell(expanded, 37), /fpt-account-tags|Repeats/);
   assert.doesNotMatch(expanded, /fpt-details|Details for|fpt-account-list/);
@@ -210,9 +212,11 @@ test("transfer rows show source and card destination rather than a misleading ze
   const html = renderExpanded([row({ id: "entry:card", source: "manual", kind: "transfer", currency: "PHP", amount: 300,
     fromAccountId: 34, toAccountId: 37, accountId: null, creditCardPaymentFor: 37, usd: 0, php: -300 })]);
   assert.match(plain(html), /Peso savings/);
-  assert.match(plain(html), /to RCBC JCB/);
+  assert.match(plain(html), /RCBC JCB/);
+  assert.match(accountCell(html, 34), /Decreased -₱300\.00/);
+  assert.match(accountCell(html, 37), /Owed decreased -₱300\.00/);
   assert.match(html, /-₱300\.00/);
-  assert.match(html, /Card payment/);
+  assert.match(html, /credit card payment/);
 });
 
 test("recorded history displays its per-account balances and retains financial details", () => {
@@ -243,7 +247,7 @@ test("explicit account IDs keep activity and receipts out of same-name accounts"
   })], { accounts: duplicateAccounts });
   assert.match(accountCell(html, 1), /Internet receipt/);
   assert.match(accountCell(html, 1), /-\$25\.00/);
-  assert.match(accountCell(html, 1), /Matched bank movement included here once/);
+  assert.match(html, /Matched bank movement included here once/);
   assert.doesNotMatch(accountCell(html, 1), /Cash movement shown in matched recorded transactions|<details/);
   assert.doesNotMatch(accountCell(html, 2), /fpt-account-tags|Internet receipt|Scheduled bill/);
 });
@@ -263,7 +267,7 @@ test("legacy names require a unique account and accept either mask format", () =
 
 test("completed expense and transfer tags retain their native signs without projected movements", () => {
   const expense = renderExpanded([row({ completed: true, accountMovements: [] })]);
-  assert.match(accountCell(expense, 1), /fpt-info-tag">-\$25\.00/);
+  assert.match(accountCell(expense, 1), /Decreased -\$25\.00/);
   const transfer = renderExpanded([row({ kind: "transfer", accountId: null, fromAccountId: 1, toAccountId: 2,
     completed: true, amount: 100, accountMovements: [] })], { accounts: [accounts[0],
     { id: 2, name: "Savings", currency: "USD", type: "savings" }] });
@@ -283,7 +287,37 @@ test("debt movement tags distinguish the transaction from its change to the amou
   const html = renderExpanded([row({ accountId: 37, currency: "PHP", amount: 120,
     accountMovements: [{ accountId: 37, amount: -120, balanceDelta: 120, currency: "PHP" }] })]);
   assert.match(accountCell(html, 37), /-₱120\.00/);
-  assert.match(accountCell(html, 37), /Balance owed \+₱120\.00/);
+  assert.match(accountCell(html, 37), /Owed increased \+₱120\.00/);
+});
+
+test("completed card payment receipts show the amount owed decreasing", () => {
+  const html = renderExpanded([row({ completed: true, accountId: 37, currency: "PHP", amount: 300,
+    accountMovements: [], recordedTransactions: [{ id: 5, accountId: 37, date: today,
+      kind: "income", amount: 300, currency: "PHP", description: "Card payment" }] })]);
+  assert.match(accountCell(html, 37), /Owed decreased -₱300\.00/);
+  assert.match(accountCell(html, 37), /fpt-change-positive/);
+  assert.doesNotMatch(accountCell(html, 37), /Added \+₱300/);
+});
+
+test("partly recorded transfers show each account's own change and avoid duplicate posted tags", () => {
+  const html = renderExpanded([row({ accountId: null, kind: "conversion", fromAccountId: 1, toAccountId: 34,
+    accountMovements: [{ accountId: 1, amount: -25, currency: "USD", transactionId: 5, kind: "recorded" },
+      { accountId: 34, amount: 1400, currency: "PHP", kind: "conversion" }],
+    recordedTransactions: [{ id: 5, accountId: 1, date: today, kind: "expense", amount: 25, currency: "USD" }],
+  })]);
+  assert.equal((accountCell(html, 1).match(/Decreased -\$25\.00/g) || []).length, 1);
+  assert.match(accountCell(html, 34), /Added \+₱1,400\.00/);
+  assert.doesNotMatch(accountCell(html, 37), /fpt-change-tag/);
+});
+
+test("transaction menu and recording controls sit beside the description title", () => {
+  const get = harness({ rows: [row()], onToggleComplete() {}, onRecord() {} });
+  const title = find(get(), (node) => node.props?.className === "fpt-description-title");
+  const menu = find(title, (node) => node.type === "details" && node.props.className === "fpt-action-menu");
+  assert.ok(menu);
+  assert.ok(find(menu, (node) => node.props?.["aria-label"] === "Record payment: Internet"));
+  assert.ok(button(menu, "Mark done"));
+  assert.equal(find(get(), (node) => node.props?.className === "fpt-actions"), undefined);
 });
 
 test("status and search filters preserve precomputed balances and source rows", () => {

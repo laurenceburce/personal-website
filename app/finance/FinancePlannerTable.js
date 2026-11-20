@@ -101,14 +101,26 @@ function fallbackAccountAmount(row, account) {
   return row.currency === account.currency ? (row.kind === "income" ? amount : -amount) : null;
 }
 
-function AccountCell({ row, account, accounts, plan, today }) {
+function AccountChangeTag({ amount, balanceDelta, currency, debt, note }) {
+  if (!Number.isFinite(amount)) return null;
+  const delta = Number.isFinite(balanceDelta) ? balanceDelta : debt ? -amount : amount;
+  const positive = debt ? delta < 0 : delta > 0;
+  const direction = debt ? delta < 0 ? "Owed decreased" : delta > 0 ? "Owed increased" : "No change"
+    : delta < 0 ? "Decreased" : delta > 0 ? "Added" : "No change";
+  return <span className={`fpt-info-tag fpt-change-tag${delta ? positive ? " fpt-change-positive" : " fpt-change-negative" : ""}`}
+    title={[note, debt ? `Transaction ${signed(amount, currency)}` : null].filter(Boolean).join(" · ")}>
+    {direction} {signed(delta, currency)}
+  </span>;
+}
+
+function AccountCell({ row, account, accounts, plan }) {
   const snapshot = row.accountBalanceSnapshot?.find((item) => Number(item.accountId) === Number(account.id));
   const value = row.accountBalanceSnapshotKind === "unavailable" ? null : snapshot?.balance;
   const involved = accountInvolved(row, account, accounts, plan);
-  const from = sameAccount(row.fromAccountId, account);
-  const to = sameAccount(row.toAccountId || row.creditAccountId, account);
   const moves = (row.accountMovements || []).filter((move) => activityInAccount(move, account, accounts));
   const receipts = (row.recordedTransactions || []).filter((item) => activityInAccount(item, account, accounts));
+  const extraReceipts = receipts.filter((item) => !moves.some((move) => move.transactionId != null &&
+    String(move.transactionId) === String(item.transactionId ?? item.id)));
   const fallbackAmount = fallbackAccountAmount(row, account);
   const debt = ["credit", "loan"].includes(account.type);
   const negative = Number.isFinite(value) && (debt ? value > 0 : value < 0);
@@ -117,25 +129,15 @@ function AccountCell({ row, account, accounts, plan, today }) {
     <span>{Number.isFinite(value) ? money(value, account.currency) : "\u2014"}</span>
     {Number.isFinite(value) && debt && <small>{value < 0 ? "Credit balance" : "Balance owed"}</small>}
     {involved && <div className="fpt-account-tags" aria-label={`Activity in ${accountName(account)} for ${row.description}`}>
-      <span className="fpt-info-tag">{row.creditCardPaymentFor ? "Card payment" : from ? "Sent" : to ? "Received" : getPlanRowCategory(row).label}</span>
-      {moves.length ? moves.map((move, index) => <span key={index} className="fpt-info-tag">
-        {signed(move.amount, move.currency || account.currency)}
-        {Number.isFinite(move.balanceDelta) && move.balanceDelta !== move.amount &&
-          <> · Balance owed {signed(move.balanceDelta, move.currency || account.currency)}</>}
-      </span>) : !receipts.length && fallbackAmount != null &&
-        <span className="fpt-info-tag">{signed(fallbackAmount, account.currency)}</span>}
-      <div className="fpt-account-context"><SourceLabel row={row} asTags omitMovementDetails/></div>
-      {from && row.toAccountId && <span className="fpt-info-tag">to {accountName(accounts.find((item) => Number(item.id) === Number(row.toAccountId)))}</span>}
-      {to && row.fromAccountId && <span className="fpt-info-tag">from {accountName(accounts.find((item) => Number(item.id) === Number(row.fromAccountId)))}</span>}
-      {row.notes && <span className="fpt-info-tag">{row.notes}</span>}
-      {row.cardCreditActivity && <span className="fpt-info-tag">Card balance</span>}
-      {row.estimated && <span className="fpt-info-tag">Estimated</span>}
-      {row.recurring && <span className="fpt-info-tag">Repeats</span>}
+      {moves.map((move, index) => <AccountChangeTag key={`move-${index}`} amount={move.amount}
+        balanceDelta={move.balanceDelta} currency={move.currency || account.currency} debt={debt}
+        note={move.label || row.description}/>)}
+      {!moves.length && !receipts.length && fallbackAmount != null &&
+        <AccountChangeTag amount={fallbackAmount} currency={account.currency} debt={debt} note={row.description}/>}
       {row.awaitingBankSync && <span className="fpt-info-tag">Awaiting bank match</span>}
-      {recorded(row, today) && row.completionSource === "transaction" && (row.matchedForecast || row.recordedTransactions?.length > 0) && <span className="fpt-info-tag">Matched to account</span>}
-      {receipts.map((item, index) => <span key={index} className="fpt-info-tag">
-        {item.description || item.merchant || "Bank transaction"} · {formatDate(item.date || row.date)} · {signed((item.kind === "income" ? 1 : -1) * item.amount, item.currency || account.currency)}
-      </span>)}
+      {extraReceipts.map((item, index) => <AccountChangeTag key={`receipt-${index}`}
+        amount={(item.kind === "income" ? 1 : -1) * item.amount} currency={item.currency || account.currency} debt={debt}
+        note={`${item.description || item.merchant || "Bank transaction"} · ${formatDate(item.date || row.date)}`}/>)}
     </div>}
   </td>;
 }
@@ -232,10 +234,10 @@ export default function FinancePlannerTable({
       </div>
       <button type="button" className="fpt-jump-current" disabled={loading || currentId == null}
         aria-controls={tableId} onClick={jumpToCurrent}>Jump to current</button>
-      <button type="button" className="fpt-account-columns-toggle" disabled={loading || !accountColumns.length}
+      {expanded && <button type="button" className="fpt-account-columns-toggle" disabled={loading || !accountColumns.length}
         aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
         {expanded ? "Collapse accounts" : "Expand accounts"}
-      </button>
+      </button>}
       <span className="fpt-count" aria-live="polite">{visible.length}{filtered ? ` of ${rows.length}` : ""} {visible.length === 1 ? "transaction" : "transactions"}</span>
     </div>
     {!visible.length ? <div className="fpt-empty" role="status">
@@ -251,7 +253,12 @@ export default function FinancePlannerTable({
           <col style={{ width: expanded ? "190px" : "30%" }}/>
           {expanded && accountColumns.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>
         <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">USD</th><th scope="col">PHP</th>
-          <th scope="col" className="fpt-projection-heading"><span>Running balance</span><small>After each transaction</small></th>
+          <th scope="col" className="fpt-projection-heading"><span>Running balance</span>
+            <button type="button" className="fpt-balance-expand" disabled={loading || !accountColumns.length}
+              aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
+              {expanded ? "Collapse accounts" : "Expand accounts"}
+            </button>
+          </th>
           {expanded && accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
             <strong>{accountName(account)}</strong><small>{account.currency}{["credit", "loan"].includes(account.type) ? " · Balance owed" : ""}</small>
           </th>)}</tr></thead>
@@ -277,16 +284,11 @@ export default function FinancePlannerTable({
               <time dateTime={row.date} title={formatDate(row.date, { year: "numeric" })}>{formatDate(row.date, { month: "short", day: "numeric" })}</time>
             </td>}
             <td className="fpt-transaction">
-              <div className="fpt-description-line"><strong>{row.description}</strong>
-                {done ? <span className="fpt-status-pill fpt-status-done">Done</span>
-                  : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span> : null}
-              </div>
-              {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
-              <div className="fpt-actions">
+              <div className="fpt-description-line"><div className="fpt-description-title"><strong>{row.description}</strong>
+                {(actions || canRecord) && <details className="fpt-action-menu"><summary aria-label={`Actions for ${row.description}`}>•••</summary><div>
                 {canRecord && <button type="button" className="fpt-record" disabled={busy}
                   aria-label={`Record ${row.kind === "income" ? "receipt" : "payment"}: ${row.description}`} onClick={() => !busy && onRecord(row)}>
                   {row.kind === "income" ? "Record receipt" : "Record payment"}</button>}
-                {actions && <details className="fpt-action-menu"><summary aria-label={`Actions for ${row.description}`}>•••</summary><div>
                   {canEdit && <button type="button" disabled={busy || !(editableOccurrence ? onEditOccurrence : onEdit)}
                     aria-label={editableOccurrence ? `Edit this occurrence: ${row.description}` : `Edit ${row.description}`}
                     onClick={() => { if (!busy) editableOccurrence ? onEditOccurrence?.(row) : onEdit?.(manualEntry); }}>Edit</button>}
@@ -299,6 +301,10 @@ export default function FinancePlannerTable({
                     aria-label={`Delete ${row.description}`} onClick={() => !busy && onDelete?.(manualEntry)}>Delete{row.recurring ? " recurring entry" : ""}</button>}
                 </div></details>}
               </div>
+                {done ? <span className="fpt-status-pill fpt-status-done">Done</span>
+                  : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span> : null}
+              </div>
+              {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
             {["USD", "PHP"].map((currency) => {
               const value = Number(currency === "USD" ? row.usd : row.php) || 0;
