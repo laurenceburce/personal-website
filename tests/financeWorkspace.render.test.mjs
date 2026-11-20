@@ -204,7 +204,82 @@ test("future running balances retain the correct paid and unpaid bill occurrence
   }
 });
 
-test("connected reported balances anchor projections while unconfirmed planner receipts and manual balances remain separate", () => {
+test("completed November 20 table rows retain the bank closing balance while future expenses apply once", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const receipts = [
+    { id: 10, date: today, kind: "expense", amount: 50, currency: "USD", accountId: 1, merchant: "Confirmed first", provider: "plaid" },
+    { id: 11, date: today, kind: "expense", amount: 25, currency: "USD", accountId: 1, merchant: "Confirmed final", provider: "plaid" },
+  ];
+  for (const awaitingBankSync of [false, true]) for (const startDate of ["2026-11-15", today, "2026-11-21"]) {
+    const transactions = receipts.map((receipt) => awaitingBankSync && receipt.id === 11 ? { ...receipt,
+      provider: "", planId: base.id, planRowId: "entry:saved-done", planGenerated: true, awaitingBankSync: true } : receipt);
+    const props = fixture("plans", 0, { bills: [], plans: [{ ...base, continuous: true, balanceMode: "live", entries: [
+      { id: "a-unpaid", date: today, description: "Earlier planned expense", kind: "expense", amount: 100, currency: "USD", accountId: 1 },
+      { id: "future", date: "2026-11-21", description: "Future expense", kind: "expense", amount: 25, currency: "USD", accountId: 1 },
+    ] }] }, { balanceAsOf: today, accounts: [mapFinanceActivityAccount({ id: 1, name: "Bank checking", account_type: "checking",
+      currency: "USD", current_balance: 1252.13, external_provider: "plaid", external_account_id: "checking" })] });
+    props.today = today;
+    props.legacyRange = false;
+    props.initialPlannerRange = { startDate, endDate: "2026-11-21" };
+    props.initialPlanActivity = { ...props.initialPlanActivity, from: startDate > today ? today : startDate, to: "2026-11-21",
+      transactions, balanceTransactions: transactions, balanceHistoryFrom: "2026-11-15",
+      balanceHistoryThrough: today, balanceHistoryComplete: true };
+    const before = structuredClone(props);
+    const tree = workspaceHarness(props)();
+    const ledger = findElement(tree, (node) => node.type?.name === "FinancePlannerTable");
+    const rows = ledger.props.rows;
+    const future = rows.find((row) => row.entryId === "future");
+    assert.equal(future.projectedBalanceUsd, 1127.13, `${startDate}: unpaid 100 and future 25 apply once`);
+    const current = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+    assert.equal(current.assets.USD.current, 1252.13);
+    assert.equal(current.assets.USD.projected, 1127.13);
+    if (startDate <= today) {
+      assert.equal(rows[0].entryId, "a-unpaid", "the unpaid same-day expense precedes both recorded receipts");
+      const first = rows.find((row) => row.transactionId === 10);
+      const last = rows.find((row) => row.transactionId === 11);
+      assert.equal(first.projectedBalanceUsd, 1277.13);
+      assert.equal(last.projectedBalanceUsd, 1252.13);
+      assert.ok(first.completed && last.completed);
+      assert.equal(last.accountBalanceSnapshotKind, "recorded");
+      if (awaitingBankSync) assert.equal(last.awaitingBankSync, true, "a saved Done receipt remains recognized before its bank match");
+    }
+    const states = [];
+    let cursor = 0;
+    const useState = (initial) => {
+      const index = cursor++;
+      if (!(index in states)) states[index] = typeof initial === "function" ? initial() : initial;
+      return [states[index], (value) => { states[index] = typeof value === "function" ? value(states[index]) : value; }];
+    };
+    const Table = loadComponent(fileURLToPath(new URL("../app/finance/FinancePlannerTable.js", import.meta.url)), {
+      ...require("react"), useState, useEffect() {}, useRef: (initial) => useState(() => ({ current: initial }))[0],
+    }).default;
+    const renderTable = () => { cursor = 0; return Table(ledger.props); };
+    const rowMarkup = () => new Map([...renderToStaticMarkup(renderTable()).matchAll(/<tr\b[^>]*data-row-id="([^"]+)"[^>]*>([\s\S]*?)<\/tr>/g)]
+      .map((match) => [match[1], match[2]]));
+    const compact = rowMarkup();
+    const funds = (row) => row.match(/<dl\b[^>]*aria-label="Account funds"[^>]*>([\s\S]*?)<\/dl>/)?.[1]
+      .match(/<dt>USD<\/dt><dd\b[^>]*>([\s\S]*?)<\/dd>/)?.[1];
+    assert.equal(plain(funds(compact.get(future.id))), "$1,127.13");
+    if (startDate <= today) {
+      assert.equal(plain(funds(compact.get("transaction:10"))), "$1,277.13");
+      assert.equal(plain(funds(compact.get("transaction:11"))), "$1,252.13");
+      assert.match(compact.get("transaction:11"), /fpt-status-done">Done</);
+    }
+    findElement(renderTable(), (node) => node.type === "button" && node.props.children === "Expand accounts").props.onClick();
+    const expanded = rowMarkup();
+    const bankCell = (id) => expanded.get(id).match(/<td\b[^>]*data-account-id="1"[^>]*>([\s\S]*?)<\/td>/)?.[1]
+      .match(/<span>(.*?)<\/span>/)?.[1];
+    assert.equal(bankCell(future.id), "$1,127.13");
+    if (startDate <= today) {
+      assert.equal(bankCell("transaction:10"), "$1,277.13");
+      assert.equal(bankCell("transaction:11"), "$1,252.13");
+    }
+    assert.deepEqual(props, before, "changing the date view cannot change bank balances or saved planner entries");
+  }
+});
+
+test("connected reported balances anchor saved Done rows and future projections without changing manual balances", () => {
   const today = "2026-11-20";
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const accounts = [
@@ -227,7 +302,8 @@ test("connected reported balances anchor projections while unconfirmed planner r
   assert.equal(current.assets.USD.current, 1320, "provider 1250 plus the existing manual 70, without the unconfirmed debit");
   assert.equal(current.assets.USD.projected, 1295, "only the future 25 is projected from the reported bank balance");
   const recorded = rows.find((row) => row.entryId === "recorded" || row.planRowId === "entry:recorded");
-  assert.equal(recorded.accountBalanceSnapshot.find((account) => account.accountId === 1).balance, null);
+  assert.equal(recorded.accountBalanceSnapshot.find((account) => account.accountId === 1).balance, 1250,
+    "the known saved Done row ends at the bank closing balance without another forward debit");
   assert.equal(recorded.accountBalanceSnapshot.find((account) => account.accountId === 2).balance, 70);
   assert.equal(rows.find((row) => row.entryId === "future").accountBalanceSnapshot.find((account) => account.accountId === 1).balance, 1225);
   assert.deepEqual(props, before);
@@ -1743,12 +1819,12 @@ test("expanded November 20 rows before a recorded Fill exclude its later JCB exp
   assert.equal(rows[4].recordedTransactions.length, 1, "the manual JCB payment leg is already recorded");
   const balances = (id) => rows.map((row) => row.accountBalanceSnapshot.find((account) => account.accountId === id).balance);
   assert.deepEqual(balances(37), [4336.88, 4336.88, 4336.88, 4336.88, -15663.12, 10824.12]);
-  assert.deepEqual(balances(34), [67554.08, 112130.78, 112130.78, 112130.78, 92130.78, 92130.78]);
+  assert.deepEqual(balances(34), [67554.08, 112130.78, 112130.78, 112130.78, 92130.78, 67554.08]);
   assert.deepEqual(rows.map((row) => row.projectedBalancePhp), balances(34), "collapsed totals agree with expanded cash accounts");
   const analytics = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
   assert.equal(analytics.assets.PHP.current, 67554.08);
   assert.equal(analytics.debt.PHP.current, 10824.12);
-  assert.equal(analytics.assets.PHP.projected, balances(34).at(-1));
+  assert.equal(analytics.assets.PHP.projected, 92130.78, "unpaid movements remain in the forecast without altering the Done row's actual snapshot");
   assert.equal(analytics.debt.PHP.projected, balances(37).at(-1));
   const states = [];
   let cursor = 0;
@@ -1773,7 +1849,7 @@ test("expanded November 20 rows before a recorded Fill exclude its later JCB exp
   assert.deepEqual(collapsedTotals("Credit cards", "USD"), Array(6).fill("$1,660.15"));
   assert.deepEqual(collapsedTotals("Account funds", "USD"), Array(6).fill("$50.00"));
   assert.deepEqual(collapsedTotals("Account funds", "PHP"),
-    ["₱67,554.08", "₱112,130.78", "₱112,130.78", "₱112,130.78", "₱92,130.78", "₱92,130.78"]);
+    ["₱67,554.08", "₱112,130.78", "₱112,130.78", "₱112,130.78", "₱92,130.78", "₱67,554.08"]);
   findElement(renderTable(), (node) => node.type === "button" && node.props.children === "Expand accounts").props.onClick();
   const html = renderToStaticMarkup(renderTable());
   const renderedRows = [...html.matchAll(/<tr\b[^>]*data-row-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);
@@ -1781,6 +1857,7 @@ test("expanded November 20 rows before a recorded Fill exclude its later JCB exp
   assert.deepEqual(cells(37).map((cell) => cell.match(/<span>(.*?)<\/span>/)[1]),
     ["₱4,336.88", "₱4,336.88", "₱4,336.88", "₱4,336.88", "-₱15,663.12", "₱10,824.12"]);
   assert.match(cells(37).at(-1), />\+26,487\.24<|>26,487\.24</);
+  assert.equal(cells(34).at(-1).match(/<span>(.*?)<\/span>/)[1], "₱67,554.08");
   assert.ok(cells(2).every((cell) => cell.includes("$50.00")));
   assert.ok(cells(3).every((cell) => cell.includes("$1.99")));
   assert.ok(cells(5).every((cell) => cell.includes("$1,658.16")));

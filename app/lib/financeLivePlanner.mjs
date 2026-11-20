@@ -11,10 +11,6 @@ const dateTime = (value) => {
 const nativeMoney = (value) => ["number", "string"].includes(typeof value) && String(value).trim() !== "" && Number.isFinite(Number(value))
   ? roundMoney(Number(value)) : null;
 const isDebt = (account) => ["credit", "loan"].includes(account.type || account.account_type);
-const connected = (account) => account && (account.isLinked || account.balanceSource === "bank" ||
-  (account.external_provider && account.external_account_id));
-const awaitingBankReceipt = (transaction, account) => connected(account) &&
-  (transaction.awaitingBankSync === true || Number(transaction.plan_provisional ?? transaction.planProvisional) === 1);
 const active = (account) => !account.isArchived && !account.is_archived && !account.isSyncExcluded && !account.is_sync_excluded &&
   !account.mergedIntoAccountId && !account.merged_into_account_id;
 const orderedPastRows = (rows, range, today) => rows.filter((row) => row.date >= range.startDate && row.date < today &&
@@ -131,7 +127,7 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     mask: account.mask || "", type: account.type || account.account_type, currency: account.currency,
     balance: balances.get(Number(account.id)) ?? null, isDebt: isDebt(account) }));
   const seen = new Set();
-  const savedHistory = historyTransactions.flatMap((transaction) => {
+  const history = historyTransactions.flatMap((transaction) => {
     const key = transactionKey(transaction.id);
     if (!key || seen.has(key) || transaction.pending || !Number.isFinite(dateTime(transaction.date)) ||
         transaction.date > today || !["income", "expense"].includes(transaction.kind) ||
@@ -139,43 +135,20 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     seen.add(key);
     return [{ ...transaction, key }];
   }).sort(compareRecorded);
-  const historyById = new Map(savedHistory.map((transaction) => [transaction.key, transaction]));
-  const unconfirmed = new Map(savedHistory.filter((transaction) =>
-    awaitingBankReceipt(transaction, byId.get(Number(transaction.accountId)))).map((transaction) => [transaction.key, transaction]));
-  // A local provisional receipt is absent from the provider's reported balance.
-  // Retain its identity for coverage without reversing it as posted bank history.
-  for (const row of rows) {
-    const evidence = [...(row.recordedTransactions || []),
-      ...(row.source === "transaction" && !row.recordedTransactions?.length ? [row] : [])];
-    for (const transaction of evidence) {
-      const key = transactionKey(transaction.transactionId ?? transaction.id);
-      const account = byId.get(Number(transaction.accountId));
-      if (!key || historyById.has(key) || !awaitingBankReceipt(transaction, account)) continue;
-      const date = transaction.date || row.date;
-      if (!Number.isFinite(dateTime(date)) || date > today) continue;
-      const known = { ...transaction, key, date };
-      historyById.set(key, known);
-      unconfirmed.set(key, known);
-    }
-  }
-  const history = savedHistory.filter((transaction) => !unconfirmed.has(transaction.key));
+  const historyById = new Map(history.map((transaction) => [transaction.key, transaction]));
   const prepared = rows.map((row, index) => {
     const isRecorded = Boolean(row.recordedInAccounts || ["plan", "transaction"].includes(row.completionSource) ||
       (row.source === "transaction" && row.date <= today && !row.scheduled));
     const ids = [...new Set([row.transactionId, ...(row.matchedTransactionIds || []),
       ...(row.recordedTransactions || []).map((transaction) => transaction.transactionId ?? transaction.id),
       ...(row.source === "transaction" ? [row.id] : [])].map(transactionKey).filter(Boolean))];
-    const evidence = ids.map((id) => historyById.get(id));
-    const records = evidence.filter((transaction) => transaction && !unconfirmed.has(transaction.key));
-    const unconfirmedAccounts = new Set(evidence.filter((transaction) => transaction && unconfirmed.has(transaction.key))
-      .map((transaction) => Number(transaction.accountId)));
-    const cutoff = [...records].sort(compareRecorded).at(-1) || evidence.filter(Boolean).sort(compareRecorded).at(-1);
+    const records = ids.map((id) => historyById.get(id));
+    const cutoff = records.filter(Boolean).sort(compareRecorded).at(-1);
     const complete = historyComplete && historyThrough >= today && cutoff &&
-      evidence.length > 0 && evidence.every(Boolean) && records.every((transaction) => historyFrom <= transaction.date) &&
-      (records.length > 0 || historyFrom <= row.date);
+      records.length > 0 && records.every((transaction) => transaction && historyFrom <= transaction.date);
     // Statement payment IDs explain the due; their transaction rows own the movements.
     return { row, index, isRecorded, hasEvidence: ids.length > 0, evidenceOnly: row.source === "creditCardDue",
-      complete, cutoff, records, unconfirmedAccounts };
+      complete, cutoff, records };
   });
   const claims = new Map();
   for (const item of prepared.filter((item) => item.complete && !item.evidenceOnly)) for (const transaction of item.records) {
@@ -253,19 +226,10 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
   let hasProjectedActivity = false;
   const withProjections = (balances) => new Map([...balances].map(([id, value]) =>
     [id, value == null ? null : roundMoney(value + (projectedDeltas.get(id) || 0))]));
-  const unconfirmedByRow = new Map(prepared.map((item) => [item.row, item.unconfirmedAccounts]));
-  const result = (row, balances, kind, note) => {
-    const values = new Map(balances);
-    const unknown = row.date <= today ? unconfirmedByRow.get(row) : null;
-    if (unknown?.size) {
-      for (const accountId of unknown) values.set(accountId, null);
-      note += " Balances awaiting a bank match are unavailable for the unconfirmed account legs; connected accounts use the bank's reported balance.";
-    }
-    return { ...row, accountBalanceSnapshot: snapshot(values),
-      accountBalanceSnapshotKind: kind, accountBalanceSnapshotNote: note,
-      projectedBalanceUsd: kind === "unavailable" ? null : sumBalances(selected, values, "USD", false),
-      projectedBalancePhp: kind === "unavailable" ? null : sumBalances(selected, values, "PHP", false) };
-  };
+  const result = (row, balances, kind, note) => ({ ...row, accountBalanceSnapshot: snapshot(balances),
+    accountBalanceSnapshotKind: kind, accountBalanceSnapshotNote: note,
+    projectedBalanceUsd: kind === "unavailable" ? null : sumBalances(selected, balances, "USD", false),
+    projectedBalancePhp: kind === "unavailable" ? null : sumBalances(selected, balances, "PHP", false) });
   return prepared.map(({ row, index, isRecorded, hasEvidence, evidenceOnly, complete, cutoff }) => {
     if (row.date >= today && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
       for (const move of projectedAccountMoves(row, byId, today).moves) {
@@ -282,6 +246,10 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
         "Recorded balance history is incomplete for this row. Current balances are available in the summary above.");
       const base = !evidenceOnly && (isRecorded || cutoff.date === row.date) && historical.has(index)
         ? historical.get(index) : displayBases.get(index);
+      // The bank's current value anchors the latest recorded event on its date.
+      // Pending forecasts must not rewrite that event or earlier actual history.
+      if (isRecorded || row.completed) return result(row, base, "recorded",
+        `After recorded activity on ${cutoff.date}. Reconstructed from the dated current balance and later recorded movements; planned entries are excluded.`);
       return result(row, withProjections(base), hasProjectedActivity ? "projected" : "recorded", hasProjectedActivity
         ? "Account balances after this row, including earlier planned movements. Recorded transactions are counted once."
         : `After recorded activity on ${cutoff.date}. Reconstructed from current balances and later recorded movements; same-day rows follow planner order.`);

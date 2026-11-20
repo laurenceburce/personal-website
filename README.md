@@ -191,9 +191,11 @@ The finance workspace separates recorded activity from your plans:
   Future rows show projections; recorded rows reconstruct tracked balances from
   current values and later posted activity, following the table's transaction order
   within each day. Later transactions do not change earlier rows' account balances.
-  Today's planned and recorded rows share that same sequence, including partially
-  recorded transfers. Remaining planned movements carry into later rows once;
-  compact cash totals use the same balances as the expanded account columns.
+  Today's completed bank transactions use the bank balance as their dated anchor:
+  the latest recorded balance agrees with the bank, and earlier rows reverse only
+  later recorded transactions. Planned entries do not change those historical
+  balances. Remaining plans, including partially recorded transfers, carry into
+  future projections once. Compact totals use the expanded account balances.
   Incomplete history stays unavailable. Text, status chips, and amount colors use
   stronger contrast, with labels as well as color to distinguish states.
   Manual accounts use the live planner as their source of truth: the saved starting
@@ -209,8 +211,8 @@ The finance workspace separates recorded activity from your plans:
   Linked-account entries can be **Planned** or **Recorded · already happened**.
   Connected account balances come directly from the bank. Recorded planner entries
   awaiting a bank match do not adjust those reported balances; a unique posted match
-  replaces the generated record once. Unconfirmed bank receipts cannot reconstruct
-  historical account balances. Use **Record payment** or **Record receipt**
+  replaces the generated record once. Known recorded entries remain in the dated
+  transaction history while awaiting that match. Use **Record payment** or **Record receipt**
   to enter the actual date and amount, including early or partial payments.
   Matching bills use a one-cent rounding tolerance consistently: a $1.99 posted
   charge can complete a $2 bill without creating another $0.01 payment or adding
