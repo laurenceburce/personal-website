@@ -36,21 +36,6 @@ function positionCurrentRow(scroller, row, behavior = "auto") {
   return true;
 }
 
-function AccountBalanceCell({ row, account }) {
-  const snapshot = row.accountBalanceSnapshot?.find((item) => Number(item.accountId) === Number(account.id));
-  const value = row.accountBalanceSnapshotKind === "unavailable" ? null : snapshot?.balance;
-  const available = Number.isFinite(value);
-  const debt = ["credit", "loan"].includes(account.type);
-  const credit = debt && available && value < 0;
-  const negative = available && (debt ? value > 0 : value < 0);
-  return <td className={`fpt-account-balance${negative ? " fpt-negative" : credit ? " fpt-positive" : ""}`}
-    data-account-id={account.id} data-label={accountName(account)}
-    title={row.accountBalanceSnapshotNote || "Account balance after this transaction"}>
-    {available ? <><span>{money(value, account.currency)}</span>{credit && <small>Credit balance</small>}</>
-      : <span aria-label={`Balance unavailable for ${accountName(account)}`}>—</span>}
-  </td>;
-}
-
 function rowAccounts(row, accounts, plan) {
   const byId = (id) => accounts.find((account) => Number(account.id) === Number(id));
   const from = row.fromAccountId || (row.source === "creditCardDue"
@@ -115,7 +100,6 @@ export default function FinancePlannerTable({
     !account.mergedIntoAccountId && !account.merged_into_account_id && ["USD", "PHP"].includes(account.currency) &&
     accounts.findIndex((item) => Number(item.id) === Number(account.id)) === index);
   const expanded = accountsExpanded && accountColumns.length > 0;
-  const tableWidth = expanded ? 820 + accountColumns.length * 160 : null;
   const currentId = current == null ? null : String(current.id);
   const tableId = `planner-transactions-${encodeURIComponent(String(plan.id || "live"))}`;
   const windowKey = `${viewKey ?? `${plan.id}:${plan.startDate}:${plan.endDate}`}:${today}`;
@@ -192,24 +176,14 @@ export default function FinancePlannerTable({
       {filtered && <button type="button" className="fp-button fp-secondary" onClick={clear}>Clear filters</button>}
     </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
-      <table className="fpt-table" style={expanded ? { width: `${tableWidth}px`, minWidth: "100%" } : undefined}>
-        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the projected balance column to show separate account balance columns; collapse to return to the compact view.</caption>
-        {expanded && <><colgroup><col style={{ width: "110px" }}/><col style={{ width: "240px" }}/><col style={{ width: "180px" }}/><col style={{ width: "140px" }}/></colgroup>
-          <colgroup>{accountColumns.map((account) => <col key={account.id} style={{ width: "160px" }}/>)}</colgroup>
-          <colgroup><col style={{ width: "150px" }}/></colgroup></>}
-        <thead><tr><th scope="col" rowSpan={expanded ? 2 : undefined}>Date</th><th scope="col" rowSpan={expanded ? 2 : undefined}>Transaction</th><th scope="col" rowSpan={expanded ? 2 : undefined}>Account</th><th scope="col" rowSpan={expanded ? 2 : undefined}>Amount</th>
-          {expanded ? <th scope="colgroup" className="fpt-account-group" aria-label="Account balances" colSpan={accountColumns.length}>
-            <strong>Account balances</strong><button type="button" className="fpt-account-columns-toggle" aria-expanded="true"
-              aria-controls={tableId} onClick={toggleAccountColumns}>Collapse accounts</button>
-          </th> : <th scope="col" className="fpt-projection-heading"><span>Projected balance</span>
-            <button type="button" className="fpt-account-columns-toggle" aria-expanded="false" aria-controls={tableId}
-              disabled={loading || !accountColumns.length} onClick={toggleAccountColumns}>Expand accounts</button>
-          </th>}
-          <th scope="col" rowSpan={expanded ? 2 : undefined}>Status</th></tr>
-          {expanded && <tr>{accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
-            <strong>{accountName(account)}</strong><small>{["credit", "loan"].includes(account.type) ? `Balance owed · ${account.currency}` : account.currency}</small>
-          </th>)}</tr>}
-        </thead>
+      <table className="fpt-table">
+        <caption className="fp-sr-only">Recorded and planned transactions in date order. Expand the running balance column to show the account list beneath the totals.</caption>
+        <colgroup><col style={{ width: "12%" }}/><col style={{ width: "24%" }}/><col style={{ width: "16%" }}/><col style={{ width: "16%" }}/><col style={{ width: "32%" }}/></colgroup>
+        <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">USD</th><th scope="col">PHP</th>
+          <th scope="col" className="fpt-projection-heading"><span>Running balance</span>
+            <button type="button" className="fpt-account-columns-toggle" aria-expanded={expanded} aria-controls={tableId}
+              disabled={loading || !accountColumns.length} onClick={toggleAccountColumns}>{expanded ? "Collapse accounts" : "Expand accounts"}</button>
+          </th></tr></thead>
         <tbody>{visible.map((row) => {
           const category = getPlanRowCategory(row);
           const assigned = rowAccounts(row, accounts, plan);
@@ -227,7 +201,7 @@ export default function FinancePlannerTable({
             if (node) rowRefs.current.set(String(row.id), node); else rowRefs.current.delete(String(row.id));
           }} aria-current={currentRow ? "true" : undefined} data-row-id={row.id}
             className={`fpt-row fpt-category-${category.key}${recorded(row, today) ? " fpt-row-recorded" : ""}${isToday ? " fpt-row-today" : ""}${currentRow ? " fpt-row-current" : ""}`}>
-            <td className="fpt-date"><time dateTime={row.date}>{formatDate(row.date, { year: "numeric" })}</time>
+            <td className="fpt-date"><time dateTime={row.date} title={formatDate(row.date, { year: "numeric" })}>{formatDate(row.date, { month: "short", day: "numeric" })}</time>
               {(isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
             <td className="fpt-transaction">
@@ -236,26 +210,11 @@ export default function FinancePlannerTable({
                 {row.recurring && <span>Repeats</span>}
                 <details className="fpt-details"><summary aria-label={`Details for ${row.description}`}>Details</summary>
                   <div className="fpt-detail-body"><SourceLabel row={row}/>
-                    <dl className="fpt-extra-balances">
-                      {[["Annual reserve · USD", row.reserveUsd, "USD"], ["Annual reserve · PHP", row.reservePhp, "PHP"],
-                        ["Savings · USD", row.savingsUsd, "USD"], ["Savings · PHP", row.savingsPhp, "PHP"]].filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
-                          <div key={label}><dt>{label}</dt><dd>{money(value, currency)}</dd></div>)}
-                    </dl>
-                  </div>
-                </details>
-              </div>
-            </td>
-            <td className="fpt-account" data-label="Account">{assigned.from || assigned.to ?
+                    <div className="fpt-account" data-label="Account">{assigned.from || assigned.to ?
               <span className="fpt-account-pair"><span>{assigned.from}</span><small>to {assigned.to}</small></span> :
-              <span>{assigned.names.slice(0, 2).join(" · ")}{assigned.names.length > 2 ? ` +${assigned.names.length - 2}` : ""}</span>}</td>
-            <td className="fpt-amount" data-label="Amount"><NativeAmount row={row}/></td>
-            {expanded ? accountColumns.map((account) => <AccountBalanceCell key={account.id} row={row} account={account}/>)
-              : <td className="fpt-projection" data-label="Projected balance">{inCurrentBalance ? <small>Included in current balance</small>
-                : plan.continuous && row.date < today ? <small>Past due · review payment</small>
-                  : <div className="fpt-money-stack">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
-                    ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
-                    <span key={currency} className={value < 0 ? "fpt-negative" : ""}><small>{currency}</small>{balance(value, currency)}</span>)}</div>}</td>}
-            <td className="fpt-status-cell"><Status row={row} today={today}/>
+              <span>{assigned.names.slice(0, 2).join(" · ")}{assigned.names.length > 2 ? ` +${assigned.names.length - 2}` : ""}</span>}</div>
+                    <NativeAmount row={row}/>
+                    <div className="fpt-status-cell"><Status row={row} today={today}/>
               <div className="fpt-actions">
                 {canRecord && <button type="button" className="fpt-record" disabled={busy}
                   aria-label={`Record ${row.kind === "income" ? "receipt" : "payment"}: ${row.description}`} onClick={() => !busy && onRecord(row)}>
@@ -273,13 +232,41 @@ export default function FinancePlannerTable({
                     aria-label={`Delete ${row.description}`} onClick={() => !busy && onDelete?.(manualEntry)}>Delete{row.recurring ? " recurring entry" : ""}</button>}
                 </div></details>}
               </div>
+            </div>
+                    <dl className="fpt-extra-balances">
+                      {[["Annual reserve · USD", row.reserveUsd, "USD"], ["Annual reserve · PHP", row.reservePhp, "PHP"],
+                        ["Savings · USD", row.savingsUsd, "USD"], ["Savings · PHP", row.savingsPhp, "PHP"]].filter(([, value]) => Number.isFinite(value)).map(([label, value, currency]) =>
+                          <div key={label}><dt>{label}</dt><dd>{money(value, currency)}</dd></div>)}
+                    </dl>
+                  </div>
+                </details>
+              </div>
             </td>
+            {["USD", "PHP"].map((currency) => {
+              const value = Number(currency === "USD" ? row.usd : row.php) || 0;
+              return <td key={currency} className={`fpt-amount ${value < 0 ? "fpt-flow-out" : value > 0 ? "fpt-flow-in" : "fpt-flow-zero"}`}>{money(value, currency)}</td>;
+            })}
+            <td className="fpt-projection" data-label="Running balance">{inCurrentBalance ? <small>Included in current balance</small>
+                : plan.continuous && row.date < today ? <small>Past due · review payment</small>
+                  : <div className="fpt-money-stack">{[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
+                    ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]].map(([currency, value]) =>
+                    <span key={currency} className={value < 0 ? "fpt-negative" : ""}><small>{currency}</small>{balance(value, currency)}</span>)}</div>}{expanded && <dl className="fpt-account-list" aria-label={`Account balances for ${row.description}`}>
+                {accountColumns.map((account) => {
+                  const snapshot = row.accountBalanceSnapshot?.find((item) => Number(item.accountId) === Number(account.id));
+                  const value = row.accountBalanceSnapshotKind === "unavailable" ? null : snapshot?.balance;
+                  return <div key={account.id} data-account-id={account.id} title={row.accountBalanceSnapshotNote}>
+                    <dt>{accountName(account)}</dt><dd>{Number.isFinite(value) ? money(value, account.currency) : "\u2014"}
+                    {Number.isFinite(value) && ["credit", "loan"].includes(account.type) && <small>{value < 0 ? "Credit balance" : "Balance owed"}</small>}</dd>
+                  </div>;
+                })}
+              </dl>}</td>
+
           </tr>;
         })}</tbody>
       </table>
     </div>}
     <p className="fpt-footnote" id={`${tableId}-hint`}>{expanded
-      ? "Individual account columns are expanded. Scroll sideways to view them; unavailable history is shown as —. Future balances are projected."
-      : "Recorded activity is included in current balances. Expand accounts in the balance column to view individual account columns."}</p>
+      ? "Account balances are listed beneath the totals. Unavailable history is shown as an em dash. Future balances are projected."
+      : "Recorded activity is included in current balances. Expand accounts to see the account list. Rotate your phone for a wider landscape view."}</p>
   </section>;
 }

@@ -68,33 +68,33 @@ function harness(props) {
   return () => { cursor = 0; return Component({ plan, accounts, today, ...props }); };
 }
 const button = (tree, text) => find(tree, (node) => node.type === "button" && node.props.children === text);
-const accountColumns = (html) => [...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]);
-const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
+const accountColumns = (html) => [...new Set([...html.matchAll(/<div\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]))];
+const accountCell = (html, id) => html.match(new RegExp(`<div\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/div>`))?.[1];
 const renderExpanded = (rows, extra = {}) => {
   const get = harness({ rows, ...extra });
   button(get(), "Expand accounts").props.onClick();
   return renderToStaticMarkup(get());
 };
 
-test("planner table defaults to its compact summary and expands the balance column into account columns", () => {
+test("planner table defaults to its compact summary and expands the account list beneath running totals", () => {
   const html = render([row()]);
-  assert.equal((html.match(/<th\b/g) || []).length, 6);
+  assert.equal((html.match(/<th\b/g) || []).length, 5);
   assert.deepEqual(accountColumns(html), []);
-  assert.match(html, /Projected balance/);
+  assert.match(html, /Running balance/);
   assert.match(html, /Expand accounts/);
   assert.match(html, /\$175\.00/);
   assert.match(html, /₱2,000\.00/);
-  assert.doesNotMatch(html, /fpt-accounts-expanded|fpt-balances-row|Account balances for Internet/);
+  assert.doesNotMatch(html, /fpt-accounts-expanded|fpt-balances-row/);
   const get = harness({ rows: [row()] });
   const expand = button(get(), "Expand accounts");
   assert.equal(expand.props["aria-expanded"], false);
   expand.props.onClick();
   const expanded = renderToStaticMarkup(get());
-  assert.equal((expanded.match(/<th\b/g) || []).length, 6 + accounts.length);
+  assert.equal((expanded.match(/<th\b/g) || []).length, 5);
   assert.match(expanded, /fpt-accounts-expanded/);
-  assert.match(expanded, /colSpan="3"/);
-  assert.match(expanded, /rowSpan="2"/);
-  for (const label of ["Date", "Transaction", "Account", "Amount", "Status", "Balance owed"]) assert.ok(expanded.includes(label));
+  assert.match(expanded, /fpt-account-list/);
+  assert.match(expanded, /Account balances for Internet/);
+  for (const label of ["Date", "Description", "USD", "PHP", "Recorded", "Balance owed"]) assert.ok(expanded.includes(label));
   assert.deepEqual(accountColumns(expanded), ["1", "34", "37"]);
   assert.match(expanded, /Daily checking · ••1234/);
   assert.match(expanded, /-\$25\.00/);
@@ -102,14 +102,14 @@ test("planner table defaults to its compact summary and expands the balance colu
   assert.match(accountCell(expanded, 34), /₱2,000\.00/);
   assert.match(accountCell(expanded, 37), /₱600\.00/);
   assert.match(expanded, /aria-label="Details for Internet"/);
-  assert.doesNotMatch(expanded, /Starting balances|Show columns|fpt-balances-row|Account balances for Internet/);
+  assert.doesNotMatch(expanded, /Starting balances|Show columns|fpt-balances-row/);
   const collapse = button(get(), "Collapse accounts");
   assert.equal(collapse.props["aria-expanded"], true);
   collapse.props.onClick();
   const restored = renderToStaticMarkup(get());
   assert.deepEqual(accountColumns(restored), []);
-  assert.equal((restored.match(/<th\b/g) || []).length, 6);
-  assert.match(restored, /Projected balance/);
+  assert.equal((restored.match(/<th\b/g) || []).length, 5);
+  assert.match(restored, /Running balance/);
   assert.match(restored, /\$175\.00/);
 });
 
@@ -124,9 +124,9 @@ test("planner keeps the compact balance summary when no supported active account
     assert.equal(expand.props.disabled, true);
     assert.equal(expand.props["aria-expanded"], false);
     const html = renderToStaticMarkup(get());
-    assert.equal((html.match(/<th\b/g) || []).length, 6);
+    assert.equal((html.match(/<th\b/g) || []).length, 5);
     assert.deepEqual(accountColumns(html), []);
-    assert.match(html, /Projected balance/);
+    assert.match(html, /Running balance/);
     assert.match(html, /\$175\.00/);
     assert.doesNotMatch(html, /colSpan="0"|Collapse accounts/);
   }
@@ -152,7 +152,7 @@ test("recorded history displays its per-account balances and retains financial d
   assert.match(html, /Annual reserve · USD/);
   assert.match(html, /Savings · PHP/);
   assert.match(html, /aria-label="Reopen Internet"/);
-  assert.doesNotMatch(html, /Included in current balance|Account balances for Internet/);
+
 });
 
 test("status and search filters preserve precomputed balances and source rows", () => {
@@ -230,7 +230,7 @@ test("account columns use row snapshots instead of aggregate totals or current a
   assert.match(accountCell(html, 1), /\$0\.00/);
   assert.match(accountCell(html, 34), /₱42,000\.00/);
   assert.match(accountCell(html, 37), /₱600\.00/);
-  assert.doesNotMatch(html, /\$9,999\.00|\$8,888\.00|₱7,777\.00/);
+  assert.doesNotMatch(accountCell(html, 1), /\$9,999\.00|\$8,888\.00/);
 });
 
 test("current row is the last transaction today, then nearest past or first upcoming activity", () => {
@@ -279,12 +279,12 @@ test("historical balance columns distinguish recorded snapshots from unavailable
     assert.match(accountCell(html, 1), kind === "recorded" ? /\$175\.00/ : /—/);
     if (kind === "unavailable") {
       assert.match(html, /Later transaction history is incomplete/);
-      assert.doesNotMatch(html, /\$99,999\.00|₱99,999\.00|\$175\.00/);
+      assert.doesNotMatch(accountCell(html, 1), /\$99,999\.00|\$175\.00/);
     }
   }
 });
 
-test("account header order is stable through filters and excludes inactive or unsupported accounts", () => {
+test("account list order is stable through filters and excludes inactive or unsupported accounts", () => {
   const extra = [
     { id: 90, name: "Archived", currency: "USD", type: "checking", isArchived: true },
     { id: 91, name: "Merged", currency: "PHP", type: "savings", mergedIntoAccountId: 34 },

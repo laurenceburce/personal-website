@@ -8,6 +8,7 @@ export function GET() {
       start_url: "/finance",
       scope: "/finance",
       display: "standalone",
+      orientation: "any",
       background_color: "#f7f8fa",
       theme_color: "#16765b",
       icons: [
