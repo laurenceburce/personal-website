@@ -115,7 +115,6 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
   const prepared = rows.map((row, index) => {
     const isRecorded = Boolean(row.recordedInAccounts || ["plan", "transaction"].includes(row.completionSource) ||
       (row.source === "transaction" && row.date <= today && !row.scheduled));
-    if (!isRecorded) return { row, index };
     const ids = [...new Set([row.transactionId, ...(row.matchedTransactionIds || []),
       ...(row.recordedTransactions || []).map((transaction) => transaction.transactionId ?? transaction.id),
       ...(row.source === "transaction" ? [row.id] : [])].map(transactionKey).filter(Boolean))];
@@ -123,17 +122,19 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     const cutoff = records.filter(Boolean).sort(compareRecorded).at(-1);
     const complete = historyComplete && historyThrough >= today && cutoff &&
       records.length > 0 && records.every((transaction) => transaction && historyFrom <= transaction.date);
-    return { row, index, isRecorded, complete, cutoff, records };
+    // Statement payment IDs explain the due; their transaction rows own the movements.
+    return { row, index, isRecorded, hasEvidence: ids.length > 0, evidenceOnly: row.source === "creditCardDue",
+      complete, cutoff, records };
   });
   const claims = new Map();
-  for (const item of prepared.filter((item) => item.complete)) for (const transaction of item.records) {
+  for (const item of prepared.filter((item) => item.complete && !item.evidenceOnly)) for (const transaction of item.records) {
     const owners = claims.get(transaction.key) || [];
     owners.push(item);
     claims.set(transaction.key, owners);
   }
   // Ambiguous evidence cannot identify a unique logical balance after either row.
   for (const owners of claims.values()) if (owners.length > 1) for (const owner of owners) owner.complete = false;
-  const owners = new Map(prepared.filter((item) => item.complete).flatMap((item) =>
+  const owners = new Map(prepared.filter((item) => item.complete && !item.evidenceOnly).flatMap((item) =>
     item.records.map((transaction) => [transaction.key, item])));
   const grouped = new Map();
   for (const transaction of history) {
@@ -162,35 +163,75 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     return logicalByDate.get(event.date)[index];
   });
   const historical = new Map();
+  const beforeRecorded = new Map();
+  const dateClosings = new Map();
   const reversed = new Map(current);
-  for (const event of [...events].reverse()) {
-    if (event.owner?.cutoff.date === event.date) historical.set(event.owner.index, snapshot(reversed));
-    for (const transaction of [...event.records].reverse()) {
-      const account = byId.get(Number(transaction.accountId));
-      const value = reversed.get(Number(transaction.accountId));
-      if (!account || account.currency !== transaction.currency || value == null) continue;
-      const delta = (transaction.kind === "income" ? 1 : -1) * (isDebt(account) ? -1 : 1) * Number(transaction.amount);
-      reversed.set(Number(transaction.accountId), roundMoney(value - delta));
+  const dates = [...new Set([today, ...events.map((event) => event.date),
+    ...prepared.map(({ row }) => row.date).filter((date) => date <= today && Number.isFinite(dateTime(date)))])].sort().reverse();
+  let cursor = events.length - 1;
+  for (const date of dates) {
+    dateClosings.set(date, new Map(reversed));
+    while (cursor >= 0 && events[cursor].date === date) {
+      const event = events[cursor--];
+      const finalLeg = event.owner?.cutoff.date === event.date;
+      if (finalLeg) historical.set(event.owner.index, new Map(reversed));
+      for (const transaction of [...event.records].reverse()) {
+        const account = byId.get(Number(transaction.accountId));
+        const value = reversed.get(Number(transaction.accountId));
+        if (!account || account.currency !== transaction.currency || value == null) continue;
+        const delta = (transaction.kind === "income" ? 1 : -1) * (isDebt(account) ? -1 : 1) * Number(transaction.amount);
+        reversed.set(Number(transaction.accountId), roundMoney(value - delta));
+      }
+      if (finalLeg) beforeRecorded.set(event.owner.index, new Map(reversed));
     }
   }
-  const projected = new Map(current);
-  return prepared.map(({ row, index, isRecorded, complete, cutoff }) => {
+  const displayBases = new Map();
+  const nextByDate = new Map();
+  for (const item of [...prepared].reverse()) {
+    const { row, index, complete, cutoff, evidenceOnly } = item;
+    if (row.date > today) continue;
+    if (complete && !evidenceOnly && cutoff.date === row.date) nextByDate.set(row.date, beforeRecorded.get(index));
+    displayBases.set(index, nextByDate.get(row.date) || dateClosings.get(row.date));
+  }
+  const todayEvidence = prepared.filter(({ row, isRecorded, hasEvidence, evidenceOnly, records }) => !evidenceOnly &&
+    (isRecorded || hasEvidence) && (row.date === today || records.some((transaction) => transaction?.date === today)));
+  const todayComplete = !todayEvidence.length || (historyComplete && historyFrom <= today && historyThrough >= today &&
+    todayEvidence.every((item) => item.complete));
+  const projectedDeltas = new Map();
+  let hasProjectedActivity = false;
+  const withProjections = (balances) => new Map([...balances].map(([id, value]) =>
+    [id, value == null ? null : roundMoney(value + (projectedDeltas.get(id) || 0))]));
+  const result = (row, balances, kind, note) => ({ ...row, accountBalanceSnapshot: snapshot(balances),
+    accountBalanceSnapshotKind: kind, accountBalanceSnapshotNote: note,
+    projectedBalanceUsd: kind === "unavailable" ? null : sumBalances(selected, balances, "USD", false),
+    projectedBalancePhp: kind === "unavailable" ? null : sumBalances(selected, balances, "PHP", false) });
+  return prepared.map(({ row, index, isRecorded, hasEvidence, evidenceOnly, complete, cutoff }) => {
     if (row.date >= today && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
       for (const move of projectedAccountMoves(row, byId, today).moves) {
         const account = byId.get(Number(move.accountId));
-        const value = projected.get(Number(move.accountId));
-        if (!account || account.currency !== move.currency || value == null || (move.recordedDate && move.recordedDate <= today)) continue;
+        if (!account || account.currency !== move.currency || (move.recordedDate && move.recordedDate <= today)) continue;
         const delta = nativeMoney(move.balanceDelta ?? (isDebt(account) ? -Number(move.amount) : Number(move.amount)));
-        if (delta != null) projected.set(Number(move.accountId), roundMoney(value + delta));
+        if (delta != null && delta !== 0) {
+          projectedDeltas.set(Number(move.accountId), roundMoney((projectedDeltas.get(Number(move.accountId)) || 0) + delta));
+          hasProjectedActivity = true;
+        }
       }
-    if (isRecorded) return { ...row, accountBalanceSnapshot: complete ? historical.get(index) : snapshot(new Map()),
-      accountBalanceSnapshotKind: complete ? "recorded" : "unavailable",
-      accountBalanceSnapshotNote: complete ? `After recorded activity on ${cutoff.date}. Reconstructed from current balances and later recorded movements; same-day rows follow planner order.`
-        : "Recorded balance history is incomplete for this row. Current balances are available in the summary above." };
-    if (row.date >= today && !row.completed) return { ...row, accountBalanceSnapshot: snapshot(projected),
-      accountBalanceSnapshotKind: "projected", accountBalanceSnapshotNote: "Projected account balances after this transaction. Card and loan balances show the amount owed." };
-    return { ...row, accountBalanceSnapshot: snapshot(new Map()), accountBalanceSnapshotKind: "unavailable",
-      accountBalanceSnapshotNote: "This past row has no linked recorded transaction. Record or reschedule it to update account balances." };
+    if (row.date <= today && (isRecorded || hasEvidence)) {
+      if (!complete || (evidenceOnly && row.date === today && !todayComplete)) return result(row, new Map(), "unavailable",
+        "Recorded balance history is incomplete for this row. Current balances are available in the summary above.");
+      const base = !evidenceOnly && (isRecorded || cutoff.date === row.date) ? historical.get(index) : displayBases.get(index);
+      return result(row, withProjections(base), hasProjectedActivity ? "projected" : "recorded", hasProjectedActivity
+        ? "Account balances after this row, including earlier planned movements. Recorded transactions are counted once."
+        : `After recorded activity on ${cutoff.date}. Reconstructed from current balances and later recorded movements; same-day rows follow planner order.`);
+    }
+    if (row.date >= today && (!row.completed || hasEvidence || isRecorded)) {
+      if (row.date === today && !todayComplete) return result(row, new Map(), "unavailable",
+        "Recorded balance history is incomplete for this day. Current balances are available in the summary above.");
+      return result(row, withProjections(row.date === today ? displayBases.get(index) : current), "projected",
+        "Projected account balances after this transaction in planner order. Card and loan balances show the amount owed.");
+    }
+    return result(row, new Map(), "unavailable",
+      "This past row has no linked recorded transaction. Record or reschedule it to update account balances.");
   });
 }
 

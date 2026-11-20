@@ -1550,6 +1550,84 @@ test("November 20 account balances follow each displayed transaction before the 
   assert.deepEqual(props, input, "computing row balances cannot rewrite the account's current value or planner entries");
 });
 
+test("expanded November 20 rows before a recorded Fill exclude its later JCB expense even when those rows are unrecorded", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const plan = { ...base, continuous: true, balanceMode: "live", includeTransactions: true, includeIncome: false,
+    includeAllocations: false, includeAnnualReserve: false, completedRows: [], entries: [
+      { id: "a-start", date: today, description: "Start of day", kind: "income", amount: 0, currency: "PHP", accountId: 34 },
+      { id: "b-income", date: today, description: "Savings deposit", kind: "income", amount: 44576.70, currency: "PHP", accountId: 34 },
+      ...["c", "d"].map((id) => ({ id: `${id}-other`, date: today, description: `Other ${id}`, kind: "expense",
+        amount: 0, currency: "PHP", accountId: 34 })),
+      { id: "y-payment", date: today, description: "JCB payment", kind: "transfer", amount: 20000, currency: "PHP", fromAccountId: 34, toAccountId: 37 },
+      { id: "z-fill", date: today, description: "Fill", kind: "expense", amount: 26487.24, currency: "PHP", accountId: 37 },
+    ] };
+  const props = fixture("plans", 0, { plans: [plan], bills: [] });
+  props.today = today;
+  const rawAccounts = [
+    { id: 2, name: "USD savings", account_type: "savings", currency: "USD", opening_balance: 50 },
+    { id: 3, name: "Card 1", account_type: "credit", currency: "USD", opening_balance: 1.99 },
+    { id: 4, name: "Card 2", account_type: "credit", currency: "USD", opening_balance: 0 },
+    { id: 5, name: "Card 3", account_type: "credit", currency: "USD", opening_balance: 1658.16 },
+    { id: 34, name: "RCBC", account_type: "checking", currency: "PHP", opening_balance: 0, current_balance: 67554.08,
+      external_provider: "plaid", external_account_id: "rcbc" },
+    { id: 37, name: "JCB", account_type: "credit", currency: "PHP", opening_balance: 4336.88 },
+    { id: 38, name: "PHP card", account_type: "credit", currency: "PHP", opening_balance: 0 },
+  ];
+  const specs = financePlanPostingSpecs(props.snapshot.document, rawAccounts, [], { today, rate: 58 });
+  const transactions = specs.map((spec, index) => ({ ...financePlanTransactionMetadata({ source_plan_id: spec.planId,
+    source_plan_row_id: spec.rowId, source_plan_leg: spec.leg, plan_generated: 1, plan_record_json: JSON.stringify(spec) }),
+    id: 100 + index, date: spec.date, kind: spec.kind, accountId: spec.accountId, amount: spec.amount,
+    currency: spec.currency, merchant: spec.description, category: spec.category }));
+  assert.equal(transactions.length, 2, "only the manual payment leg and Fill have been recorded");
+  props.initialActivity = { ...props.initialActivity, balanceAsOf: today, accounts: rawAccounts.map((account) =>
+    mapFinanceActivityAccount({ ...account, native_movement: transactions.filter((transaction) => transaction.accountId === account.id)
+      .reduce((total, transaction) => total + (transaction.kind === "income" ? 1 : -1) * transaction.amount, 0) })) };
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions, balanceTransactions: transactions,
+    balanceHistoryFrom: plan.startDate, balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const tree = workspaceHarness(props)();
+  const ledger = findElement(tree, (node) => node.type?.name === "FinancePlannerTable");
+  const rows = ledger.props.rows;
+  assert.deepEqual(rows.map((row) => row.description), ["Start of day", "Savings deposit", "Other c", "Other d", "JCB payment", "Fill"]);
+  assert.ok(rows.slice(0, 4).every((row) => !row.completed && !row.recordedInAccounts));
+  assert.equal(rows[4].completed, false, "the linked funding leg remains unrecorded");
+  assert.equal(rows[4].recordedTransactions.length, 1, "the manual JCB payment leg is already recorded");
+  const balances = (id) => rows.map((row) => row.accountBalanceSnapshot.find((account) => account.accountId === id).balance);
+  assert.deepEqual(balances(37), [4336.88, 4336.88, 4336.88, 4336.88, -15663.12, 10824.12]);
+  assert.deepEqual(balances(34), [67554.08, 112130.78, 112130.78, 112130.78, 92130.78, 92130.78]);
+  assert.deepEqual(rows.map((row) => row.projectedBalancePhp), balances(34), "collapsed totals agree with expanded cash accounts");
+  const analytics = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+  assert.equal(analytics.assets.PHP.current, 67554.08);
+  assert.equal(analytics.debt.PHP.current, 10824.12);
+  assert.equal(analytics.assets.PHP.projected, balances(34).at(-1));
+  assert.equal(analytics.debt.PHP.projected, balances(37).at(-1));
+  const states = [];
+  let cursor = 0;
+  const useState = (initial) => {
+    const index = cursor++;
+    if (!(index in states)) states[index] = typeof initial === "function" ? initial() : initial;
+    return [states[index], (value) => { states[index] = typeof value === "function" ? value(states[index]) : value; }];
+  };
+  const Table = loadComponent(fileURLToPath(new URL("../app/finance/FinancePlannerTable.js", import.meta.url)), {
+    ...require("react"), useState, useEffect() {}, useRef: (initial) => useState(() => ({ current: initial }))[0],
+  }).default;
+  const renderTable = () => { cursor = 0; return Table(ledger.props); };
+  findElement(renderTable(), (node) => node.type === "button" && node.props.children === "Expand accounts").props.onClick();
+  const html = renderToStaticMarkup(renderTable());
+  const renderedRows = [...html.matchAll(/<tr\b[^>]*data-row-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);
+  const cells = (id) => renderedRows.map((row) => row.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1]);
+  assert.deepEqual(cells(37).map((cell) => cell.match(/<span>(.*?)<\/span>/)[1]),
+    ["₱4,336.88", "₱4,336.88", "₱4,336.88", "₱4,336.88", "-₱15,663.12", "₱10,824.12"]);
+  assert.match(cells(37).at(-1), />\+26,487\.24<|>26,487\.24</);
+  assert.ok(cells(2).every((cell) => cell.includes("$50.00")));
+  assert.ok(cells(3).every((cell) => cell.includes("$1.99")));
+  assert.ok(cells(5).every((cell) => cell.includes("$1,658.16")));
+  assert.equal((html.match(/aria-current="true"/g) || []).length, 1);
+  assert.match(html, /data-row-id="transaction:100"[^>]*class="[^"]*fpt-row-current/);
+  assert.deepEqual(props, before);
+});
+
 test("recording part of a live card payment retains the future balance target", async () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const scheduled = { id: "card-target", date: "2026-11-20", description: "Card payoff", kind: "transfer",

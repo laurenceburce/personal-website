@@ -180,6 +180,9 @@ The finance workspace separates recorded activity from your plans:
   Future rows show projections; recorded rows reconstruct tracked balances from
   current values and later posted activity, following the table's transaction order
   within each day. Later transactions do not change earlier rows' account balances.
+  Today's planned and recorded rows share that same sequence, including partially
+  recorded transfers. Remaining planned movements carry into later rows once;
+  compact cash totals use the same balances as the expanded account columns.
   Incomplete history stays unavailable. Text, status chips, and amount colors use
   stronger contrast, with labels as well as color to distinguish states.
   Manual accounts use the live planner as their source of truth: the saved starting
