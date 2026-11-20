@@ -178,7 +178,8 @@ The finance workspace separates recorded activity from your plans:
   mobile, labeled by account name, currency, and balance owed for credit/loan accounts.
   On mobile, the compact view keeps its readable cards and an account-columns toggle.
   Future rows show projections; recorded rows reconstruct tracked balances from
-  current values and later posted activity, using saved order within a day.
+  current values and later posted activity, following the table's transaction order
+  within each day. Later transactions do not change earlier rows' account balances.
   Incomplete history stays unavailable. Text, status chips, and amount colors use
   stronger contrast, with labels as well as color to distinguish states.
   Manual accounts use the live planner as their source of truth: the saved starting

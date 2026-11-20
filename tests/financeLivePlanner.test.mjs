@@ -158,6 +158,99 @@ test("expanded recorded balances reverse later posted movements and keep both tr
   assert.deepEqual({ accounts, rows, history }, before);
 });
 
+test("same-day recorded snapshots follow planner rows when posting IDs were saved in a different order", () => {
+  const date = "2026-11-20";
+  const accounts = [account(1, "checking", 67554.08, "PHP"), account(2, "credit", 10824.12, "PHP"),
+    account(3, "checking", 300)];
+  const history = [
+    [1, 2, "expense", 26487.24],
+    [2, 1, "income", 44576.70],
+    [3, 1, "expense", 20000],
+    [4, 2, "income", 20000],
+  ].map(([id, accountId, kind, amount]) => ({ id, date, accountId, kind, amount, currency: "PHP" }));
+  const rows = [
+    { id: "entry:income", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [2] },
+    { id: "entry:payment", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [3, 4] },
+    { id: "entry:fill", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [1] },
+  ];
+  const before = structuredClone({ accounts, rows, history });
+  const result = withLivePlannerAccountSnapshots({ accounts, rows, today: date, historyTransactions: history,
+    historyFrom: date, historyThrough: date, historyComplete: true });
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot.map((item) => item.balance)), [
+    [87554.08, 4336.88, 300],
+    [67554.08, -15663.12, 300],
+    [67554.08, 10824.12, 300],
+  ]);
+  assert.ok(result.every((row) => row.accountBalanceSnapshotKind === "recorded"));
+  assert.deepEqual(filterLivePlannerRows(result, { startDate: date, endDate: date }), result);
+  assert.deepEqual({ accounts, rows, history }, before, "snapshot ordering cannot change saved or bank balances");
+});
+
+test("reordering planner events preserves hidden same-day slots and reverses later hidden dates", () => {
+  const date = "2026-11-20";
+  const accounts = [account(1, "checking", 92)];
+  const history = [
+    { id: 1, date, accountId: 1, kind: "income", amount: 10, currency: "USD" },
+    { id: 2, date, accountId: 1, kind: "expense", amount: 5, currency: "USD" },
+    { id: 3, date, accountId: 1, kind: "expense", amount: 20, currency: "USD" },
+    { id: 4, date: "2026-11-21", accountId: 1, kind: "income", amount: 7, currency: "USD" },
+  ];
+  const rows = [
+    { id: "entry:first", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [3] },
+    { id: "entry:last", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [1] },
+  ];
+  const result = withLivePlannerAccountSnapshots({ accounts, rows, today: "2026-11-21", historyTransactions: history,
+    historyFrom: date, historyThrough: "2026-11-21", historyComplete: true });
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot[0].balance), [80, 85]);
+  assert.equal(accounts[0].nativeCurrentBalance, 92, "later independent receipts remain in the current balance");
+});
+
+test("multi-day transfer receipts retain actual dates and snapshot after the final leg", () => {
+  const accounts = [account(1, "checking", 90), account(2, "savings", 30)];
+  const history = [
+    [1, "2026-11-18", 1, "expense", 20],
+    [2, "2026-11-19", 1, "expense", 5],
+    [3, "2026-11-20", 1, "income", 10],
+    [4, "2026-11-20", 2, "income", 20],
+    [5, "2026-11-20", 2, "income", 10],
+    [6, "2026-11-21", 1, "income", 5],
+  ].map(([id, date, accountId, kind, amount]) => ({ id, date, accountId, kind, amount, currency: "USD" }));
+  const rows = [
+    { id: "transaction:2", date: "2026-11-19", source: "transaction", transactionId: 2, completed: true },
+    { id: "entry:transfer", date: "2026-11-20", recordedInAccounts: true, completed: true, matchedTransactionIds: [1, 4] },
+  ];
+  const input = { accounts, rows, today: "2026-11-21", historyTransactions: history,
+    historyFrom: "2026-11-18", historyThrough: "2026-11-21", historyComplete: true };
+  const result = withLivePlannerAccountSnapshots(input);
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot.map((item) => item.balance)), [[75, 0], [85, 20]],
+    "the Nov 19 row includes the Nov 18 debit even though its paired row is on Nov 20");
+  const visibleRange = { startDate: "2026-11-20", endDate: "2026-11-20" };
+  assert.deepEqual(withLivePlannerAccountSnapshots({ ...input, rows: filterLivePlannerRows(rows, visibleRange) }),
+    filterLivePlannerRows(result, visibleRange), "hiding an earlier date cannot change the transfer snapshot");
+  const incomplete = withLivePlannerAccountSnapshots({ ...input, historyFrom: "2026-11-19" });
+  assert.equal(incomplete[1].accountBalanceSnapshotKind, "unavailable", "coverage must include every paired receipt date");
+  assert.deepEqual(incomplete[1].accountBalanceSnapshot.map((item) => item.balance), [null, null]);
+});
+
+test("rows claiming the same receipt stay unavailable without replaying shared history twice", () => {
+  const date = "2026-11-20";
+  const accounts = [account(1, "checking", 75)];
+  const history = [
+    { id: 1, date, accountId: 1, kind: "expense", amount: 10, currency: "USD" },
+    { id: 2, date, accountId: 1, kind: "expense", amount: 20, currency: "USD" },
+    { id: 3, date, accountId: 1, kind: "income", amount: 5, currency: "USD" },
+  ];
+  const rows = [
+    { id: "entry:first", date, recordedInAccounts: true, completed: true, matchedTransactionIds: [1] },
+    { id: "entry:duplicate", date, recordedInAccounts: true, completed: true, matchedTransactionIds: [1, 2] },
+    { id: "transaction:3", date, source: "transaction", transactionId: 3, completed: true },
+  ];
+  const result = withLivePlannerAccountSnapshots({ accounts, rows, today: date, historyTransactions: history,
+    historyFrom: date, historyThrough: date, historyComplete: true });
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshotKind), ["unavailable", "unavailable", "recorded"]);
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot[0].balance), [null, null, 75]);
+});
+
 test("each future row snapshots all native accounts without replaying recorded movements", () => {
   const accounts = [account(1, "checking", 1000), account(2, "savings", 500), account(3, "credit", 300), account(4, "cash", 0, "PHP")];
   const rows = [

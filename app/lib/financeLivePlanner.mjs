@@ -112,7 +112,6 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     return [{ ...transaction, key }];
   }).sort(compareRecorded);
   const historyById = new Map(history.map((transaction) => [transaction.key, transaction]));
-  const recordedRows = [];
   const prepared = rows.map((row, index) => {
     const isRecorded = Boolean(row.recordedInAccounts || ["plan", "transaction"].includes(row.completionSource) ||
       (row.source === "transaction" && row.date <= today && !row.scheduled));
@@ -122,24 +121,57 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
       ...(row.source === "transaction" ? [row.id] : [])].map(transactionKey).filter(Boolean))];
     const records = ids.map((id) => historyById.get(id));
     const cutoff = records.filter(Boolean).sort(compareRecorded).at(-1);
-    const complete = historyComplete && historyThrough >= today && cutoff && historyFrom <= cutoff.date &&
-      records.length > 0 && records.every(Boolean);
-    if (complete) recordedRows.push({ index, cutoff });
-    return { row, index, isRecorded, complete, cutoff };
+    const complete = historyComplete && historyThrough >= today && cutoff &&
+      records.length > 0 && records.every((transaction) => transaction && historyFrom <= transaction.date);
+    return { row, index, isRecorded, complete, cutoff, records };
+  });
+  const claims = new Map();
+  for (const item of prepared.filter((item) => item.complete)) for (const transaction of item.records) {
+    const owners = claims.get(transaction.key) || [];
+    owners.push(item);
+    claims.set(transaction.key, owners);
+  }
+  // Ambiguous evidence cannot identify a unique logical balance after either row.
+  for (const owners of claims.values()) if (owners.length > 1) for (const owner of owners) owner.complete = false;
+  const owners = new Map(prepared.filter((item) => item.complete).flatMap((item) =>
+    item.records.map((transaction) => [transaction.key, item])));
+  const grouped = new Map();
+  for (const transaction of history) {
+    const owner = owners.get(transaction.key);
+    const key = owner ? `row:${owner.index}:${transaction.date}` : `transaction:${transaction.key}`;
+    const event = grouped.get(key) || { date: transaction.date, records: [], owner };
+    event.key = transaction.key;
+    event.records.push(transaction);
+    grouped.set(key, event);
+  }
+  const savedEvents = [...grouped.values()].sort(compareRecorded);
+  const logicalByDate = new Map();
+  for (const event of savedEvents) if (event.owner) {
+    const logical = logicalByDate.get(event.date) || [];
+    logical.push(event);
+    logicalByDate.set(event.date, logical);
+  }
+  for (const logical of logicalByDate.values()) logical.sort((first, second) => first.owner.index - second.owner.index);
+  const dayCursors = new Map();
+  // Posting IDs reflect write order, so use planner order in the represented slots.
+  // Hidden history keeps its saved slot; cross-date transfer legs keep their actual dates.
+  const events = savedEvents.map((event) => {
+    if (!event.owner) return event;
+    const index = dayCursors.get(event.date) || 0;
+    dayCursors.set(event.date, index + 1);
+    return logicalByDate.get(event.date)[index];
   });
   const historical = new Map();
   const reversed = new Map(current);
-  let cursor = history.length - 1;
-  for (const { index, cutoff } of recordedRows.sort((first, second) => compareRecorded(second.cutoff, first.cutoff))) {
-    while (cursor >= 0 && compareRecorded(history[cursor], cutoff) > 0) {
-      const transaction = history[cursor--];
+  for (const event of [...events].reverse()) {
+    if (event.owner?.cutoff.date === event.date) historical.set(event.owner.index, snapshot(reversed));
+    for (const transaction of [...event.records].reverse()) {
       const account = byId.get(Number(transaction.accountId));
       const value = reversed.get(Number(transaction.accountId));
       if (!account || account.currency !== transaction.currency || value == null) continue;
       const delta = (transaction.kind === "income" ? 1 : -1) * (isDebt(account) ? -1 : 1) * Number(transaction.amount);
       reversed.set(Number(transaction.accountId), roundMoney(value - delta));
     }
-    historical.set(index, snapshot(reversed));
   }
   const projected = new Map(current);
   return prepared.map(({ row, index, isRecorded, complete, cutoff }) => {
@@ -153,7 +185,7 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
       }
     if (isRecorded) return { ...row, accountBalanceSnapshot: complete ? historical.get(index) : snapshot(new Map()),
       accountBalanceSnapshotKind: complete ? "recorded" : "unavailable",
-      accountBalanceSnapshotNote: complete ? `After recorded activity on ${cutoff.date}. Reconstructed from current balances and later recorded movements; same-day records follow saved order.`
+      accountBalanceSnapshotNote: complete ? `After recorded activity on ${cutoff.date}. Reconstructed from current balances and later recorded movements; same-day rows follow planner order.`
         : "Recorded balance history is incomplete for this row. Current balances are available in the summary above." };
     if (row.date >= today && !row.completed) return { ...row, accountBalanceSnapshot: snapshot(projected),
       accountBalanceSnapshotKind: "projected", accountBalanceSnapshotNote: "Projected account balances after this transaction. Card and loan balances show the amount owed." };

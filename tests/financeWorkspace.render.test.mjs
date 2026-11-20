@@ -12,6 +12,8 @@ import * as insights from "../app/lib/financeInsights.mjs";
 import * as accountPlan from "../app/lib/financeAccountPlan.mjs";
 import * as livePlanner from "../app/lib/financeLivePlanner.mjs";
 import * as primaryPlanner from "../app/lib/financePrimaryPlanner.mjs";
+import { financePlanPostingSpecs, financePlanTransactionMetadata } from "../app/lib/financePlanPostings.mjs";
+import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
 // Render the actual workspace and its child components with Next's JSX compiler.
 // Stylesheets do not affect the financial values asserted here.
@@ -1498,6 +1500,54 @@ test("workspace live projections follow refreshed accounts despite legacy captur
     assert.ok(html.includes(`Projected balance${planner.money(balance)}`));
     assert.ok(!html.includes("$999.00"));
   }
+});
+
+test("November 20 account balances follow each displayed transaction before the final JCB Fill expense", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const plan = { ...base, continuous: true, balanceMode: "live", includeTransactions: true,
+    includeIncome: false, includeAllocations: true, includeAnnualReserve: false, completedRows: [], entries: [
+      { id: "z-fill", date: today, description: "Fill", kind: "expense", amount: 26487.24, currency: "PHP", accountId: 37 },
+      { id: "income", date: today, description: "Savings deposit", kind: "income", amount: 44576.70, currency: "PHP", accountId: 34 },
+      { id: "y-payment", date: today, description: "JCB payment", kind: "transfer", amount: 20000, currency: "PHP", fromAccountId: 34, toAccountId: 37 },
+    ] };
+  const props = fixture("plans", 0, { plans: [plan], bills: [],
+    salary: { amount: 0, currency: "PHP", payFrequency: "biweekly", firstPayDate: today },
+    allocations: [1, 2, 3].map((id) => ({ id: `bill-${id}`, name: `Bill ${id}`, kind: "expense",
+      amount: 1, currency: "PHP", accountId: 2 })) });
+  props.today = today;
+  const rawAccounts = [
+    { id: 34, name: "RCBC", account_type: "checking", currency: "PHP", opening_balance: 42977.38 },
+    { id: 37, name: "JCB", account_type: "credit", currency: "PHP", opening_balance: 4336.88 },
+    { id: 2, name: "Cash", account_type: "cash", currency: "PHP", opening_balance: 100 },
+  ];
+  const specs = financePlanPostingSpecs(props.snapshot.document, rawAccounts, [], { today, rate: 58 });
+  const receipts = specs.map((spec, index) => ({ id: 100 + index, transaction_date: spec.date, kind: spec.kind,
+    account_id: spec.accountId, amount: spec.amount, currency: spec.currency, merchant: spec.description, category: spec.category,
+    source_plan_id: spec.planId, source_plan_row_id: spec.rowId, source_plan_leg: spec.leg, plan_generated: 1,
+    plan_record_json: JSON.stringify(spec) }));
+  const transactions = receipts.map((receipt) => ({ ...financePlanTransactionMetadata(receipt), id: receipt.id,
+    date: receipt.transaction_date, kind: receipt.kind, accountId: receipt.account_id, amount: receipt.amount,
+    currency: receipt.currency, merchant: receipt.merchant, category: receipt.category }));
+  props.initialActivity = { ...props.initialActivity, balanceAsOf: today, accounts: rawAccounts.map((account) =>
+    mapFinanceActivityAccount({ ...account, native_movement: receipts.filter((receipt) => receipt.account_id === account.id)
+      .reduce((total, receipt) => total + (receipt.kind === "income" ? 1 : -1) * receipt.amount, 0) })) };
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions, balanceTransactions: transactions,
+    balanceHistoryFrom: plan.startDate, balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const input = structuredClone(props);
+  const rows = table(props).rows;
+  assert.deepEqual(rows.map((row) => row.description), ["Savings deposit", "Expense allocation · Bill 1", "Expense allocation · Bill 2",
+    "Expense allocation · Bill 3", "JCB payment", "Fill"]);
+  const balances = (accountId) => rows.map((row) => row.accountBalanceSnapshot.find((account) => account.accountId === accountId).balance);
+  assert.deepEqual(balances(37), [4336.88, 4336.88, 4336.88, 4336.88, -15663.12, 10824.12]);
+  assert.deepEqual(balances(34), [87554.08, 87554.08, 87554.08, 87554.08, 67554.08, 67554.08]);
+  assert.deepEqual(balances(2), [100, 99, 98, 97, 97, 97]);
+  assert.ok(rows.every((row) => row.accountBalanceSnapshotKind === "recorded"));
+  assert.equal(rows.at(-1).amount, 26487.24);
+  assert.equal(props.initialActivity.accounts.find((account) => account.id === 37).nativeCurrentBalance, 10824.12);
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  assert.match(html, /-₱26,487\.24/);
+  assert.deepEqual(props, input, "computing row balances cannot rewrite the account's current value or planner entries");
 });
 
 test("recording part of a live card payment retains the future balance target", async () => {
