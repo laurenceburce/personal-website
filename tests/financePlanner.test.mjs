@@ -749,6 +749,75 @@ test("explicit early payment links satisfy their scheduled bill without duplicat
   assert.equal(partial.at(-1).balanceUsd, 900);
 });
 
+test("one-cent monthly bill matches retain actual charges without adding a cent to future card payments", () => {
+  const document = { salary: {}, allocations: [], bills: [{ id: "google", name: "Google", cadence: "monthly",
+    dueDay: 18, amount: 2, currency: "USD", accountId: 2 }] };
+  const base = { id: "live", startDate: "2026-11-01", endDate: "2026-12-20", balanceMode: "live", openingUsd: 0,
+    accountLinks: { availableUsdAccountId: 1 }, includeIncome: false, includeAllocations: false, includeAnnualReserve: false,
+    entries: [{ id: "pay-card", date: "2026-11-21", description: "Pay full card", kind: "transfer", amountMode: "cardBalance",
+      amount: 100, currency: "USD", fromAccountId: 1, toAccountId: 2 }] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 100 }];
+  for (const includeTransactions of [true, false]) for (const linked of [true, false]) {
+    const transaction = { id: 101, date: "2026-11-18", kind: "expense", accountId: 2, amount: 1.99, currency: "USD",
+      merchant: "GOOGLE *Google One", provider: "plaid", ...(linked ? { planId: base.id, planRowId: "entry:actual-google",
+        planScheduledRowId: "bill:google:2026-11-18" } : {}) };
+    const plan = { ...base, includeTransactions };
+    const before = structuredClone({ plan, document, accounts, transaction });
+    const rows = buildPlanRows(plan, document, 58, { accounts, transactions: [transaction], today: "2026-11-20" });
+    assert.equal(rows.find((row) => row.entryId === "pay-card").amount, 100, `linked=${linked}, visible=${includeTransactions}`);
+    assert.equal(rows.some((row) => row.id === "bill:google:2026-11-18" && !row.completed), false, "a matched cent difference cannot leave an unpaid remainder");
+    const nextMonth = rows.find((row) => row.id === "bill:google:2026-12-18");
+    assert.equal(nextMonth.amount, 2, "only the paid occurrence settles; the next bill retains its saved amount");
+    assert.equal(nextMonth.completed, false);
+    if (includeTransactions) {
+      const actual = rows.find((row) => row.transactionId === transaction.id);
+      assert.equal(actual.amount, 1.99);
+      assert.equal(actual.completed, true);
+      assert.equal(actual.billId, "google");
+    } else if (!linked) {
+      const bill = rows.find((row) => row.source === "bill");
+      assert.equal(bill.completed, true);
+      assert.deepEqual(bill.matchedTransactionIds, [transaction.id]);
+    }
+    assert.deepEqual({ plan, document, accounts, transaction }, before);
+  }
+  const partial = buildPlanRows(base, document, 58, { accounts, today: "2026-11-20", transactions: [
+    { id: 101, date: "2026-11-18", kind: "expense", accountId: 2, amount: 1.98, currency: "USD", merchant: "GOOGLE *Google One",
+      planId: base.id, planRowId: "entry:actual-google", planScheduledRowId: "bill:google:2026-11-18" },
+  ] });
+  assert.equal(partial.find((row) => row.source === "bill").amount, 0.02);
+  assert.equal(partial.find((row) => row.source === "bill").completed, false);
+  assert.equal(partial.find((row) => row.entryId === "pay-card").amount, 100.02);
+  for (const patch of [{ pending: true }, { accountId: 3 }, { kind: "income" }, { currency: "PHP" }]) {
+    const guarded = buildPlanRows(base, document, 58, { accounts, today: "2026-11-20", transactions: [
+      { id: 101, date: "2026-11-18", kind: "expense", accountId: 2, amount: 1.99, currency: "USD", merchant: "GOOGLE *Google One",
+        planId: base.id, planRowId: "entry:actual-google", planScheduledRowId: "bill:google:2026-11-18", ...patch },
+    ] });
+    const unpaid = guarded.find((row) => row.id === "bill:google:2026-11-18");
+    assert.equal(unpaid.amount, 2, JSON.stringify(patch));
+    assert.equal(unpaid.completed, false, JSON.stringify(patch));
+  }
+});
+
+test("bill rounding does not forgive a linked salary or manual-entry cent remainder", () => {
+  const base = { id: "live", startDate: "2026-11-18", endDate: "2026-11-20", openingUsd: 100, includeIncome: true,
+    includeTransactions: true, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  for (const source of ["salary", "manual"]) {
+    const document = { salary: source === "salary" ? { amount: 4, currency: "USD", accountId: 1,
+      firstPayDate: "2026-11-18", payFrequency: "semimonthly" } : {}, bills: [], allocations: [] };
+    const plan = source === "manual" ? { ...base, entries: [{ id: "purchase", description: "Purchase", date: "2026-11-18",
+      amount: 2, currency: "USD", kind: "expense", accountId: 1 }] } : base;
+    const rowId = source === "salary" ? "salary:2026-11-18" : "entry:purchase";
+    const rows = buildPlanRows(plan, document, 58, { today: "2026-11-20", transactions: [{ id: 101, date: "2026-11-18",
+      kind: source === "salary" ? "income" : "expense", accountId: 1, currency: "USD", amount: 1.99, merchant: "Actual receipt",
+      planId: base.id, planRowId: "entry:actual", planScheduledRowId: rowId }] });
+    const remaining = rows.find((row) => row.id === rowId);
+    assert.equal(remaining.amount, 0.01, source);
+    assert.equal(remaining.completed, false, source);
+  }
+});
+
 test("unavailable native starting balances are excluded with a reason, never NaN or an available-balance fallback", () => {
   const accounts = [
     { id: 1, currency: "USD", nativeCurrentBalance: null, currentBalance: 50, availableBalance: 60 },

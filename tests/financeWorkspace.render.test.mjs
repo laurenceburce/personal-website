@@ -956,6 +956,38 @@ test("posted matches mark forecast rows done even when recorded cashflow rows ar
   assert.equal(table(props).rows.length, 1, "a bank match and its forecast share one visible row");
 });
 
+test("the Google monthly bill is automatically done for its posted card charge without a penny payment action", () => {
+  for (const linked of [false, true]) {
+    const base = fixture("plans", 0).snapshot.document.plans[0];
+    const props = fixture("plans", 0, {
+      bills: [{ id: "google", name: "Google", amount: 2, currency: "USD", cadence: "monthly", dueDay: 18, accountId: 3 }],
+      plans: [{ ...base, continuous: true, balanceMode: "live", includeTransactions: true }],
+    }, { balanceAsOf: "2026-11-20", accounts: [{ id: 3, name: "US Bank Credit", type: "credit", currency: "USD",
+      isLinked: true, nativeCurrentBalance: 1.99 }] });
+    props.today = "2026-11-20";
+    const charge = { id: 123, date: "2026-11-18", merchant: "GOOGLE *Google One", amount: 1.99, currency: "USD",
+      kind: "expense", accountId: 3, provider: "plaid", ...(linked ? { planId: base.id, planRowId: "entry:google-receipt",
+        planScheduledRowId: "bill:google:2026-11-18", planGenerated: false } : {}) };
+    props.initialPlanActivity = { ...props.initialPlanActivity, transactions: [charge], balanceTransactions: [charge],
+      balanceHistoryFrom: base.startDate, balanceHistoryThrough: props.today, balanceHistoryComplete: true };
+    const ledger = table(props);
+    assert.equal(ledger.rows.length, 1, "the existing card charge replaces its monthly forecast once");
+    const row = ledger.rows[0];
+    assert.equal(row.transactionId, 123);
+    assert.equal(row.completed, true);
+    assert.equal(row.completionSource, "transaction");
+    assert.equal(row.amount, 1.99);
+    assert.equal(row.scheduledSource, "bill");
+    assert.equal(row.accountBalanceSnapshot.find((account) => account.accountId === 3).balance, 1.99);
+    const forecast = analytics(props);
+    assert.equal(forecast.debt.USD.current, 1.99);
+    assert.equal(forecast.debt.USD.projected, 1.99);
+    const html = renderToStaticMarkup(createElement(Workspace, alignFixture(props)));
+    assert.match(html, /fpt-status-done[^>]*>Done</);
+    assert.doesNotMatch(html, /Record payment: Google|fpt-row-overdue/);
+  }
+});
+
 test("a balance read failure keeps the plan popup and its last bank data available", async () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const account = {

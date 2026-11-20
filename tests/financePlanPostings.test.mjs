@@ -394,6 +394,26 @@ test("same-save actual payments replace a scheduled bill and partial payments po
   }
 });
 
+test("a recorded Google card charge does not generate a one-cent recurring bill remainder on refresh", async () => {
+  const receipt = entry({ id: "google-receipt", description: "GOOGLE *Google One", accountId: 37,
+    currency: "USD", amount: 1.99, scheduledRowId: `bill:google:${today}` });
+  const document = livePlanner([receipt]);
+  document.bills = [{ id: "google", name: "Google", amount: 2, currency: "USD", cadence: "monthly", dueDay: 18, accountId: 37 }];
+  const store = ledger([manual(37, "credit", 0, "USD")], document);
+  await store.refresh(); await store.refresh();
+  assert.deepEqual(store.rows().map((row) => [row.source_plan_row_id, row.amount]), [["entry:google-receipt", 1.99]]);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 1.99, "the card keeps the actual charge rather than the rounded forecast");
+  const receiptId = store.rows()[0].id;
+  assert.equal(financePlanTransactionMetadata(store.rows()[0]).planScheduledRowId, `bill:google:${today}`);
+
+  receipt.amount = 1.50;
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().find((row) => row.id === receiptId).amount, 1.50);
+  assert.equal(store.rows().find((row) => row.source_plan_row_id === `bill:google:${today}`).amount, 0.50,
+    "a real partial payment still records its remaining bill amount");
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 2);
+});
+
 test("annual funding and its reserve-covered payment use native transfer legs without spending twice", async () => {
   const document = livePlanner();
   document.salary = { amount: 0, currency: "PHP", accountId: 1, payFrequency: "biweekly", firstPayDate: today };

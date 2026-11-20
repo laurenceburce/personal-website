@@ -542,6 +542,13 @@ function scheduledPlanTransaction(forecast, transaction) {
     String(forecast.planId) === String(transaction.planId) && String(forecast.id) === String(transaction.planScheduledRowId);
 }
 
+function unpaidForecastAmount(forecast, paid, amount = forecast.amount) {
+  const remaining = Math.max(0, roundMoney(amount - paid));
+  // Bill matching already accepts one cent of rounding. Linked receipts and
+  // card projections must not create a remainder for that same difference.
+  return forecast.source === "bill" && paid > 0 && remaining <= 0.01 ? 0 : remaining;
+}
+
 export function forecastMatchesTransaction(forecast, transaction) {
   if (forecast.partialPayment && scheduledPlanTransaction(forecast, transaction)) return false;
   if (
@@ -1424,12 +1431,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const exact = postedCardActivity.filter((transaction) => sameLeg(transaction) &&
       (exactPlanTransaction(row, transaction) || scheduledPlanTransaction(row, transaction) ||
         (row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.id))));
-    if (exact.length) return Math.max(0, roundMoney(Math.abs(leg.amount) - exact.reduce((sum, transaction) => sum + Number(transaction.amount), 0)));
+    if (exact.length) return unpaidForecastAmount(row, exact.reduce((sum, transaction) => sum + Number(transaction.amount), 0), Math.abs(leg.amount));
     const candidates = postedCardActivity.filter((transaction) => sameLeg(transaction) && !claimedCardRecords.has(String(transaction.id)) &&
       (["transfer", "conversion"].includes(row.kind) ? matchesTransferLeg(row, transaction, leg) : forecastMatchesTransaction(row, transaction)));
     if (candidates.length === 1) {
       claimedCardRecords.add(String(candidates[0].id));
-      return Math.max(0, roundMoney(Math.abs(leg.amount) - Number(candidates[0].amount)));
+      return unpaidForecastAmount(row, Number(candidates[0].amount), Math.abs(leg.amount));
     }
     return Math.abs(leg.amount);
   };
@@ -1635,7 +1642,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
       (forecast.accountId == null || Number(forecast.accountId) === Number(transaction.accountId)));
     if (!payments.length) continue;
     const paid = roundMoney(payments.reduce((total, transaction) => total + transaction.amount, 0));
-    const remaining = Math.max(0, roundMoney(forecast.amount - paid));
+    const remaining = unpaidForecastAmount(forecast, paid);
     for (const transaction of payments) linkedSchedules.set(transaction.id, { ...forecast });
     if (remaining === 0) explicitlyPaidForecasts.add(forecast.id);
     else Object.assign(forecast, nativeFlow(remaining, forecast.currency, forecast.kind), {
