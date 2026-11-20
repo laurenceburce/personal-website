@@ -15,6 +15,12 @@ function Field({ label, children, hint }) {
   );
 }
 
+const activeManualAccount = (account) => account && Number(account.id) > 0 &&
+  !account.isLinked && !account.provider && !account.external_provider &&
+  !account.externalAccountId && !account.external_account_id && !account.connectionId && !account.connection_id &&
+  !account.isArchived && !account.is_archived && !account.isSyncExcluded && !account.is_sync_excluded &&
+  !account.mergedIntoAccountId && !account.merged_into_account_id;
+
 export default function FinancePlanEntryForm({
   entry,
   plan,
@@ -25,6 +31,7 @@ export default function FinancePlanEntryForm({
   disabled,
   rate,
   completed = false,
+  autoRecordManualAccounts = false,
   today = localDate(),
 }) {
   const [draft, setDraft] = useState(() => ({
@@ -36,7 +43,7 @@ export default function FinancePlanEntryForm({
     ...entry,
     kind: entry?.kind === "transfer" && accounts.some((account) => Number(account.id) === Number(entry.toAccountId) && account.type === "credit")
       ? "cardPayment" : entry?.kind || "expense",
-    recordNow: entry ? completed : false,
+    recordNow: entry || completed ? completed : null,
     recurrence: entry?.recurrence || "once",
     repeatUntil: entry?.repeatUntil || "",
   }));
@@ -45,7 +52,11 @@ export default function FinancePlanEntryForm({
   const recurring = draft.recurrence !== "once";
   const cardPayment = draft.kind === "cardPayment";
   const transfer = draft.kind === "transfer" || cardPayment;
-  const recording = !recurring && draft.recordNow;
+  const selectedAccountIds = transfer || draft.kind === "conversion"
+    ? [draft.fromAccountId, draft.toAccountId] : [draft.accountId];
+  const automaticRecording = autoRecordManualAccounts && !entry && formatDate(draft.date) !== "—" && draft.date <= today &&
+    selectedAccountIds.some((id) => accounts.some((account) => Number(account.id) === Number(id) && activeManualAccount(account)));
+  const recording = !recurring && (draft.recordNow ?? automaticRecording);
   const liveCardBalance = cardPayment && !recording && draft.amountMode === "cardBalance";
   const card = accounts.find((account) => Number(account.id) === Number(draft.toAccountId));
   const currentDebt = card?.nativeCurrentBalance;
@@ -85,7 +96,7 @@ export default function FinancePlanEntryForm({
           description: draft.description.trim(),
           amount: Number(paymentAmount),
           ...(cardPayment || draft.amountMode ? { amountMode: liveCardBalance ? "cardBalance" : "fixed" } : {}),
-          ...(!recurring ? { recordNow: Boolean(recordNow) } : {}),
+          ...(!recurring ? { recordNow: Boolean(recording) } : {}),
           recurrence: draft.recurrence,
           repeatUntil: recurring ? draft.repeatUntil || null : null,
         });
@@ -123,7 +134,9 @@ export default function FinancePlanEntryForm({
           onChange={(event) => set("description", event.target.value)}
         />
       </Field>
-      {!recurring && <Field label="Status" hint="Recorded rows update your accounts. Linked bank transactions replace matching records when they arrive.">
+      {!recurring && <Field label="Status" hint={recording
+        ? "Saving records this transaction and updates your account balances. Matching bank transactions replace these records when they arrive."
+        : "Planned rows affect projections. Choose Recorded after a transaction happens to update your account balances."}>
         <select value={recording ? "recorded" : "planned"} onChange={(event) => {
           set("recordNow", event.target.value === "recorded");
           setError("");
@@ -253,7 +266,8 @@ export default function FinancePlanEntryForm({
       </p>}
       {draft.kind === "transfer" && (
         <p className="fp-inline-note">
-          This planned transfer moves money between accounts and leaves your total funds unchanged.
+          {recording ? "Recording updates both account balances and leaves your total funds unchanged."
+            : "This planned transfer moves money between accounts and leaves your total funds unchanged."}
           Moving linked savings into a spending account increases available funds; moving money into savings sets it aside.
           No bank transfer is initiated.
         </p>

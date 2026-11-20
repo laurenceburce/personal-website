@@ -208,6 +208,154 @@ test("new one-time entries start today within plan bounds and stay planned until
   }
 });
 
+test("live planner additions to manual accounts record native income and expenses by default", () => {
+  for (const kind of ["income", "expense"]) {
+    const form = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts: cardAccounts });
+    let tree = form.render();
+    assert.equal(input(tree, "Status", "select").props.value, "planned");
+    input(tree, "Entry type", "select").props.onChange({ target: { value: kind } });
+    input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+    input(tree, "Description", "input").props.onChange({ target: { value: "Actual movement" } });
+    amountInput(tree).props.onChange({ target: { value: "10457.95" } });
+    tree = form.render();
+    accountSelect(tree, kind === "income" ? "Receive into account" : "Pay from account").props.onChange(kind === "income" ? 34 : 37);
+    tree = form.render();
+    assert.equal(input(tree, "Status", "select").props.value, "recorded");
+    assert.ok(plain(renderToStaticMarkup(tree)).includes("updates your account balances"));
+    tree.props.onSubmit({ preventDefault() {} });
+    assert.equal(form.saved().recordNow, true);
+    assert.equal(form.saved().kind, kind);
+    assert.equal(form.saved().amount, 10457.95);
+    assert.equal(form.saved().currency, "PHP");
+  }
+});
+
+test("automatic recording follows dates and accounts while an explicit planned choice stays selected", () => {
+  const linked = { id: 1, name: "Bank", type: "checking", currency: "PHP", isLinked: true, provider: "plaid" };
+  const form = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts: [...cardAccounts, linked] });
+  let tree = form.render();
+  input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+  tree = form.render();
+  accountSelect(tree, "Pay from account").props.onChange(34);
+  tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "recorded");
+  input(tree, "Date", "input").props.onChange({ target: { value: "2026-11-19" } });
+  tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "planned");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().recordNow, false);
+  input(tree, "Date", "input").props.onChange({ target: { value: "2026-11-17" } });
+  tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "recorded");
+  accountSelect(tree, "Pay from account").props.onChange(1);
+  tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "planned");
+  accountSelect(tree, "Pay from account").props.onChange(34);
+  tree = form.render();
+  input(tree, "Status", "select").props.onChange({ target: { value: "planned" } });
+  input(tree, "Date", "input").props.onChange({ target: { value: "2026-11-18" } });
+  accountSelect(tree, "Pay from account").props.onChange(37);
+  tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "planned");
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().recordNow, false);
+});
+
+test("a manual account on either transfer or conversion leg records the actual movement", () => {
+  for (const kind of ["transfer", "conversion"]) {
+    for (const manualLeg of ["from", "to"]) {
+      const accounts = [
+        { id: 1, name: "Source", type: "checking", currency: "USD", isLinked: manualLeg !== "from" },
+        { id: 2, name: "Destination", type: "savings", currency: kind === "conversion" ? "PHP" : "USD", isLinked: manualLeg !== "to" },
+      ];
+      const form = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts });
+      let tree = form.render();
+      input(tree, "Entry type", "select").props.onChange({ target: { value: kind } });
+      amountInput(tree).props.onChange({ target: { value: "20" } });
+      tree = form.render();
+      accountSelect(tree, "From account").props.onChange(1);
+      accountSelect(tree, "To account").props.onChange(2);
+      tree = form.render();
+      assert.equal(input(tree, "Status", "select").props.value, "recorded");
+      tree.props.onSubmit({ preventDefault() {} });
+      assert.equal(form.saved().recordNow, true);
+      assert.equal(form.saved().kind, kind);
+      assert.equal(form.saved().fromAccountId, 1);
+      assert.equal(form.saved().toAccountId, 2);
+    }
+  }
+});
+
+test("linked, excluded and unavailable accounts never trigger automatic recording", () => {
+  for (const flags of [{ isLinked: true }, { provider: "plaid" }, { connectionId: 1 }, { externalAccountId: "bank-34" },
+    { isArchived: true }, { isSyncExcluded: true }, { mergedIntoAccountId: 99 }, { is_archived: true },
+    { is_sync_excluded: true }, { merged_into_account_id: 99 }]) {
+    const form = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts: [{ ...cardAccounts[0], ...flags }] });
+    let tree = form.render();
+    input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+    tree = form.render();
+    accountSelect(tree, "Pay from account").props.onChange(34);
+    tree = form.render();
+    assert.equal(input(tree, "Status", "select").props.value, "planned", JSON.stringify(flags));
+    tree.props.onSubmit({ preventDefault() {} });
+    assert.equal(form.saved().recordNow, false);
+  }
+});
+
+test("live planner defaults preserve existing status and keep recurring entries as forecasts", () => {
+  const existing = { id: "manual", date: "2026-11-18", description: "Existing", amount: 20,
+    currency: "PHP", kind: "expense", accountId: 34 };
+  for (const completed of [false, true]) {
+    const form = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts: cardAccounts, entry: existing, completed });
+    const tree = form.render();
+    assert.equal(input(tree, "Status", "select").props.value, completed ? "recorded" : "planned");
+    tree.props.onSubmit({ preventDefault() {} });
+    assert.equal(form.saved().recordNow, completed);
+  }
+  const recurring = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts: cardAccounts });
+  let tree = recurring.render();
+  input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+  tree = recurring.render();
+  accountSelect(tree, "Pay from account").props.onChange(34);
+  input(tree, "Repeat", "select").props.onChange({ target: { value: "daily" } });
+  tree = recurring.render();
+  assert.equal(field(tree, "Status"), undefined);
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.ok(!Object.hasOwn(recurring.saved(), "recordNow"));
+});
+
+test("new explicit recording forms honor completed without an existing entry", () => {
+  const form = harness({ completed: true, today: "2026-11-18", accounts: cardAccounts });
+  let tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "recorded");
+  input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+  tree = form.render();
+  accountSelect(tree, "Pay from account").props.onChange(37);
+  tree = form.render();
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().recordNow, true);
+});
+
+test("automatic manual card payments use the entered actual amount across balance refreshes", () => {
+  const form = harness({ autoRecordManualAccounts: true, today: "2026-11-18", accounts: cardAccounts });
+  let tree = form.render();
+  input(tree, "Entry type", "select").props.onChange({ target: { value: "cardPayment" } });
+  input(tree, "Currency", "select").props.onChange({ target: { value: "PHP" } });
+  tree = form.render();
+  accountSelect(tree, "From account").props.onChange(34);
+  accountSelect(tree, "Credit card").props.onChange(37);
+  tree = form.render();
+  assert.equal(input(tree, "Status", "select").props.value, "recorded");
+  assert.equal(field(tree, "Payment amount"), undefined);
+  assert.equal(amountInput(tree).props.readOnly, false);
+  amountInput(tree).props.onChange({ target: { value: "1250.75" } });
+  tree = form.render({ accounts: cardAccounts.map((account) => account.id === 37 ? { ...account, nativeCurrentBalance: 5000 } : account) });
+  tree.props.onSubmit({ preventDefault() {} });
+  assert.equal(form.saved().amount, 1250.75);
+  assert.equal(form.saved().amountMode, "fixed");
+  assert.equal(form.saved().recordNow, true);
+});
+
 test("recording a one-time row requires its actual account and a date no later than today", () => {
   const entry = { id: "fill", date: "2026-11-18", description: "Fill", kind: "expense", amount: 50,
     currency: "PHP", recurrence: "once", accountId: null };

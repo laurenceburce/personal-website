@@ -1333,6 +1333,49 @@ test("recording an early scheduled payment opens an actual transaction and refre
   assert.ok(calls.some((url) => url.startsWith("/api/finance/plan-activity")));
 });
 
+test("live planner additions enable manual-account recording and refresh actual balances without projecting the same expense twice", async () => {
+  const card = { id: 37, name: "Manual PHP card", type: "credit", currency: "PHP", isLinked: false, nativeCurrentBalance: 25000 };
+  const props = fixture("plans", 0, { bills: [] }, { accounts: [card] });
+  const renderWorkspace = workspaceHarness(props);
+  findElement(renderWorkspace(), (node) => node.type?.name === "Button" && node.props.children === "Add transaction").props.onClick();
+  const form = findElement(renderWorkspace(), (node) => node.type?.name === "FinancePlanEntryForm");
+  assert.equal(form.props.autoRecordManualAccounts, true);
+  assert.equal(form.props.today, props.today);
+  assert.equal(form.props.entry, undefined);
+  const expense = { id: "fill", date: props.today, description: "Fill", kind: "expense", amount: 10457.95,
+    currency: "PHP", accountId: 37, recurrence: "once" };
+  const calls = [];
+  let saved;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push(url);
+    if (options?.method === "PUT") {
+      saved = JSON.parse(options.body).document;
+      return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) };
+    }
+    if (url.startsWith("/api/finance/activity")) return { ok: true, json: async () => ({ ...props.initialActivity,
+      accounts: [{ ...card, nativeCurrentBalance: 35457.95 }] }) };
+    const query = new URL(url, "https://example.test").searchParams;
+    return { ok: true, json: async () => ({ configured: true, from: query.get("start"), to: query.get("end"), transactions: [
+      { ...expense, id: 91, merchant: "Fill", planId: saved.plans[0].id, planRowId: "entry:fill", planGenerated: true,
+        recordedInAccounts: true },
+    ] }) };
+  };
+  try { await form.props.onSave({ ...expense, recordNow: true }); }
+  finally { globalThis.fetch = originalFetch; }
+  assert.deepEqual(saved.plans[0].entries, [expense]);
+  assert.deepEqual(saved.plans[0].completedRows.map((item) => item.rowId), ["entry:fill"]);
+  assert.ok(calls.some((url) => url.startsWith("/api/finance/activity")));
+  assert.ok(calls.some((url) => url.startsWith("/api/finance/plan-activity")));
+  const tree = renderWorkspace();
+  const ledger = findElement(tree, (node) => node.type?.name === "FinancePlannerTable");
+  assert.equal(ledger.props.accounts[0].nativeCurrentBalance, 35457.95);
+  const actual = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+  assert.equal(actual.debt.PHP.current, 35457.95);
+  assert.equal(actual.debt.PHP.projected, 35457.95);
+  assert.equal(ledger.props.rows.filter((row) => row.description === "Fill").length, 1);
+});
+
 test("workspace live projections follow refreshed accounts despite legacy captured openings", () => {
   const base = fixture("plans", 0).snapshot.document.plans[0];
   const overrides = { bills: [], plans: [{ ...base, openingUsd: 0, startingAccounts: [{ accountId: 1, percentage: 100 }],

@@ -2125,6 +2125,8 @@ export default function FinanceAppClient({
               busy={busy}
               disabled={!state.configured}
               rate={rate}
+              today={today}
+              autoRecordManualAccounts
               completed={Boolean(modal.recording || (modal.entry && plan.completedRows?.some((row) => row.rowId === `entry:${modal.entry.id}`)))}
             />
           )}
