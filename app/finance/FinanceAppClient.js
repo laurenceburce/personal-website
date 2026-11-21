@@ -33,6 +33,7 @@ import Ledger from "./FinancePlannerTable";
 import FinancePlannerRange from "./FinancePlannerRange";
 import FinancePlannerAnalytics from "./FinancePlannerAnalytics";
 import { ensurePrimaryFinancePlanner } from "../lib/financePrimaryPlanner.mjs";
+import { getPlanRowOrderId, orderPlanRows } from "../lib/financePlanRowOrder.mjs";
 import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerOpeningRow, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../lib/financeLivePlanner.mjs";
 import { BillForm, BillsTable } from "./FinanceBills";
 import {
@@ -802,8 +803,8 @@ export default function FinanceAppClient({
       receipts.every((id) => pastReceiptIds.has(id)));
   });
   const rowsWithBalances = withLivePlannerBalances({ accounts, today,
-    rows: [...pastPlanRows, ...futureDisplayRows]
-      .filter((row) => row.source !== "salary" || Number(row.amount) > 0) });
+    rows: orderPlanRows([...pastPlanRows, ...futureDisplayRows]
+      .filter((row) => row.source !== "salary" || Number(row.amount) > 0), plan) });
   const balanceHistoryMatches = planRecordsMatch;
   const displayedPlanRows = withLivePlannerAccountSnapshots({ accounts, rows: rowsWithBalances, today,
     historyTransactions: balanceHistoryMatches ? planActivity.balanceTransactions || [] : [],
@@ -1200,6 +1201,19 @@ export default function FinanceAppClient({
         { ...document, plans: upsert(document.plans, row) },
         "Planner updated.",
       );
+  }
+  async function movePlanRow(row, direction) {
+    if (!plan || busy || row.isOpeningBalance || ![-1, 1].includes(direction)) return;
+    const sameDay = displayedPlanRows.filter((item) => item.date === row.date && !item.isOpeningBalance);
+    const rowIds = [...new Set(sameDay.map(getPlanRowOrderId))];
+    const index = rowIds.indexOf(getPlanRowOrderId(row));
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= rowIds.length) return;
+    [rowIds[index], rowIds[target]] = [rowIds[target], rowIds[index]];
+    await savePlan({ ...plan, rowOrder: [
+      ...(plan.rowOrder || []).filter((order) => order.date !== row.date),
+      { date: row.date, rowIds },
+    ] });
   }
   async function togglePlanCompletion(row) {
     if (!plan || busy || row.completionSource === "transaction") return;
@@ -1973,6 +1987,7 @@ export default function FinanceAppClient({
                     busy={busy} onToggleComplete={togglePlanCompletion} onRecord={recordScheduledRow}
                     onEditOccurrence={(row) => open({ type: "occurrence", row, planId: plan.id })}
                     onResetOccurrence={resetPlanOccurrence}
+                    onMoveRow={movePlanRow}
                     onEdit={(entry) => open({ type: "entry", entry })}
                     onDelete={(row) => open({ type: "deleteEntry", row })} />
                 )}

@@ -395,14 +395,20 @@ test("the authorized restart commits once with a backup, preserves financial his
   const edited = structuredClone(restarted.document);
   delete edited.plans[0].restart;
   edited.plans[0].id = "untrusted-client-id";
+  edited.plans[0].rowOrder = [{ date, rowIds: ["entry:future", "transaction:11"] }];
   edited.salary.amount += 1;
   const saved = await isolated.saveFinancePlanner(edited, 8);
   assert.equal(saved.document.plans[0].id, "plan-1");
   assert.deepEqual(saved.document.plans[0].restart, restarted.document.plans[0].restart);
+  assert.deepEqual(saved.document.plans[0].rowOrder, edited.plans[0].rowOrder);
   const tampered = structuredClone(saved.document);
   tampered.plans[0].restart = { version: 99, date: "invalid", transactionId: -1 };
   const preserved = await isolated.saveFinancePlanner(tampered, 9);
   assert.deepEqual(preserved.document.plans[0].restart, restarted.document.plans[0].restart);
+  assert.deepEqual(preserved.document.plans[0].rowOrder, edited.plans[0].rowOrder);
+  const reloaded = await isolated.getFinancePlanner();
+  assert.equal(reloaded.revision, preserved.revision, "loading a saved row order does not create another revision");
+  assert.deepEqual(reloaded.document.plans[0].rowOrder, edited.plans[0].rowOrder);
   assert.equal(state.restart_backup, initialDocument);
   assert.deepEqual(financialRows(), initialFinancial);
   assert.deepEqual(accounts, initialAccounts);
@@ -852,6 +858,48 @@ test("live starting account selections persist bounded percentages and validate 
     planner.plans[0].startingAccounts = starting;
     assert.throws(() => validateFinancePlanner(planner), /Starting balance|Starting balances|starting balance/);
   }
+});
+
+test("row order preserves date-local priority and stale canonical identifiers independently of the view", () => {
+  const planner = document();
+  assert.deepEqual(validateFinancePlanner(planner).plans[0].rowOrder, []);
+  planner.plans[0].rowOrder = [
+    { date: "2026-11-20", rowIds: [" entry:conversion-1 ", "transaction:11", "linked-transfer:12:13"], ignored: true },
+    { date: "2026-11-19", rowIds: ["transaction:11", "bill:removed:2026-11-19"] },
+    { date: "2030-01-01", rowIds: ["__proto__", "constructor", "future-source:unknown"] },
+  ];
+  const before = structuredClone(planner);
+  const clean = validateFinancePlanner(planner);
+  assert.deepEqual(clean.plans[0].rowOrder, [
+    { date: "2026-11-20", rowIds: ["entry:conversion-1", "transaction:11", "linked-transfer:12:13"] },
+    { date: "2026-11-19", rowIds: ["transaction:11", "bill:removed:2026-11-19"] },
+    { date: "2030-01-01", rowIds: ["__proto__", "constructor", "future-source:unknown"] },
+  ]);
+  assert.deepEqual(validateFinancePlanner(clean), clean);
+  assert.deepEqual(planner, before);
+  assert.equal({}.polluted, undefined);
+});
+
+test("row order rejects ambiguous dates and references, invalid text and excessive collections", () => {
+  const ordered = (rowOrder) => {
+    const planner = document();
+    planner.plans[0].rowOrder = rowOrder;
+    return planner;
+  };
+  for (const invalid of [
+    null, {}, "rows", [null], [{ date: "2026-02-30", rowIds: [] }], [{ date: "1899-12-31", rowIds: [] }],
+    [{ date: "2026-11-20", rowIds: [] }, { date: "2026-11-20", rowIds: ["entry:one"] }],
+    [{ date: "2026-11-20", rowIds: "entry:one" }], [{ date: "2026-11-20", rowIds: ["entry:one", " entry:one "] }],
+    ...["", " ", "row\u0000id", "row\nid", "row\u007fid", "x".repeat(241), 42, true, null, {}, []]
+      .map((id) => [{ date: "2026-11-20", rowIds: [id] }]),
+    Array.from({ length: 2001 }, (_, index) => ({ date: addDays("2026-01-01", index), rowIds: [] })),
+    [{ date: "2026-11-20", rowIds: Array.from({ length: 10001 }, (_, index) => `transaction:${index + 1}`) }],
+  ]) assert.throws(() => validateFinancePlanner(ordered(invalid)), /row order/i);
+  const valid = validateFinancePlanner(ordered([
+    { date: "2026-11-20", rowIds: Array.from({ length: 5000 }, (_, index) => `transaction:${index + 1}`) },
+    { date: "2026-11-21", rowIds: Array.from({ length: 5000 }, (_, index) => `transaction:${index + 1}`) },
+  ]));
+  assert.equal(valid.plans[0].rowOrder.reduce((sum, row) => sum + row.rowIds.length, 0), 10000);
 });
 
 test("completed plan rows retain orphan history but store only validated identifiers and timestamps", () => {

@@ -14,6 +14,7 @@
 .fp-app .fpt-filter-tabs button:disabled, .fp-app .fpt-actions button:disabled,
 .fp-app .fpt-account-columns-toggle:disabled, .fp-app .fpt-balance-expand:disabled, .fp-app .fpt-jump-current:disabled { opacity: .45; cursor: default; }
 .fp-app .fpt-count { margin-left: auto; color: #52675b; font-size: 11px; white-space: nowrap; }
+.fp-app .fpt-order-hint { margin: -4px 0 12px; color: #52675b; font-size: 11px; line-height: 1.6; }
 .fp-app .fpt-account-visibility { min-width: 0; margin: 0 0 12px; padding: 7px 11px 10px; border: 1px solid #d4dfd8; border-radius: 7px; background: #f7faf8; }
 .fp-app .fpt-account-visibility legend { padding: 0 4px; color: #476052; font-size: 11px; font-weight: 600; }
 .fp-app .fpt-account-visibility-options { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; }
@@ -81,6 +82,8 @@
 .fp-app .fpt-action-menu button { display: block; width: 100%; padding: 8px 9px; border: 0; border-radius: 4px; background: transparent; color: #4c6857; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
 .fp-app .fpt-action-menu button:hover { background: #f3f7f3; }
 .fp-app .fpt-action-menu button.fpt-delete { color: #a44c3c; }
+.fp-app .fpt-row-order-actions { margin-top: 4px; padding-top: 4px; border-top: 1px solid #e0e8e2; }
+.fp-app .fpt-action-menu button:disabled { opacity: .45; cursor: default; }
 
 /* Amounts and context stay with the account that changed. */
 .fp-app .fpt-table .fpt-account-balance-heading { background: #f1f6f3; }

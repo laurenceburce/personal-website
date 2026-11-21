@@ -1,6 +1,7 @@
 import { addDays, buildPlanRows, convert, entryOccurrences, forecastMatchesTransaction, localDate, roundMoney } from "./financePlanner.mjs";
 import { buildAccountPlan } from "./financeAccountPlan.mjs";
 import { mapFinanceActivityAccount } from "./financeActivity.mjs";
+import { orderPlanRows } from "./financePlanRowOrder.mjs";
 
 const DAY = 86400000;
 const keyFor = (planId, rowId, leg) => JSON.stringify([planId, rowId, leg]);
@@ -180,8 +181,8 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
     }
     const running = new Map();
     const priority = (row) => row.kind === "transfer" ? 2 : row.kind === "conversion" ? 1 : 0;
-    candidates.sort((first, second) => first.row.date.localeCompare(second.row.date) || priority(first.row) - priority(second.row));
-    for (const { row, rowId } of candidates) {
+    const orderedCandidates = orderPlanRows(candidates.map((candidate) => ({ ...candidate.row, id: candidate.rowId, source: "manual", candidate })), plan, { priority });
+    for (const { candidate: { row, rowId } } of orderedCandidates) {
         const explicitlyRecorded = completed.has(rowId);
         const transfer = ["transfer", "conversion"].includes(row.kind);
         const partialConversion = authoritative && row.kind === "conversion";
@@ -196,7 +197,8 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
           (transfer ? prior.get(keyFor(plan.id, rowId, "credit")) : null);
         const frozen = same(old?.signature, signature);
         const dynamic = authoritative && manualAccount(target) && row.amountMode === "cardBalance" && !frozen;
-        if (dynamic) dynamicPayments.push({ planId: plan.id, rowId, date: row.date, accountId: Number(target.id) });
+        if (dynamic) dynamicPayments.push({ planId: plan.id, rowId, id: rowId, date: row.date, accountId: Number(target.id),
+          kind: "transfer", source: "manual", amountMode: "cardBalance" });
         const recordedRate = frozen ? old.conversionRate : Number.isFinite(Number(rate)) && Number(rate) > 0 ? Number(rate) : 58;
         const amount = frozen ? old.sourceAmount : row.amountMode === "cardBalance" && target
           ? Math.max(0, nativeBalance(target) + (running.get(Number(target.id)) || 0)) : money(row.amount);
@@ -243,10 +245,19 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
     const evidence = specs.filter((spec) => !unresolved.has(keyFor(spec.planId, spec.rowId, "")));
     const scheduled = scheduledManualSpecs(document, primary, accounts, existing, evidence, transactions, today, rate, frozenEvents);
     const target = byId.get(payment.accountId);
+    const orderedDay = primary.rowOrder?.some((day) => day.date === payment.date && day.rowIds?.length);
+    const beforePayment = (spec) => {
+      if (spec.date !== payment.date) return spec.date < payment.date;
+      const event = { id: spec.rowId, date: spec.date, source: spec.plannerSource || "manual",
+        kind: spec.transferAccountId ? "transfer" : spec.kind, amountMode: spec.signature?.[7] };
+      const priority = (row) => row.source === "creditCardDue" ? 3 : row.amountMode === "cardBalance" ? 2
+        : ["transfer", "conversion"].includes(row.kind) ? 1 : 0;
+      return orderPlanRows([event, payment], primary, { priority })[0] === event;
+    };
     const earlierCustom = evidence.filter((spec) => spec.planId === primary.id && spec.accountId === payment.accountId &&
-      spec.date <= payment.date && !spec.reusedTransactionId);
+      (orderedDay ? beforePayment(spec) : spec.date <= payment.date) && !spec.reusedTransactionId);
     const earlierScheduled = scheduled.filter((spec) => spec.accountId === payment.accountId &&
-      (spec.date < payment.date || (spec.date === payment.date && spec.plannerSource !== "creditCardDue")));
+      (orderedDay ? beforePayment(spec) : spec.date < payment.date || (spec.date === payment.date && spec.plannerSource !== "creditCardDue")));
     const amount = Math.max(0, money(nativeBalance(target) - [...earlierCustom, ...earlierScheduled].reduce((total, spec) => total + nativeDelta(spec), 0)));
     for (const spec of specs.filter((spec) => spec.planId === payment.planId && spec.rowId === payment.rowId)) {
       spec.amount = amount;

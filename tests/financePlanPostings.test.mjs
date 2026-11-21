@@ -260,6 +260,34 @@ const livePlanner = (entries = [], completed = []) => {
   return document;
 };
 
+test("saved same-day order sets new manual live-payment amounts and later reordering preserves posted receipts", async () => {
+  for (const generatedBill of [false, true]) for (const paymentFirst of [false, true]) {
+    const payment = entry({ id: "pay", description: "Pay card", kind: "transfer", accountId: null,
+      fromAccountId: 1, toAccountId: 37, amount: 0, amountMode: "cardBalance" });
+    const charge = entry({ id: "charge", amount: 100 });
+    const document = livePlanner(generatedBill ? [payment] : [charge, payment]);
+    if (generatedBill) document.bills = [{ id: "charge", name: "Card bill", amount: 100, currency: "PHP", cadence: "monthly", dueDay: 18, accountId: 37 }];
+    const chargeId = generatedBill ? `bill:charge:${today}` : "entry:charge";
+    const rowIds = paymentFirst ? ["entry:pay", chargeId] : [chargeId, "entry:pay"];
+    document.plans[0].rowOrder = [{ date: today, rowIds }];
+    const rawAccounts = [manual(1, "checking", 1000), manual(37, "credit", 500)];
+    const store = ledger(rawAccounts, document);
+    await store.refresh(); await store.refresh();
+    const paid = paymentFirst ? 500 : 600;
+    assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [1000 - paid, 600 - paid]);
+    const receipts = () => store.rows().map(({ id, account_id, amount, transaction_date }) => ({ id, account_id, amount, transaction_date }))
+      .sort((a, b) => a.id - b.id);
+    const recorded = receipts();
+    assert.equal(recorded.length, 3);
+    assert.ok(store.rows().filter((row) => row.source_plan_row_id === "entry:pay").every((row) => row.amount === paid));
+    document.plans[0].rowOrder = [{ date: today, rowIds: [...rowIds].reverse() }];
+    await store.refresh(); await store.refresh();
+    assert.deepEqual(receipts(), recorded, "changing display chronology cannot rewrite an already-posted payment amount or its identity");
+    assert.deepEqual(store.accounts().map((account) => account.nativeCurrentBalance), [1000 - paid, 600 - paid]);
+    assert.deepEqual(rawAccounts.map((account) => account.opening_balance), [1000, 500]);
+  }
+});
+
 test("automatic account refresh waits for the one-time planner restart without materializing legacy forecasts", async () => {
   const document = livePlanner([entry()]);
   delete document.plans[0].restart;

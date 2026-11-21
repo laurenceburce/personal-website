@@ -11,7 +11,7 @@ export function createPrimaryFinancePlan(currentDate = localDate()) {
     id: "live-planner", name: "Live planner", continuous: true, balanceMode: "live",
     startDate: currentDate, endDate: addDays(currentDate, 365) > "2200-12-31" ? "2200-12-31" : addDays(currentDate, 365),
     openingUsd: 0, openingPhp: 0, openingReserveUsd: 0, openingReservePhp: 0,
-    accountOpeningBalances: [], startingAccounts: [], completedRows: [], rowOverrides: [],
+    accountOpeningBalances: [], startingAccounts: [], completedRows: [], rowOverrides: [], rowOrder: [],
     includeIncome: true, includeTransactions: true, includeAllocations: true, includeAnnualReserve: true,
     entries: [],
   };

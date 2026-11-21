@@ -192,6 +192,10 @@ The finance workspace separates recorded activity from your plans:
   **(US)** or **(PH)**; masked digits appear only when needed to distinguish accounts
   with the same name. Automatic payments show the specific card name, and the
   assigned accounts appear beneath transaction descriptions.
+  Each transaction's menu includes **Move up** and **Move down** for rows dated
+  the same day. The saved order is shared across devices, and running balances
+  follow that sequence. Clear search and status filters before reordering;
+  the starting balances row stays first and dates stay chronological.
   Search or filter **All / Upcoming / Recorded /
   Overdue** without changing calculated balances. **Reserves & planning notes**
   below the table contains statement, reserve, conversion, and matching evidence.

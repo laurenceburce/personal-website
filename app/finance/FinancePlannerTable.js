@@ -203,7 +203,7 @@ function AccountCell({ row, account, accounts, plan, groupStart }) {
 export default function FinancePlannerTable({
   plan, rows = [], accounts = [], today = localDate(), busy = false, loading = false,
   viewKey,
-  onEdit, onDelete, onEditOccurrence, onResetOccurrence, onToggleComplete, onRecord,
+  onEdit, onDelete, onEditOccurrence, onResetOccurrence, onToggleComplete, onRecord, onMoveRow,
 }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
@@ -227,6 +227,14 @@ export default function FinancePlannerTable({
   const expanded = accountsExpanded && allAccountColumns.length > 0;
   const hasAccountColumns = expanded && accountColumns.length > 0;
   const columnLayout = expanded ? accountColumns.map((account) => account.id).join(":") : "compact";
+  const rowOrderKey = JSON.stringify(plan.rowOrder || []);
+  const sameDayRows = new Map();
+  for (const row of rows) if (!row.isOpeningBalance) {
+    const group = sameDayRows.get(row.date) || [];
+    group.push(row);
+    sameDayRows.set(row.date, group);
+  }
+  const hasMovableRows = onMoveRow && [...sameDayRows.values()].some((group) => group.length > 1);
   const accountGroups = ["USD", "PHP"].map((currency) => ({
     currency, accounts: accountColumns.filter((account) => account.currency === currency),
   })).filter((group) => group.accounts.length);
@@ -281,8 +289,9 @@ export default function FinancePlannerTable({
         scroller.getBoundingClientRect().top - headerHeight - anchor.offset), left: hasAccountColumns ? scroller.scrollLeft : 0 });
     }
     columnAnchor.current = null;
-  }, [expanded, columnLayout]);
+  }, [expanded, columnLayout, rowOrderKey]);
   const captureColumnAnchor = () => {
+    columnAnchor.current = null;
     const scroller = scrollerRef.current;
     if (scroller) {
       const top = scroller.getBoundingClientRect().top + (scroller.querySelector("thead")?.getBoundingClientRect().height || 0);
@@ -328,6 +337,9 @@ export default function FinancePlannerTable({
       </button>}
       <span className="fpt-count" aria-live="polite">{transactionCount}{filtered ? ` of ${totalTransactionCount}` : ""} {transactionCount === 1 ? "transaction" : "transactions"}</span>
     </div>
+    {hasMovableRows && <p className="fpt-order-hint">{filtered
+      ? "Clear search and status filters to reorder transactions within the same date."
+      : "Use each transaction’s ••• menu to move it up or down within the same date."}</p>}
     {expanded && <fieldset className="fpt-account-visibility" disabled={loading}>
       <legend>Account columns</legend>
       <div className="fpt-account-visibility-options">{ACCOUNT_COLUMN_TYPES.map(([type, label]) =>
@@ -370,6 +382,9 @@ export default function FinancePlannerTable({
           const category = getPlanRowCategory(row);
           const description = getPlannerTransactionLabel(row, accounts);
           const accountContext = rowAccountContext(row, accounts, plan);
+          const dayRows = sameDayRows.get(row.date) || [];
+          const dayIndex = dayRows.findIndex((item) => String(item.id) === String(row.id));
+          const canReorder = onMoveRow && !row.isOpeningBalance && dayRows.length > 1;
           const manualEntry = (row.source === "manual" || row.planGenerated) && plan.entries?.find((entry) => entry.id === row.entryId);
           const editableOccurrence = row.editable && (["salary", "bill", "allocation", "reserve"].includes(row.source) || (row.source === "manual" && row.recurring));
           const canRecord = !recorded(row, today) && onRecord && (['salary', 'bill', 'creditCardDue'].includes(row.source) ||
@@ -394,7 +409,7 @@ export default function FinancePlannerTable({
             </td>}
             <td className="fpt-transaction">
               <div className="fpt-description-line"><div className="fpt-description-title"><strong>{description}</strong>
-                {(actions || canRecord) && <details className="fpt-action-menu"><summary aria-label={`Actions for ${description}`}>•••</summary><div
+                {(actions || canRecord || canReorder) && <details className="fpt-action-menu"><summary aria-label={`Actions for ${description}`}>•••</summary><div
                   onClick={(event) => { if (event.target.closest("button")) event.currentTarget.parentElement.open = false; }}>
                 {canRecord && <button type="button" className="fpt-record" disabled={busy}
                   aria-label={`Record ${row.kind === "income" ? "receipt" : "payment"}: ${description}`} onClick={() => !busy && onRecord(row)}>
@@ -407,6 +422,19 @@ export default function FinancePlannerTable({
                     aria-label={`${recorded(row, today) ? "Reopen" : "Mark done:"} ${description}`}
                     onClick={() => !busy && onToggleComplete(row)}>{recorded(row, today) ? "Reopen" : "Mark done"}</button>}
                   {row.isOverride && onResetOccurrence && <button type="button" disabled={busy} onClick={() => !busy && onResetOccurrence(row)}>Restore default</button>}
+                  {canReorder && <div className="fpt-row-order-actions" role="group" aria-label={`Order on ${formatDate(row.date)}`}
+                    title={filtered ? "Clear search and status filters to reorder transactions." : undefined}>
+                    <button type="button" disabled={busy || loading || Boolean(filtered) || dayIndex <= 0}
+                      aria-label={`Move up: ${description}`} onClick={() => {
+                        if (busy || loading || filtered || dayIndex <= 0) return;
+                        captureColumnAnchor(); onMoveRow(row, -1);
+                      }}>Move up</button>
+                    <button type="button" disabled={busy || loading || Boolean(filtered) || dayIndex < 0 || dayIndex >= dayRows.length - 1}
+                      aria-label={`Move down: ${description}`} onClick={() => {
+                        if (busy || loading || filtered || dayIndex < 0 || dayIndex >= dayRows.length - 1) return;
+                        captureColumnAnchor(); onMoveRow(row, 1);
+                      }}>Move down</button>
+                  </div>}
                   {manualEntry && <button type="button" className="fpt-delete" disabled={busy || !onDelete}
                     aria-label={`Delete ${description}`} onClick={() => !busy && onDelete?.(manualEntry)}>Delete{row.recurring ? " recurring entry" : ""}</button>}
                 </div></details>}

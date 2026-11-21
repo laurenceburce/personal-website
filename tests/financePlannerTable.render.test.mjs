@@ -113,6 +113,56 @@ test("shared dates span consecutive visible rows while current activity stays on
   assert.match(filtered, /aria-current="true"/);
 });
 
+test("row menus move same-day transactions while protecting date boundaries and opening balances", () => {
+  const rows = [
+    row({ id: "opening", date: today, description: "Starting balances", isOpeningBalance: true, completed: true, completionSource: "transaction" }),
+    row({ id: "first", date: today, description: "First" }),
+    row({ id: "second", date: today, description: "Second", source: "transaction", completionSource: "transaction", completed: true }),
+    row({ id: "tomorrow", description: "Next date", date: "2026-11-19" }),
+  ];
+  const before = structuredClone(rows);
+  const calls = [];
+  const get = harness({ rows, onMoveRow: (...args) => calls.push(args) });
+  const transaction = (id) => find(get(), (node) => node.type === "tr" && node.props["data-row-id"] === id);
+  assert.equal(button(transaction("first"), "Move up").props.disabled, true);
+  assert.equal(button(transaction("first"), "Move down").props.disabled, false);
+  assert.equal(button(transaction("second"), "Move up").props.disabled, false);
+  assert.equal(button(transaction("second"), "Move down").props.disabled, true);
+  assert.equal(button(transaction("opening"), "Move down"), undefined);
+  assert.equal(button(transaction("tomorrow"), "Move up"), undefined);
+  button(transaction("first"), "Move up").props.onClick();
+  button(transaction("second"), "Move down").props.onClick();
+  assert.deepEqual(calls, []);
+  button(transaction("first"), "Move down").props.onClick();
+  button(transaction("second"), "Move up").props.onClick();
+  assert.deepEqual(calls, [[rows[1], 1], [rows[2], -1]]);
+  assert.deepEqual(rows, before);
+});
+
+test("row ordering waits for unfiltered ready rows and works with expanded account columns", () => {
+  const rows = [row({ id: "first", date: today, description: "First" }), row({ id: "second", date: today, description: "Second" })];
+  const calls = [];
+  for (const state of [{ busy: true }, { loading: true }]) {
+    const get = harness({ rows, ...state, onMoveRow: (...args) => calls.push(args) });
+    const down = button(get(), "Move down");
+    assert.equal(down.props.disabled, true);
+    down.props.onClick();
+  }
+  assert.deepEqual(calls, []);
+  const get = harness({ rows, onMoveRow: (...args) => calls.push(args) });
+  button(get(), "Expand accounts").props.onClick();
+  assert.match(renderToStaticMarkup(get()), /fpt-accounts-expanded/);
+  find(get(), (node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: "First" } });
+  assert.equal(button(get(), "Move down").props.disabled, true);
+  button(get(), "Move down").props.onClick();
+  assert.match(renderToStaticMarkup(get()), /Clear search and status filters to reorder/);
+  assert.deepEqual(calls, []);
+  find(get(), (node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: "" } });
+  assert.equal(button(get(), "Move down").props.disabled, false);
+  button(get(), "Move down").props.onClick();
+  assert.deepEqual(calls, [[rows[0], 1]]);
+});
+
 test("planner table defaults to its compact summary and expands accounts into horizontal columns", () => {
   const html = render([row()]);
   assert.equal((html.match(/<th\b/g) || []).length, 5);

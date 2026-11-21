@@ -341,6 +341,32 @@ function completedRows(value) {
   });
 }
 
+function planRowOrder(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 2000)
+    throw plannerError("Row order must contain at most 2000 dates.");
+  const dates = new Set();
+  let count = 0;
+  return value.map((row) => {
+    object(row, "Row order");
+    const day = date(row.date, "Row order date");
+    if (dates.has(day)) throw plannerError("Row order dates must be unique.");
+    dates.add(day);
+    if (!Array.isArray(row.rowIds) || (count += row.rowIds.length) > 10000)
+      throw plannerError("Row order must contain at most 10000 row identifiers.");
+    const ids = new Set();
+    const rowIds = row.rowIds.map((value) => {
+      const id = text(value, "Row order identifier", 240);
+      if (/[\u0000-\u001f\u007f]/.test(id))
+        throw plannerError("Row order identifiers must not contain control characters.");
+      if (ids.has(id)) throw plannerError("Row order identifiers must be unique within each date.");
+      ids.add(id);
+      return id;
+    });
+    return { date: day, rowIds };
+  });
+}
+
 /** Normalize only known fields; never persist arbitrary caller properties. */
 export function validateFinancePlanner(value) {
   const source = object(value, "Planner");
@@ -498,6 +524,7 @@ export function validateFinancePlanner(value) {
         ...(plan.accountLinks === undefined ? {} : { accountLinks: planAccountLinks(plan.accountLinks) }),
         completedRows: completedRows(plan.completedRows),
         rowOverrides: rowOverrides(plan.rowOverrides, startDate, endDate),
+        rowOrder: planRowOrder(plan.rowOrder),
         openingReserveUsd: amount(
           plan.openingReserveUsd === undefined ? 0 : plan.openingReserveUsd,
           "Opening annual reserve USD",

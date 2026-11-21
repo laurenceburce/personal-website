@@ -18,9 +18,94 @@ import {
   localDate,
   salaryOccurrences,
 } from "../app/lib/financePlanner.mjs";
+import { getPlanRowOrderId } from "../app/lib/financePlanRowOrder.mjs";
+import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
 
 const getSummary = (document, rate, asOf = "2026-11-02") =>
   summarize(document, rate, asOf);
+
+test("saved same-date order is applied before running cash balances while dates and ending funds remain unchanged", () => {
+  const date = "2026-11-22";
+  const document = { salary: {}, bills: [], allocations: [] };
+  const plan = { id: "live", startDate: date, endDate: "2026-11-23", openingUsd: 100, includeIncome: false,
+    includeTransactions: true, includeAnnualReserve: false, includeAllocations: false, entries: [
+      { id: "z-expense", date, description: "First expense", kind: "expense", amount: 30, currency: "USD" },
+      { id: "income", date, description: "Income", kind: "income", amount: 50, currency: "USD" },
+      { id: "a-expense", date, description: "Second expense", kind: "expense", amount: 20, currency: "USD" },
+      { id: "later", date: "2026-11-23", description: "Later", kind: "expense", amount: 5, currency: "USD" },
+    ] };
+  const original = buildPlanRows(plan, document, 58, { today: "2026-11-21" });
+  assert.deepEqual(original.map((row) => row.entryId), ["income", "z-expense", "a-expense", "later"], "unlisted equal-priority rows retain their input order");
+  const chosen = { ...plan, rowOrder: [{ date, rowIds: ["entry:a-expense", "entry:z-expense", "entry:income", "entry:later", "missing"] }] };
+  const before = structuredClone({ document, chosen });
+  const rows = buildPlanRows(chosen, document, 58, { today: "2026-11-21" });
+  assert.deepEqual(rows.map((row) => row.entryId), ["a-expense", "z-expense", "income", "later"]);
+  assert.deepEqual(rows.map((row) => row.balanceUsd), [80, 50, 100, 95]);
+  assert.equal(rows.at(-1).balanceUsd, original.at(-1).balanceUsd);
+  assert.deepEqual({ document, chosen }, before);
+});
+
+test("a saved bill row rank survives bank matching and the linked-account final reconciliation sort", () => {
+  const date = "2026-11-22";
+  const document = { salary: {}, allocations: [], bills: [{ id: "rent", name: "Rent", amount: 25, currency: "USD", cadence: "monthly", dueDay: 22, accountId: 1 }] };
+  const plan = { id: "live", startDate: date, endDate: date, balanceMode: "snapshot", openingUsd: 100, openingPhp: 0,
+    includeIncome: false, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+    accountLinks: { availableUsdAccountId: 1 }, accountOpeningBalances: [{ accountId: 1, balance: 100 }],
+    rowOrder: [{ date, rowIds: [`bill:rent:${date}`, "entry:income"] }],
+    entries: [{ id: "income", date, description: "Gift", kind: "income", amount: 50, currency: "USD", accountId: 1 }] };
+  const accounts = [{ id: 1, currency: "USD", type: "checking", nativeCurrentBalance: 125 }];
+  for (const transactions of [[], [{ id: 9, date, accountId: 1, currency: "USD", kind: "expense", amount: 25, merchant: "Rent", provider: "plaid" }]]) {
+    const before = structuredClone({ plan, document, accounts, transactions });
+    const rows = buildPlanRows(plan, document, 58, { accounts, transactions, today: date });
+    assert.deepEqual(rows.map(getPlanRowOrderId), [`bill:rent:${date}`, "entry:income"]);
+    assert.deepEqual(rows.map((row) => row.balanceUsd), [75, 125]);
+    if (transactions.length) assert.equal(rows[0].transactionId, 9);
+    assert.deepEqual({ plan, document, accounts, transactions }, before);
+  }
+});
+
+test("saved same-day card charge and live-payment order changes only the debt known before that payment", () => {
+  const date = "2026-11-22";
+  const document = { salary: {}, bills: [], allocations: [] };
+  const plan = { id: "live", continuous: true, startDate: date, endDate: date, openingUsd: 1000,
+    includeIncome: false, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+    entries: [{ id: "charge", date, description: "Card purchase", kind: "expense", amount: 100, currency: "USD", accountId: 2 },
+      { id: "pay", date, description: "Pay card", kind: "transfer", fromAccountId: 1, toAccountId: 2, amount: 0, currency: "USD", amountMode: "cardBalance" }] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 500 }];
+  for (const [rowIds, expected] of [[ ["entry:pay", "entry:charge"], 500 ], [ ["entry:charge", "entry:pay"], 600 ]]) {
+    const chosen = { ...plan, rowOrder: [{ date, rowIds }] };
+    const before = structuredClone({ chosen, document, accounts });
+    const rows = buildPlanRows(chosen, document, 58, { accounts, today: "2026-11-21" });
+    assert.deepEqual(rows.map(getPlanRowOrderId), rowIds);
+    assert.equal(rows.find((row) => row.entryId === "pay").amount, expected);
+    assert.deepEqual({ chosen, document, accounts }, before);
+  }
+});
+
+test("a card payment ordered after the same-day statement cannot erase that earlier automatic payment", () => {
+  const date = "2026-11-22";
+  const document = { salary: {}, bills: [], allocations: [] };
+  const plan = { id: "live", continuous: true, balanceMode: "live", startDate: date, endDate: date, openingUsd: 1000,
+    includeIncome: false, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+    accountLinks: { availableUsdAccountId: 1 }, entries: [{ id: "pay", date, description: "Pay remaining card", kind: "transfer",
+      fromAccountId: 1, toAccountId: 2, currency: "USD", amount: 0, amountMode: "cardBalance" }] };
+  const accounts = [{ id: 1, type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+    { id: 2, type: "credit", currency: "USD", nativeCurrentBalance: 500, creditCardDueStatus: "manual",
+      creditCardDue: { statementBalance: 200, dueDate: date, lastStatementDate: "2026-11-01" } }];
+  for (const rowIds of [[`creditCardDue:2:${date}`, "entry:pay"], ["entry:pay", `creditCardDue:2:${date}`], ["missing"]]) {
+    const chosen = { ...plan, rowOrder: [{ date, rowIds }] };
+    const before = structuredClone({ chosen, document, accounts });
+    const rows = buildPlanRows(chosen, document, 58, { accounts, today: "2026-11-21" });
+    const dueFirst = rowIds[0].startsWith("creditCardDue");
+    assert.equal(rows.find((row) => row.entryId === "pay").amount, dueFirst ? 300 : 500);
+    assert.equal(rows.find((row) => row.source === "creditCardDue")?.amount || 0, dueFirst ? 200 : 0);
+    const projected = buildAccountPlan(chosen, document, 58, { accounts, rows, today: "2026-11-21" });
+    assert.deepEqual([projected.rows.at(-1).accountBalances[1], projected.rows.at(-1).accountBalances[2]], [500, 0],
+      "both sequences pay exactly the same debt once");
+    assert.deepEqual({ chosen, document, accounts }, before);
+  }
+});
 
 function transferFixture() {
   return {

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerComputationRange, getLivePlannerRange, getLivePlannerOpeningRow, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../app/lib/financeLivePlanner.mjs";
 import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
+import { orderPlanRows } from "../app/lib/financePlanRowOrder.mjs";
 
 const today = "2026-11-18";
 const range = { startDate: today, endDate: "2027-01-01" };
@@ -292,6 +293,37 @@ test("same-day recorded snapshots follow planner rows when posting IDs were save
   assert.ok(result.every((row) => row.accountBalanceSnapshotKind === "recorded"));
   assert.deepEqual(filterLivePlannerRows(result, { startDate: date, endDate: date }), result);
   assert.deepEqual({ accounts, rows, history }, before, "snapshot ordering cannot change saved or bank balances");
+});
+
+test("saved row order moves a complete native transfer together and keeps future and missing-history balances honest", () => {
+  const date = "2026-11-20";
+  const accounts = [account(1, "checking", 950), account(2, "savings", 100), account(3, "credit", 230)];
+  const history = [[1, 1, "expense", 100], [2, 2, "income", 100], [3, 1, "income", 50], [4, 3, "expense", 30]]
+    .map(([id, accountId, kind, amount]) => ({ id, date, accountId, kind, amount, currency: "USD" }));
+  const rows = [
+    { id: "entry:transfer", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [1, 2] },
+    { id: "transaction:3", completionKey: "entry:income", date, source: "transaction", transactionId: 3, completed: true },
+    { id: "entry:charge", date, completed: true, recordedInAccounts: true, matchedTransactionIds: [4] },
+    flow("future", "2026-11-21", [movement(1, -25)]),
+  ];
+  const plan = { rowOrder: [{ date, rowIds: ["entry:charge", "entry:income", "entry:transfer"] }] };
+  const input = { accounts, rows, plan, history };
+  const before = structuredClone(input);
+  const ordered = orderPlanRows(rows, plan);
+  const options = { accounts, rows: ordered, today: date, historyTransactions: history,
+    historyFrom: date, historyThrough: date, historyComplete: true };
+  const result = withLivePlannerAccountSnapshots(options);
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshot.map((item) => item.balance)),
+    [[1000, 0, 230], [1050, 0, 230], [950, 100, 230], [925, 100, 230]]);
+  assert.deepEqual(result.map((row) => row.accountBalanceSnapshotKind), ["recorded", "recorded", "recorded", "projected"]);
+  assert.deepEqual(result[2].matchedTransactionIds, [1, 2], "both actual transfer legs remain owned by the one moved row");
+  const summary = getLivePlannerAnalytics({ accounts, rows: ordered, today: date, range: { startDate: date, endDate: "2026-11-21" } });
+  assert.equal(summary.assets.USD.current, 1050);
+  assert.equal(summary.assets.USD.projected, 1025);
+  const incomplete = withLivePlannerAccountSnapshots({ ...options, historyComplete: false });
+  assert.ok(incomplete.slice(0, 3).every((row) => row.accountBalanceSnapshotKind === "unavailable"));
+  assert.deepEqual(incomplete[3].accountBalanceSnapshot.map((item) => item.balance), [925, 100, 230]);
+  assert.deepEqual(input, before);
 });
 
 test("November 20 Done balances anchor to reported bank 1252.13 without losing remaining future plans", () => {

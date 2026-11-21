@@ -12,6 +12,7 @@ import * as insights from "../app/lib/financeInsights.mjs";
 import * as accountPlan from "../app/lib/financeAccountPlan.mjs";
 import * as livePlanner from "../app/lib/financeLivePlanner.mjs";
 import * as primaryPlanner from "../app/lib/financePrimaryPlanner.mjs";
+import * as rowOrder from "../app/lib/financePlanRowOrder.mjs";
 import { financePlanPostingSpecs, financePlanTransactionMetadata } from "../app/lib/financePlanPostings.mjs";
 import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
@@ -43,6 +44,7 @@ function loadComponent(filename, reactOverride) {
     if (specifier === "../lib/financeAccountPlan.mjs") return accountPlan;
     if (specifier === "../lib/financeLivePlanner.mjs") return livePlanner;
     if (specifier === "../lib/financePrimaryPlanner.mjs") return primaryPlanner;
+    if (specifier === "../lib/financePlanRowOrder.mjs") return rowOrder;
     if (specifier.startsWith("./")) {
       return loadComponent(resolve(dirname(filename), `${specifier}.js`));
     }
@@ -285,6 +287,113 @@ test("refreshing a restarted workspace keeps its captured opening while future r
     assert.ok(!requests.some((request) => request.method === "PUT"), "refresh cannot persist a new reset baseline");
     assert.deepEqual(props, original);
   } finally { globalThis.fetch = originalFetch; }
+});
+
+test("moving a same-day planner row persists its order and recalculates balances on save and reload", async () => {
+  const today = "2026-11-20";
+  const day = "2026-11-21";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const entries = [
+    { id: "income", date: day, description: "Deposit", kind: "income", amount: 100, currency: "USD", accountId: 1 },
+    { id: "expense", date: day, description: "Shopping", kind: "expense", amount: 30, currency: "USD", accountId: 1 },
+    { id: "following", date: "2026-11-22", description: "Following day", kind: "expense", amount: 5, currency: "USD", accountId: 1 },
+  ];
+  const otherDay = { date: "2026-11-22", rowIds: ["entry:following"] };
+  const props = fixture("plans", 0, { bills: [{ id: "fee", name: "Fee", cadence: "monthly", dueDay: 21,
+    amount: 20, currency: "USD", accountId: 1 }], plans: [{ ...base, continuous: true, balanceMode: "live",
+    startDate: today, endDate: "2026-11-22", entries,
+    restart: { version: 1, date: today, transactionId: 0, coveredEntryIds: [],
+      balances: [{ accountId: 1, currency: "USD", type: "checking", balance: 1252.13 }] },
+    rowOrder: [otherDay, { date: day, rowIds: ["entry:expense", "entry:income", `bill:fee:${day}`] }],
+  }] }, { balanceAsOf: today, accounts: [{ id: 1, name: "Checking", isLinked: true, type: "checking", currency: "USD", nativeCurrentBalance: 1252.13 }] });
+  props.today = today;
+  props.initialPlanActivity = { ...props.initialPlanActivity, balanceTransactions: [],
+    balanceHistoryFrom: today, balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const renderWorkspace = workspaceHarness(props);
+  let tree = renderWorkspace();
+  const ledger = () => findElement(tree, (node) => node.type?.name === "FinancePlannerTable").props;
+  const ordered = () => ledger().rows.filter((row) => row.date === day);
+  assert.deepEqual(ordered().map(rowOrder.getPlanRowOrderId), ["entry:expense", "entry:income", `bill:fee:${day}`]);
+  assert.deepEqual(ordered().map((row) => row.projectedBalanceUsd), [1222.13, 1322.13, 1302.13]);
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url, method: options?.method || "GET" });
+    if (options?.method === "PUT") {
+      saved = JSON.parse(options.body).document;
+      return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) };
+    }
+    if (url.startsWith("/api/finance/activity")) return { ok: true, json: async () => props.initialActivity };
+    if (url.startsWith("/api/finance/plan-activity")) return { ok: true, json: async () => props.initialPlanActivity };
+    throw new Error(`Unexpected row-order request: ${url}`);
+  };
+  try {
+    await ledger().onMoveRow(ledger().rows[0], 1);
+    assert.equal(requests.length, 0, "the captured opening cannot be moved");
+    await ledger().onMoveRow(ordered().find((row) => row.entryId === "income"), -1);
+    tree = renderWorkspace();
+    assert.deepEqual(saved.plans[0].rowOrder, [otherDay, { date: day, rowIds: ["entry:income", "entry:expense", `bill:fee:${day}`] }]);
+    assert.deepEqual(saved.plans[0].entries, entries);
+    assert.deepEqual(saved.bills, props.snapshot.document.bills);
+    assert.deepEqual(ordered().map((row) => row.projectedBalanceUsd), [1352.13, 1322.13, 1302.13]);
+    const summary = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+    assert.equal(summary.assets.USD.current, 1252.13);
+    assert.equal(summary.assets.USD.projected, 1297.13);
+    assert.ok(!requests.some((request) => request.method === "POST"), "moving rows cannot record account movements");
+    const reloaded = table({ ...props, snapshot: { ...props.snapshot, document: saved, revision: 2 } });
+    assert.deepEqual(reloaded.rows.filter((row) => row.date === day).map(rowOrder.getPlanRowOrderId),
+      ["entry:income", "entry:expense", `bill:fee:${day}`]);
+    assert.deepEqual(reloaded.rows.filter((row) => row.date === day).map((row) => row.projectedBalanceUsd), [1352.13, 1322.13, 1302.13]);
+    assert.deepEqual(props, before);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("saved same-day order follows matched bill identities and reconstructed Done balances", () => {
+  const today = "2026-11-20";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const savedOrder = ["entry:card", "entry:income", `bill:service:${today}`];
+  const props = fixture("plans", 0, { bills: [{ id: "service", name: "Service", cadence: "monthly", dueDay: 20,
+    amount: 50, currency: "USD", accountId: 1 }], plans: [{ ...base, continuous: true, balanceMode: "live",
+    startDate: "2026-11-19", endDate: "2026-11-21", rowOrder: [{ date: today, rowIds: savedOrder }],
+    restart: { version: 1, date: "2026-11-19", transactionId: 0, coveredEntryIds: [], balances: [
+      { accountId: 1, currency: "USD", type: "checking", balance: 1202.13 },
+      { accountId: 37, currency: "USD", type: "credit", balance: 170 },
+    ] }, entries: [
+      { id: "card", date: today, description: "Card charge", kind: "expense", amount: 30, currency: "USD", accountId: 37 },
+      { id: "income", date: today, description: "Deposit", kind: "income", amount: 100, currency: "USD", accountId: 1 },
+      { id: "future", date: "2026-11-21", description: "Future expense", kind: "expense", amount: 25, currency: "USD", accountId: 1 },
+    ] }] }, { balanceAsOf: today, accounts: [
+    { id: 1, name: "Checking", isLinked: true, type: "checking", currency: "USD", nativeCurrentBalance: 1252.13 },
+    { id: 37, name: "Manual card", type: "credit", currency: "USD", nativeCurrentBalance: 200 },
+  ] });
+  props.today = today;
+  const transactions = [
+    { id: 1, date: today, accountId: 1, kind: "expense", amount: 50, currency: "USD", merchant: "Service", provider: "plaid" },
+    { id: 2, date: today, accountId: 37, kind: "expense", amount: 30, currency: "USD", merchant: "Card charge",
+      planId: base.id, planRowId: "entry:card", planGenerated: true, manualPlannerSource: true },
+    { id: 3, date: today, accountId: 1, kind: "income", amount: 100, currency: "USD", merchant: "Deposit",
+      planId: base.id, planRowId: "entry:income", planGenerated: false, provider: "plaid" },
+  ];
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions, balanceTransactions: transactions,
+    balanceHistoryFrom: "2026-11-19", balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const tree = workspaceHarness(props)();
+  const rows = findElement(tree, (node) => node.type?.name === "FinancePlannerTable").props.rows;
+  const recorded = rows.filter((row) => row.date === today);
+  assert.deepEqual(recorded.map(rowOrder.getPlanRowOrderId), savedOrder);
+  assert.equal(recorded.at(-1).transactionId, 1, "the matched bill retains its canonical position after becoming a bank transaction");
+  assert.deepEqual(recorded.map((row) => row.accountBalanceSnapshot.map((account) => account.balance)),
+    [[1202.13, 200], [1302.13, 200], [1252.13, 200]]);
+  assert.ok(recorded.every((row) => row.completed && row.accountBalanceSnapshotKind === "recorded"));
+  const future = rows.find((row) => row.entryId === "future");
+  assert.equal(future.projectedBalanceUsd, 1227.13);
+  const summary = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+  assert.equal(summary.assets.USD.current, 1252.13);
+  assert.equal(summary.assets.USD.projected, 1227.13);
+  assert.equal(summary.debt.USD.projected, 200);
+  assert.deepEqual(props, before);
 });
 
 test("an early posted bank payment appears once across the history and future projection boundary", () => {
