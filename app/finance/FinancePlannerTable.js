@@ -16,6 +16,9 @@ const balance = (value, currency) => Number.isFinite(value) ? money(value, curre
 const accountName = (account) => account
   ? `${account.name || "Account"}${account.mask ? ` · ••${account.mask}` : ""}` : "Choose an account";
 const accountTypeOrder = (account) => ({ checking: 0, savings: 1, credit: 2 }[account.type || account.account_type] ?? 3);
+const ACCOUNT_COLUMN_TYPES = [["checking", "Checking"], ["savings", "Savings"], ["credit", "Credit cards"]];
+const ACCOUNT_COLUMN_STORAGE_KEY = "finance:planner:account-columns:v1";
+const defaultAccountColumns = () => ({ checking: true, savings: true, credit: true });
 
 function creditCardBalances(row, accounts) {
   const snapshots = new Map((row.accountBalanceSnapshot || []).map((item) => [Number(item.accountId), item]));
@@ -186,6 +189,7 @@ export default function FinancePlannerTable({
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [accountsExpanded, setAccountsExpanded] = useState(false);
+  const [visibleAccountTypes, setVisibleAccountTypes] = useState(defaultAccountColumns);
   const [jumpRequest, setJumpRequest] = useState(0);
   const scrollerRef = useRef(null);
   const rowRefs = useRef(new Map());
@@ -193,14 +197,17 @@ export default function FinancePlannerTable({
   const handledJump = useRef(0);
   const columnAnchor = useRef(null);
   const current = selectCurrentPlannerRow(rows, today);
-  const accountColumns = accounts.filter((account, index) => !account.isArchived && !account.is_archived &&
+  const allAccountColumns = accounts.filter((account, index) => !account.isArchived && !account.is_archived &&
     !account.isSyncExcluded && !account.is_sync_excluded &&
     !account.mergedIntoAccountId && !account.merged_into_account_id && ["USD", "PHP"].includes(account.currency) &&
     accounts.findIndex((item) => Number(item.id) === Number(account.id)) === index)
     .sort((a, b) => ["USD", "PHP"].indexOf(a.currency) - ["USD", "PHP"].indexOf(b.currency) ||
       accountTypeOrder(a) - accountTypeOrder(b));
-  const creditAccounts = accountColumns.filter((account) => (account.type || account.account_type) === "credit");
-  const expanded = accountsExpanded && accountColumns.length > 0;
+  const creditAccounts = allAccountColumns.filter((account) => (account.type || account.account_type) === "credit");
+  const accountColumns = allAccountColumns.filter((account) => visibleAccountTypes[account.type || account.account_type] !== false);
+  const expanded = accountsExpanded && allAccountColumns.length > 0;
+  const hasAccountColumns = expanded && accountColumns.length > 0;
+  const columnLayout = expanded ? accountColumns.map((account) => account.id).join(":") : "compact";
   const accountGroups = ["USD", "PHP"].map((currency) => ({
     currency, accounts: accountColumns.filter((account) => account.currency === currency),
   })).filter((group) => group.accounts.length);
@@ -230,6 +237,14 @@ export default function FinancePlannerTable({
   const totalTransactionCount = rows.filter((row) => !row.isOpeningBalance).length;
   const clear = () => { setSearch(""); setStatus("all"); };
   useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(ACCOUNT_COLUMN_STORAGE_KEY));
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+      setVisibleAccountTypes(Object.fromEntries(ACCOUNT_COLUMN_TYPES.map(([type]) =>
+        [type, typeof saved[type] === "boolean" ? saved[type] : true])));
+    } catch { /* Storage is optional; every account type remains visible by default. */ }
+  }, []);
+  useEffect(() => {
     if (loading || currentId == null || positionedView.current === windowKey) return;
     if (positionCurrentRow(scrollerRef.current, rowRefs.current.get(currentId))) positionedView.current = windowKey;
   }, [windowKey, currentId, loading, rows.length]);
@@ -244,11 +259,11 @@ export default function FinancePlannerTable({
     if (scroller && row) {
       const headerHeight = scroller.querySelector("thead")?.getBoundingClientRect().height || 0;
       scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + row.getBoundingClientRect().top -
-        scroller.getBoundingClientRect().top - headerHeight - anchor.offset), left: expanded ? scroller.scrollLeft : 0 });
+        scroller.getBoundingClientRect().top - headerHeight - anchor.offset), left: hasAccountColumns ? scroller.scrollLeft : 0 });
     }
     columnAnchor.current = null;
-  }, [expanded]);
-  const toggleAccountColumns = () => {
+  }, [expanded, columnLayout]);
+  const captureColumnAnchor = () => {
     const scroller = scrollerRef.current;
     if (scroller) {
       const top = scroller.getBoundingClientRect().top + (scroller.querySelector("thead")?.getBoundingClientRect().height || 0);
@@ -262,7 +277,17 @@ export default function FinancePlannerTable({
       }
       columnAnchor.current ||= firstVisible;
     }
+  };
+  const toggleAccountColumns = () => {
+    captureColumnAnchor();
     setAccountsExpanded((value) => !value);
+  };
+  const changeAccountTypeVisibility = (type, checked) => {
+    captureColumnAnchor();
+    const next = { ...visibleAccountTypes, [type]: checked };
+    setVisibleAccountTypes(next);
+    try { window.localStorage.setItem(ACCOUNT_COLUMN_STORAGE_KEY, JSON.stringify(next)); }
+    catch { /* Keep the selected columns usable when browser storage is unavailable. */ }
   };
   const jumpToCurrent = () => { clear(); setJumpRequest((request) => request + 1); };
   return <section className={`fpt-planner-table${expanded ? " fpt-accounts-expanded" : ""}`} aria-label="Planner transactions" aria-busy={loading}>
@@ -278,12 +303,21 @@ export default function FinancePlannerTable({
       </div>
       <button type="button" className="fpt-jump-current" disabled={loading || currentId == null}
         aria-controls={tableId} onClick={jumpToCurrent}>Jump to current</button>
-      {expanded && <button type="button" className="fpt-account-columns-toggle" disabled={loading || !accountColumns.length}
+      {expanded && <button type="button" className="fpt-account-columns-toggle" disabled={loading || !allAccountColumns.length}
         aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
         {expanded ? "Collapse accounts" : "Expand accounts"}
       </button>}
       <span className="fpt-count" aria-live="polite">{transactionCount}{filtered ? ` of ${totalTransactionCount}` : ""} {transactionCount === 1 ? "transaction" : "transactions"}</span>
     </div>
+    {expanded && <fieldset className="fpt-account-visibility" disabled={loading}>
+      <legend>Account columns</legend>
+      <div className="fpt-account-visibility-options">{ACCOUNT_COLUMN_TYPES.map(([type, label]) =>
+        <label key={type}><input type="checkbox" checked={visibleAccountTypes[type]} aria-controls={tableId}
+          onChange={(event) => changeAccountTypeVisibility(type, event.target.checked)}/><span>{label}</span></label>)}
+        <span className="fpt-account-visibility-note">Running totals include all accounts.</span>
+      </div>
+      {!accountColumns.length && <p role="status">All account columns are hidden. Select an account type to show it.</p>}
+    </fieldset>}
     {!visible.length ? <div className="fpt-empty" role="status">
       <strong>{loading ? "Loading transactions…" : filtered ? "No transactions match your filters" : "No transactions in this date range"}</strong>
       <p>{filtered ? "Try another search or show all statuses." : "Change the dates above or add a transaction to your planner."}</p>
@@ -297,11 +331,11 @@ export default function FinancePlannerTable({
           <col style={{ width: expanded ? "400px" : "46%" }}/></colgroup>
         {expanded && accountGroups.map((group) => <colgroup key={group.currency}>
           {group.accounts.map((account) => <col key={account.id} style={{ width: "190px" }}/>)}</colgroup>)}
-        <thead><tr><th scope="col" rowSpan={expanded ? 2 : undefined}>Date</th>
-          <th scope="col" rowSpan={expanded ? 2 : undefined}>Description</th>
-          <th scope="col" rowSpan={expanded ? 2 : undefined}>USD</th><th scope="col" rowSpan={expanded ? 2 : undefined}>PHP</th>
-          <th scope="col" rowSpan={expanded ? 2 : undefined} className="fpt-projection-heading"><span>Running balance</span>
-            <button type="button" className="fpt-balance-expand" disabled={loading || !accountColumns.length}
+        <thead><tr><th scope="col" rowSpan={hasAccountColumns ? 2 : undefined}>Date</th>
+          <th scope="col" rowSpan={hasAccountColumns ? 2 : undefined}>Description</th>
+          <th scope="col" rowSpan={hasAccountColumns ? 2 : undefined}>USD</th><th scope="col" rowSpan={hasAccountColumns ? 2 : undefined}>PHP</th>
+          <th scope="col" rowSpan={hasAccountColumns ? 2 : undefined} className="fpt-projection-heading"><span>Running balance</span>
+            <button type="button" className="fpt-balance-expand" disabled={loading || !allAccountColumns.length}
               aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
               {expanded ? "Collapse accounts" : "Expand accounts"}
             </button>
@@ -309,7 +343,7 @@ export default function FinancePlannerTable({
           </th>
           {expanded && accountGroups.map((group) => <th key={group.currency} scope="colgroup"
             className="fpt-currency-heading" colSpan={group.accounts.length} data-currency={group.currency}>{group.currency}</th>)}
-        </tr>{expanded && <tr>{accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
+        </tr>{hasAccountColumns && <tr>{accountColumns.map((account) => <th key={account.id} scope="col" className="fpt-account-balance-heading" data-account-id={account.id}>
           <strong>{accountName(account)}</strong><small>{({ checking: "Checking", savings: "Savings", credit: "Credit card", loan: "Loan", cash: "Cash" })[account.type || account.account_type] || "Account"}</small>
         </th>)}</tr>}</thead>
         <tbody>{visible.map((row, index) => {

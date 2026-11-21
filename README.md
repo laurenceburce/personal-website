@@ -184,7 +184,10 @@ The finance workspace separates recorded activity from your plans:
   both appear row by row. Loans remain in their individual account columns.
   **Expand accounts** in the balance column
   reveals individual account columns across the whole table; **Collapse accounts**
-  returns to the compact view. Search or filter **All / Upcoming / Recorded /
+  returns to the compact view. In the expanded view, **Account columns** lets you
+  show or hide **Checking**, **Savings**, and **Credit cards** separately. These
+  choices are saved in this browser; running totals and transactions stay the same.
+  Search or filter **All / Upcoming / Recorded /
   Overdue** without changing calculated balances. **Reserves & planning notes**
   below the table contains statement, reserve, conversion, and matching evidence.
   Each transaction's menu sits beside its description and includes recording,

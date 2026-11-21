@@ -14,6 +14,14 @@
 .fp-app .fpt-filter-tabs button:disabled, .fp-app .fpt-actions button:disabled,
 .fp-app .fpt-account-columns-toggle:disabled, .fp-app .fpt-balance-expand:disabled, .fp-app .fpt-jump-current:disabled { opacity: .45; cursor: default; }
 .fp-app .fpt-count { margin-left: auto; color: #52675b; font-size: 11px; white-space: nowrap; }
+.fp-app .fpt-account-visibility { min-width: 0; margin: 0 0 12px; padding: 7px 11px 10px; border: 1px solid #d4dfd8; border-radius: 7px; background: #f7faf8; }
+.fp-app .fpt-account-visibility legend { padding: 0 4px; color: #476052; font-size: 11px; font-weight: 600; }
+.fp-app .fpt-account-visibility-options { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; }
+.fp-app .fpt-account-visibility label { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; color: #344f3e; font-size: 12px; cursor: pointer; }
+.fp-app .fpt-account-visibility input { width: 16px; height: 16px; margin: 0; accent-color: #3e7451; cursor: pointer; }
+.fp-app .fpt-account-visibility input:focus-visible { outline: 2px solid #527fae; outline-offset: 3px; }
+.fp-app .fpt-account-visibility-note { margin-left: auto; color: #52675b; font-size: 11px; }
+.fp-app .fpt-account-visibility p { margin: 5px 0 0; color: #52675b; font-size: 11px; }
 
 /* The complete ledger shares one viewport with expanded account columns. */
 .fp-app .fpt-table-wrap { min-width: 0; max-height: 75dvh; overflow: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-color: #a5b7ac #f3f6f3; scroll-padding-top: 60px; border: 1px solid #d4dfd8; border-radius: 8px; background: #fff; }
@@ -139,6 +147,8 @@
   .fp-app .fpt-filter-tabs button { flex: 1; padding: 6px; }
   .fp-app .fpt-jump-current, .fp-app .fpt-account-columns-toggle { min-height: 33px; padding: 6px 8px; font-size: 10px; }
   .fp-app .fpt-count { margin-left: 0; font-size: 10px; }
+  .fp-app .fpt-account-visibility-options { gap: 2px 14px; }
+  .fp-app .fpt-account-visibility-note { flex-basis: 100%; margin-left: 0; }
   .fp-app .fpt-table th, .fp-app .fpt-table td { padding: 8px 6px; }
   .fp-app .fpt-table thead th { padding: 9px 4px; font-size: 11px; }
   .fp-app .fpt-table { font-size: 11px; }

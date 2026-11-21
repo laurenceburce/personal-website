@@ -69,6 +69,11 @@ function harness(props) {
   return () => { cursor = 0; return Component({ plan, accounts, today, ...props }); };
 }
 const button = (tree, text) => find(tree, (node) => node.type === "button" && node.props.children === text);
+const accountTypeCheckbox = (tree, label) => {
+  const wrapper = find(tree, (node) => node.type === "label" && plain(renderToStaticMarkup(node)).trim() === label);
+  assert.ok(wrapper, `Missing account column control: ${label}`);
+  return find(wrapper, (node) => node.type === "input" && node.props.type === "checkbox");
+};
 const accountColumns = (html) => [...new Set([...html.matchAll(/<th\b[^>]*data-account-id="([^"]+)"/g)].map((match) => match[1]))];
 const accountCell = (html, id) => html.match(new RegExp(`<td\\b[^>]*data-account-id="${id}"[^>]*>([\\s\\S]*?)<\\/td>`))?.[1];
 const changeTags = (html, id) => [...accountCell(html, id).matchAll(/<span class="[^"]*fpt-change-tag[^"]*"[^>]*>(.*?)<\/span>/g)].map((match) => match[1]);
@@ -144,6 +149,147 @@ test("planner table defaults to its compact summary and expands accounts into ho
   assert.equal((restored.match(/<th\b/g) || []).length, 5);
   assert.match(restored, /Running balance/);
   assert.match(restored, /\$175\.00/);
+});
+
+test("checking, savings and credit card column toggles remain independent without changing transactions or totals", () => {
+  const bank = [
+    { id: 1, name: "Dollar checking", type: "checking", currency: "USD" },
+    { id: 2, name: "Peso checking", account_type: "checking", currency: "PHP" },
+    { id: 3, name: "Dollar savings", type: "savings", currency: "USD" },
+    { id: 4, name: "Peso savings", account_type: "savings", currency: "PHP" },
+    { id: 5, name: "Dollar card", account_type: "credit", currency: "USD" },
+    { id: 6, name: "Peso card", type: "credit", currency: "PHP" },
+  ];
+  const snapshot = bank.map((account) => ({ accountId: account.id, currency: account.currency, balance: account.id * 100 }));
+  const rows = [row({ id: "checking-expense", projectedBalanceUsd: 400, projectedBalancePhp: 600, accountBalanceSnapshot: snapshot }),
+    row({ id: "card-payment", description: "Card payment", kind: "transfer", amount: 10, currency: "PHP", source: "manual",
+      usd: 0, php: 0, accountId: null, fromAccountId: 4, toAccountId: 6, projectedBalanceUsd: 400, projectedBalancePhp: 590,
+      accountBalanceSnapshot: snapshot.map((account) => ({ ...account, balance: account.balance - (account.accountId === 4 || account.accountId === 6 ? 10 : 0) })) })];
+  const props = { rows, accounts: bank };
+  const before = structuredClone(props);
+  const get = harness(props);
+  assert.doesNotMatch(renderToStaticMarkup(get()), /<legend>Account columns<\/legend>/);
+  button(get(), "Expand accounts").props.onClick();
+  const initial = renderToStaticMarkup(get());
+  assert.match(initial, /<fieldset\b[^>]*>[\s\S]*?<legend>Account columns<\/legend>/);
+  for (const label of ["Checking", "Savings", "Credit cards"]) assert.equal(accountTypeCheckbox(get(), label).props.checked, true);
+  const rowIds = (html) => [...html.matchAll(/<tr\b[^>]*data-row-id="([^"]+)"/g)].map((match) => match[1]);
+  const totals = (html) => [...html.matchAll(/<td class="fpt-projection"[^>]*>([\s\S]*?)<\/td>/g)].map((match) => match[1]);
+  const check = (expected, groups) => {
+    const html = renderToStaticMarkup(get());
+    assert.deepEqual(accountColumns(html), expected);
+    assert.deepEqual(rowIds(html), rowIds(initial));
+    assert.deepEqual(amountCells(html), amountCells(initial));
+    assert.deepEqual(totals(html), totals(initial), "hiding columns cannot hide account funds or credit card totals");
+    assert.deepEqual([...html.matchAll(/scope="colgroup" class="fpt-currency-heading" colSpan="(\d+)" data-currency="([^"]+)"/g)]
+      .map((match) => [match[2], Number(match[1])]), groups);
+    const colgroups = [...html.matchAll(/<colgroup>([\s\S]*?)<\/colgroup>/g)].map((match) => (match[1].match(/<col\b/g) || []).length);
+    assert.deepEqual(colgroups, [5, ...groups.map(([, count]) => count)]);
+    assert.doesNotMatch(html, /colSpan="0"|<tr><\/tr>/);
+    assert.deepEqual(props, before);
+    return html;
+  };
+  const toggle = (label, checked) => accountTypeCheckbox(get(), label).props.onChange({ target: { checked } });
+  check(["1", "3", "5", "2", "4", "6"], [["USD", 3], ["PHP", 3]]);
+  toggle("Checking", false);
+  check(["3", "5", "4", "6"], [["USD", 2], ["PHP", 2]]);
+  toggle("Savings", false);
+  check(["5", "6"], [["USD", 1], ["PHP", 1]]);
+  toggle("Checking", true);
+  assert.equal(accountTypeCheckbox(get(), "Savings").props.checked, false);
+  check(["1", "5", "2", "6"], [["USD", 2], ["PHP", 2]]);
+  toggle("Credit cards", false);
+  check(["1", "2"], [["USD", 1], ["PHP", 1]]);
+  toggle("Checking", false);
+  const hidden = check([], []);
+  assert.equal((hidden.match(/<th\b/g) || []).length, 5);
+  assert.doesNotMatch(hidden.match(/<thead>([\s\S]*?)<\/thead>/)[1], /rowSpan="2"|fpt-currency-heading/);
+  assert.ok(button(get(), "Collapse accounts"), "users can collapse or restore columns even when every type is hidden");
+  for (const label of ["Checking", "Savings", "Credit cards"]) assert.equal(accountTypeCheckbox(get(), label).props.checked, false);
+  toggle("Savings", true);
+  check(["3", "4"], [["USD", 1], ["PHP", 1]]);
+});
+
+test("account type visibility leaves cash and loan columns available", () => {
+  const get = harness({ rows: [row()], accounts: [...accounts,
+    { id: 7, name: "Cash", type: "cash", currency: "USD" }, { id: 8, name: "Loan", type: "loan", currency: "PHP" }] });
+  button(get(), "Expand accounts").props.onClick();
+  for (const label of ["Checking", "Savings", "Credit cards"])
+    accountTypeCheckbox(get(), label).props.onChange({ target: { checked: false } });
+  const html = renderToStaticMarkup(get());
+  assert.deepEqual(accountColumns(html), ["7", "8"]);
+  assert.deepEqual(runningValues(html, "Credit cards"), { USD: "$0.00", PHP: "₱600.00" });
+});
+
+test("saved account column preferences load without being overwritten and survive a new table mount", () => {
+  const key = "finance:planner:account-columns:v1";
+  const initial = JSON.stringify({ checking: false, savings: true, credit: true });
+  const values = new Map([[key, initial]]);
+  const writes = [];
+  const originalWindow = globalThis.window;
+  globalThis.window = { localStorage: { getItem: (name) => values.get(name) ?? null,
+    setItem(name, value) { writes.push(name); values.set(name, value); } } };
+  const rows = [row()];
+  const before = structuredClone(rows);
+  try {
+    const get = effectHarness({ rows });
+    get.render();
+    let tree = get.render();
+    assert.equal(values.get(key), initial);
+    assert.deepEqual(writes, [], "mounting cannot overwrite preferences with initial defaults");
+    button(tree, "Expand accounts").props.onClick();
+    tree = get.render();
+    assert.equal(accountTypeCheckbox(tree, "Checking").props.checked, false);
+    assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["34", "37"]);
+    accountTypeCheckbox(tree, "Savings").props.onChange({ target: { checked: false } });
+    tree = get.render();
+    assert.deepEqual(writes, [key]);
+    assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["37"]);
+    const remount = effectHarness({ rows });
+    remount.render();
+    tree = remount.render();
+    button(tree, "Expand accounts").props.onClick();
+    tree = remount.render();
+    assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["37"]);
+    assert.equal(accountTypeCheckbox(tree, "Checking").props.checked, false);
+    assert.equal(accountTypeCheckbox(tree, "Savings").props.checked, false);
+    assert.equal(accountTypeCheckbox(tree, "Credit cards").props.checked, true);
+    assert.deepEqual(runningValues(renderToStaticMarkup(tree), "Credit cards"), { USD: "$0.00", PHP: "₱600.00" });
+    assert.deepEqual(rows, before);
+  } finally { globalThis.window = originalWindow; }
+});
+
+test("invalid or unavailable preference storage keeps account visibility controls usable", () => {
+  const key = "finance:planner:account-columns:v1";
+  const originalWindow = globalThis.window;
+  try {
+    for (const mode of ["invalid JSON", "array", "partial booleans", "blocked"]) {
+      let writes = 0;
+      globalThis.window = { localStorage: {
+        getItem(name) {
+          assert.equal(name, key);
+          if (mode === "blocked") throw new Error("Storage unavailable");
+          return mode === "invalid JSON" ? "{" : mode === "array" ? "[]"
+            : JSON.stringify({ checking: "false", savings: false, credit: null });
+        },
+        setItem(name) { assert.equal(name, key); writes++; if (mode === "blocked") throw new Error("Storage unavailable"); },
+      } };
+      const get = effectHarness({ rows: [row()] });
+      get.render();
+      let tree = get.render();
+      button(tree, "Expand accounts").props.onClick();
+      tree = get.render();
+      assert.equal(accountTypeCheckbox(tree, "Checking").props.checked, true, mode);
+      assert.equal(accountTypeCheckbox(tree, "Savings").props.checked, mode !== "partial booleans", mode);
+      assert.equal(accountTypeCheckbox(tree, "Credit cards").props.checked, true, mode);
+      assert.equal(writes, 0, "reading corrupt or blocked storage cannot write defaults");
+      accountTypeCheckbox(tree, "Credit cards").props.onChange({ target: { checked: false } });
+      tree = get.render();
+      assert.equal(accountTypeCheckbox(tree, "Credit cards").props.checked, false, mode);
+      assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), mode === "partial booleans" ? ["1"] : ["1", "34"]);
+      assert.deepEqual(runningValues(renderToStaticMarkup(tree), "Credit cards"), { USD: "$0.00", PHP: "₱600.00" });
+    }
+  } finally { globalThis.window = originalWindow; }
 });
 
 test("running balances stay numeric while reserves and explanations remain in the notes disclosure", () => {
