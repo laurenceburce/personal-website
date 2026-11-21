@@ -134,7 +134,7 @@ test("planner table defaults to its compact summary and expands accounts into ho
   assert.match(expanded, /Activity in Daily checking/);
   for (const label of ["Date", "Description", "USD", "PHP", "Scheduled bill", "Balance owed"]) assert.ok(expanded.includes(label));
   assert.deepEqual(accountColumns(expanded), ["1", "34", "37"]);
-  assert.match(expanded, /Daily checking · ••1234/);
+  assert.match(expanded, /<strong>Daily checking \(US\)<\/strong>/);
   assert.match(expanded, /-\$25\.00/);
   assert.match(accountCell(expanded, 1), /\$175\.00/);
   assert.match(accountCell(expanded, 34), /₱2,000\.00/);
@@ -184,7 +184,11 @@ test("checking, savings and credit card column toggles remain independent withou
     assert.deepEqual([...html.matchAll(/scope="colgroup" class="fpt-currency-heading" colSpan="(\d+)" data-currency="([^"]+)"/g)]
       .map((match) => [match[2], Number(match[1])]), groups);
     const colgroups = [...html.matchAll(/<colgroup>([\s\S]*?)<\/colgroup>/g)].map((match) => (match[1].match(/<col\b/g) || []).length);
-    assert.deepEqual(colgroups, [5, ...groups.map(([, count]) => count)]);
+    assert.deepEqual(colgroups, [4, ...groups.map(([, count]) => count), 1]);
+    for (const [, body] of html.matchAll(/<tr\b[^>]*data-row-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/g)) {
+      const cells = [...body.matchAll(/<td\b([^>]*)>/g)];
+      assert.match(cells.at(-1)[1], /fpt-projection/, "running balances remain after all visible account columns");
+    }
     assert.doesNotMatch(html, /colSpan="0"|<tr><\/tr>/);
     assert.deepEqual(props, before);
     return html;
@@ -724,7 +728,7 @@ test("expanded account columns show zero, card credits and unavailable values wi
   const before = structuredClone(rows);
   const html = renderExpanded(rows, { accounts: [...accounts, { id: 50, name: "Unreported account", type: "checking", currency: "USD", nativeCurrentBalance: 99999 }] });
   assert.deepEqual(accountColumns(html), ["1", "50", "34", "37"]);
-  for (const label of ["Daily checking · ••1234", "Peso savings", "RCBC JCB", "Unreported account"]) assert.ok(html.includes(label));
+  for (const label of ["Daily checking (US)", "Peso savings (PH)", "RCBC JCB (PH)", "Unreported account (US)"]) assert.ok(html.includes(label));
   assert.match(accountCell(html, 1), /\$0\.00/);
   assert.match(accountCell(html, 34), /₱12,000\.00/);
   assert.match(accountCell(html, 37), /-₱125\.00/);
@@ -779,6 +783,57 @@ test("account list order is stable through filters and excludes inactive or unsu
   assert.deepEqual(accountColumns(renderToStaticMarkup(get())), before);
 });
 
+test("account labels identify currency and automatic payments while raw names and masks remain searchable", () => {
+  const bank = [
+    { id: 1, name: "Checking", mask: "1234", type: "checking", currency: "USD" },
+    { id: 2, name: "Annual Savings", mask: "5555", type: "savings", currency: "USD" },
+    { id: 34, name: "Peso savings", mask: "2222", type: "savings", currency: "PHP" },
+    { id: 37, name: "Credit Card", officialName: "RCBC Gold JCB", mask: "9876", type: "credit", currency: "PHP" },
+    { id: 38, name: "Checking", mask: "5678", type: "checking", currency: "PHP" },
+  ];
+  const snapshot = [{ accountId: 1, currency: "USD", balance: 175 }, { accountId: 2, currency: "USD", balance: 50 },
+    { accountId: 34, currency: "PHP", balance: 2000 }, { accountId: 37, currency: "PHP", balance: 600 },
+    { accountId: 38, currency: "PHP", balance: 0 }];
+  const rows = [
+    row({ id: "coffee", description: "Coffee", projectedBalanceUsd: 225, accountBalanceSnapshot: snapshot }),
+    row({ id: "transfer", description: "Annual transfer", source: "manual", kind: "transfer", amount: 10, accountId: null,
+      fromAccountId: 1, toAccountId: 2, usd: 0, php: 0, projectedBalanceUsd: 225, accountBalanceSnapshot: snapshot }),
+    row({ id: "autopay", description: "Credit Card · automatic payment", source: "creditCardDue", autopayEnabled: true,
+      creditAccountId: 37, sourceAccountId: 34, accountId: null, currency: "PHP", amount: 100, usd: 0, php: -100,
+      projectedBalanceUsd: 225, projectedBalancePhp: 1900, accountBalanceSnapshot: snapshot }),
+  ];
+  const props = { rows, accounts: bank };
+  const before = structuredClone(props);
+  const get = harness(props);
+  button(get(), "Expand accounts").props.onClick();
+  const html = renderToStaticMarkup(get());
+  const labels = (markup) => Object.fromEntries([...markup.matchAll(/<th\b[^>]*data-account-id="([^"]+)"[^>]*>\s*<strong>(.*?)<\/strong>/g)]
+    .map(([, id, label]) => [id, plain(label)]));
+  assert.deepEqual(labels(html), { 1: "Checking (US)", 2: "Annual Savings (US)", 34: "Peso savings (PH)",
+    37: "RCBC Gold JCB (PH)", 38: "Checking (PH)" });
+  const automatic = html.match(/<tr\b[^>]*data-row-id="autopay"[^>]*>([\s\S]*?)<\/tr>/)[1];
+  assert.match(automatic, /<strong>RCBC Gold JCB \(Automatic Payment\)<\/strong>/);
+  assert.match(automatic, /<small class="fpt-transaction-accounts">Peso savings \(PH\) → RCBC Gold JCB \(PH\)<\/small>/);
+  const transfer = html.match(/<tr\b[^>]*data-row-id="transfer"[^>]*>([\s\S]*?)<\/tr>/)[1];
+  assert.match(transfer, /<small class="fpt-transaction-accounts">Checking \(US\) → Annual Savings \(US\)<\/small>/,
+    "context follows account IDs even when Checking exists in both currencies");
+  assert.deepEqual(amountCells(automatic), ["$0.00", "-₱100.00"]);
+  for (const [query, ids] of [
+    ["Credit Card", ["autopay"]], ["9876", ["autopay"]], ["RCBC Gold JCB (Automatic Payment)", ["autopay"]],
+    ["RCBC Gold JCB (PH)", ["autopay"]], ["Annual Savings (US)", ["transfer"]],
+    ["Checking (US)", ["coffee", "transfer"]], ["1234", ["coffee", "transfer"]],
+  ]) {
+    find(get(), (node) => node.type === "input" && node.props.type === "search").props.onChange({ target: { value: query } });
+    assert.deepEqual([...renderToStaticMarkup(get()).matchAll(/<tr\b[^>]*data-row-id="([^"]+)"/g)].map((match) => match[1]), ids, query);
+  }
+  const duplicates = renderExpanded(rows, { accounts: [...bank,
+    { id: 3, name: "Checking", mask: "4321", type: "checking", currency: "USD" }] });
+  assert.equal(labels(duplicates)[1], "Checking (US) · ••1234");
+  assert.equal(labels(duplicates)[3], "Checking (US) · ••4321");
+  assert.equal(labels(duplicates)[38], "Checking (PH)", "a different currency already distinguishes an account name");
+  assert.deepEqual(props, before);
+});
+
 test("account columns group USD then PHP with checking, savings and credit cards within each currency", () => {
   const bank = [
     { id: 1, name: "Peso card", type: "credit", currency: "PHP" },
@@ -801,7 +856,7 @@ test("account columns group USD then PHP with checking, savings and credit cards
   assert.deepEqual(bank, before);
 });
 
-test("expanded account headers span their currency groups without creating empty groups", () => {
+test("expanded currency account groups precede the final running balance in headers and body", () => {
   for (const [bank, groups] of [
     [accounts, [["USD", 1], ["PHP", 2]]],
     [accounts.filter((account) => account.currency === "PHP"), [["PHP", 2]]],
@@ -812,12 +867,27 @@ test("expanded account headers span their currency groups without creating empty
     const headerRows = [...head.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);
     assert.equal(headerRows.length, 2);
     assert.equal((headerRows[0].match(/scope="col" rowSpan="2"/g) || []).length, 5);
+    const headings = [...headerRows[0].matchAll(/<th\b([^>]*)>([\s\S]*?)<\/th>/g)].map(([, attributes, content]) =>
+      attributes.includes("fpt-projection-heading") ? "Running balance"
+        : attributes.includes('scope="colgroup"') ? `${attributes.match(/data-currency="([^"]+)"/)[1]} accounts` : plain(content));
+    assert.deepEqual(headings, ["Date", "Description", "USD", "PHP", ...groups.map(([currency]) => `${currency} accounts`), "Running balance"]);
     assert.deepEqual([...head.matchAll(/scope="colgroup" class="fpt-currency-heading" colSpan="(\d+)" data-currency="([^"]+)"/g)]
       .map((match) => [match[2], Number(match[1])]), groups);
     assert.deepEqual(accountColumns(headerRows[1]), accountColumns(html));
     const colgroups = [...html.matchAll(/<colgroup>([\s\S]*?)<\/colgroup>/g)].map((match) => (match[1].match(/<col\b/g) || []).length);
-    assert.deepEqual(colgroups, [5, ...groups.map(([, count]) => count)]);
-    assert.doesNotMatch(render([row()], { accounts: bank }), /fpt-currency-heading|scope="colgroup"|rowSpan="2"/);
+    assert.deepEqual(colgroups, [4, ...groups.map(([, count]) => count), 1]);
+    const body = html.match(/<tr\b[^>]*data-row-id="[^"]+"[^>]*>([\s\S]*?)<\/tr>/)[1];
+    const cells = [...body.matchAll(/<td\b([^>]*)>/g)].map(([, attributes], index) =>
+      index < 4 ? ["Date", "Description", "USD", "PHP"][index]
+        : attributes.includes("data-account-id") ? `account:${attributes.match(/data-account-id="([^"]+)"/)[1]}`
+          : attributes.includes("fpt-projection") ? "Running balance" : "Unexpected cell");
+    assert.deepEqual(cells, ["Date", "Description", "USD", "PHP", ...accountColumns(html).map((id) => `account:${id}`), "Running balance"]);
+    const compact = render([row()], { accounts: bank });
+    assert.doesNotMatch(compact, /fpt-currency-heading|scope="colgroup"|rowSpan="2"/);
+    assert.equal((compact.match(/<th\b/g) || []).length, 5);
+    assert.deepEqual(amountCells(html), amountCells(compact));
+    assert.deepEqual(runningValues(html, "Account funds"), runningValues(compact, "Account funds"));
+    assert.deepEqual(runningValues(html, "Credit cards"), runningValues(compact, "Credit cards"));
   }
 });
 

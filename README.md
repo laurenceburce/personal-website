@@ -187,6 +187,11 @@ The finance workspace separates recorded activity from your plans:
   returns to the compact view. In the expanded view, **Account columns** lets you
   show or hide **Checking**, **Savings**, and **Credit cards** separately. These
   choices are saved in this browser; running totals and transactions stay the same.
+  Expanded columns place **Running balance** at the far right. USD account groups
+  use light blue shading and PHP groups light green. Readable account labels use
+  **(US)** or **(PH)**; masked digits appear only when needed to distinguish accounts
+  with the same name. Automatic payments show the specific card name, and the
+  assigned accounts appear beneath transaction descriptions.
   Search or filter **All / Upcoming / Recorded /
   Overdue** without changing calculated balances. **Reserves & planning notes**
   below the table contains statement, reserve, conversion, and matching evidence.

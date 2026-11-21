@@ -62,7 +62,8 @@
 
 .fp-app .fpt-description-line { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .fp-app .fpt-description-title { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
-.fp-app .fpt-description-title > strong { min-width: 0; color: #344d3d; font-weight: 500; line-height: 1.5; }
+.fp-app .fpt-description-title > strong { min-width: 0; color: #344d3d; font-weight: 600; line-height: 1.6; overflow-wrap: break-word; }
+.fp-app .fpt-transaction-accounts { display: block; margin-top: 4px; color: #52675b; font-size: 11px; line-height: 1.5; overflow-wrap: break-word; }
 .fp-app .fpt-status-pill { display: inline-flex; flex-shrink: 0; margin-left: auto; padding: 2px 5px; border: 1px solid #d9e2db; border-radius: 4px; background: #f3f6f3; color: #607567; font-size: 9px; font-weight: 600; line-height: 1.4; white-space: nowrap; }
 .fp-app .fpt-status-done { border-color: #d2e4d7; background: #eef6f0; color: #4c785c; }
 .fp-app .fpt-status-overdue { border-color: #efd1c9; background: #fcece7; color: #a14b3b; }
@@ -83,7 +84,7 @@
 
 /* Amounts and context stay with the account that changed. */
 .fp-app .fpt-table .fpt-account-balance-heading { background: #f1f6f3; }
-.fp-app .fpt-account-balance-heading strong { display: block; color: #3a5946; font-size: 11px; font-weight: 600; line-height: 1.5; }
+.fp-app .fpt-account-balance-heading strong { display: block; color: #3a5946; font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: break-word; }
 .fp-app .fpt-account-balance-heading small { display: block; margin-top: 3px; color: #52675b; font-size: 10px; font-weight: 400; }
 .fp-app .fpt-table .fpt-account-balance { background: #fcfdfc; text-align: center; vertical-align: top; }
 .fp-app .fpt-account-balance > span { display: block; color: #34513e; font-size: 13px; font-weight: 600; line-height: 1.6; }
@@ -110,6 +111,19 @@
 .fp-app .fpt-row-overdue .fpt-description-title > strong { color: #9e493a; }
 .fp-app .fpt-row-overdue.fpt-row-current > .fpt-transaction { box-shadow: inset 3px 0 #b75d4c; }
 .fp-app .fpt-row-overdue .fpt-account-tags .fpt-info-tag { border-color: #eed7d0; background: #fff7f3; color: #a46050; }
+
+/* Currency shading follows account columns; overdue rows retain their alert fill. */
+.fp-app .fpt-table [data-currency="USD"] { --fpt-account-fill: #f0f7ff; --fpt-account-header: #e1edfc; --fpt-account-edge: #b8cee7; }
+.fp-app .fpt-table [data-currency="PHP"] { --fpt-account-fill: #f0f9f2; --fpt-account-header: #e1f1e6; --fpt-account-edge: #b9d8c2; }
+.fp-app .fpt-table thead [data-currency] { background: var(--fpt-account-header); }
+.fp-app .fpt-table thead [data-currency="USD"], .fp-app .fpt-table thead [data-currency="USD"] strong { color: #345577; }
+.fp-app .fpt-table thead [data-currency="PHP"], .fp-app .fpt-table thead [data-currency="PHP"] strong { color: #345f43; }
+.fp-app .fpt-table .fpt-account-balance[data-currency] { background: var(--fpt-account-fill); }
+.fp-app .fpt-table [data-group-start], .fp-app .fpt-table .fpt-currency-heading { border-left: 2px solid var(--fpt-account-edge); }
+.fp-app .fpt-table .fpt-row-current > .fpt-account-balance[data-currency="USD"] { background: #e6f0ff; }
+.fp-app .fpt-table .fpt-row-current > .fpt-account-balance[data-currency="PHP"] { background: #e6f3ea; }
+.fp-app .fpt-table .fpt-row-overdue > .fpt-account-balance[data-currency] { background: #fdf0ed; }
+.fp-app .fpt-accounts-expanded .fpt-projection-heading, .fp-app .fpt-accounts-expanded .fpt-projection { border-left: 2px solid #c8d5cd; }
 
 /* Full planning context stays below the ledger until requested. */
 .fp-app .fpt-notes { margin-top: 14px; border: 1px solid #e0e8e2; border-radius: 7px; background: #fcfdfb; }
