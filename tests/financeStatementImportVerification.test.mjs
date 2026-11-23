@@ -71,6 +71,28 @@ test("saved statement verification exposes the later live payment after prior st
   assert.deepEqual(context.events.slice(-2), ["commit", "release"]);
 });
 
+test("an already-paid issued statement leaves current debt for the next cycle without replaying recorded payments", async () => {
+  const context = harness({ currentBalance: 13696.72,
+    statement: { statementBalance: 4653.76, minimumPayment: 500, lastStatementDate: "2026-11-04", dueDate: "2026-12-01" },
+    records: [{ id: 101, account_id: 2, account_type: "credit", transaction_date: "2026-11-20", kind: "income",
+      amount: 20000, currency: "PHP", merchant: "Card payment", category: "Transfer", pending: 0 }],
+    entries: [{ id: "remaining", description: "Full balance payment", date: "2027-01-01", kind: "transfer",
+      currency: "PHP", amount: 13696.72, amountMode: "cardBalance", fromAccountId: 1, toAccountId: 2 }] });
+  const result = await verifyFinanceStatementPlan(context.pool, context.operation, context.imported, context.today);
+  assert.equal(result.currentBalance, 13696.72, "recorded payments are already reflected in the current app balance");
+  assert.equal(result.balanceUnchanged, true);
+  assert.deepEqual(result.statementRows.map(({ date, dueDate, statementBalance, paidAmount, amount, estimated }) =>
+    ({ date, dueDate, statementBalance, paidAmount, amount, estimated })), [
+    { date: "2026-11-24", dueDate: "2026-12-01", statementBalance: 4653.76, paidAmount: 4653.76, amount: 0, estimated: false },
+    { date: "2026-12-25", dueDate: "2027-01-01", statementBalance: null, paidAmount: 0, amount: 13696.72, estimated: true },
+  ]);
+  assert.deepEqual(result.paymentRows, [{ id: "entry:remaining", date: "2027-01-01", amount: 0,
+    amountMode: "cardBalance", liveCardBalance: true, fromAccountId: 1, toAccountId: 2 }]);
+  assert.equal(Math.round([...result.statementRows, ...result.paymentRows].reduce((total, row) => total + row.amount, 0) * 100), 1369672,
+    "the remaining current debt is projected once despite the historical payment and later explicit transfer");
+  assert.deepEqual(context.events.slice(-2), ["commit", "release"]);
+});
+
 test("statement verification fails closed and releases its read transaction when the ledger is truncated", async () => {
   const context = harness({ records: Array.from({ length: 10001 }, () => ({})) });
   await assert.rejects(verifyFinanceStatementPlan(context.pool, context.operation, context.imported, context.today), /verification limit/);
