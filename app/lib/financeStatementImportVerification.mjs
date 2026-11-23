@@ -42,7 +42,10 @@ export async function verifyFinanceStatementPlan(pool, operation, imported, toda
       statementRows: rows.filter((row) => row.source === "creditCardDue" && Number(row.creditAccountId) === account.id)
         .map((row) => ({ id: row.id, date: row.date, dueDate: row.dueDate, statementBalance: row.statementBalance,
           paidAmount: row.paidAmount, amount: row.amount, estimated: Boolean(row.estimated),
-          projectedCycle: Boolean(row.projectedCycle), plannedPaymentAmount: row.plannedPaymentAmount })) };
+          projectedCycle: Boolean(row.projectedCycle), plannedPaymentAmount: row.plannedPaymentAmount })),
+      paymentRows: rows.filter((row) => row.source === "manual" && row.kind === "transfer" && Number(row.toAccountId) === account.id)
+        .map((row) => ({ id: row.id, date: row.date, amount: row.amount, amountMode: row.amountMode,
+          liveCardBalance: Boolean(row.liveCardBalance), fromAccountId: row.fromAccountId, toAccountId: row.toAccountId })) };
   } catch (error) {
     await connection.rollback().catch(() => {});
     throw error;
