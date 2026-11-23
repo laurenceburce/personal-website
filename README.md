@@ -247,6 +247,14 @@ The finance workspace separates recorded activity from your plans:
   optional autopay timing remain configurable under **Bank accounts**. No action sends
   a bank payment. Removing a recorded custom row reverses generated manual transactions;
   imported bank records are retained.
+  Issued card statements keep their reported due date, original scheduled payment
+  date, and unpaid amount. An unrecorded payment whose schedule has passed remains
+  in the active forecast; carrying it forward does not record a payment. The row
+  distinguishes a missed schedule from an actual past-due statement and shows the
+  statement total, confirmed payments, pending bank matches, and remaining amount.
+  Future monthly card payments are explicitly estimated from known closing/due dates
+  and scheduled purchases or refunds. Partial bank responses preserve coherent
+  last-known statement details as stale; a new cycle never inherits an old amount.
   A statement's projected debt reduction uses only its assigned funding. If a
   reserve covers part of a payment and no account funds the rest, the remaining
   debt stays owed. Later full-balance payments use that remaining amount.

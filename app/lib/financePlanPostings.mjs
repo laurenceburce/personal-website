@@ -350,6 +350,24 @@ function scheduledManualSpecs(document, primary, accounts, existing, custom, tra
   for (const row of native) {
     if (row.date > today || (restart && row.date <= restart.date) || ["transaction", "manual"].includes(row.source)) continue;
     if (frozenEvents.has(keyFor(primary.id, row.id, ""))) continue;
+    // A carried or inferred payment is not proof of a new payment. Previously
+    // posted receipts remain facts at their original date and native amount.
+    if (row.carriedPayment || row.projectedCycle) {
+      for (const receipt of existing) {
+        if (String(receipt.source_plan_id) !== String(primary.id) || receipt.source_plan_row_id !== row.id ||
+            !posted(receipt, today)) continue;
+        const saved = parse(receipt.plan_record_json);
+        if (!saved.manualPlannerSource || saved.plannerSource !== "creditCardDue") continue;
+        specs.push({ ...saved, planId: primary.id, rowId: row.id, leg: receipt.source_plan_leg,
+          accountId: Number(receipt.account_id), currency: receipt.currency, kind: receipt.kind,
+          date: dateOnly(receipt.posting_date || receipt.transaction_date), amount: money(receipt.amount),
+          description: receipt.merchant, category: receipt.category, note: receipt.note,
+          awaitingBankSync: Boolean(receipt.plan_provisional),
+          ...(!receipt.plan_generated || providerRecord(receipt) ? { reusedTransactionId: Number(receipt.id) } : {}),
+        });
+      }
+      continue;
+    }
     const linked = (kind, currency, fallback) => plan.accountLinks
       ? plan.accountLinks[`${kind}${currency === "PHP" ? "Php" : "Usd"}AccountId`] : fallback;
     const unavailable = (selected) => Number(selected) > 0 && inactiveAccount(byId.get(Number(selected)));

@@ -278,6 +278,25 @@ test("next-cycle estimates identify unbilled balance without claiming a confirme
   }
 });
 
+test("statement explanations distinguish original schedules, bank-confirmed payments, and inferred cycle amounts", () => {
+  const carried = plain(render([row({ source: "creditCardDue", date: "2026-11-22", dueDate: "2026-11-25",
+    scheduledPaymentDate: "2026-11-18", carriedPayment: true, autopayEnabled: true, autopayDaysBeforeDue: 7,
+    statementStatus: "stale", statementBalance: 500, paidAmount: 175, confirmedPaidAmount: 125,
+    committedPaymentAmount: 50, amount: 325, currency: "USD", usd: -325 })]));
+  assert.match(carried, /Statement balance \$500\.00 · Paid \$125\.00 · Recorded · awaiting bank match \$50\.00/);
+  assert.doesNotMatch(carried, /Paid \$175\.00/);
+  assert.match(carried, /Automatic payment Nov 18, 2026 · Due Nov 25, 2026/);
+  assert.match(carried, /unpaid amount is included from Nov 22, 2026/);
+  assert.match(carried, /Last known statement details/);
+  const estimate = plain(render([row({ source: "creditCardDue", date: "2026-12-18", dueDate: "2026-12-25",
+    scheduledPaymentDate: "2026-12-18", projectedCycle: true, estimated: true, estimatedBalance: 100,
+    amount: 75, currency: "USD", usd: -75 })]));
+  assert.match(estimate, /Estimated monthly card payment/);
+  assert.match(estimate, /Estimated cycle balance \$100\.00 · Remaining \$75\.00/);
+  assert.match(estimate, /Includes scheduled card activity/);
+  assert.doesNotMatch(estimate, /Statement balance \$0\.00/);
+});
+
 test("automatic card payments disclose their payment date separately from the original due date", () => {
   for (const estimated of [false, true]) {
     const html = render([row({

@@ -65,9 +65,14 @@
 .fp-app .fpt-description-title { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .fp-app .fpt-description-title > strong { min-width: 0; color: #344d3d; font-weight: 600; line-height: 1.6; overflow-wrap: break-word; }
 .fp-app .fpt-transaction-accounts { display: block; margin-top: 4px; color: #52675b; font-size: 11px; line-height: 1.5; overflow-wrap: break-word; }
+.fp-app .fpt-card-payment-details { margin-top: 5px; color: #52675b; font-size: 10px; line-height: 1.6; }
+.fp-app .fpt-card-payment-details small { display: block; font-size: inherit; }
+.fp-app .fpt-card-payment-details strong { color: #3f5949; font-weight: 600; }
+.fp-app .fpt-card-payment-details .fpt-card-payment-review { color: #805a15; }
 .fp-app .fpt-status-pill { display: inline-flex; flex-shrink: 0; margin-left: auto; padding: 2px 5px; border: 1px solid #d9e2db; border-radius: 4px; background: #f3f6f3; color: #607567; font-size: 9px; font-weight: 600; line-height: 1.4; white-space: nowrap; }
 .fp-app .fpt-status-done { border-color: #d2e4d7; background: #eef6f0; color: #4c785c; }
 .fp-app .fpt-status-overdue { border-color: #efd1c9; background: #fcece7; color: #a14b3b; }
+.fp-app .fpt-status-review { border-color: #e8d5a5; background: #fff5dc; color: #805a15; }
 .fp-app .fpt-today-tag { display: inline-flex; margin-top: 5px; padding: 2px 5px; border-radius: 4px; background: #e6effc; color: #365b8a; font-size: 9px; font-weight: 600; line-height: 1.4; }
 .fp-app .fpt-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
 .fp-app .fpt-actions:empty { display: none; }

@@ -893,7 +893,7 @@ test("repair uses locked removal flags, preserves imported copies and remaps pla
   assert.ok(!queries.some((query) => /^DELETE/.test(query.sql)));
 });
 
-function syncBackend({ excluded = false, removedOwner = 3, onQuery } = {}) {
+function syncBackend({ excluded = false, removedOwner = 3, creditDue = null, onQuery } = {}) {
   return backend((sql, params) => {
     const intercepted = onQuery?.(sql, params);
     if (intercepted !== undefined) return intercepted;
@@ -921,6 +921,8 @@ function syncBackend({ excluded = false, removedOwner = 3, onQuery } = {}) {
       return [{ id: 2 }];
     if (sql.startsWith("SELECT is_sync_excluded"))
       return [{ is_sync_excluded: excluded ? 1 : 0 }];
+    if (sql.startsWith("SELECT credit_card_due_json"))
+      return [{ credit_card_due_json: creditDue && JSON.stringify(creditDue) }];
     if (sql.startsWith("SELECT DISTINCT account_id"))
       return [{ account_id: 2 }];
     if (sql.startsWith("SELECT t.id, t.duplicate_of_id"))
@@ -947,6 +949,31 @@ test("merging re-linked cards preserves the newest statement cache on the canoni
   assert.equal(update.params[8], 1, "canonical autopay is independent of newer bank statement metadata");
   assert.equal(update.params[9], 7);
   assert.equal(update.params.at(-1), 2);
+});
+
+test("duplicate card repair keeps a coherent last-known statement without filling a different cycle's unknown balance", async (t) => {
+  bankEnvironment(t);
+  const cached = { statementBalance: 350, minimumPayment: 25, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-01", lastPaymentAmount: 40, syncedAt: "2026-11-02T12:00:00.000Z" };
+  for (const newCycle of [false, true]) {
+    const incoming = { statementBalance: null, minimumPayment: null, dueDate: newCycle ? "2026-12-25" : null,
+      lastStatementDate: newCycle ? "2026-11-30" : null, lastPaymentDate: null, lastPaymentAmount: null,
+      syncedAt: "2026-11-20T12:00:00.000Z" };
+    const rows = [identityAccount(2, 1, { account_type: "credit", credit_card_due_json: JSON.stringify(cached), credit_card_due_status: "current" }),
+      identityAccount(30, 3, { account_type: "credit", credit_card_due_json: JSON.stringify(incoming), credit_card_due_status: "current" })];
+    const before = structuredClone(rows);
+    const { api, queries } = backend((sql) => sql.startsWith("SELECT a.*, c.institution_id") ? rows : []);
+    await api.repairDuplicateFinanceAccounts({ preview: false });
+    const update = queries.find(({ sql }) => sql.includes("SET connection_id = ?"));
+    const saved = JSON.parse(update.params[6]);
+    assert.equal(saved.statementBalance, newCycle ? null : 350);
+    assert.equal(saved.dueDate, newCycle ? "2026-12-25" : "2026-11-25");
+    assert.equal(saved.lastStatementDate, newCycle ? "2026-11-30" : "2026-10-31");
+    assert.equal(update.params[7], "stale");
+    assert.deepEqual(update.params.slice(1, 3), [before[1].current_balance, before[1].available_balance],
+      "statement reconciliation cannot change the selected bank balance");
+    assert.deepEqual(rows, before);
+  }
 });
 
 test("duplicate card repair retains an enabled autopay preference from the re-linked card", async (t) => {
@@ -1059,7 +1086,7 @@ test("credit sync imports the full statement and due date separately from curren
   const updates = queries.filter(({sql}) => sql.includes("SET credit_card_due_json = ?"));
   assert.equal(updates.length, 1);
   assert.match(updates[0].sql, /is_archived = 0 AND is_sync_excluded = 0/);
-  assert.deepEqual(updates[0].params.slice(1), [2, 3]);
+  assert.deepEqual(updates[0].params.slice(1), ["current", 2, 3]);
   assert.deepEqual(JSON.parse(updates[0].params[0]), {
     statementBalance: 350.12, minimumPayment: 25, dueDate: "2026-11-25",
     lastStatementDate: "2026-10-31", lastPaymentDate: "2026-10-25", lastPaymentAmount: 40,
@@ -1083,6 +1110,56 @@ test("credit sync stores zero and missing statement fields without inferring fro
   assert.equal(saved.minimumPayment, 0);
   assert.equal(saved.dueDate, null);
   assert.equal(saved.lastPaymentAmount, 0);
+});
+
+test("a partial same-cycle liability response retains cached statement details as stale under an account lock", async (t) => {
+  const cached = { statementBalance: 350.12, minimumPayment: 25, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-01", lastPaymentAmount: 40, syncedAt: "2026-11-02T12:00:00.000Z" };
+  bankEnvironment(t, async (url) => url.endsWith("/liabilities/get")
+    ? response({ liabilities: { credit: [{ account_id: "account-new", last_statement_balance: null,
+      minimum_payment_amount: null, next_payment_due_date: "2026-11-25", last_statement_issue_date: "2026-10-31",
+      last_payment_date: "2026-11-10", last_payment_amount: null }] } }) : creditBankResponse(url));
+  const { api, queries } = syncBackend({ creditDue: cached });
+  await api.syncFinanceConnection(3);
+  const update = queries.find(({ sql }) => sql.includes("SET credit_card_due_json = ?"));
+  assert.deepEqual(JSON.parse(update.params[0]), cached, "a partial new payment cannot borrow the last payment's amount");
+  assert.deepEqual(update.params.slice(1), ["stale", 2, 3]);
+  assert.doesNotMatch(update.sql, /current_balance|opening_balance|available_balance/);
+  const locked = queries.find(({ sql }) => sql.startsWith("SELECT credit_card_due_json"));
+  assert.ok(locked.inTransaction);
+  assert.match(locked.sql, /connection_id = \?.*is_archived = 0.*is_sync_excluded = 0.*FOR UPDATE/);
+  assert.deepEqual(locked.params, [2, 3]);
+});
+
+test("a new liability cycle with an unknown amount never reuses the older statement balance", async (t) => {
+  const cached = { statementBalance: 350.12, minimumPayment: 25, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-01", lastPaymentAmount: 40, syncedAt: "2026-11-02T12:00:00.000Z" };
+  bankEnvironment(t, async (url) => url.endsWith("/liabilities/get")
+    ? response({ liabilities: { credit: [{ account_id: "account-new", last_statement_balance: null,
+      minimum_payment_amount: null, next_payment_due_date: "2026-12-25", last_statement_issue_date: "2026-11-30",
+      last_payment_date: "2026-11-10", last_payment_amount: 50 }] } }) : creditBankResponse(url));
+  const { api, queries } = syncBackend({ creditDue: cached });
+  await api.syncFinanceConnection(3);
+  const update = queries.find(({ sql }) => sql.includes("SET credit_card_due_json = ?"));
+  const saved = JSON.parse(update.params[0]);
+  assert.equal(saved.statementBalance, null);
+  assert.equal(saved.minimumPayment, null);
+  assert.equal(saved.dueDate, "2026-12-25");
+  assert.equal(saved.lastStatementDate, "2026-11-30");
+  assert.equal(saved.lastPaymentDate, "2026-11-10");
+  assert.equal(saved.lastPaymentAmount, 50);
+  assert.equal(update.params[1], "stale");
+});
+
+test("liability updates skip accounts whose canonical ownership changed after the balance refresh", async (t) => {
+  bankEnvironment(t, async (url) => url.endsWith("/liabilities/get")
+    ? response({ liabilities: { credit: [{ account_id: "account-new", last_statement_balance: 100,
+      next_payment_due_date: "2026-11-25" }] } }) : creditBankResponse(url));
+  const { api, queries } = syncBackend({ onQuery(sql) {
+    if (sql.startsWith("SELECT credit_card_due_json")) return [];
+  } });
+  await api.syncFinanceConnection(3);
+  assert.ok(!queries.some(({ sql }) => sql.includes("SET credit_card_due_json = ?")));
 });
 
 test("unsupported liability access keeps cached dues stale while balances and transactions still refresh", async (t) => {

@@ -843,6 +843,80 @@ test("manual card statements require funding and post debt and funding movements
   assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [1000, 500]);
 });
 
+test("an unpaid earlier autopay stays a projection until an explicit statement payment is recorded", async () => {
+  const document = livePlanner();
+  document.plans[0].accountLinks = { availablePhpAccountId: 1 };
+  const card = { ...manual(37, "credit", 500), credit_card_due_status: "manual",
+    credit_card_autopay_enabled: 1, credit_card_autopay_days_before_due: 7,
+    credit_card_due_json: JSON.stringify({ statementBalance: 200, dueDate: "2026-11-20", lastStatementDate: "2026-10-25" }) };
+  const source = manual(1, "checking", 1000);
+  const before = structuredClone({ source, card });
+  const store = ledger([source, card], document);
+  for (let index = 0; index < 3; index++) await store.refresh();
+  assert.deepEqual(store.rows(), [], "a missed configured payment cannot become a new receipt on refresh");
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [1000, 500]);
+  assert.deepEqual({ source, card }, before);
+  const payment = entry({ id: "recorded-payment", description: "Recorded statement payment", kind: "transfer",
+    accountId: null, fromAccountId: 1, toAccountId: 37, amount: 200,
+    scheduledRowId: "creditCardDue:37:2026-11-20" });
+  document.plans[0].entries.push(payment);
+  document.plans[0].completedRows = [completion(payment.id)];
+  for (let index = 0; index < 3; index++) await store.refresh();
+  const receipts = store.rows();
+  assert.equal(receipts.length, 2);
+  assert.ok(receipts.every((row) => row.source_plan_row_id === "entry:recorded-payment"));
+  assert.ok(receipts.every((row) => row.amount === 200 && row.transaction_date === today));
+  assert.ok(receipts.every((row) => financePlanTransactionMetadata(row).creditCardPaymentDueDate === "2026-11-20"));
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [800, 300]);
+  assert.deepEqual({ source, card }, before);
+});
+
+test("a carried statement keeps its already posted payment at the original date and amount", async () => {
+  const document = livePlanner();
+  document.plans[0].accountLinks = { availablePhpAccountId: 1 };
+  const card = { ...manual(37, "credit", 500), credit_card_due_status: "manual",
+    credit_card_due_json: JSON.stringify({ statementBalance: 200, dueDate: today, lastStatementDate: "2026-10-25" }) };
+  const store = ledger([manual(1, "checking", 1000), card], document);
+  await store.refresh();
+  const receipts = store.rows().map((row) => [row.id, row.account_id, row.kind, row.currency, row.amount, row.transaction_date]);
+  assert.equal(receipts.length, 2);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [800, 300]);
+  for (const date of ["2026-11-19", "2026-11-19", "2026-11-20"]) {
+    await store.refresh(date);
+    assert.deepEqual(store.rows().map((row) => [row.id, row.account_id, row.kind, row.currency, row.amount, row.transaction_date]), receipts);
+    assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [800, 300]);
+    assert.ok(store.rows().every((row) => !financePlanTransactionMetadata(row).planDetached));
+  }
+});
+
+test("an inferred cycle payment dated today stays a forecast while its manual card charge posts", async () => {
+  const document = livePlanner();
+  document.plans[0].accountLinks = { availablePhpAccountId: 1 };
+  document.bills = [{ id: "card-charge", name: "Card charge", amount: 100, currency: "PHP",
+    cadence: "monthly", dueDay: 18, accountId: 37 }];
+  const card = { ...manual(37, "credit", 0), credit_card_due_status: "manual",
+    credit_card_autopay_enabled: 1, credit_card_autopay_days_before_due: 20,
+    credit_card_due_json: JSON.stringify({ statementBalance: 0, lastStatementDate: "2026-10-18", dueDate: "2026-11-08" }) };
+  const store = ledger([manual(1, "checking", 1000), card], document);
+  for (let index = 0; index < 3; index++) await store.refresh();
+  const [charge] = store.rows();
+  assert.equal(store.rows().length, 1, "an unissued future cycle cannot fabricate an actual card payment today");
+  assert.equal(charge.source_plan_row_id, `bill:card-charge:${today}`);
+  assert.equal(charge.kind, "expense");
+  assert.equal(charge.amount, 100);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [1000, 100]);
+  const payment = entry({ id: "recorded-cycle-payment", description: "Recorded card payment", kind: "transfer",
+    accountId: null, fromAccountId: 1, toAccountId: 37, amount: 100,
+    scheduledRowId: "creditCardDue:37:2026-12-08" });
+  document.plans[0].entries.push(payment);
+  document.plans[0].completedRows = [completion(payment.id)];
+  for (let index = 0; index < 3; index++) await store.refresh();
+  assert.equal(store.rows().length, 3);
+  assert.equal(store.rows().filter((row) => row.source_plan_row_id === "entry:recorded-cycle-payment").length, 2);
+  assert.deepEqual(store.accounts().map((row) => row.nativeCurrentBalance), [900, 0]);
+  assert.equal(store.rows().find((row) => row.id === charge.id).source_plan_row_id, charge.source_plan_row_id);
+});
+
 test("advancing a manual card statement preserves its settled cycle and records the next due only once", async () => {
   for (const withClosingDate of [false, true]) {
     const document = livePlanner();

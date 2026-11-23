@@ -816,11 +816,12 @@ export default function FinanceAppClient({
   const creditCardObligations = useMemo(
     () => getCreditCardObligations(accounts, {
       today,
+      carryPastPayments: plannerRange.endDate >= today,
       transactions: planRecordsMatch
         ? [...(planActivity.transactions || []), ...(planActivity.creditCardPaymentTransactions || [])]
         : [],
     }),
-    [accounts, today, planRecordsMatch, planActivity],
+    [accounts, today, planRecordsMatch, planActivity, plannerRange.endDate],
   );
   const planWaitingForRecords = Boolean(
     plan &&
@@ -1217,6 +1218,10 @@ export default function FinanceAppClient({
   }
   async function togglePlanCompletion(row) {
     if (!plan || busy || row.completionSource === "transaction") return;
+    if (!row.completed && row.source === "creditCardDue") {
+      recordScheduledRow(row);
+      return;
+    }
     const entry = row.entryId && plan.entries.find((item) => item.id === row.entryId);
     if (!row.completed && entry && (["transfer", "conversion"].includes(entry.kind)
       ? !entry.fromAccountId || !entry.toAccountId : !entry.accountId)) {

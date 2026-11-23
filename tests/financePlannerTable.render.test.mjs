@@ -475,6 +475,51 @@ test("card expenses display their native amount without changing projected cash 
   assert.deepEqual(rows, before);
 });
 
+test("card statements disclose their exact remaining amount and original payment and due dates", () => {
+  const statement = row({ source: "creditCardDue", id: "creditCardDue:37:2026-11-20", accountId: null,
+    creditAccountId: 37, sourceAccountId: 1, description: "U.S. Bank Credit Card · automatic payment",
+    date: today, scheduledPaymentDate: "2026-11-13", dueDate: "2026-11-20", autopayEnabled: true,
+    statementBalance: 500, confirmedPaidAmount: 125, paidAmount: 125, amount: 375, usd: -375,
+    carriedPayment: true, missedPayment: true, paymentOverdue: false, statementStatus: "stale" });
+  const bank = [accounts[0], { ...accounts[2], name: "U.S. Bank Credit Card", currency: "USD" }];
+  const html = render([statement], { accounts: bank, onRecord() {}, onToggleComplete() {} });
+  const body = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
+  assert.match(plain(body), /Last known statement · Scheduled Nov 13 · Due Nov 20/);
+  assert.match(plain(body), /Statement \$500\.00 · Paid \$125\.00 · Remaining \$375\.00/);
+  assert.match(body, /fpt-status-review/);
+  assert.doesNotMatch(body, /fpt-row-overdue|>Past due<|>Mark done<|>Done</);
+  assert.match(body, /Record payment/);
+  assert.deepEqual(amountCells(html), ["-\$375.00", "₱0.00"]);
+});
+
+test("carried overdue statements use the bank due date in status filters even on today's timeline", () => {
+  const get = harness({ rows: [row({ id: "overdue-card", source: "creditCardDue", date: today, dueDate: "2026-11-17",
+    scheduledPaymentDate: "2026-11-10", carriedPayment: true, missedPayment: true, paymentOverdue: true,
+    statementBalance: 25, paidAmount: 0 })] });
+  assert.match(renderToStaticMarkup(get()), /fpt-row-overdue/);
+  button(get(), "Overdue").props.onClick();
+  assert.match(renderToStaticMarkup(get()), /data-row-id="overdue-card"/);
+  button(get(), "Upcoming").props.onClick();
+  assert.doesNotMatch(renderToStaticMarkup(get()), /data-row-id="overdue-card"/);
+});
+
+test("estimated cycle payments and locally recorded payments cannot claim confirmed bank statements or payments", () => {
+  const pending = render([row({ source: "creditCardDue", date: today, statementBalance: 500,
+    confirmedPaidAmount: 0, committedPaymentAmount: 500, paidAmount: 500, amount: 0, usd: 0,
+    completed: true, awaitingBankSync: true, completionSource: "transaction" })]);
+  const pendingBody = plain(pending.match(/<tbody>([\s\S]*?)<\/tbody>/)[1]);
+  assert.match(pendingBody, /Recorded/);
+  assert.match(pendingBody, /Awaiting bank match \$500\.00/);
+  assert.doesNotMatch(pendingBody, /Paid \$500\.00/);
+  const estimated = render([row({ source: "creditCardDue", statementBalance: null, estimated: true,
+    projectedCycle: true, estimatedBalance: 75, amount: 75, dueDate: "2026-12-20", date: "2026-12-13",
+    scheduledPaymentDate: "2026-12-13", estimateDateIsReported: false, autopayEnabled: true })]);
+  const estimatedBody = plain(estimated.match(/<tbody>([\s\S]*?)<\/tbody>/)[1]);
+  assert.match(estimatedBody, /Estimated payment · Scheduled Dec 13 · Estimated due Dec 20/);
+  assert.match(estimatedBody, /Estimated amount \$75\.00/);
+  assert.doesNotMatch(estimatedBody, /Issued statement|Statement \$0\.00/);
+});
+
 test("income, refunds and funded expenses retain their full native value when cash flows differ", () => {
   for (const [activity, expected] of [
     [{ currency: "USD", amount: 42, kind: "income", cardCreditActivity: true, usd: 0 }, ["$42.00", "₱0.00"]],

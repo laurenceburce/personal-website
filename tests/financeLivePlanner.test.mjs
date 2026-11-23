@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerComputationRange, getLivePlannerRange, getLivePlannerOpeningRow, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../app/lib/financeLivePlanner.mjs";
 import { buildAccountPlan } from "../app/lib/financeAccountPlan.mjs";
 import { orderPlanRows } from "../app/lib/financePlanRowOrder.mjs";
+import { buildPlanRows } from "../app/lib/financePlanner.mjs";
 
 const today = "2026-11-18";
 const range = { startDate: today, endDate: "2027-01-01" };
@@ -157,6 +158,38 @@ test("card dues need a valid cash funding leg before projected debt can be paid"
   assert.equal(funded.assets.USD.projected, 900);
   assert.equal(funded.unassignedCount, 0);
   assert.equal(funded.cashflow.USD.payments, 100);
+});
+
+test("a carried issued payment projects once from current funds while preserving its real due and configured dates", () => {
+  const today = "2026-11-22";
+  const accounts = [account(1, "checking", 1000), { ...account(2, "credit", 100), isLinked: true,
+    creditCardDueStatus: "current", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 100, dueDate: "2026-11-25", lastStatementDate: "2026-11-01" } }];
+  const range = { startDate: "2026-11-23", endDate: "2026-12-01" };
+  const plan = { id: "live", continuous: true, balanceMode: "live", ...getLivePlannerComputationRange(range, today),
+    accountLinks: { availableUsdAccountId: 1 }, includeIncome: false, includeTransactions: true,
+    includeAnnualReserve: false, includeAllocations: false, entries: [],
+    restart: { version: 1, date: "2026-11-20", transactionId: 100, balances: [], coveredEntryIds: [] } };
+  const document = { salary: {}, bills: [], allocations: [], plans: [plan] };
+  const before = structuredClone({ accounts, plan, document });
+  const rows = buildPlanRows(plan, document, 58, { today, accounts });
+  const native = buildAccountPlan(plan, document, 58, { today, accounts, rows });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].carriedPayment, true);
+  assert.equal(rows[0].date, today);
+  assert.equal(rows[0].dueDate, "2026-11-25");
+  assert.equal(rows[0].scheduledPaymentDate, "2026-11-18");
+  assert.equal(rows[0].amount, 100);
+  const snapshot = withLivePlannerAccountSnapshots({ today, accounts, rows: native.rows })[0];
+  assert.equal(snapshot.projectedBalanceUsd, 900);
+  assert.deepEqual(snapshot.accountBalanceSnapshot.map((item) => item.balance), [900, 0]);
+  const summary = getLivePlannerAnalytics({ today, accounts, rows: native.rows, range });
+  assert.equal(summary.assets.USD.current, 1000);
+  assert.equal(summary.assets.USD.projected, 900);
+  assert.equal(summary.debt.USD.current, 100);
+  assert.equal(summary.debt.USD.projected, 0);
+  assert.deepEqual(filterLivePlannerRows([snapshot], range), [], "hiding today's carried row cannot remove its effect on later projections");
+  assert.deepEqual({ accounts, plan, document }, before);
 });
 
 test("partially funded card dues reduce debt only by their known native funding", () => {

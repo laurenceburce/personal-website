@@ -156,6 +156,41 @@ export function normalizeFinanceCreditCardDue(value) {
   };
 }
 
+/** Retain coherent cached details when a provider returns an incomplete record. */
+export function mergeFinanceCreditCardDue(previous, value) {
+  const cached = normalizeFinanceCreditCardDue(previous);
+  const due = normalizeFinanceCreditCardDue(value);
+  if (!due) return { due: cached, status: cached ? "stale" : "unavailable" };
+  const statementFields = ["statementBalance", "minimumPayment", "dueDate", "lastStatementDate"];
+  const sameDue = due.dueDate != null && due.dueDate === cached?.dueDate;
+  const sameClose = due.lastStatementDate != null && due.lastStatementDate === cached?.lastStatementDate;
+  const conflictingDue = due.dueDate != null && cached?.dueDate != null && due.dueDate !== cached.dueDate;
+  const conflictingClose = due.lastStatementDate != null && cached?.lastStatementDate != null && due.lastStatementDate !== cached.lastStatementDate;
+  const sameCycle = cached && !conflictingDue && !conflictingClose && (sameDue || sameClose);
+  const missingCycle = due.statementBalance == null && due.dueDate == null && due.lastStatementDate == null;
+  let retained = false;
+  if (cached && missingCycle && statementFields.some((field) => cached[field] != null)) {
+    // Without a new cycle identity, keep the previous statement as last known
+    // rather than attaching a lone new field to an unidentified statement.
+    for (const field of statementFields) due[field] = cached[field];
+    retained = true;
+  } else if (sameCycle) {
+    for (const field of statementFields) if (due[field] == null && cached[field] != null) {
+      due[field] = cached[field];
+      retained = true;
+    }
+  }
+  if ((due.lastPaymentDate == null || due.lastPaymentAmount == null) &&
+      cached?.lastPaymentDate != null && cached.lastPaymentAmount != null) {
+    // A new date cannot inherit an older payment's amount, or vice versa.
+    due.lastPaymentDate = cached.lastPaymentDate;
+    due.lastPaymentAmount = cached.lastPaymentAmount;
+    retained = true;
+  }
+  if (retained) due.syncedAt = cached.syncedAt;
+  return { due, status: retained || due.statementBalance == null || due.dueDate == null ? "stale" : "current" };
+}
+
 export function mapFinanceActivityAccount(row) {
   const currency = String(row.currency || "USD").toUpperCase();
   if (!CURRENCIES.has(currency)) return null;

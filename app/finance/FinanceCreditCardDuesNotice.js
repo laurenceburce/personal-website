@@ -1,5 +1,5 @@
-import { financeAccountLabel } from "./FinanceAccountSelect";
 import { formatDate, localDate, money } from "../lib/financePlanner.mjs";
+import { getPlannerAccountLabel } from "../lib/financePlanPresentation.mjs";
 
 export default function FinanceCreditCardDuesNotice({
   accounts = [],
@@ -11,8 +11,9 @@ export default function FinanceCreditCardDuesNotice({
   paymentHistoryWarning,
 }) {
   const cards = accounts.filter(
-    (account) => account.type === "credit" &&
-      !account.isArchived && !account.mergedIntoAccountId,
+    (account) => (account.type || account.account_type) === "credit" &&
+      !account.isArchived && !account.is_archived && !account.isSyncExcluded && !account.is_sync_excluded &&
+      !account.mergedIntoAccountId && !account.merged_into_account_id,
   );
   if (!cards.length) return null;
   const estimates = obligations.filter((row) => row.estimated && row.amount > 0);
@@ -32,19 +33,20 @@ export default function FinanceCreditCardDuesNotice({
       ? account.nativeCurrentBalance : account.currentBalance;
     return Number.isFinite(Number(balance)) && Number(balance) > 0 &&
       !obligations.some((row) => String(row.creditAccountId) === String(account.id) &&
-        row.amount > 0 && formatDate(row.date) !== "—");
+        (row.amount > 0 || row.committedPaymentAmount > 0) && formatDate(row.date) !== "—");
   });
   const afterPlan = plan?.endDate
     ? estimates.filter((row) => row.date > plan.endDate)
     : [];
   const beforePlan = plan?.startDate
-    ? obligations.filter((row) => row.autopayEnabled && row.amount > 0 && row.date < plan.startDate)
+    ? obligations.filter((row) => row.autopayEnabled && row.amount > 0 && row.date < plan.startDate &&
+      (!plan.restart?.date || row.date >= plan.restart.date))
     : [];
   const stale = cards.filter(
     (account) => account.isLinked && account.creditCardDueStatus === "stale" &&
       (!missing.includes(account) || estimatedAccountIds.has(String(account.id))),
   );
-  const names = (items) => items.map(financeAccountLabel).join(", ");
+  const names = (items) => items.map((account) => getPlannerAccountLabel(account, cards)).join(", ");
   const showPayments = () => onChangeRange?.({
     startDate: [plan.startDate, ...beforePlan.map((row) => row.date)].sort()[0],
     endDate: [plan.endDate, ...afterPlan.map((row) => row.date)].sort().at(-1),
@@ -52,9 +54,9 @@ export default function FinanceCreditCardDuesNotice({
   return (
     <div className="fp-credit-card-dues-notice">
       <p className="fp-plan-flow-note">
-        Entered and bank-reported credit card statements use their due dates or saved autopay schedule. Unbilled
-        balances use the next available payment date and are labeled as estimates.
-        Future purchases, payments, and statement updates can change these estimates.
+        Issued statements keep their reported due date and saved payment schedule. Recorded payments reduce the remaining amount.
+        Future monthly payments use known billing-cycle dates and planned card activity, and are labeled as estimates.
+        Missing statement details stay unavailable until supplied by the bank or entered manually.
       </p>
       {beforePlan.length > 0 && (
         <div className="fp-plan-warning" role="status">

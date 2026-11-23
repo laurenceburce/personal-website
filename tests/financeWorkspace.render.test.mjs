@@ -396,6 +396,102 @@ test("saved same-day order follows matched bill identities and reconstructed Don
   assert.deepEqual(props, before);
 });
 
+test("an unpaid early card payment survives the restart floor with its issued amount and both dates", () => {
+  const today = "2026-11-22";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  for (const isLinked of [false, true]) for (const startDate of ["2026-11-20", "2026-11-23"]) {
+    const props = fixture("plans", 0, { bills: [], plans: [{ ...base, continuous: true, balanceMode: "live",
+      startDate: "2026-11-20", endDate: "2026-12-01", accountLinks: { availableUsdAccountId: 1 },
+      restart: { version: 1, date: "2026-11-20", transactionId: 100, coveredEntryIds: [], balances: [
+        { accountId: 1, type: "checking", currency: "USD", balance: 1000 },
+        { accountId: 2, type: "credit", currency: "USD", balance: 100 },
+      ] }, entries: [] }] }, { balanceAsOf: today, accounts: [
+      { id: 1, name: "Checking", type: "checking", currency: "USD", isLinked: true, nativeCurrentBalance: 1000 },
+      { id: 2, name: "Card", type: "credit", currency: "USD", isLinked, nativeCurrentBalance: 100,
+        creditCardDueStatus: isLinked ? "current" : "manual", creditCardAutopayEnabled: true,
+        creditCardAutopayDaysBeforeDue: 7, creditCardDue: { statementBalance: 100, minimumPayment: 10,
+          dueDate: "2026-11-25", lastStatementDate: "2026-11-01" } },
+    ] });
+    props.today = today;
+    props.legacyRange = false;
+    props.initialPlannerRange = { startDate, endDate: "2026-12-01" };
+    props.initialPlanActivity = { configured: true, from: startDate > today ? today : startDate, to: "2026-12-01",
+      transactions: [], balanceTransactions: [], balanceHistoryFrom: "2026-11-20", balanceHistoryThrough: today, balanceHistoryComplete: true };
+    const before = structuredClone(props);
+    const tree = workspaceHarness(props)();
+    const rows = findElement(tree, (node) => node.type?.name === "FinancePlannerTable").props.rows;
+    if (startDate < today) {
+      const payment = rows.find((row) => row.source === "creditCardDue");
+      assert.ok(payment, "an unpaid issued statement cannot disappear behind the planner's restart floor");
+      assert.equal(payment.id, "creditCardDue:2:2026-11-25");
+      assert.equal(payment.date, today);
+      assert.equal(payment.dueDate, "2026-11-25");
+      assert.equal(payment.scheduledPaymentDate, "2026-11-18");
+      assert.equal(payment.statementBalance, 100);
+      assert.equal(payment.amount, 100);
+      assert.equal(payment.carriedPayment, true);
+      assert.equal(payment.missedPayment, true);
+      assert.equal(payment.paymentOverdue, false, "the bank's actual deadline has not passed");
+      assert.equal(payment.completed, false);
+      assert.equal(payment.estimated, undefined);
+      assert.deepEqual(payment.accountBalanceSnapshot.map((account) => account.balance), [900, 0]);
+      const rendered = restartTableHarness(findElement(tree, (node) => node.type?.name === "FinancePlannerTable").props);
+      assert.doesNotMatch(rendered.rows().get(payment.id), /fpt-status-done/);
+    }
+    const summary = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+    assert.equal(summary.assets.USD.current, 1000);
+    assert.equal(summary.assets.USD.projected, 900, "a narrower future view still includes the carried unpaid payment once");
+    assert.equal(summary.debt.USD.current, 100);
+    assert.equal(summary.debt.USD.projected, 0);
+    assert.deepEqual(props, before);
+  }
+});
+
+test("a saved payment awaiting its bank match does not turn unchanged statement debt into next-month unbilled debt", () => {
+  const today = "2026-11-22";
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const payment = { id: "payment", date: today, description: "Recorded card payment", kind: "transfer", amount: 100,
+    currency: "USD", fromAccountId: 1, toAccountId: 2, scheduledRowId: "creditCardDue:2:2026-11-25" };
+  const props = fixture("plans", 0, { bills: [], plans: [{ ...base, continuous: true, balanceMode: "live",
+    startDate: "2026-11-20", endDate: "2026-12-31", accountLinks: { availableUsdAccountId: 1 }, entries: [payment],
+    completedRows: [{ rowId: "entry:payment", completedAt: `${today}T12:00:00.000Z` }],
+    restart: { version: 1, date: "2026-11-20", transactionId: 100, coveredEntryIds: [], balances: [
+      { accountId: 1, type: "checking", currency: "USD", balance: 1000 },
+      { accountId: 2, type: "credit", currency: "USD", balance: 100 },
+    ] } }] }, { balanceAsOf: today, accounts: [
+    { id: 1, name: "Checking", type: "checking", currency: "USD", isLinked: true, nativeCurrentBalance: 1000 },
+    { id: 2, name: "Card", type: "credit", currency: "USD", isLinked: true, nativeCurrentBalance: 100,
+      creditCardDueStatus: "current", creditCardDue: { statementBalance: 100, dueDate: "2026-11-25", lastStatementDate: "2026-11-01" } },
+  ] });
+  props.today = today;
+  const transactions = [[101, 1, "expense"], [102, 2, "income"]].map(([id, accountId, kind]) => ({
+    id, accountId, kind, date: today, amount: 100, currency: "USD", merchant: "Recorded card payment", category: "Transfer",
+    planId: base.id, planRowId: "entry:payment", planScheduledRowId: "creditCardDue:2:2026-11-25",
+    planGenerated: true, awaitingBankSync: true, creditCardPaymentFor: 2, creditCardPaymentDueDate: "2026-11-25",
+  }));
+  props.initialPlanActivity = { ...props.initialPlanActivity, transactions, balanceTransactions: transactions,
+    balanceHistoryFrom: "2026-11-20", balanceHistoryThrough: today, balanceHistoryComplete: true };
+  const before = structuredClone(props);
+  const tree = workspaceHarness(props)();
+  const rows = findElement(tree, (node) => node.type?.name === "FinancePlannerTable").props.rows;
+  const issued = rows.find((row) => row.source === "creditCardDue" && !row.estimated);
+  assert.equal(issued.statementBalance, 100);
+  assert.equal(issued.confirmedPaidAmount, 0);
+  assert.equal(issued.committedPaymentAmount, 100);
+  assert.equal(issued.amount, 0, "the saved commitment must not be projected as a second cash payment");
+  assert.ok(!rows.some((row) => row.source === "creditCardDue" && row.estimated),
+    "the bank's unchanged original statement debt is not a new cycle's purchases");
+  const actual = rows.find((row) => row.entryId === "payment");
+  assert.equal(actual.awaitingBankSync, true);
+  assert.deepEqual(actual.accountBalanceSnapshot.map((account) => account.balance), [1000, 100]);
+  const summary = findElement(tree, (node) => node.type?.name === "FinancePlannerAnalytics").props.analytics;
+  assert.equal(summary.assets.USD.current, 1000);
+  assert.equal(summary.assets.USD.projected, 1000);
+  assert.equal(summary.debt.USD.current, 100);
+  assert.equal(summary.debt.USD.projected, 100);
+  assert.deepEqual(props, before);
+});
+
 test("an early posted bank payment appears once across the history and future projection boundary", () => {
   const today = "2026-11-20";
   const base = fixture("plans", 0).snapshot.document.plans[0];
@@ -592,7 +688,7 @@ test("budget plans include saved autopay dates before the original bank due date
     assert.equal(payment[currency === "USD" ? "balanceUsd" : "balancePhp"], 550);
     const html = renderToStaticMarkup(createElement(Workspace, alignFixture(props)));
     assert.match(plain(html), /Automatic payment Nov 13, 2026 · Due Nov 20, 2026/);
-    assert.match(plain(html), /saved autopay schedule/);
+    assert.match(plain(html), /reported due date and saved payment schedule/);
   }
 });
 

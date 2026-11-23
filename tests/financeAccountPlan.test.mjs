@@ -1123,7 +1123,8 @@ test("annual autopay reserve funding recognizes a bank payment posted after its 
   const result = buildAccountPlan(plan, document, 63, { accounts, transactions: records,
     creditCardPaymentTransactions: [fee, ...records], today: "2026-12-13" });
   const payment = result.rows.find((row) => row.source === "creditCardDue");
-  assert.equal(payment.date, "2026-12-11");
+  assert.equal(payment.date, "2026-12-13");
+  assert.equal(payment.scheduledPaymentDate, "2026-12-11");
   assert.equal(payment.dueDate, "2026-12-18");
   assert.equal(payment.annualBillCoverage[0].reserveAlreadyPaidAmount, 100);
   assert.equal(payment.accountMovements.find((move) => move.kind === "cardReserveFunding").amount, -295);

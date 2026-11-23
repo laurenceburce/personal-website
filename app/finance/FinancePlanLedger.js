@@ -110,7 +110,7 @@ export function SourceLabel({ row, asTags = false, omitMovementDetails = false }
           ? row.creditCardPaymentFor ? "Planned credit card payment" : "Planned account transfer"
           : "Plan entry"
       : row.source === "creditCardDue" && row.estimated
-        ? "Estimated next card payment"
+        ? row.projectedCycle ? "Estimated monthly card payment" : "Estimated next card payment"
         : row.source === "creditCardDue" && row.manualStatement
           ? "Manual credit card statement"
         : labels[row.source] || "Plan flow";
@@ -125,6 +125,7 @@ export function SourceLabel({ row, asTags = false, omitMovementDetails = false }
         : "plan entry";
   const shortfallCurrency = row.currency || (row.php ? "PHP" : "USD");
   const grossAmount = row.grossAmount ?? row.amount;
+  const confirmedPaid = Number.isFinite(row.confirmedPaidAmount) ? row.confirmedPaidAmount : row.paidAmount;
   const annualPayment = row.annualPayment && Number.isFinite(grossAmount);
   const reflectedNativeFlows = row.reflectedInRecordedTransactions
     ? []
@@ -173,7 +174,8 @@ export function SourceLabel({ row, asTags = false, omitMovementDetails = false }
       {row.source === "creditCardDue" && !row.estimated && (
         <small className="fpl-credit-card-due-detail">
           Statement balance {money(row.statementBalance, row.currency)}
-          {row.paidAmount > 0 && <>{" "}· Paid {money(row.paidAmount, row.currency)}</>}
+          {confirmedPaid > 0 && <>{" "}· Paid {money(confirmedPaid, row.currency)}</>}
+          {row.committedPaymentAmount > 0 && <>{" "}· Recorded · awaiting bank match {money(row.committedPaymentAmount, row.currency)}</>}
           {row.plannedPaymentAmount > 0 && <>
             {" "}· Planned payments {money(row.plannedPaymentAmount, row.currency)}
           </>}
@@ -184,21 +186,29 @@ export function SourceLabel({ row, asTags = false, omitMovementDetails = false }
       )}
       {row.source === "creditCardDue" && row.autopayEnabled && (
         <small className="fpl-credit-card-due-detail">
-          Automatic payment {formatDate(row.date, { year: "numeric" })}
+          Automatic payment {formatDate(row.scheduledPaymentDate || row.date, { year: "numeric" })}
           {" "}· {row.estimated && !row.estimateDateIsReported ? "Estimated due" : "Due"} {formatDate(row.dueDate, { year: "numeric" })}
           {" "}· {row.autopayDaysBeforeDue === 0 ? "On the due date" : `${row.autopayDaysBeforeDue} ${row.autopayDaysBeforeDue === 1 ? "day" : "days"} before due`}
         </small>
       )}
+      {row.source === "creditCardDue" && row.carriedPayment && <small className="fpl-reconciliation-note">
+        Payment not recorded for {formatDate(row.scheduledPaymentDate, { year: "numeric" })}.
+        {" "}The unpaid amount is included from {formatDate(row.date, { year: "numeric" })}; the bank due date stays {formatDate(row.dueDate, { year: "numeric" })}.
+      </small>}
+      {row.source === "creditCardDue" && row.statementStatus === "stale" && <small className="fpl-reconciliation-note">
+        Last known statement details. Refresh bank data to check the amount and due date.
+      </small>}
       {row.source === "creditCardDue" && row.estimated && (
         <>
           <small className="fpl-credit-card-due-detail">
-            Unbilled balance {money(row.estimatedBalance ?? row.amount, row.currency)}
-            {row.plannedPaymentAmount > 0 && <>
-              {" "}· Planned payments {money(row.plannedPaymentAmount, row.currency)}
+            {row.projectedCycle ? "Estimated cycle balance" : "Unbilled balance"} {money(row.estimatedBalance ?? row.amount, row.currency)}
+            {row.plannedPaymentAmount > 0 && <>{" "}· Planned payments {money(row.plannedPaymentAmount, row.currency)}</>}
+            {(row.plannedPaymentAmount > 0 || Number.isFinite(row.estimatedBalance) && row.estimatedBalance !== row.amount) && <>
               {" "}· Remaining {money(row.amount, row.currency)}
             </>}
           </small>
           <small className="fpl-reconciliation-note">
+            {row.projectedCycle && <>Includes scheduled card activity for this billing cycle. </>}
             {row.autopayEnabled
               ? row.estimateDateIsReported
                 ? row.manualStatement ? "Automatic payment follows the saved schedule for the entered due date." : "Automatic payment follows the saved schedule for the bank’s next due date."

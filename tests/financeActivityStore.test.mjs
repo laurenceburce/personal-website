@@ -4,6 +4,7 @@ import {
   financeActivityWindow,
   financeProviderStatus,
   mapFinanceActivityAccount,
+  mergeFinanceCreditCardDue,
   validateFinanceTransactionInput,
 } from "../app/lib/financeActivity.mjs";
 
@@ -206,6 +207,65 @@ test("credit statement dues preserve unknown fields and never use the revolving 
   assert.equal(missing.minimumPayment, 0);
   assert.equal(missing.dueDate, null);
   assert.equal(mapFinanceActivityAccount({...row, account_type: "checking"}).creditCardDue, null);
+});
+
+test("partial provider records preserve a coherent same-cycle statement as stale last-known data", () => {
+  const cached = { statementBalance: 500, minimumPayment: 25, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-01", lastPaymentAmount: 100, syncedAt: "2026-11-02T12:00:00.000Z" };
+  const incoming = { statementBalance: null, minimumPayment: null, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-10", lastPaymentAmount: 50, syncedAt: "2026-11-12T12:00:00.000Z" };
+  const before = structuredClone({ cached, incoming });
+  const result = mergeFinanceCreditCardDue(cached, incoming);
+  assert.equal(result.status, "stale");
+  assert.deepEqual(result.due, { ...cached, lastPaymentDate: incoming.lastPaymentDate, lastPaymentAmount: 50 });
+  const absent = mergeFinanceCreditCardDue(cached, { syncedAt: incoming.syncedAt });
+  assert.equal(absent.status, "stale");
+  assert.deepEqual(absent.due, cached, "an unidentified empty provider record cannot erase the last known cycle");
+  const closingOnly = mergeFinanceCreditCardDue(cached, { ...incoming, dueDate: null });
+  assert.equal(closingOnly.status, "stale");
+  assert.equal(closingOnly.due.dueDate, cached.dueDate, "a matching closing date can identify the same cached cycle");
+  assert.equal(closingOnly.due.statementBalance, cached.statementBalance);
+  assert.deepEqual({ cached, incoming }, before);
+});
+
+test("a new due or closing date never inherits an older cycle's statement amount", () => {
+  const cached = { statementBalance: 500, minimumPayment: 25, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-01", lastPaymentAmount: 100, syncedAt: "2026-11-02T12:00:00.000Z" };
+  for (const cycle of [{ dueDate: "2026-12-25", lastStatementDate: "2026-11-30" },
+    { dueDate: "2026-11-25", lastStatementDate: "2026-11-20" },
+    { dueDate: "2026-12-25", lastStatementDate: null }, { dueDate: null, lastStatementDate: "2026-11-30" }]) {
+    const incoming = { statementBalance: null, minimumPayment: null, ...cycle,
+      lastPaymentDate: "2026-11-10", lastPaymentAmount: 50, syncedAt: "2026-11-12T12:00:00.000Z" };
+    const result = mergeFinanceCreditCardDue(cached, incoming);
+    assert.equal(result.status, "stale");
+    assert.equal(result.due.statementBalance, null);
+    assert.equal(result.due.minimumPayment, null);
+    assert.equal(result.due.dueDate, cycle.dueDate);
+    assert.equal(result.due.lastStatementDate, cycle.lastStatementDate);
+  }
+  const fresh = mergeFinanceCreditCardDue(cached, { statementBalance: 0, minimumPayment: 0, dueDate: "2026-12-25",
+    lastStatementDate: "2026-11-30", lastPaymentDate: "2026-11-10", lastPaymentAmount: 50, syncedAt: "2026-11-12T12:00:00Z" });
+  assert.equal(fresh.status, "current");
+  assert.equal(fresh.due.statementBalance, 0);
+  assert.equal(fresh.due.minimumPayment, 0);
+});
+
+test("a partially reported last payment cannot combine its new date or amount with an older payment", () => {
+  const cached = { statementBalance: 500, dueDate: "2026-11-25", lastStatementDate: "2026-10-31",
+    lastPaymentDate: "2026-11-01", lastPaymentAmount: 100, syncedAt: "2026-11-02T12:00:00.000Z" };
+  for (const partial of [{ lastPaymentDate: "2026-11-10", lastPaymentAmount: null },
+    { lastPaymentDate: null, lastPaymentAmount: 50 }, { lastPaymentDate: null, lastPaymentAmount: null }]) {
+    const result = mergeFinanceCreditCardDue(cached, { ...cached, ...partial, syncedAt: "2026-11-12T12:00:00Z" });
+    assert.equal(result.status, "stale");
+    assert.equal(result.due.lastPaymentDate, "2026-11-01");
+    assert.equal(result.due.lastPaymentAmount, 100);
+    assert.equal(result.due.syncedAt, cached.syncedAt);
+  }
+  const fresh = mergeFinanceCreditCardDue(cached, { ...cached, lastPaymentDate: "2026-11-10", lastPaymentAmount: 0,
+    syncedAt: "2026-11-12T12:00:00Z" });
+  assert.equal(fresh.status, "current");
+  assert.equal(fresh.due.lastPaymentDate, "2026-11-10");
+  assert.equal(fresh.due.lastPaymentAmount, 0);
 });
 
 test("manual PHP credit card statements round trip without replacing the tracked balance", () => {

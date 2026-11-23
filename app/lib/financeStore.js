@@ -6,6 +6,7 @@ import {
   financeProviderStatus,
   mapFinanceActivityAccount,
   normalizeFinanceCreditCardDue,
+  mergeFinanceCreditCardDue,
   validateFinanceTransactionInput,
 } from "./financeActivity.mjs";
 import { financePlanActivityRange } from "./financePlanActivity.mjs";
@@ -3272,7 +3273,12 @@ async function syncPlaidCreditCardDues(pool, connectionId, accessToken, external
       if (!externalIds.includes(card?.account_id)) continue;
       const accountId = await getAccountIdByProvider(database, "plaid", card.account_id);
       if (!accountId) continue;
-      const due = normalizeFinanceCreditCardDue({
+      const [previous] = await database.query(`SELECT credit_card_due_json FROM personal_finance_accounts
+        WHERE id = ? AND connection_id = ? AND account_type = 'credit'
+          AND is_archived = 0 AND is_sync_excluded = 0 AND merged_into_account_id IS NULL FOR UPDATE`,
+      [accountId, connectionId]);
+      if (!previous[0]) continue;
+      const { due, status } = mergeFinanceCreditCardDue(previous[0].credit_card_due_json, {
         statementBalance: card.last_statement_balance,
         minimumPayment: card.minimum_payment_amount,
         dueDate: card.next_payment_due_date,
@@ -3282,10 +3288,10 @@ async function syncPlaidCreditCardDues(pool, connectionId, accessToken, external
         syncedAt,
       });
       await database.query(`UPDATE personal_finance_accounts
-        SET credit_card_due_json = ?, credit_card_due_status = 'current'
+        SET credit_card_due_json = ?, credit_card_due_status = ?
         WHERE id = ? AND connection_id = ? AND account_type = 'credit'
           AND is_archived = 0 AND is_sync_excluded = 0 AND merged_into_account_id IS NULL`,
-      [JSON.stringify(due), accountId, connectionId]);
+      [JSON.stringify(due), status, accountId, connectionId]);
     }
     await database.commit();
   } catch (error) {
@@ -3723,7 +3729,12 @@ export async function repairDuplicateFinanceAccounts({
       const latestDue = group.accounts
         .map((account) => ({ account, due: normalizeFinanceCreditCardDue(account.credit_card_due_json) }))
         .filter(({ due }) => due)
-        .sort((a, b) => (Date.parse(b.due.syncedAt) || 0) - (Date.parse(a.due.syncedAt) || 0))[0];
+        .sort((a, b) => (Date.parse(a.due.syncedAt) || 0) - (Date.parse(b.due.syncedAt) || 0))
+        .reduce((previous, record) => {
+          const merged = mergeFinanceCreditCardDue(previous?.due, record.due);
+          return { ...record, due: merged.due,
+            status: record.account.credit_card_due_status === "current" && merged.status === "current" ? "current" : "stale" };
+        }, null);
       const canonical = group.accounts.find((account) => Number(account.id) === Number(group.canonicalId));
       const customName = canonical?.custom_name || [...group.accounts]
         .filter((account) => account.custom_name)
@@ -3787,7 +3798,7 @@ export async function repairDuplicateFinanceAccounts({
           latest.persistent_account_id || null,
           latestDue ? JSON.stringify(latestDue.due) : null,
           latestDue ? latestDue.account.connection_id === latest.connection_id &&
-            latestDue.account.credit_card_due_status === "current" ? "current" : "stale" : "unavailable",
+            latestDue.status === "current" ? "current" : "stale" : "unavailable",
           Number(autopay.credit_card_autopay_enabled) === 1 ? 1 : 0,
           autopay.credit_card_autopay_days_before_due != null && Number.isInteger(autopayDays) && autopayDays >= 0 && autopayDays <= 31 ? autopayDays : 7,
           customName,

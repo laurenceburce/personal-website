@@ -11,6 +11,8 @@ const recorded = (row, today) => Boolean(row.completed || row.recordedInAccounts
 const accountRecorded = (row, today) => Boolean(row.recordedInAccounts ||
   ["plan", "transaction"].includes(row.completionSource) ||
   (row.source === "transaction" && !row.scheduled && row.date <= today));
+const pastDue = (row, today) => !recorded(row, today) && (row.source === "creditCardDue"
+  ? row.paymentOverdue ?? (row.dueDate || row.date) < today : row.date < today);
 const signed = (amount, currency) => `${amount > 0 ? "+" : ""}${money(amount, currency)}`;
 const balance = (value, currency) => Number.isFinite(value) ? money(value, currency) : "Unavailable";
 const accountName = (account) => account
@@ -41,6 +43,26 @@ function RunningTotals({ values, label, debt = false }) {
         {balance(value, currency)}
       </dd></div>)}
   </dl>;
+}
+
+function CardPaymentDetails({ row }) {
+  if (row.source !== "creditCardDue") return null;
+  const paid = Number.isFinite(row.confirmedPaidAmount) ? row.confirmedPaidAmount : row.paidAmount;
+  const remaining = row.grossAmount ?? row.amount;
+  const scheduled = row.scheduledPaymentDate || row.date;
+  return <div className="fpt-card-payment-details">
+    <small><strong>{row.estimated ? "Estimated payment" : row.statementStatus === "stale" ? "Last known statement" : row.manualStatement ? "Entered statement" : "Issued statement"}</strong>
+      {row.autopayEnabled && <> · Scheduled {formatDate(scheduled)}</>}
+      {row.dueDate && <> · {row.estimated && !row.estimateDateIsReported ? "Estimated due" : "Due"} {formatDate(row.dueDate)}</>}
+    </small>
+    <small>{!row.estimated && Number.isFinite(row.statementBalance) && <>Statement {money(row.statementBalance, row.currency)} · </>}
+      {paid > 0 && <>Paid {money(paid, row.currency)} · </>}
+      {row.committedPaymentAmount > 0 && <>Awaiting bank match {money(row.committedPaymentAmount, row.currency)} · </>}
+      {row.plannedPaymentAmount > 0 && <>Other planned payments {money(row.plannedPaymentAmount, row.currency)} · </>}
+      {row.estimated ? "Estimated amount" : "Remaining"} {balance(remaining, row.currency)}
+    </small>
+    {row.carriedPayment && <small className="fpt-card-payment-review">Payment not recorded for {formatDate(scheduled)}. Unpaid amount remains in the projection.</small>}
+  </div>;
 }
 
 function transactionAmount(row, currency) {
@@ -244,8 +266,8 @@ export default function FinancePlannerTable({
   const query = search.trim().toLowerCase();
   const visible = rows.filter((row) => {
     const done = recorded(row, today);
-    if ((status === "recorded" && !accountRecorded(row, today)) || (status === "upcoming" && (done || row.date < today)) ||
-        (status === "overdue" && (done || row.date >= today))) return false;
+    if ((status === "recorded" && !accountRecorded(row, today)) || (status === "upcoming" && (done || row.date < today || pastDue(row, today))) ||
+        (status === "overdue" && !pastDue(row, today))) return false;
     if (!query) return true;
     const assigned = rowAccounts(row, accounts, plan);
     return [row.description, getPlannerTransactionLabel(row, accounts), rowAccountContext(row, accounts, plan), row.category, getPlanRowCategory(row).label,
@@ -389,7 +411,7 @@ export default function FinancePlannerTable({
           const editableOccurrence = row.editable && (["salary", "bill", "allocation", "reserve"].includes(row.source) || (row.source === "manual" && row.recurring));
           const canRecord = !recorded(row, today) && onRecord && (['salary', 'bill', 'creditCardDue'].includes(row.source) ||
             (row.source === "manual" && row.kind === "transfer" && row.amountMode === "cardBalance"));
-          const canToggle = onToggleComplete && row.completionSource !== "transaction" &&
+          const canToggle = onToggleComplete && row.source !== "creditCardDue" && row.completionSource !== "transaction" &&
             !(row.manualPlannerSource && recorded(row, today));
           const canEdit = manualEntry || editableOccurrence;
           const actions = canEdit || canToggle || (row.isOverride && onResetOccurrence);
@@ -399,7 +421,8 @@ export default function FinancePlannerTable({
           const currentRow = String(row.id) === currentId;
           const isToday = row.date === today;
           const done = recorded(row, today);
-          const overdue = !done && row.date < today;
+          const overdue = pastDue(row, today);
+          const reviewPayment = !done && !overdue && row.source === "creditCardDue" && !row.estimated && row.missedPayment;
           return <tr key={row.id} ref={(node) => {
             if (node) rowRefs.current.set(String(row.id), node); else rowRefs.current.delete(String(row.id));
           }} aria-current={currentRow ? "true" : undefined} data-row-id={row.id}
@@ -440,11 +463,13 @@ export default function FinancePlannerTable({
                 </div></details>}
               </div>
                 {row.isOpeningBalance ? <span className="fpt-status-pill">Start</span>
-                  : done ? <span className="fpt-status-pill fpt-status-done">Done</span>
+                  : done ? <span className="fpt-status-pill fpt-status-done">{row.source === "creditCardDue" && row.awaitingBankSync ? "Recorded" : "Done"}</span>
                   : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span>
+                    : reviewPayment ? <span className="fpt-status-pill fpt-status-review">Review</span>
                     : <span className="fpt-status-pill">Planned</span>}
               </div>
               {accountContext && <small className="fpt-transaction-accounts">{accountContext}</small>}
+              <CardPaymentDetails row={row}/>
               {!row.isOpeningBalance && (isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
             {["USD", "PHP"].map((currency) => {
