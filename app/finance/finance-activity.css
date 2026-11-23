@@ -722,6 +722,7 @@
 .fa-accounts-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 15px;
 }
 .fa-account-card {
@@ -803,10 +804,133 @@
   margin-top: 5px;
 }
 .fa-credit-card-due {
-  margin-bottom: 18px;
-  padding: 12px;
-  background: #f5f8f1;
+  margin-bottom: 0;
+  padding: 14px;
+  background: #f4f7fa;
+  border: 1px solid #e0e7ee;
   border-radius: 7px;
+}
+.fa-credit-group-note {
+  margin: -3px 0 15px !important;
+  color: #52675b;
+  font-size: 12px !important;
+  line-height: 1.7 !important;
+  max-width: 850px;
+}
+.fa-credit-account {
+  background: #fff;
+}
+.fa-card-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.fa-card-section-heading h5 {
+  margin: 0;
+  font-size: 12px !important;
+  font-weight: 700;
+  color: #304d40;
+}
+.fa-card-section-heading > span {
+  color: #52675b;
+  font-size: 10px;
+}
+.fa-card-section-heading .fa-card-status {
+  border-radius: 4px;
+  padding: 3px 6px;
+  background: #e6f0e9;
+  color: #365d45;
+}
+.fa-card-section-heading .fa-card-status-needed {
+  background: #fff0d9;
+  color: #78531d;
+}
+.fa-card-autopay-summary {
+  grid-column: 1 / -1;
+}
+.fa-card-planning {
+  margin: 14px 0;
+}
+.fa-card-planning:empty {
+  display: none;
+}
+.fa-card-charges {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fa-card-charges > li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid #e8eee6;
+  font-size: 12px;
+}
+.fa-card-charges > li > div {
+  min-width: 0;
+}
+.fa-card-charges strong,
+.fa-card-planned-payment strong {
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.fa-card-charges small,
+.fa-card-planned-payment small {
+  display: block;
+  margin-top: 3px;
+  color: #52675b;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.fa-card-charges > li > span {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.fa-card-planning p,
+.fa-card-plan-action > small {
+  margin: 8px 0 0 !important;
+  color: #52675b;
+  font-size: 11px !important;
+  line-height: 1.7 !important;
+}
+.fa-card-plan-action {
+  display: grid;
+  justify-items: start;
+  margin-top: 14px;
+}
+.fa-card-planned-payment {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 11px;
+  background: #f0f7f3;
+  border-radius: 6px;
+}
+.fa-use-balance {
+  justify-self: start;
+  border: 0;
+  padding: 6px 0;
+  background: transparent;
+  color: #16634c;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.fa-use-balance:disabled {
+  opacity: .5;
+  cursor: not-allowed;
 }
 .fa-credit-card-due dl {
   display: grid;
@@ -1487,6 +1611,7 @@
   margin-top: 12px;
   border-top: 1px solid #e8eee6;
   padding-top: 12px;
+  margin-bottom: 12px;
   font-size: 11px;
 }
 .fa-card-autopay > summary {

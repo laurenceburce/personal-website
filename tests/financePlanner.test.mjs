@@ -3583,6 +3583,94 @@ function cardStatementFixture() {
   };
 }
 
+test("a manual card without statement dates keeps assigned bills in card debt without inventing a cash payment", () => {
+  const plan = { id: "main", continuous: true, balanceMode: "live", startDate: "2026-11-22", endDate: "2026-12-01",
+    openingUsd: 0, openingPhp: 0, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountLinks: { availablePhpAccountId: 1 }, includeIncome: false,
+    includeTransactions: true, includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const document = { salary: {}, allocations: [], bills: [
+    { id: "converge", name: "Converge", amount: 1000, currency: "PHP", accountId: 2, cadence: "monthly", dueDay: 25 },
+  ] };
+  for (const creditCardDue of [null, { statementBalance: 2240.01, dueDate: null, lastStatementDate: null }]) {
+    const accounts = [
+      { id: 1, name: "Checking", type: "checking", currency: "PHP", nativeCurrentBalance: 10000 },
+      { id: 2, name: "RCBC Gold Visa", type: "credit", currency: "PHP", nativeCurrentBalance: 2240.01,
+        isLinked: false, creditCardDueStatus: "manual", creditCardDue, creditCardAutopayEnabled: true },
+    ];
+    const before = structuredClone({ plan, document, accounts });
+    const options = { accounts, today: "2026-11-22" };
+    assert.deepEqual(getCreditCardObligations(accounts, options), [], "a current owed balance does not establish a statement amount or payment date");
+    const rows = buildPlanRows(plan, document, 58, options);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "bill:converge:2026-11-25");
+    assert.equal(rows[0].amount, 1000);
+    assert.equal(rows[0].cardCreditActivity, true);
+    assert.equal(rows[0].php, 0);
+    assert.equal(rows[0].balancePhp, 10000);
+    const projection = buildAccountPlan(plan, document, 58, options);
+    assert.equal(projection.accounts.find((account) => account.accountId === 1).endingBalance, 10000);
+    assert.equal(projection.accounts.find((account) => account.accountId === 2).endingBalance, 3240.01);
+    const explicit = { ...plan, entries: [{ id: "payment", description: "Pay card", date: "2026-11-28",
+      kind: "transfer", amountMode: "cardBalance", amount: 2240.01, currency: "PHP", fromAccountId: 1, toAccountId: 2 }] };
+    const paymentRows = buildPlanRows(explicit, document, 58, options);
+    assert.equal(paymentRows.find((row) => row.entryId === "payment").amount, 3240.01);
+    const paid = buildAccountPlan(explicit, document, 58, options);
+    assert.equal(paid.accounts.find((account) => account.accountId === 1).endingBalance, 6759.99);
+    assert.equal(paid.accounts.find((account) => account.accountId === 2).endingBalance, 0);
+    assert.deepEqual({ plan, document, accounts }, before);
+  }
+});
+
+test("an issued manual statement keeps pre-close payments separate from current unbilled debt and future purchases", () => {
+  const plan = { id: "main", continuous: true, balanceMode: "live", startDate: "2026-11-22", endDate: "2026-12-31",
+    openingUsd: 0, openingPhp: 0, startingAccounts: [{ accountId: 1, percentage: 100 }],
+    accountLinks: { availablePhpAccountId: 1 }, includeIncome: false, includeTransactions: true,
+    includeAllocations: false, includeAnnualReserve: false, entries: [] };
+  const accounts = [
+    { id: 1, name: "Checking", type: "checking", currency: "PHP", nativeCurrentBalance: 10000 },
+    { id: 2, name: "Card A", type: "credit", currency: "PHP", nativeCurrentBalance: 2240.01,
+      isLinked: false, creditCardDueStatus: "manual", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+      creditCardDue: { statementBalance: 169, minimumPayment: 169, dueDate: "2026-12-01", lastStatementDate: "2026-11-03",
+        lastPaymentDate: "2026-10-29", lastPaymentAmount: 1499 } },
+  ];
+  const transactions = [
+    { date: "2026-10-12", amount: 35785.73 }, { date: "2026-10-29", amount: 1499 },
+  ].flatMap((payment, index) => [
+    { ...payment, id: 100 + index * 2, accountId: 1, kind: "expense", currency: "PHP", merchant: "Card A payment", category: "Transfer Out" },
+    { ...payment, id: 101 + index * 2, accountId: 2, kind: "income", currency: "PHP", merchant: "Payment received", category: "Transfer In" },
+  ]);
+  const options = { accounts, transactions, today: "2026-11-22" };
+  const baseDocument = { salary: {}, allocations: [], bills: [] };
+  const obligations = getCreditCardObligations(accounts, options);
+  assert.deepEqual(obligations.map((row) => [row.dueDate, row.date, row.amount, Boolean(row.estimated)]), [
+    ["2026-12-01", "2026-11-24", 169, false], ["2027-01-01", "2026-12-25", 2071.01, true],
+  ]);
+  assert.equal(obligations[0].statementBalance, 169);
+  assert.equal(obligations[0].paidAmount, 0);
+  assert.equal(obligations[0].confirmedPaidAmount, 0);
+  assert.deepEqual(obligations[0].paymentTransactionIds, []);
+  const baseRows = buildPlanRows(plan, baseDocument, 58, options);
+  assert.equal(baseRows.at(-1).balancePhp, 7759.99);
+  assert.equal(baseRows.filter((row) => row.source === "transaction").length, 0, "earlier payments are evidence, not new cash flows");
+  const document = { ...baseDocument, bills: [{ id: "subscription", name: "Subscription", cadence: "monthly", dueDay: 30,
+    amount: 169, currency: "PHP", accountId: 2 }] };
+  const before = structuredClone({ plan, document, accounts, transactions });
+  const rows = buildPlanRows(plan, document, 58, options);
+  assert.deepEqual(rows.filter((row) => row.source === "creditCardDue").map((row) => [row.dueDate, row.date, row.amount]), [
+    ["2026-12-01", "2026-11-24", 169], ["2027-01-01", "2026-12-25", 2240.01],
+  ]);
+  assert.equal(rows.find((row) => row.source === "creditCardDue" && !row.estimated).statementBalance, 169);
+  assert.deepEqual(rows.filter((row) => row.source === "bill").map((row) => [row.date, row.amount, row.php]), [
+    ["2026-11-30", 169, 0], ["2026-12-30", 169, 0],
+  ]);
+  assert.equal(rows.at(-1).balancePhp, 7590.99);
+  const projection = buildAccountPlan(plan, document, 58, options);
+  assert.equal(projection.accounts.find((account) => account.accountId === 1).endingBalance, 7590.99);
+  assert.equal(projection.accounts.find((account) => account.accountId === 2).endingBalance, 169,
+    "the December purchase remains in the February cycle rather than being charged twice");
+  assert.deepEqual({ plan, document, accounts, transactions }, before);
+});
+
 test("an unpaid issued autopay before the restart floor is carried into today's forecast without changing its bank dates", () => {
   const { plan: base, document, accounts } = cardStatementFixture();
   const today = "2026-11-22";

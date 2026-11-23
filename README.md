@@ -285,6 +285,18 @@ The finance workspace separates recorded activity from your plans:
   Use **Edit account** on a manual account or card to change its name, type,
   or current native balance. Balance corrections adjust the starting balance and retain transaction history;
   card statement details and automatic payment settings stay separate.
+  Credit cards separate the current balance owed from the closed statement,
+  due date, minimum payment, and automatic payment date. **Charges to this card**
+  shows assigned bills with their next native charge amounts and dates; those
+  purchase dates do not establish the card's payment due date.
+  **Add statement / Edit statement** opens a compact editor with saved details
+  prefilled. **Use current balance** fills only the amount, after an explicit
+  choice; use it only when the tracked debt matches the statement. Saving a
+  statement schedules its unpaid amount without changing the current debt.
+  For a card without statement details, **Plan full payment** opens an editable
+  payment with the card and available funding account selected. Choose its date;
+  the amount follows the remaining card balance. Existing planned payments are
+  shown separately with a shortcut back to the Live planner.
   Archiving an account keeps already recorded transactions, including both sides
   of a recorded transfer. Advancing a card to its next statement also retains
   the previous cycle's recorded payments.

@@ -13,6 +13,7 @@ import * as accountPlan from "../app/lib/financeAccountPlan.mjs";
 import * as livePlanner from "../app/lib/financeLivePlanner.mjs";
 import * as primaryPlanner from "../app/lib/financePrimaryPlanner.mjs";
 import * as rowOrder from "../app/lib/financePlanRowOrder.mjs";
+import * as cardContext from "../app/lib/financeCreditCardContext.mjs";
 import { financePlanPostingSpecs, financePlanTransactionMetadata } from "../app/lib/financePlanPostings.mjs";
 import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
@@ -45,6 +46,7 @@ function loadComponent(filename, reactOverride) {
     if (specifier === "../lib/financeLivePlanner.mjs") return livePlanner;
     if (specifier === "../lib/financePrimaryPlanner.mjs") return primaryPlanner;
     if (specifier === "../lib/financePlanRowOrder.mjs") return rowOrder;
+    if (specifier === "../lib/financeCreditCardContext.mjs") return cardContext;
     if (specifier.startsWith("./")) {
       return loadComponent(resolve(dirname(filename), `${specifier}.js`));
     }
@@ -894,6 +896,60 @@ test("monthly bill reserves and commitment cards recalculate from saved balances
       assert.ok(!plain(html).includes("Your annual bills are fully funded."));
     }
   }
+});
+
+test("bank account cards receive saved charge schedules and open an unscheduled full-payment draft for the chosen card", async () => {
+  const card = { id: 41, name: "RCBC Gold Visa", type: "credit", currency: "PHP", nativeCurrentBalance: 2240.01,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7, creditCardDueStatus: "unavailable", creditCardDue: null };
+  const bills = [{ id: "spotify", name: "Spotify", amount: 169, currency: "PHP", cadence: "monthly", dueDay: 28, accountId: 41 }];
+  const base = fixture("accounts", 0).snapshot.document.plans[0];
+  const props = fixture("accounts", 0, { bills, plans: [{ ...base, accountLinks: { availablePhpAccountId: 34 } }] },
+    { balanceAsOf: "2026-11-22", accounts: [
+      { id: 34, name: "PHP checking", type: "checking", currency: "PHP", nativeCurrentBalance: 10000 },
+      card,
+      { ...card, id: 42, name: "RCBC Gold JCB", nativeCurrentBalance: 13696.72 },
+    ] });
+  props.today = "2026-11-22";
+  alignFixture(props);
+  const before = structuredClone(props);
+  const renderWorkspace = workspaceHarness(props);
+  const panel = findElement(renderWorkspace(), (node) => node.type?.name === "BankAccountsPanel");
+  assert.deepEqual(panel.props.document.bills, bills);
+  assert.equal(panel.props.today, "2026-11-22");
+  assert.equal(typeof panel.props.onPlanCardPayment, "function");
+  assert.equal(findElement(renderWorkspace(), (node) => node.type?.name === "FinancePlanEntryForm"), null);
+  panel.props.onPlanCardPayment(card);
+  const form = findElement(renderWorkspace(), (node) => node.type?.name === "FinancePlanEntryForm");
+  assert.ok(form);
+  const draft = form.props.entry;
+  assert.equal(draft.date, "", "knowing card debt cannot invent a payment date");
+  assert.equal(draft.kind, "transfer");
+  assert.equal(draft.currency, "PHP");
+  assert.equal(draft.amountMode, "cardBalance");
+  assert.equal(draft.amount, 2240.01);
+  assert.equal(draft.fromAccountId, 34);
+  assert.equal(draft.toAccountId, 41);
+  assert.match(draft.description, /RCBC Gold Visa.*payment|payment.*RCBC Gold Visa/i);
+  assert.equal(form.props.completed, false);
+  assert.match(renderToStaticMarkup(form), /type="date"[^>]*value=""/);
+  const originalFetch = globalThis.fetch;
+  let saved;
+  globalThis.fetch = async (url, options) => {
+    if (options?.method === "PUT") {
+      saved = JSON.parse(options.body).document;
+      return { ok: true, json: async () => ({ ...props.snapshot, document: saved, revision: 2 }) };
+    }
+    return { ok: true, json: async () => url.startsWith("/api/finance/activity") ? props.initialActivity
+      : { configured: true, from: base.startDate, to: base.endDate, transactions: [] } };
+  };
+  try { await form.props.onSave({ ...draft, date: "2026-11-28", recordNow: false }); }
+  finally { globalThis.fetch = originalFetch; }
+  assert.equal(saved.plans[0].entries.length, 1);
+  assert.equal(saved.plans[0].entries[0].date, "2026-11-28");
+  assert.equal(saved.plans[0].entries[0].amountMode, "cardBalance");
+  assert.equal(saved.plans[0].entries[0].toAccountId, 41);
+  assert.deepEqual(saved.plans[0].completedRows || [], []);
+  assert.deepEqual(props, before, "opening and saving a plan must not rewrite the supplied card statement or debt");
 });
 
 test("workspace spending totals recover funds as an annual bill is saved, then adjust when lowered", () => {

@@ -10,6 +10,7 @@ import {
   money,
 } from "../lib/financePlanner.mjs";
 import { getFinanceInsights } from "../lib/financeInsights.mjs";
+import { getFinanceCreditCardContext } from "../lib/financeCreditCardContext.mjs";
 import FinanceAccountSelect, {
   financeAccountLabel,
 } from "./FinanceAccountSelect";
@@ -148,26 +149,40 @@ function CreditCardDue({ account }) {
   const complete = statementAvailable && dueDate !== "—";
   return (
     <div className="fa-credit-card-due">
+      <div className="fa-card-section-heading">
+        <h5>Statement &amp; payment</h5>
+        <span className={`fa-card-status ${complete ? "" : "fa-card-status-needed"}`}>
+          {complete ? "Statement saved" : "Setup needed"}
+        </span>
+      </div>
       <dl>
         <div>
           <dt>Statement balance</dt>
           <dd>
-            <NativeMoney
+            {statementAvailable ? <NativeMoney
               value={due?.statementBalance}
               currency={account.currency}
-            />
+            /> : "Not entered"}
           </dd>
         </div>
         <div>
           <dt>Payment due</dt>
-          <dd>{dueDate === "—" ? "Unavailable" : dueDate}</dd>
+          <dd>{dueDate === "—" ? "Date needed" : dueDate}</dd>
         </div>
-        {account.creditCardAutopayEnabled && (
-          <div>
+        <div className="fa-card-autopay-summary">
             <dt>Automatic payment</dt>
-            <dd>{autopayDate === "—" ? "Unavailable" : autopayDate}</dd>
-          </div>
-        )}
+            <dd>{!account.creditCardAutopayEnabled ? "Off · pay by due date" : autopayDate === "—"
+              ? `${account.creditCardAutopayDaysBeforeDue ?? 7} days before due · date needed`
+              : autopayDate}</dd>
+        </div>
+        {due?.minimumPayment != null && <div>
+          <dt>Minimum payment</dt>
+          <dd><NativeMoney value={due.minimumPayment} currency={account.currency} /></dd>
+        </div>}
+        {due?.lastStatementDate && <div>
+          <dt>Statement closed</dt>
+          <dd>{formatDate(due.lastStatementDate, { year: "numeric" })}</dd>
+        </div>}
       </dl>
       {account.creditCardDueStatus === "stale" && (
         <p>
@@ -178,14 +193,50 @@ function CreditCardDue({ account }) {
       <small>
         {complete
           ? !account.isLinked
-            ? "Manually entered statement details. Update them when a new statement arrives. Budget Plans use the full statement balance and your payment schedule."
+            ? "The Live planner uses this statement and payment schedule. Update them when your next statement arrives; purchases after closing belong to the next cycle."
             : account.creditCardAutopayEnabled
-            ? "Budget Plans use the automatic payment date. The bank’s due date stays unchanged."
-            : "Statement dues appear automatically in Budget Plans for the due date."
+            ? "The Live planner uses the automatic payment date. The bank’s due date stays unchanged."
+            : "The Live planner schedules the statement payment for the due date."
           : account.isLinked
-            ? "This bank connection has not supplied complete statement details for Budget Plans."
-            : "Enter payment details below to include this card in Budget Plans."}
+            ? "This bank has not supplied complete statement details. Charges still update the card balance; a statement and due date are needed to schedule its payment."
+            : "Charges already update this card’s balance. Add its statement and due date to schedule payment automatically, or plan a full payment on a date you choose."}
       </small>
+    </div>
+  );
+}
+
+function CreditCardPlanning({ account, context, disabled, onPlanPayment, onReviewPlan }) {
+  const payment = context.nextPayment;
+  const incomplete = account.creditCardDue?.statementBalance == null || !account.creditCardDue?.dueDate;
+  const canPlan = canRenameAccount(account) && ["USD", "PHP"].includes(account.currency) && account.nativeCurrentBalance != null && Number.isFinite(Number(account.nativeCurrentBalance)) &&
+    Number(account.nativeCurrentBalance) > 0;
+  return (
+    <div className="fa-card-planning">
+      {context.assignedCharges.length > 0 && <section aria-label={`Charges to ${account.name}`}>
+        <div className="fa-card-section-heading">
+          <h5>Charges to this card</h5>
+          <span>Next charge</span>
+        </div>
+        <ul className="fa-card-charges">
+          {[...context.assignedCharges].sort((first, second) => (first.date || "9999").localeCompare(second.date || "9999")).map((charge) => <li key={charge.billId}>
+            <div><strong>{charge.name}</strong><small>{charge.cadence}{charge.date ? ` · ${formatDate(charge.date, { year: "numeric" })}` : " · Date not set"}</small></div>
+            <span>{charge.amount == null ? "Amount not scheduled" : <NativeMoney value={charge.amount} currency={charge.currency} />}</span>
+          </li>)}
+        </ul>
+        <p>These are purchase dates. The card’s statement determines when they must be paid.</p>
+      </section>}
+      {payment && <div className="fa-card-planned-payment">
+        <div><strong>Planned payment · {formatDate(payment.date, { year: "numeric" })}</strong>
+          <small>{payment.amountMode === "cardBalance" ? "Full balance remaining on the payment date" : <NativeMoney value={payment.amount} currency={account.currency} />}</small>
+        </div>
+        {onReviewPlan && <ActionButton disabled={disabled} onClick={onReviewPlan}>View in planner</ActionButton>}
+      </div>}
+      {incomplete && !payment && onPlanPayment && <div className="fa-card-plan-action">
+        <ActionButton disabled={disabled || !canPlan} onClick={() => onPlanPayment(account)}>
+          Plan full payment
+        </ActionButton>
+        <small>Choose a date and paying account. The amount follows the card’s remaining balance.</small>
+      </div>}
     </div>
   );
 }
@@ -320,8 +371,8 @@ export function ManualCreditCardDetailsForm({ account, disabled = false, saving 
   };
   const incomplete = account.creditCardDue?.statementBalance == null || !account.creditCardDue?.dueDate;
   return (
-    <details className="fa-card-autopay fa-card-payment-details" open={incomplete || undefined}>
-      <summary>Payment details</summary>
+    <details className="fa-card-autopay fa-card-payment-details">
+      <summary>{incomplete ? "Add statement" : "Edit statement"}</summary>
       <form aria-label={`${account.name || "Credit card"} payment details`} onSubmit={(event) => {
         event.preventDefault();
         if (disabled || saving || account.isLinked) return;
@@ -343,6 +394,11 @@ export function ManualCreditCardDetailsForm({ account, disabled = false, saving 
               <FinanceNumberInput required min="0" max="999999999" step="0.01" value={draft.statementBalance}
                 onChange={(event) => set("statementBalance", event.target.value)} />
               <small>Use the statement amount, which may differ from the current balance owed.</small>
+              {account.nativeCurrentBalance != null && validAmount(account.nativeCurrentBalance) && <button
+                type="button" className="fa-use-balance" disabled={disabled || saving}
+                onClick={() => set("statementBalance", Number(account.nativeCurrentBalance))}>
+                Use current balance · {money(account.nativeCurrentBalance, account.currency)}
+              </button>}
             </label>
             <label className="fa-field">
               <span>Payment due</span>
@@ -361,10 +417,10 @@ export function ManualCreditCardDetailsForm({ account, disabled = false, saving 
               <small>The closing date helps match payments made earlier in the statement cycle.</small>
             </label>
           </div>
-          <p>Budget Plans use the full statement balance and your automatic payment schedule when enabled. Update these details when a new statement arrives; record actual payments as transactions.</p>
+          <p>Saving schedules the statement in the Live planner. It does not change the current balance or record a payment. Use the current balance only if it matches your statement.</p>
           {error && <p className="fa-form-error" role="alert">{error}</p>}
           <button type="submit" className="fa-button" disabled={disabled || saving}>
-            {saving ? "Saving…" : "Save payment details"}
+            {saving ? "Saving…" : "Save statement"}
           </button>
         </fieldset>
       </form>
@@ -406,7 +462,7 @@ export function CreditCardAutopayForm({ account, disabled = false, saving = fals
             <small>7 days means one week early. Use 0 for the due date.</small>
           </label>}
           {enabled && validDays && <p className="fa-autopay-preview">
-            {paymentDate === "—" ? account.isLinked ? "A bank due date is needed to calculate the payment date." : "Enter a payment due date in Payment details to calculate the automatic payment date." : `Planned payment: ${paymentDate}.`}
+            {paymentDate === "—" ? account.isLinked ? "A bank due date is needed to calculate the payment date." : "Add a statement with a payment due date to calculate the automatic payment date." : `Planned payment: ${paymentDate}.`}
           </p>}
           <p>This forecasts the autopay you have set up with your bank. It does not enroll the card in bank autopay or send a payment.</p>
           {error && <p className="fa-form-error" role="alert">{error}</p>}
@@ -1285,6 +1341,8 @@ function clearOAuthQuery() {
 
 export function BankAccountsPanel({
   activity,
+  document = {},
+  today = localDate(),
   accountAllocations = [],
   rate,
   currency = "USD",
@@ -1293,6 +1351,8 @@ export function BankAccountsPanel({
   onRefresh,
   onNotice,
   onError,
+  onPlanCardPayment,
+  onReviewPlan,
 }) {
   const [pending, setPending] = useState("");
   const [linkStatus, setLinkStatus] = useState("");
@@ -1507,7 +1567,7 @@ export function BankAccountsPanel({
         ...settings,
       });
       await callbacks.current.onRefresh?.();
-      callbacks.current.onNotice?.(`${account.name || "Credit card"} automatic payment settings saved. Budget Plans have been updated.`);
+      callbacks.current.onNotice?.(`${account.name || "Credit card"} automatic payment settings saved. The Live planner has been updated.`);
     });
   }
 
@@ -1518,7 +1578,7 @@ export function BankAccountsPanel({
         ...details,
       });
       await callbacks.current.onRefresh?.();
-      callbacks.current.onNotice?.(`${account.name || "Credit card"} payment details saved. Budget Plans have been updated.`);
+      callbacks.current.onNotice?.(`${account.name || "Credit card"} statement saved. The Live planner has been updated.`);
     });
   }
 
@@ -1990,6 +2050,9 @@ export function BankAccountsPanel({
                     <h3 id={`fa-account-group-${group.id}`}>{group.label}</h3>
                     <span className="fa-count">{groupedAccounts.length}</span>
                   </header>
+                  {group.id === "credit" && groupedAccounts.length > 0 && <p className="fa-credit-group-note">
+                    Balance owed includes current purchases. Statement balance is the amount billed for a closed cycle; its due date controls the planner’s payment.
+                  </p>}
                   {!groupedAccounts.length ? (
                     <p className="fa-account-group-empty">
                       No accounts in this category.
@@ -2023,7 +2086,7 @@ export function BankAccountsPanel({
                               : plannerBalance ? "Live planner balance" : "Current balance";
                         const supported = ["USD", "PHP"].includes(account.currency);
                         return (
-                          <article className="fa-account-card" key={account.id}>
+                          <article className={`fa-account-card ${account.type === "credit" ? "fa-credit-account" : ""}`} data-account-id={account.id} key={account.id}>
                             <div className="fa-account-heading">
                               <span
                                 className={`fa-account-icon ${liability ? "fa-liability-icon" : ""}`}
@@ -2097,6 +2160,10 @@ export function BankAccountsPanel({
                             {account.type === "credit" && (
                               <>
                                 <CreditCardDue account={account} />
+                                <CreditCardPlanning account={account}
+                                  context={getFinanceCreditCardContext(document, account, today)}
+                                  disabled={working || unavailable}
+                                  onPlanPayment={onPlanCardPayment} onReviewPlan={onReviewPlan} />
                                 {!account.isLinked && (
                                   <ManualCreditCardDetailsForm
                                     key={`${account.id}:${account.creditCardDue?.statementBalance ?? ""}:${account.creditCardDue?.dueDate || ""}:${account.creditCardDue?.minimumPayment ?? ""}:${account.creditCardDue?.lastStatementDate || ""}`}
@@ -2115,7 +2182,7 @@ export function BankAccountsPanel({
                                 />
                               </>
                             )}
-                            {allocation &&
+                            {account.type !== "credit" && allocation &&
                               (allocation.roles?.length > 0 ||
                                 allocation.annualReserved > 0) && (
                                 <div className="fa-account-allocations">

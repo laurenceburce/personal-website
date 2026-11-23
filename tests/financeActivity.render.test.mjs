@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as planner from "../app/lib/financePlanner.mjs";
 import * as insights from "../app/lib/financeInsights.mjs";
+import * as cardContext from "../app/lib/financeCreditCardContext.mjs";
 import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
 
 // Render real JSX with Next's compiler. Effects never run in these server
@@ -74,6 +75,7 @@ function loadComponents(reactOverride) {
       if (specifier.endsWith(".css")) return {};
       if (specifier === "../lib/financePlanner.mjs") return planner;
       if (specifier === "../lib/financeInsights.mjs") return insights;
+      if (specifier === "../lib/financeCreditCardContext.mjs") return cardContext;
       if (specifier === "./FinanceAccountSelect") return selectModule.exports;
       if (specifier === "./FinanceNumberInput") return numberModule.exports;
       return require(specifier);
@@ -396,7 +398,7 @@ test("manual account cards show Live planner balances and native starting balanc
   const card = mapFinanceActivityAccount({ id: 37, name: "PHP card", account_type: "credit", currency: "PHP",
     opening_balance: 25000, native_movement: -10457.95 });
   const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [manual, card, bankAccounts[0]] }, rate: 63 });
-  const articles = [...html.matchAll(/<article class="fa-account-card">([\s\S]*?)<\/article>/g)].map((match) => match[1]);
+  const articles = [...html.matchAll(/<article class="fa-account-card[^"]*"[^>]*>([\s\S]*?)<\/article>/g)].map((match) => match[1]);
   const savings = articles.find((article) => article.includes("PHP savings"));
   assert.match(savings, /Live planner balance[\s\S]*?₱89,542\.05/);
   assert.match(savings, /fa-account-source[^>]*>Live planner</);
@@ -432,8 +434,7 @@ test("credit cards show full statement amounts and dated dues separately from cu
   assert.match(html, /Balance owed[\s\S]*\$990\.00/);
   assert.match(html, /Statement balance[\s\S]*\$472\.35/);
   assert.match(html, /Payment due[\s\S]*Nov 20, 2026/);
-  assert.match(html, /automatically in Budget Plans for the due date/);
-  assert.doesNotMatch(html, /\$25\.00/);
+  assert.match(html, /Minimum payment[\s\S]*\$25\.00/);
   assert.match(html, /No accounts in this category/);
 });
 
@@ -447,8 +448,8 @@ test("missing statement data stays unavailable and stale statement data is label
   });
   const missing = renderCard({ creditCardDue: null, creditCardDueStatus: "unavailable" });
   const missingDetails = missing.match(/<div class="fa-credit-card-due">([\s\S]*?)<\/dl>/)?.[1];
-  assert.match(missingDetails, /Statement balance<\/dt><dd>Unavailable/);
-  assert.match(missingDetails, /Payment due<\/dt><dd>Unavailable/);
+  assert.match(missingDetails, /Statement balance<\/dt><dd>Not entered/);
+  assert.match(missingDetails, /Payment due<\/dt><dd>Date needed/);
   assert.doesNotMatch(missingDetails, /\$990\.00|\$0\.00/);
   assert.match(missing, /has not supplied complete statement details/);
   const stale = renderCard({
@@ -468,7 +469,6 @@ test("credit card automatic payment display keeps the bank due date and statemen
   assert.match(html, /Payment due<\/dt><dd>Nov 20, 2026/);
   assert.match(html, /Automatic payment<\/dt><dd>Nov 13, 2026/);
   assert.match(html, /Statement balance[\s\S]*\$472\.35/);
-  assert.match(html, /Budget Plans use the automatic payment date/);
   assert.match(html, /does not enroll the card in bank autopay or send a payment/);
   assert.deepEqual(card, before);
   assert.doesNotMatch(html, /type="number"/);
@@ -515,20 +515,20 @@ function manualDetailsHarness(props = {}) {
   return harness;
 }
 
-test("manual credit cards offer an open payment details editor without inferring statement debt from their current balance", () => {
+test("manual credit cards keep a collapsed statement editor without inferring statement debt from current balances", () => {
   const card = { ...account, id: 41, name: "RCBC Gold JCB", type: "credit", nativeCurrentBalance: 14930.79,
     creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 };
   const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [card] }, rate: 63 });
-  assert.match(html, /fa-card-payment-details" open=""/);
+  assert.doesNotMatch(html, /fa-card-payment-details" open=/);
+  assert.match(html, /<summary>Add statement<\/summary>/);
   assert.match(html, /Statement balance · PHP/);
   assert.match(html, /Minimum payment · PHP \(optional\)/);
   assert.match(html, /Statement date \(optional\)/);
-  assert.match(html, /Enter payment details below/);
-  assert.match(html, /Save payment details/);
-  assert.match(html, /Enter a payment due date in Payment details/);
+  assert.match(html, /Charges already update this card/);
+  assert.match(html, /Save statement/);
   assert.doesNotMatch(html, /value="14930\.79"|Statement details are imported|type="number"/);
   const linked = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [{ ...card, isLinked: true, provider: "plaid" }] }, rate: 63 });
-  assert.doesNotMatch(linked, /Save payment details|fa-card-payment-details/);
+  assert.doesNotMatch(linked, /Save statement|fa-card-payment-details/);
 });
 
 test("manual card details save native statement values and optional dates without touching autopay or current debt", () => {
@@ -548,10 +548,163 @@ test("manual card details save native statement values and optional dates withou
   const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [savedCard] }, rate: 63 });
   assert.match(html, /Statement balance[\s\S]*₱4,723\.50/);
   assert.match(html, /Automatic payment<\/dt><dd>Nov 13, 2026/);
-  assert.match(html, /Manually entered statement details/);
-  assert.match(html, /Update them when a new statement arrives/);
+  assert.match(html, /<summary>Edit statement<\/summary>/);
   assert.match(html, /value="4723\.5"/);
   assert.doesNotMatch(html, /Last known statement details/);
+});
+
+test("manual statement drafts use current debt only after an explicit choice and never invent a due date", () => {
+  const card = { ...account, id: 41, name: "RCBC Gold Visa", type: "credit", nativeCurrentBalance: 2240.01 };
+  const before = structuredClone(card);
+  const harness = manualDetailsHarness({ account: card });
+  const statementInput = (tree) => findElement(tree, (node) => node.type === numberModule.exports.default && node.props.required);
+  assert.equal(statementInput(harness.render()).props.value, "");
+  const useBalance = findElement(harness.render(), (node) => node.type === "button" && node.props.className === "fa-use-balance");
+  assert.ok(useBalance);
+  assert.equal(Boolean(useBalance.props.disabled), false);
+  useBalance.props.onClick();
+  const tree = harness.render();
+  assert.equal(Number(statementInput(tree).props.value), 2240.01);
+  assert.equal(findElement(tree, (node) => node.type === "input" && node.props.type === "date" && node.props.required).props.value, "");
+  assert.deepEqual(harness.saved, []);
+  assert.deepEqual(card, before);
+  for (const balance of [null, -20, NaN]) {
+    const unavailable = manualDetailsHarness({ account: { ...card, nativeCurrentBalance: balance } });
+    const button = findElement(unavailable.render(), (node) => node.type === "button" && node.props.className === "fa-use-balance");
+    assert.ok(!button || button.props.disabled, "unknown or credit balances cannot become a statement amount");
+  }
+});
+
+test("saved manual statements keep zero amounts and all known fields prefilled in their collapsed editor", () => {
+  const card = { ...account, id: 41, name: "RCBC Gold Visa", type: "credit", nativeCurrentBalance: 2240.01,
+    creditCardDueStatus: "manual", creditCardDue: { statementBalance: 0, dueDate: "2026-12-15", minimumPayment: 0, lastStatementDate: "2026-11-20" } };
+  const html = render(ManualCreditCardDetailsForm, { account: card, onSave() {} });
+  assert.match(html, /<summary>Edit statement<\/summary>/);
+  assert.doesNotMatch(html, /<details[^>]*\sopen=/);
+  assert.match(html, /value="0"/);
+  assert.match(html, /value="2026-12-15"/);
+  assert.match(html, /value="2026-11-20"/);
+  assert.doesNotMatch(html, /value="2240\.01"/);
+});
+
+test("a saved manual statement displays its exact issued amount, minimum and dates separately from total debt", () => {
+  const card = { ...account, id: 41, name: "Manual PHP card", type: "credit", nativeCurrentBalance: 2240.01,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7, creditCardDueStatus: "manual",
+    creditCardDue: { statementBalance: 169, minimumPayment: 169, dueDate: "2026-12-01", lastStatementDate: "2026-11-03" } };
+  const before = structuredClone(card);
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [card] }, today: "2026-11-22", rate: 63 });
+  assert.match(html, /Balance owed[\s\S]*₱2,240\.01/);
+  assert.match(html, /Statement balance<\/dt><dd>₱169\.00/);
+  assert.match(html, /Minimum payment<\/dt><dd>₱169\.00/);
+  assert.match(html, /Payment due<\/dt><dd>Dec 1, 2026/);
+  assert.match(html, /Statement closed<\/dt><dd>Nov 3, 2026/);
+  assert.match(html, /Automatic payment<\/dt><dd>Nov 24, 2026/);
+  assert.match(html, /<summary>Edit statement<\/summary>/);
+  assert.match(html, /value="169"/);
+  assert.match(html, /value="2026-12-01"/);
+  assert.match(html, /value="2026-11-03"/);
+  assert.doesNotMatch(html, /value="2240\.01"/);
+  assert.deepEqual(card, before);
+});
+
+test("card summaries show exact assigned charges separately from unknown statement dates and distinct card debt", () => {
+  const visa = { ...account, id: 41, name: "RCBC Gold Visa", type: "credit", nativeCurrentBalance: 2240.01,
+    creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7 };
+  const jcb = { ...visa, id: 42, name: "RCBC Gold JCB", nativeCurrentBalance: 13696.72 };
+  const document = { salary: {}, allocations: [], bills: [
+    { id: "spotify", name: "Spotify", amount: 169, currency: "PHP", cadence: "monthly", dueDay: 28, accountId: 41 },
+    { id: "globe", name: "Globe", amount: 1500, currency: "PHP", cadence: "monthly", dueDay: 11, accountId: 41 },
+    { id: "converge", name: "Converge", amount: 2500, currency: "PHP", cadence: "monthly", dueDay: 28, accountId: 41 },
+    { id: "jcb-charge", name: "JCB only charge", amount: 80, currency: "PHP", cadence: "monthly", dueDay: 25, accountId: 42 },
+    { id: "wrong-currency", name: "Wrong currency", amount: 999, currency: "USD", cadence: "monthly", dueDay: 25, accountId: 41 },
+  ] };
+  const before = structuredClone({ visa, jcb, document });
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [visa, jcb] }, document,
+    today: "2026-11-22", rate: 63 });
+  const visaHtml = html.match(/<article[^>]*data-account-id="41"[^>]*>([\s\S]*?)<\/article>/)?.[1];
+  const jcbHtml = html.match(/<article[^>]*data-account-id="42"[^>]*>([\s\S]*?)<\/article>/)?.[1];
+  assert.ok(visaHtml && jcbHtml);
+  assert.match(visaHtml, /Balance owed[\s\S]*₱2,240\.01/);
+  assert.match(visaHtml, /Statement balance<\/dt><dd>Not entered/);
+  assert.match(visaHtml, /Payment due<\/dt><dd>Date needed/);
+  assert.match(visaHtml, /7 days before due · date needed/);
+  assert.match(visaHtml, /Charges to this card/);
+  for (const [name, amount, date] of [["Spotify", "₱169.00", "Nov 28"], ["Globe", "₱1,500.00", "Dec 11"], ["Converge", "₱2,500.00", "Nov 28"]]) {
+    const chargeHtml = visaHtml.match(new RegExp(`<li[^>]*>(?:(?!<li)[\\s\\S])*?<strong>${name}<\\/strong>([\\s\\S]*?)<\\/li>`))?.[1];
+    assert.ok(chargeHtml, `${name} is shown as an assigned charge`);
+    assert.ok(chargeHtml.includes(amount));
+    assert.ok(chargeHtml.includes(date));
+  }
+  assert.doesNotMatch(visaHtml, /JCB only charge|Wrong currency|₱13,696\.72|value="2240\.01"/);
+  assert.match(jcbHtml, /₱13,696\.72/);
+  assert.match(jcbHtml, /JCB only charge/);
+  assert.doesNotMatch(jcbHtml, /Spotify|Globe|Converge/);
+  assert.deepEqual({ visa, jcb, document }, before);
+});
+
+test("planning a full card payment selects that account and stays disabled when it cannot be planned", () => {
+  const card = { ...account, id: 41, name: "RCBC Gold Visa", type: "credit", nativeCurrentBalance: 2240.01 };
+  const selected = [];
+  const paymentButton = (tree) => {
+    const planning = findElement(tree, (node) => node.type?.name === "CreditCardPlanning");
+    return findElement(planning.type(planning.props), (node) => node.props?.children === "Plan full payment");
+  };
+  const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [card] }, onPlanCardPayment: (value) => selected.push(value) } });
+  const button = paymentButton(harness.render());
+  assert.ok(button);
+  assert.equal(Boolean(button.props.disabled), false);
+  button.props.onClick();
+  assert.deepEqual(selected, [card]);
+  assert.deepEqual(harness.actions, [], "planning opens an editor without saving an actual payment");
+  for (const props of [
+    { busy: true, activity: { ...bankActivity, accounts: [card] } },
+    { activity: { ...bankActivity, configured: false, accounts: [card] } },
+    { activity: { ...bankActivity, accounts: [{ ...card, nativeCurrentBalance: null }] } },
+    { activity: { ...bankActivity, accounts: [{ ...card, currency: "EUR" }] } },
+  ]) {
+    const disabled = bankHarness({ props: { ...props, onPlanCardPayment() {} } });
+    assert.equal(paymentButton(disabled.render()).props.disabled, true);
+  }
+});
+
+test("the next card charge shows its saved effective date, amount and description", () => {
+  const card = { ...account, id: 41, name: "Manual PHP card", type: "credit", nativeCurrentBalance: 2240.01 };
+  const document = { salary: {}, allocations: [],
+    bills: [{ id: "subscription", name: "Original subscription", amount: 169, currency: "PHP", cadence: "monthly", dueDay: 28, accountId: 41 }],
+    plans: [{ id: "live", continuous: true, startDate: "2026-11-01", entries: [],
+      rowOverrides: [{ rowId: "bill:subscription:2026-11-28", date: "2026-12-04", amount: 99, description: "Adjusted subscription" }] }] };
+  const before = structuredClone({ card, document });
+  const html = render(BankAccountsPanel, { activity: { ...bankActivity, accounts: [card] }, document,
+    today: "2026-11-22", rate: 63 });
+  const charges = html.match(/<ul class="fa-card-charges">([\s\S]*?)<\/ul>/)?.[1];
+  assert.ok(charges);
+  assert.match(charges, /Adjusted subscription/);
+  assert.match(charges, /Dec 4, 2026/);
+  assert.match(charges, /₱99\.00/);
+  assert.doesNotMatch(charges, /Original subscription|Nov 28|₱169\.00/);
+  assert.match(html, /Statement balance<\/dt><dd>Not entered/);
+  assert.deepEqual({ card, document }, before);
+});
+
+test("an existing card payment opens the planner instead of adding a second payment", () => {
+  const card = { ...account, id: 41, name: "Manual PHP card", type: "credit", nativeCurrentBalance: 2240.01 };
+  const payment = { id: "card-payment", date: "2026-11-28", kind: "transfer", currency: "PHP",
+    fromAccountId: 34, toAccountId: 41, amount: 2240.01, amountMode: "cardBalance", recurrence: "once" };
+  let reviews = 0;
+  const calls = [];
+  const harness = bankHarness({ props: { activity: { ...bankActivity, accounts: [card] }, today: "2026-11-22",
+    document: { bills: [], plans: [{ id: "live", continuous: true, startDate: "2026-11-01", entries: [payment] }] },
+    onPlanCardPayment: (selected) => calls.push(selected), onReviewPlan: () => { reviews++; } } });
+  const planning = findElement(harness.render(), (node) => node.type?.name === "CreditCardPlanning");
+  const tree = planning.type(planning.props);
+  const html = renderToStaticMarkup(tree);
+  assert.match(html, /Planned payment · Nov 28, 2026/);
+  assert.match(html, /Full balance remaining on the payment date/);
+  assert.doesNotMatch(html, /Plan full payment/);
+  findElement(tree, (node) => node.props?.children === "View in planner").props.onClick();
+  assert.equal(reviews, 1);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(harness.actions, []);
 });
 
 test("manual card details reject incomplete money and invalid dates while retaining zero and blank optional fields", () => {

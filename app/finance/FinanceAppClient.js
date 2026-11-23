@@ -34,6 +34,7 @@ import FinancePlannerRange from "./FinancePlannerRange";
 import FinancePlannerAnalytics from "./FinancePlannerAnalytics";
 import { ensurePrimaryFinancePlanner } from "../lib/financePrimaryPlanner.mjs";
 import { getPlanRowOrderId, orderPlanRows } from "../lib/financePlanRowOrder.mjs";
+import { createFinanceCardPaymentDraft } from "../lib/financeCreditCardContext.mjs";
 import { getLivePlannerRange, getLivePlannerComputationRange, filterLivePlannerRows, getLivePlannerAnalytics, getLivePlannerOpeningRow, withLivePlannerBalances, withLivePlannerAccountSnapshots } from "../lib/financeLivePlanner.mjs";
 import { BillForm, BillsTable } from "./FinanceBills";
 import {
@@ -1654,6 +1655,8 @@ export default function FinanceAppClient({
           {tab === "accounts" && (
             <BankAccountsPanel
               activity={activity}
+              document={document}
+              today={today}
               accountAllocations={accountAllocations}
               rate={rate}
               currency={displayCurrency}
@@ -1672,6 +1675,10 @@ export default function FinanceAppClient({
               }}
               onNotice={setNotice}
               onError={setError}
+              onReviewPlan={() => navigate("plans")}
+              onPlanCardPayment={(account) => open({ type: "entry", entry: {
+                ...createFinanceCardPaymentDraft(account, { document, accounts, today }), id: uid(),
+              } })}
             />
           )}
           {tab === "settings" && (
