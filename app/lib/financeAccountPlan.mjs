@@ -595,6 +595,7 @@ export function buildAccountPlan(plan, document, rate, options = {}) {
     const currentReserveReceipts = new Set();
     const projected = row.accountMovements
       .filter((move) => {
+        if (row.bankPendingRemoved) return false;
         if (row.reflectedInRecordedTransactions && row.source === "allocation" && row.allocationKind === "expense" && !move.recordedDate)
           return false;
         // Posted legs remain known when recorded ledger rows are hidden.

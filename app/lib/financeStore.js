@@ -466,6 +466,10 @@ export const ensureFinanceSchema = async () => {
       );
       await runMigration(
         pool,
+        "ALTER TABLE personal_finance_transactions ADD COLUMN external_pending_transaction_id VARCHAR(180) NULL",
+      );
+      await runMigration(
+        pool,
         "ALTER TABLE personal_finance_transactions ADD COLUMN import_account_key VARCHAR(160) NULL",
       );
       await runMigration(
@@ -1084,6 +1088,7 @@ function mapTransaction(row) {
     currency: row.currency || "USD",
     provider: row.external_provider || "",
     externalId: row.external_transaction_id || "",
+    pendingExternalId: row.external_pending_transaction_id || "",
     pending: Boolean(row.pending),
     createdAt:
       row.created_at instanceof Date
@@ -1181,14 +1186,15 @@ export async function getFinanceActivity({ month } = {}) {
     );
     const transactionRows = transactionResult[0];
     const accounts = accountRows.map(mapFinanceActivityAccount).filter(Boolean);
-    const transactions = transactionRows
+    const supportedTransactions = transactionRows
       .slice(0, 5000)
       .map(mapTransaction)
       .filter((row) => CURRENCY_SET.has(row.currency));
+    const transactions = supportedTransactions.filter((row) => !row.bankPendingRemoved);
     const warnings = [];
     if (
       accounts.length !== accountRows.length ||
-      transactions.length !== Math.min(transactionRows.length, 5000)
+      supportedTransactions.length !== Math.min(transactionRows.length, 5000)
     )
       warnings.push(
         "Accounts or transactions outside USD and PHP are excluded from this workspace.",
@@ -1287,7 +1293,7 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
     const matching = await getFinancePlanMatchingActivity(database, range, currentDate);
     // A visible statement may settle through receipts before the selected
     // window. Include those known receipt dates in the reconstruction floor.
-    const balanceFrom = [range.from, ...matching.matchingTransactions.map((row) => row.date),
+    const balanceFrom = [range.from, ...matching.matchingTransactions.filter((row) => !row.pending).map((row) => row.date),
       ...creditCardPayments.creditCardPaymentTransactions
       .filter((row) => !row.pending && typeof row.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(row.date) &&
         row.date >= "1900-01-01" && row.date <= currentDate)
@@ -1315,6 +1321,54 @@ export async function getFinancePlanActivity({ startDate, endDate } = {}) {
 // Boundary receipts can settle an in-range bill without becoming visible cash
 // flows. Keep this evidence separate from both the table and statement history.
 async function getFinancePlanMatchingActivity(database, range, currentDate) {
+  const [boundary, pending] = await Promise.all([
+    getFinancePlanBoundaryActivity(database, range, currentDate),
+    getFinancePendingBankActivity(database, range, currentDate),
+  ]);
+  const unique = new Map();
+  for (const row of [...pending.matchingTransactions, ...boundary.matchingTransactions])
+    if (!unique.has(String(row.id))) unique.set(String(row.id), row);
+  const merged = [...unique.values()];
+  const combinedLimit = merged.length > 10000;
+  return {
+    matchingTransactions: merged.slice(0, 10000),
+    matchingLimitHit: boundary.matchingLimitHit || pending.matchingLimitHit || combinedLimit,
+    matchingWarning: [boundary.matchingWarning, pending.matchingWarning,
+      combinedLimit ? "Only the first 10,000 pending and boundary receipts are available. Some planner matches may be incomplete." : ""].filter(Boolean).join(" "),
+  };
+}
+
+// Outstanding holds and review markers must remain available to a future-only
+// view. They are matching evidence, never additional posted ledger history.
+async function getFinancePendingBankActivity(database, range, currentDate) {
+  const empty = { matchingTransactions: [], matchingLimitHit: false, matchingWarning: "" };
+  try {
+    const [rows] = await database.query(`SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS transaction_date,
+        a.name AS account_name, a.account_type, a.color AS account_color, c.institution_name
+      FROM personal_finance_transactions t
+      JOIN personal_finance_accounts a ON a.id = t.account_id
+      LEFT JOIN personal_finance_connections c ON c.id = a.connection_id
+      WHERE t.pending = 1 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
+        AND t.currency IN ('USD', 'PHP') AND t.kind IN ('income', 'expense')
+        AND a.is_archived = 0 AND a.is_sync_excluded = 0 AND a.merged_into_account_id IS NULL
+        AND a.external_provider IS NOT NULL AND a.external_provider <> '' AND a.external_account_id IS NOT NULL AND a.external_account_id <> ''
+        AND (t.external_provider IS NOT NULL AND t.external_provider <> '' OR t.source_plan_id IS NOT NULL)
+        AND t.transaction_date <= ? AND (t.transaction_date < ? OR t.transaction_date > ?)
+      ORDER BY t.transaction_date ASC, t.id ASC LIMIT 10001`, [currentDate, range.from, range.to]);
+    const limitHit = rows.length > 10000;
+    return {
+      matchingTransactions: rows.slice(0, 10000).map(mapTransaction).filter((row) => row.pending &&
+        (row.provider || row.bankPendingRemoved) && CURRENCY_SET.has(row.currency) && row.date <= currentDate &&
+        (row.date < range.from || row.date > range.to)),
+      matchingLimitHit: limitHit,
+      matchingWarning: limitHit ? "Only the first 10,000 outstanding bank holds are available. Some pending planner transactions may be missing." : "",
+    };
+  } catch {
+    return { ...empty, matchingWarning: "Outstanding bank holds could not be loaded. Some pending planner transactions may be missing; refresh to retry." };
+  }
+}
+
+async function getFinancePlanBoundaryActivity(database, range, currentDate) {
   const empty = { matchingTransactions: [], matchingLimitHit: false, matchingWarning: "" };
   const shifted = (date, days) => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
   // Nearby prior bill occurrences can own an early receipt. Include their
@@ -1574,6 +1628,7 @@ export async function getFinanceDashboard({ month } = {}) {
         t.currency,
         t.external_provider,
         t.external_transaction_id,
+        t.external_pending_transaction_id,
         t.pending,
         t.created_at,
         t.updated_at,
@@ -1606,6 +1661,7 @@ export async function getFinanceDashboard({ month } = {}) {
         t.currency,
         t.external_provider,
         t.external_transaction_id,
+        t.external_pending_transaction_id,
         t.pending,
         t.created_at,
         t.updated_at,
@@ -1669,12 +1725,12 @@ export async function getFinanceDashboard({ month } = {}) {
           ELSE 0
         END) AS expenses_php
       FROM personal_finance_transactions
-      WHERE duplicate_of_id IS NULL AND is_provider_removed = 0 AND transaction_date >= ?
-        AND transaction_date < ?
+      WHERE duplicate_of_id IS NULL AND is_provider_removed = 0 AND pending = 0 AND transaction_date >= ?
+        AND transaction_date < ? AND transaction_date <= ?
       GROUP BY budget_month
       ORDER BY budget_month ASC
     `,
-      [seriesStart, nextMonthStart],
+      [seriesStart, nextMonthStart, currentDate],
     ),
   ]);
 
@@ -1771,6 +1827,7 @@ export async function getFinanceDashboard({ month } = {}) {
   }).filter(Boolean);
 
   const transactions = transactionRows.map(mapTransaction);
+  const postedTransactions = transactions.filter((transaction) => !transaction.pending && transaction.date <= currentDate);
   const allTransactions = allTransactionRows.map(mapTransaction);
   const budgets = budgetRows.map((row) => ({
     id: Number(row.id),
@@ -1794,7 +1851,7 @@ export async function getFinanceDashboard({ month } = {}) {
   }));
   const recurringBills = attachRecurringBillMatches(
     rawRecurringBills,
-    transactions,
+    postedTransactions,
     exchangeRate,
     safeMonth,
   );
@@ -1820,7 +1877,7 @@ export async function getFinanceDashboard({ month } = {}) {
   });
 
   const incomeUsd = toMoney(
-    transactions
+    postedTransactions
       .filter((transaction) => transaction.kind === "income")
       .reduce(
         (sum, transaction) =>
@@ -1830,7 +1887,7 @@ export async function getFinanceDashboard({ month } = {}) {
       ),
   );
   const expensesUsd = toMoney(
-    transactions
+    postedTransactions
       .filter((transaction) => transaction.kind === "expense")
       .reduce(
         (sum, transaction) =>
@@ -1844,7 +1901,7 @@ export async function getFinanceDashboard({ month } = {}) {
   );
 
   const spendByCategory = {};
-  for (const transaction of transactions) {
+  for (const transaction of postedTransactions) {
     if (transaction.kind !== "expense") continue;
     const category = transaction.category || "Uncategorized";
     spendByCategory[category] = toMoney(
@@ -3443,8 +3500,8 @@ async function upsertPlaidTransaction(pool, transaction, connectionId) {
 
   await pool.query(
     `INSERT INTO personal_finance_transactions
-       (transaction_date, kind, account_id, category, merchant, note, amount, currency, external_provider, external_transaction_id, pending, import_account_key, import_connection_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, '', ?, ?, 'plaid', ?, ?, ?, ?, ?, ?)
+       (transaction_date, kind, account_id, category, merchant, note, amount, currency, external_provider, external_transaction_id, pending, import_account_key, import_connection_id, external_pending_transaction_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, '', ?, ?, 'plaid', ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        transaction_date = VALUES(transaction_date),
        kind = VALUES(kind),
@@ -3454,6 +3511,7 @@ async function upsertPlaidTransaction(pool, transaction, connectionId) {
        amount = VALUES(amount),
        currency = VALUES(currency),
        pending = VALUES(pending),
+       external_pending_transaction_id = COALESCE(VALUES(external_pending_transaction_id), external_pending_transaction_id),
        is_provider_removed = 0,
        import_account_key = VALUES(import_account_key),
        import_connection_id = VALUES(import_connection_id),
@@ -3470,6 +3528,7 @@ async function upsertPlaidTransaction(pool, transaction, connectionId) {
       transaction?.pending ? 1 : 0,
       externalAccountId,
       connectionId,
+      cleanText(transaction?.pending_transaction_id, 180) || null,
       now,
       now,
     ],

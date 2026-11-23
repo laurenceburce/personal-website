@@ -412,6 +412,38 @@ test("a saved November 20 Done receipt awaiting a bank match still closes at rep
   }
 });
 
+test("past bank-pending forecasts leave recorded native history unchanged and project once after their display date is restored", () => {
+  const date = "2026-11-23";
+  for (const [type, current, projected] of [["checking", 1000, 980], ["credit", 1.99, 21.99]]) {
+    const accounts = [{ ...account(1, type, current), isLinked: true }];
+    const pending = { id: 302, date: "2026-11-20", accountId: 1, kind: "expense", amount: 20,
+      currency: "USD", merchant: "OPENAI", provider: "plaid", pending: true };
+    const rows = [
+      { id: "transaction:301", date: "2026-11-19", transactionId: 301, source: "transaction", completed: true },
+      flow("entry:openai", "2026-11-20", [movement(1, -20)], { description: "OpenAI", amount: 20, currency: "USD",
+        completed: false, recordedInAccounts: false, completionSource: null, bankPending: true, carriedPending: true,
+        pendingOriginalDate: "2026-11-20", pendingTransactionIds: [302], pendingTransactions: [pending] }),
+    ];
+    const history = [{ id: 301, date: "2026-11-19", accountId: 1, kind: "expense", amount: 1.99,
+      currency: "USD", merchant: "Earlier purchase", provider: "plaid" }, pending];
+    const input = { accounts, rows, today: date, historyTransactions: history,
+      historyFrom: "2026-11-01", historyThrough: date, historyComplete: true };
+    const before = structuredClone(input);
+    const snapshots = withLivePlannerAccountSnapshots(input);
+    assert.deepEqual(snapshots.map((row) => row.accountBalanceSnapshot[0].balance), [current, projected]);
+    assert.deepEqual(snapshots.map((row) => row.accountBalanceSnapshotKind), ["recorded", "projected"]);
+    assert.equal(snapshots[1].bankPending, true);
+    const summary = getLivePlannerAnalytics({ ...input, range: { startDate: "2026-11-01", endDate: "2026-11-30" } });
+    const balances = type === "credit" ? summary.debt.USD : summary.assets.USD;
+    assert.equal(balances.current, current);
+    assert.equal(balances.projected, projected);
+    assert.equal(summary.overdueCount, 0);
+    const running = withLivePlannerBalances(input);
+    if (type === "checking") assert.equal(running[1].projectedBalanceUsd, 980);
+    assert.deepEqual(input, before);
+  }
+});
+
 test("recorded bank and manual card rows exclude forecasts while later projections keep both outstanding legs", () => {
   const date = "2026-11-20";
   const accounts = [{ ...account(1, "checking", 1252.13), isLinked: true }, account(2, "credit", 200)];

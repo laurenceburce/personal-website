@@ -38,6 +38,91 @@ function historyBackend(t, handler) {
 const historyRow = (id, date, extra = {}) => ({ id, transaction_date: date, kind: "expense", account_id: 1,
   amount: "25.50", currency: "USD", ...extra });
 
+test("planner activity exposes pending bank state and the provider's replacement identity without settling it", async (t) => {
+  const start = addDays(activity.financeActivityWindow().today, -2);
+  const pending = historyRow(90, start, { pending: 1, external_provider: "plaid", external_transaction_id: "authorization",
+    source_plan_id: "live", source_plan_row_id: "entry:service", source_plan_leg: "single",
+    plan_generated: 0, plan_provisional: 0, merchant: "Service subscription" });
+  const settled = historyRow(91, start, { pending: 0, external_provider: "plaid", external_transaction_id: "settled-charge",
+    external_pending_transaction_id: "authorization" });
+  const { api } = historyBackend(t, (sql) => sql.startsWith("SELECT t.*") && sql.includes("a.name AS account_name") ? [pending, settled] : []);
+  const result = await api.getFinancePlanActivity({ startDate: start, endDate: start });
+  assert.equal(result.transactions.length, 2);
+  assert.equal(result.transactions[0].pending, true);
+  assert.equal(result.transactions[0].bankPending, true);
+  assert.equal(result.transactions[0].planRowId, "entry:service");
+  assert.equal(result.transactions[0].recordedFromPlan, false);
+  assert.equal(result.transactions[0].awaitingBankSync, false);
+  assert.equal(result.transactions[0].externalId, "authorization");
+  assert.equal(result.transactions[1].pendingExternalId, "authorization");
+  assert.equal(result.transactions[1].pending, false);
+});
+
+test("future-only API views retain outstanding pending ownership outside the posted halo without adding visible or historical flows", async (t) => {
+  const today = activity.financeActivityWindow().today;
+  const start = addDays(today, 40);
+  const pendingDate = addDays(today, -20);
+  const pending = historyRow(90, pendingDate, { pending: 1, external_provider: "plaid", external_transaction_id: "authorization",
+    source_plan_id: "live", source_plan_row_id: "entry:service", source_plan_leg: "single", plan_generated: 0, plan_provisional: 0 });
+  const marker = historyRow(91, pendingDate, { pending: 1, source_plan_id: "live", source_plan_row_id: "entry:removed", source_plan_leg: "single",
+    plan_generated: 1, plan_provisional: 1, plan_record_json: JSON.stringify({ bankPendingRemoved: true, pendingBankExternalId: "removed-auth" }) });
+  const { api, queries } = historyBackend(t, (sql) => sql.includes("WHERE t.pending = 1") ? [pending, { ...pending }, marker,
+    historyRow(92, pendingDate, { pending: 0, external_provider: "plaid" }),
+    historyRow(93, addDays(today, 1), { pending: 1, external_provider: "plaid" })] : []);
+  const result = await api.getFinancePlanActivity({ startDate: start, endDate: addDays(start, 10) });
+  assert.deepEqual(result.transactions, []);
+  assert.deepEqual(result.matchingTransactions.map((row) => row.id), [90, 91], "each outstanding task is supplied as matching-only evidence once");
+  assert.equal(result.matchingTransactions[0].bankPending, true);
+  assert.equal(result.matchingTransactions[0].planRowId, "entry:service");
+  assert.equal(result.matchingTransactions[1].bankPendingRemoved, true);
+  assert.deepEqual(result.balanceTransactions, []);
+  assert.equal(result.balanceHistoryFrom, start, "a pending hold cannot widen the posted-history reconstruction floor");
+  assert.equal(result.balanceHistoryComplete, true);
+  assert.equal(result.matchingWarning, "");
+  assert.ok(!queries.some(({ sql }) => sql.includes("AND t.currency IN ('USD', 'PHP') AND t.pending = 0")), "the expired posted halo stays empty");
+  const query = queries.find(({ sql }) => sql.includes("WHERE t.pending = 1"));
+  assert.deepEqual(query.params, [today, start, addDays(start, 10)]);
+  assert.match(query.sql, /t.duplicate_of_id IS NULL AND t.is_provider_removed = 0/);
+  assert.match(query.sql, /a.is_archived = 0 AND a.is_sync_excluded = 0 AND a.merged_into_account_id IS NULL/);
+});
+
+test("outstanding pending evidence has its own bounded warning and failures preserve posted boundary evidence", async (t) => {
+  const today = activity.financeActivityWindow().today;
+  const old = addDays(today, -20);
+  for (const failed of [false, true]) {
+    const { api } = historyBackend(t, (sql) => {
+      if (sql.includes("WHERE t.pending = 1")) {
+        if (failed) throw new Error("Pending history unavailable");
+        return Array.from({ length: 10001 }, (_, index) => historyRow(index + 1, old,
+          { pending: 1, external_provider: "plaid", external_transaction_id: `hold-${index}` }));
+      }
+      return [];
+    });
+    const result = await api.getFinancePlanActivity({ startDate: addDays(today, 40), endDate: addDays(today, 50) });
+    assert.equal(result.configured, true);
+    assert.equal(result.matchingTransactions.length, failed ? 0 : 10000);
+    assert.equal(result.matchingLimitHit, !failed);
+    assert.match(result.matchingWarning, failed ? /bank holds could not be loaded/ : /10,000 outstanding bank holds/);
+    assert.deepEqual(result.transactions, []);
+    assert.deepEqual(result.balanceTransactions, []);
+  }
+});
+
+test("account activity hides bookkeeping review markers while planner activity retains their nonfinancial evidence", async (t) => {
+  const today = activity.financeActivityWindow().today;
+  const real = historyRow(90, today, { pending: 1, external_provider: "plaid", merchant: "Real pending merchant" });
+  const marker = historyRow(91, today, { pending: 1, source_plan_id: "live", source_plan_row_id: "entry:removed", source_plan_leg: "single",
+    plan_generated: 1, plan_provisional: 1, plan_record_json: JSON.stringify({ bankPendingRemoved: true, pendingBankExternalId: "removed-auth" }) });
+  const { api } = historyBackend(t, (sql) => sql.startsWith("SELECT t.*") ? [real, marker] : []);
+  const accountActivity = await api.getFinanceActivity({ month: today.slice(0, 7) });
+  assert.deepEqual(accountActivity.transactions.map((row) => row.id), [90]);
+  assert.equal(accountActivity.warning, undefined, "hiding bookkeeping is not a currency or data-loss warning");
+  const plannerActivity = await api.getFinancePlanActivity({ startDate: today, endDate: today });
+  assert.deepEqual(plannerActivity.transactions.map((row) => row.id), [90, 91]);
+  assert.equal(plannerActivity.transactions[1].bankPendingRemoved, true);
+  assert.equal(plannerActivity.transactions[1].recordedFromPlan, false);
+});
+
 test("plan activity accepts the complete chosen range rather than an overview month window", () => {
   assert.deepEqual(
     financePlanActivityRange({

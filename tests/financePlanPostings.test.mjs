@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { financePlanPostingSpecs, financePlanTransactionMetadata, freezeFinancePlanRestartHistory, refreshFinancePlanPostings, synchronizeFinancePlanPostings } from "../app/lib/financePlanPostings.mjs";
 import { mapFinanceActivityAccount } from "../app/lib/financeActivity.mjs";
+import { buildPlanRows } from "../app/lib/financePlanner.mjs";
 
 const today = "2026-11-18";
 const completion = (id) => ({ rowId: `entry:${id}`, completedAt: `${today}T12:00:00.000Z` });
@@ -21,6 +22,7 @@ function ledger(accounts, document, initial = []) {
   let sequence = 100;
   let snapshot;
   let failure = false;
+  let matchFailure = false;
   let rate = 58;
   let currentDate = today;
   const events = [];
@@ -47,12 +49,16 @@ function ledger(accounts, document, initial = []) {
       }
       if (sql.startsWith("SELECT t.*") && sql.includes("t.source_plan_id IS NOT NULL"))
         return [structuredClone(rows.filter((row) => row.source_plan_id))];
+      if (sql.startsWith("SELECT t.*") && sql.includes("WHERE t.pending = 1"))
+        return [structuredClone(rows.filter((row) => row.pending && params[0].includes(row.account_id) && row.external_provider &&
+          row.duplicate_of_id == null && !row.is_provider_removed && row.transaction_date <= params[1]))];
       if (sql.startsWith("SELECT t.*") && sql.includes("WHERE t.pending = 0"))
         return [structuredClone(rows.filter((row) => !row.pending && row.duplicate_of_id == null &&
           !row.is_provider_removed && row.transaction_date <= params[0]))];
       if (sql.startsWith("SELECT t.*")) return [structuredClone(rows.filter((row) => params[0].includes(row.account_id) &&
-        !row.pending && row.duplicate_of_id == null && !row.is_provider_removed && row.external_provider &&
-        row.transaction_date >= params[1] && row.transaction_date <= params[2]))];
+        row.duplicate_of_id == null && !row.is_provider_removed && row.external_provider &&
+        ((row.transaction_date >= params[1] && row.transaction_date <= params[2]) ||
+          params[3]?.includes(row.external_pending_transaction_id) || params[4]?.includes(row.external_transaction_id) || params[5]?.includes(row.id))))];
       if (sql.startsWith("DELETE")) {
         rows = rows.filter((row) => !(row.id === params[0] && row.plan_generated && !row.external_provider && !row.external_transaction_id));
       } else if (sql.startsWith("UPDATE") && sql.includes("source_plan_id = NULL")) {
@@ -63,6 +69,7 @@ function ledger(accounts, document, initial = []) {
       } else if (sql.startsWith("UPDATE") && sql.includes("SET plan_record_json = ?")) {
         Object.assign(rows.find((row) => row.id === params[1]), { plan_record_json: params[0] });
       } else if (sql.startsWith("UPDATE")) {
+        if (matchFailure) throw new Error("Pending association failed");
         Object.assign(rows.find((row) => row.id === params[4]), { source_plan_id: params[0], source_plan_row_id: params[1],
           source_plan_leg: params[2], plan_record_json: params[3], plan_generated: sql.includes("plan_generated = 1") ? 1 : 0, plan_provisional: 0 });
       } else if (sql.startsWith("INSERT")) {
@@ -70,7 +77,7 @@ function ledger(accounts, document, initial = []) {
         const old = rows.find((row) => row.source_plan_id === params[8] && row.source_plan_row_id === params[9] && row.source_plan_leg === params[10]);
         const row = { id: old?.id || sequence++, transaction_date: params[0], kind: params[1], account_id: params[2], category: params[3],
           merchant: params[4], note: params[5], amount: params[6], currency: params[7], source_plan_id: params[8],
-          source_plan_row_id: params[9], source_plan_leg: params[10], plan_generated: 1, plan_provisional: params[11], plan_record_json: params[12] };
+          source_plan_row_id: params[9], source_plan_leg: params[10], plan_generated: 1, plan_provisional: params[11], plan_record_json: params[12], pending: params[13] || 0 };
         if (old) Object.assign(old, row); else rows.push(row);
       } else throw new Error(`Unexpected query: ${sql}`);
       return [{ affectedRows: 1 }];
@@ -97,7 +104,8 @@ function ledger(accounts, document, initial = []) {
       await connection.commit();
       return transactionId;
     },
-    add: (row) => rows.push(structuredClone(row)), fail: () => { failure = true; }, setRate: (value) => { rate = value; }, events,
+    add: (row) => rows.push(structuredClone(row)), update: (id, changes) => Object.assign(rows.find((row) => row.id === id), changes),
+    fail: () => { failure = true; }, failMatch: () => { matchFailure = true; }, setRate: (value) => { rate = value; }, events,
   };
 }
 
@@ -150,6 +158,247 @@ test("linked-account recorded activity keeps the bank balance until a unique ban
   await store.refresh();
   assert.equal(store.rows().length, 1, "reopening retains imported bank history");
   assert.equal(store.rows()[0].source_plan_id, null);
+});
+
+const pendingCharge = (extra = {}) => ({ id: 9, account_id: 1, transaction_date: today, kind: "expense", currency: "USD", amount: 20,
+  merchant: "OPENAI *CHATGPT SUBSCR", external_provider: "plaid", external_transaction_id: "pending-auth", pending: 1, ...extra });
+const linkedCard = (extra = {}) => ({ ...bank(1, 100), account_type: "credit", currency: "USD", ...extra });
+const linkedPurchase = (extra = {}) => entry({ accountId: 1, description: "OpenAI", currency: "USD", ...extra });
+
+function visibleLedgerPlan(store, document, currentDate = today) {
+  const transactions = store.rows().filter((row) => !row.is_provider_removed && row.duplicate_of_id == null).map((row) => ({
+    id: row.id, date: row.transaction_date, kind: row.kind, accountId: row.account_id, amount: row.amount, currency: row.currency,
+    merchant: row.merchant, provider: row.external_provider || "", externalId: row.external_transaction_id || "",
+    pendingExternalId: row.external_pending_transaction_id || "", pending: Boolean(row.pending), ...financePlanTransactionMetadata(row),
+  }));
+  return buildPlanRows(document.plans[0], document, 58, { accounts: store.accounts(), transactions, today: currentDate });
+}
+
+test("an unrecorded linked task owns its unique pending receipt and completes once through changed provider settlement", async () => {
+  const card = linkedCard();
+  const document = planner([linkedPurchase()], []);
+  document.plans[0].continuous = true;
+  const store = ledger([card], document, [pendingCharge()]);
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().length, 1);
+  assert.equal(store.rows()[0].source_plan_row_id, "entry:purchase");
+  assert.equal(JSON.parse(store.rows()[0].plan_record_json).pendingOnly, true);
+  let visible = visibleLedgerPlan(store, document);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].completionKey || visible[0].id, "entry:purchase");
+  assert.equal(visible[0].bankPending, true);
+  assert.equal(visible[0].completed, false);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  store.update(9, { amount: 22, transaction_date: "2026-11-23", merchant: "Updated bank label" });
+  await store.refresh("2026-11-23");
+  visible = visibleLedgerPlan(store, document, "2026-11-23");
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].bankPending, true);
+  assert.equal(visible[0].completed, false);
+  store.update(9, { is_provider_removed: 1 });
+  store.add(pendingCharge({ id: 10, pending: 0, transaction_date: "2026-11-27", merchant: "Completely different settled label", amount: 21.5,
+    external_transaction_id: "posted-charge", external_pending_transaction_id: "pending-auth" }));
+  card.current_balance = 121.5;
+  await store.refresh("2026-11-27"); await store.refresh("2026-11-27");
+  assert.equal(store.rows().find((row) => row.id === 10).source_plan_row_id, "entry:purchase");
+  assert.equal(store.rows().filter((row) => row.plan_generated).length, 0);
+  visible = visibleLedgerPlan(store, document, "2026-11-27");
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].completionKey || visible[0].id, "entry:purchase");
+  assert.equal(visible[0].completed, true);
+  assert.equal(visible[0].amount, 21.5);
+  assert.equal(visible[0].bankPending, undefined);
+  assert.equal(visible[0].bankPendingRemoved, undefined);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 121.5);
+});
+
+test("pending-only tasks never create a local receipt when pending evidence is unrelated or ambiguous", async () => {
+  for (const initial of [[pendingCharge({ merchant: "Different merchant" })],
+    [pendingCharge(), pendingCharge({ id: 10, external_transaction_id: "another-auth" })], []]) {
+    const document = planner([linkedPurchase()], []);
+    document.plans[0].continuous = true;
+    const store = ledger([linkedCard()], document, initial);
+    await store.refresh(); await store.refresh();
+    assert.equal(store.rows().length, initial.length);
+    assert.ok(store.rows().every((row) => !row.source_plan_id && !row.plan_generated));
+    assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  }
+});
+
+test("a lower final bank amount settles the pending task without adding a phantom remainder to a later full payment", async () => {
+  const card = linkedCard();
+  const document = planner([linkedPurchase()], []);
+  document.plans[0].continuous = true;
+  const store = ledger([card, { ...bank(2, 1000), currency: "USD" }], document, [pendingCharge()]);
+  await store.refresh();
+  store.update(9, { is_provider_removed: 1 });
+  store.add(pendingCharge({ id: 10, pending: 0, transaction_date: "2026-11-27", merchant: "Final provider merchant", amount: 19.8,
+    external_transaction_id: "settled-lower-amount", external_pending_transaction_id: "pending-auth" }));
+  card.current_balance = 119.8;
+  await store.refresh("2026-11-27"); await store.refresh("2026-11-27");
+  const settled = store.rows().find((row) => row.id === 10);
+  assert.equal(financePlanTransactionMetadata(settled).bankPendingSettled, true);
+  assert.equal(financePlanTransactionMetadata(settled).pendingBankExternalId, "pending-auth");
+  document.plans[0].entries.push(linkedPurchase({ id: "pay", kind: "transfer", accountId: null,
+    fromAccountId: 2, toAccountId: 1, date: "2026-11-28", amountMode: "cardBalance", amount: 0, description: "Pay card" }));
+  const rows = visibleLedgerPlan(store, document, "2026-11-27");
+  assert.equal(rows.find((row) => row.completionKey === "entry:purchase").amount, 19.8);
+  assert.equal(rows.find((row) => row.entryId === "pay").amount, 119.8,
+    "the original planned twenty does not add an extra twenty cents after bank settlement");
+  assert.equal(store.rows().filter((row) => row.plan_generated).length, 0);
+});
+
+test("a unique pending bank charge replaces the local posted surrogate without changing the bank balance", async () => {
+  const document = planner([linkedPurchase()]);
+  const store = ledger([linkedCard()], document);
+  await store.refresh();
+  assert.equal(store.rows().length, 1);
+  assert.equal(store.rows()[0].pending, 0);
+  const provisionalId = store.rows()[0].id;
+  store.add(pendingCharge());
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().length, 1);
+  const [pending] = store.rows();
+  assert.equal(pending.id, 9);
+  assert.notEqual(pending.id, provisionalId);
+  assert.equal(pending.pending, 1);
+  assert.equal(pending.amount, 20);
+  assert.equal(pending.source_plan_row_id, "entry:purchase");
+  assert.equal(pending.plan_generated, 0);
+  assert.equal(pending.plan_provisional, 0);
+  const metadata = financePlanTransactionMetadata(pending);
+  assert.equal(metadata.bankPending, true);
+  assert.equal(metadata.awaitingBankSync, false);
+  assert.equal(metadata.recordedFromPlan, false);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  assert.equal(store.accounts()[0].planPendingMovement, undefined);
+});
+
+test("pending-to-posted provider identity retains one canonical task when date, name and amount change", async () => {
+  const card = linkedCard();
+  const document = planner([linkedPurchase()]);
+  const store = ledger([card], document, [pendingCharge()]);
+  await store.refresh();
+  store.update(9, { amount: 22, transaction_date: "2026-11-23", merchant: "Changed pending description" });
+  await store.refresh("2026-11-23");
+  assert.equal(store.rows().length, 1);
+  assert.equal(store.rows()[0].source_plan_row_id, "entry:purchase", "an already identified authorization may change before settlement");
+  store.update(9, { is_provider_removed: 1 });
+  store.add(pendingCharge({ id: 10, pending: 0, transaction_date: "2026-11-27", merchant: "Settled service charge", amount: 21.5,
+    external_transaction_id: "posted-charge", external_pending_transaction_id: "pending-auth" }));
+  card.current_balance = 121.5;
+  await store.refresh("2026-11-27"); await store.refresh("2026-11-27");
+  const rows = store.rows();
+  assert.equal(rows.length, 2, "the removed authorization stays bank history; no generated expense survives");
+  assert.equal(rows.find((row) => row.id === 9).source_plan_id, null);
+  const settled = rows.find((row) => row.id === 10);
+  assert.equal(settled.source_plan_row_id, "entry:purchase");
+  assert.equal(settled.amount, 21.5);
+  assert.equal(settled.transaction_date, "2026-11-27");
+  assert.equal(settled.pending, 0);
+  assert.equal(settled.plan_generated, 0);
+  assert.equal(financePlanTransactionMetadata(settled).bankPending, undefined);
+  assert.equal(financePlanTransactionMetadata(settled).awaitingBankSync, false);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 121.5);
+});
+
+test("posted bank evidence wins over a matching pending authorization", async () => {
+  const store = ledger([linkedCard({ current_balance: 120 })], planner([linkedPurchase()]), [
+    pendingCharge(), pendingCharge({ id: 10, pending: 0, external_transaction_id: "settled-charge" }),
+  ]);
+  await store.refresh();
+  assert.equal(store.rows().find((row) => row.id === 10).source_plan_row_id, "entry:purchase");
+  assert.equal(store.rows().find((row) => row.id === 9).source_plan_id, undefined);
+  assert.equal(store.rows().filter((row) => row.plan_generated).length, 0);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 120);
+});
+
+test("a known pending owner survives similar new authorizations and unrelated settled charges", async () => {
+  const store = ledger([linkedCard()], planner([linkedPurchase()]), [pendingCharge()]);
+  await store.refresh();
+  store.add(pendingCharge({ id: 10, external_transaction_id: "second-authorization" }));
+  store.add(pendingCharge({ id: 11, pending: 0, merchant: "Different merchant", external_transaction_id: "unrelated-posted" }));
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().find((row) => row.id === 9).source_plan_row_id, "entry:purchase");
+  assert.equal(store.rows().find((row) => row.id === 10).source_plan_id, undefined);
+  assert.equal(store.rows().find((row) => row.id === 11).source_plan_id, undefined);
+  assert.equal(store.rows().filter((row) => row.plan_generated).length, 0);
+});
+
+test("pending matching requires distinctive merchant evidence and unique native account, currency and kind", async () => {
+  for (const changes of [{ merchant: "Another service" }, { merchant: "Card purchase payment" }, { currency: "PHP" },
+    { account_id: 2 }, { kind: "income" }, { amount: 21 }, { transaction_date: "2026-11-10" }]) {
+    const store = ledger([linkedCard(), linkedCard({ id: 2, external_account_id: "other-card" })],
+      planner([linkedPurchase()]), [pendingCharge(changes)]);
+    await store.refresh();
+    assert.equal(store.rows().find((row) => row.id === 9).source_plan_id, undefined, JSON.stringify(changes));
+    assert.equal(store.rows().filter((row) => row.plan_generated).length, 1);
+    assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  }
+  const ambiguous = ledger([linkedCard()], planner([linkedPurchase()]), [pendingCharge(), pendingCharge({ id: 10, external_transaction_id: "other-authorization" })]);
+  await ambiguous.refresh();
+  assert.ok(ambiguous.rows().filter((row) => row.external_provider).every((row) => !row.source_plan_id));
+  const competing = ledger([linkedCard()], planner([linkedPurchase(), linkedPurchase({ id: "second" })]), [pendingCharge()]);
+  await competing.refresh();
+  assert.equal(competing.rows().find((row) => row.id === 9).source_plan_id, undefined);
+});
+
+test("a removed pending authorization leaves a nonfinancial review marker instead of resurrecting a posted expense", async () => {
+  const document = planner([linkedPurchase()]);
+  const store = ledger([linkedCard()], document, [pendingCharge()]);
+  await store.refresh();
+  store.update(9, { is_provider_removed: 1 });
+  await store.refresh(); await store.refresh();
+  assert.equal(store.rows().length, 2);
+  const removed = store.rows().find((row) => row.id === 9);
+  assert.equal(removed.source_plan_id, null);
+  assert.equal(removed.is_provider_removed, 1);
+  const marker = store.rows().find((row) => row.plan_generated);
+  assert.equal(marker.pending, 1);
+  assert.equal(marker.source_plan_row_id, "entry:purchase");
+  assert.equal(financePlanTransactionMetadata(marker).bankPendingRemoved, true);
+  assert.equal(financePlanTransactionMetadata(marker).bankPending, undefined);
+  assert.equal(financePlanTransactionMetadata(marker).pendingBankExternalId, "pending-auth");
+  assert.equal(financePlanTransactionMetadata(marker).recordedFromPlan, false);
+  assert.equal(financePlanTransactionMetadata(marker).awaitingBankSync, false);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  document.plans[0].entries = [];
+  document.plans[0].completedRows = [];
+  await store.refresh();
+  assert.deepEqual(store.rows().map((row) => row.id), [9], "deleting the task deletes only the review marker, preserving bank history");
+});
+
+test("a canceled authorization can settle later by provider identity or be superseded by an explicit financial edit", async () => {
+  for (const settle of [true, false]) {
+    const purchase = linkedPurchase();
+    const document = planner([purchase]);
+    const store = ledger([linkedCard()], document, [pendingCharge()]);
+    await store.refresh();
+    store.update(9, { is_provider_removed: 1 });
+    await store.refresh();
+    if (settle) store.add(pendingCharge({ id: 10, pending: 0, transaction_date: "2026-12-01", amount: 21.5,
+      external_transaction_id: "later-settlement", external_pending_transaction_id: "pending-auth" }));
+    else purchase.amount = 30;
+    await store.refresh("2026-12-01"); await store.refresh("2026-12-01");
+    const active = store.rows().filter((row) => !row.is_provider_removed);
+    assert.equal(active.length, 1);
+    assert.equal(active[0].pending, 0);
+    assert.equal(financePlanTransactionMetadata(active[0]).bankPendingRemoved, undefined);
+    assert.equal(active[0].amount, settle ? 21.5 : 30);
+    assert.equal(active[0].plan_generated, settle ? 0 : 1);
+  }
+});
+
+test("failure while claiming a pending receipt restores the previous local row and provider history together", async () => {
+  const store = ledger([linkedCard()], planner([linkedPurchase()]));
+  await store.refresh();
+  store.add(pendingCharge());
+  const before = store.rows();
+  store.failMatch();
+  await assert.rejects(store.refresh(), /Pending association failed/);
+  assert.deepEqual(store.rows(), before);
+  assert.equal(store.accounts()[0].nativeCurrentBalance, 100);
+  assert.deepEqual(store.events.slice(-3), ["begin", "rollback", "release"]);
 });
 
 test("live full-balance payments use the connected card's reported debt without pending planner adjustments", async () => {

@@ -1240,6 +1240,218 @@ test("pending and future transactions cannot automatically complete a plan row",
   assert.equal(rows.find((row) => row.transactionId === 3).completed, true);
 });
 
+function pendingCardPurchaseFixture() {
+  const plan = { id: "live", continuous: true, startDate: "2026-11-20", endDate: "2026-11-25", balanceMode: "live",
+    includeIncome: false, includeTransactions: true, includeAnnualReserve: false, includeAllocations: false,
+    accountLinks: { availableUsdAccountId: 1 }, entries: [{ id: "openai", date: "2026-11-20", description: "OpenAI",
+      kind: "expense", amount: 20, currency: "USD", accountId: 2 }] };
+  return { plan, document: { salary: {}, bills: [], allocations: [] }, today: "2026-11-22",
+    accounts: [{ id: 1, name: "Checking", type: "checking", currency: "USD", nativeCurrentBalance: 1000 },
+      { id: 2, name: "US card", type: "credit", currency: "USD", nativeCurrentBalance: 1.99, isLinked: true }],
+    pending: { id: 101, date: "2026-11-22", kind: "expense", amount: 20, currency: "USD", accountId: 2,
+      merchant: "OPENAI *CHATGPT", provider: "plaid", pending: true } };
+}
+
+test("a unique pending bank merchant explains an unsettled custom card row without creating a posted transaction", () => {
+  const fixture = pendingCardPurchaseFixture();
+  const { document, accounts, today, pending } = fixture;
+  const before = structuredClone(fixture);
+  for (const includeTransactions of [true, false]) {
+    const plan = { ...fixture.plan, includeTransactions };
+    const baseline = buildPlanRows(plan, document, 63, { accounts, transactions: [], today });
+    const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [pending], today });
+    assert.equal(rows.length, 1, "a pending import must not become an additional transaction row");
+    assert.equal(rows[0].bankPending, true);
+    assert.deepEqual(rows[0].pendingTransactionIds, [101]);
+    assert.equal(rows[0].completed, false, "pending bank evidence is not posted completion");
+    assert.equal(rows[0].completionSource, null);
+    assert.equal(rows[0].recordedInAccounts, false);
+    assert.equal(rows[0].pending, undefined, "bank status must not change the accounting pending flag");
+    const { bankPending, bankPendingRemoved, pendingTransactionIds, pendingTransactions, pendingOriginalDate, recordedInAccounts, ...unchanged } = rows[0];
+    assert.deepEqual(pendingTransactions, [pending]);
+    assert.equal(pendingOriginalDate, "2026-11-20");
+    assert.deepEqual(unchanged, baseline[0], "only bank-status metadata changes");
+  }
+  assert.deepEqual(fixture, before);
+});
+
+test("a legacy completed receipt matched to bank pending becomes one unsettled forecast without posted evidence", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  plan.completedRows = [{ rowId: "entry:openai", completedAt: "2026-11-20T12:00:00.000Z" }];
+  const provisional = { id: 100, date: "2026-11-20", accountId: 2, amount: 20, currency: "USD", kind: "expense",
+    merchant: "OpenAI", planId: "live", planRowId: "entry:openai", planGenerated: true, awaitingBankSync: true };
+  const before = structuredClone({ plan, provisional, pending });
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [pending, provisional], today });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "entry:openai");
+  assert.equal(rows[0].bankPending, true);
+  assert.deepEqual(rows[0].pendingTransactionIds, [101]);
+  assert.equal(rows[0].completed, false);
+  assert.equal(rows[0].completionSource, null);
+  assert.equal(rows[0].recordedInAccounts, false);
+  assert.deepEqual(rows[0].matchedTransactionIds, [], "neither pending nor obsolete provisional IDs are posted evidence");
+  assert.equal(rows[0].recordedTransactions, undefined);
+  assert.deepEqual({ plan, provisional, pending }, before);
+  const projection = buildAccountPlan(plan, document, 63, { accounts, rows, today });
+  assert.equal(projection.rows[0].accountBalances[2], 21.99, "the pending purchase increases projected debt once from the bank's 1.99");
+});
+
+test("pending custom purchase matching rejects ambiguous, unrelated and mismatched bank evidence", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  const build = (transactions, chosen = plan) => buildPlanRows(chosen, document, 63, { accounts, transactions, today });
+  for (const changed of [{ accountId: 1 }, { currency: "PHP" }, { kind: "income" }, { amount: 20.01 },
+    { date: "2026-11-16" }, { date: "2026-11-23" }, { merchant: "Unrelated store" }, { provider: "" }, { pending: false }]) {
+    assert.ok(build([{ ...pending, ...changed }]).every((row) => !row.bankPending), JSON.stringify(changed));
+  }
+  assert.ok(build([pending, { ...pending, id: 102 }]).every((row) => !row.bankPending), "two pending receipts cannot identify one purchase");
+  const competing = { ...plan, entries: [...plan.entries, { ...plan.entries[0], id: "other-openai" }] };
+  assert.ok(build([pending], competing).every((row) => !row.bankPending), "one pending receipt cannot identify two purchases");
+  const generic = { ...plan, entries: [{ ...plan.entries[0], description: "Card payment" }] };
+  assert.ok(build([{ ...pending, merchant: "Card payment" }], generic).every((row) => !row.bankPending), "generic text is insufficient merchant identity");
+  assert.deepEqual(build([pending, { ...pending }])[0].pendingTransactionIds, [101], "duplicate payload references remain one receipt");
+});
+
+test("posted reconciliation removes the pending bank status and never applies both pending and posted imports", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  const posted = { ...pending, id: 102, date: "2026-11-21", pending: false,
+    planId: "live", planRowId: "entry:openai", planGenerated: false, awaitingBankSync: false };
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [pending, posted], today });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].bankPending, undefined);
+  assert.equal(rows[0].pendingTransactionIds, undefined);
+  assert.equal(rows[0].completed, true);
+  assert.equal(rows[0].completionSource, "transaction");
+  assert.deepEqual(rows[0].matchedTransactionIds, [102]);
+  assert.equal(rows[0].amount, 20);
+});
+
+test("a lower posted replacement settles its pending purchase without adding a forecast remainder to the live payoff", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  accounts[1].nativeCurrentBalance = 21.79;
+  plan.entries.push({ id: "pay", date: "2026-11-25", description: "Pay full card", kind: "transfer", amount: 0,
+    amountMode: "cardBalance", currency: "USD", fromAccountId: 1, toAccountId: 2 });
+  const posted = { ...pending, id: 102, date: "2026-11-21", amount: 19.8, pending: false,
+    planId: "live", planRowId: "entry:openai", awaitingBankSync: false };
+  for (const lineage of [{ pendingExternalId: "authorization" }, { bankPendingSettled: true }]) {
+    for (const startDate of ["2026-11-20", today]) {
+      const chosen = { ...plan, startDate };
+      const rows = buildPlanRows(chosen, document, 63, { accounts, transactions: [{ ...posted, ...lineage }], today });
+      assert.equal(rows.find((row) => row.entryId === "pay").amount, 21.79);
+      assert.ok(rows.every((row) => !row.bankPending));
+      const projection = buildAccountPlan(chosen, document, 63, { accounts, rows, today });
+      assert.deepEqual([projection.rows.at(-1).accountBalances[1], projection.rows.at(-1).accountBalances[2]], [978.21, 0]);
+      if (startDate === "2026-11-20") {
+        const completed = rows.find((row) => row.completionKey === "entry:openai");
+        assert.equal(completed.amount, 19.8);
+        assert.equal(completed.completed, true);
+        assert.deepEqual(completed.matchedTransactionIds, [102]);
+        assert.equal(rows.filter((row) => row.completionKey === "entry:openai").length, 1);
+      }
+    }
+  }
+  const partial = buildPlanRows(plan, document, 63, { accounts, transactions: [posted], today });
+  assert.equal(partial.find((row) => row.entryId === "pay").amount, 21.99,
+    "ordinary exact-source manual partial receipts retain their existing unpaid remainder without pending lineage");
+});
+
+test("past pending purchases carry into future-only views and increase live card payments exactly once", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  plan.completedRows = [{ rowId: "entry:openai", completedAt: "2026-11-20T12:00:00.000Z" }];
+  plan.entries.push({ id: "pay", date: "2026-11-25", description: "Pay full card", kind: "transfer", amount: 0,
+    amountMode: "cardBalance", currency: "USD", fromAccountId: 1, toAccountId: 2 });
+  const before = structuredClone({ plan, document, accounts, pending });
+  for (const startDate of ["2026-11-20", today, "2026-11-24"]) {
+    const chosen = { ...plan, startDate };
+    const rows = buildPlanRows(chosen, document, 63, { accounts, transactions: [pending], today });
+    const purchase = rows.find((row) => row.bankPending);
+    assert.equal(purchase.id, "entry:openai");
+    assert.equal(purchase.pendingOriginalDate, "2026-11-20");
+    assert.equal(purchase.date, startDate);
+    assert.equal(Boolean(purchase.carriedPending), startDate !== "2026-11-20");
+    assert.equal(rows.find((row) => row.entryId === "pay").amount, 21.99);
+    const projected = buildAccountPlan(chosen, document, 63, { accounts, rows, today });
+    assert.deepEqual([projected.rows.at(-1).accountBalances[1], projected.rows.at(-1).accountBalances[2]], [978.01, 0]);
+  }
+  assert.deepEqual({ plan, document, accounts, pending }, before);
+});
+
+test("pending card purchases enter the next estimated statement consistently across historical and future views", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  plan.endDate = "2026-12-30";
+  plan.entries.push({ id: "pay", date: "2026-12-30", description: "Pay full card", kind: "transfer", amount: 0,
+    amountMode: "cardBalance", currency: "USD", fromAccountId: 1, toAccountId: 2 });
+  accounts[1] = { ...accounts[1], creditCardDueStatus: "current", creditCardAutopayEnabled: true, creditCardAutopayDaysBeforeDue: 7,
+    creditCardDue: { statementBalance: 1.99, dueDate: "2026-12-05", lastStatementDate: "2026-11-10" } };
+  for (const startDate of ["2026-11-20", today]) {
+    const chosen = { ...plan, startDate };
+    const rows = buildPlanRows(chosen, document, 63, { accounts, transactions: [pending], today });
+    assert.deepEqual(rows.filter((row) => row.source === "creditCardDue").map((row) => [row.date, row.amount, Boolean(row.estimated)]), [
+      ["2026-11-28", 1.99, false], ["2026-12-29", 20, true],
+    ]);
+    assert.equal(rows.find((row) => row.entryId === "pay").amount, 0);
+    const projection = buildAccountPlan(chosen, document, 63, { accounts, rows, today });
+    assert.deepEqual([projection.rows.at(-1).accountBalances[1], projection.rows.at(-1).accountBalances[2]], [978.01, 0]);
+  }
+});
+
+test("pending evidence carries only its actual recurring occurrence into a future-only view", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  plan.entries[0] = { ...plan.entries[0], date: "2026-10-20", recurrence: "monthly" };
+  plan.completedRows = [{ rowId: "entry:openai:2026-11-20", completedAt: "2026-11-20T12:00:00.000Z" }];
+  const rows = buildPlanRows({ ...plan, startDate: today }, document, 63, { accounts, transactions: [pending], today });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "entry:openai:2026-11-20");
+  assert.equal(rows[0].date, today);
+  assert.equal(rows[0].pendingOriginalDate, "2026-11-20");
+  assert.equal(rows[0].carriedPending, true);
+  assert.equal(rows[0].completed, false);
+  plan.rowOverrides = [{ rowId: "entry:openai:2026-11-20", date: "2026-11-21", amount: 20, description: "OpenAI" }];
+  const overridden = buildPlanRows({ ...plan, startDate: today }, document, 63, { accounts, transactions: [pending], today });
+  assert.equal(overridden.length, 1, "pending reconstruction and a saved override cannot create the same occurrence twice");
+  assert.equal(overridden[0].bankPending, true);
+  assert.equal(overridden[0].id, "entry:openai:2026-11-20");
+  assert.equal(overridden[0].pendingOriginalDate, "2026-11-21");
+});
+
+test("source-linked pending evidence preserves identity across bank updates without claiming another matching custom entry", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  plan.entries.push({ ...plan.entries[0], id: "other-openai" });
+  const linked = { ...pending, planId: "live", planRowId: "entry:openai", amount: 22,
+    merchant: "Updated bank merchant", date: "2026-11-18" };
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [linked], today });
+  assert.equal(rows.filter((row) => row.bankPending).length, 1);
+  const matched = rows.find((row) => row.bankPending);
+  assert.equal(matched.id, "entry:openai");
+  assert.equal(matched.amount, 22, "known source identity follows the bank's revised native pending amount");
+  assert.equal(rows.find((row) => row.entryId === "other-openai").bankPending, undefined);
+  const identified = { ...pending, planId: "live", planRowId: "entry:openai" };
+  const concurrent = buildPlanRows(plan, document, 63, { accounts, transactions: [identified, { ...pending, id: 102 }], today });
+  assert.deepEqual(concurrent.filter((row) => row.bankPending).map((row) => [row.id, row.pendingTransactionIds]), [
+    ["entry:openai", [101]], ["entry:other-openai", [102]],
+  ], "an existing source owner stays reserved before remaining merchant candidates are considered");
+  const foreign = buildPlanRows(plan, document, 63, { accounts, transactions: [{ ...linked, planId: "other-plan" }], today });
+  assert.ok(foreign.every((row) => !row.bankPending), "an existing different plan association cannot be claimed by merchant fallback");
+});
+
+test("a removed pending source stays unresolved without claiming bank evidence or increasing a future payment", () => {
+  const { plan, document, accounts, today, pending } = pendingCardPurchaseFixture();
+  plan.completedRows = [{ rowId: "entry:openai", completedAt: "2026-11-20T12:00:00.000Z" }];
+  plan.entries.push({ id: "pay", date: "2026-11-25", description: "Pay full card", kind: "transfer", amount: 0,
+    amountMode: "cardBalance", currency: "USD", fromAccountId: 1, toAccountId: 2 });
+  const removed = { ...pending, provider: "", planId: "live", planRowId: "entry:openai", bankPendingRemoved: true };
+  const rows = buildPlanRows(plan, document, 63, { accounts, transactions: [removed], today });
+  const unresolved = rows.find((row) => row.entryId === "openai");
+  assert.equal(unresolved.bankPending, false);
+  assert.equal(unresolved.bankPendingRemoved, true);
+  assert.equal(unresolved.completed, false);
+  assert.deepEqual(unresolved.pendingTransactionIds, []);
+  assert.deepEqual(unresolved.matchedTransactionIds, []);
+  assert.equal(rows.find((row) => row.entryId === "pay").amount, 1.99);
+  const future = buildPlanRows({ ...plan, startDate: today }, document, 63, { accounts, transactions: [removed], today });
+  assert.equal(future.some((row) => row.entryId === "openai"), false, "a removed past authorization is not carried into future projections");
+  assert.equal(future.find((row) => row.entryId === "pay").amount, 1.99);
+});
+
 test("savings completion requires both assigned posted transfer legs once, rather than an equal amount", () => {
   const doc = { salary: { amount: 0, currency: "USD", payFrequency: "semimonthly", firstPayDate: "2026-11-02", accountId: 1 }, bills: [],
     allocations: [{ id: "saving", name: "Savings", kind: "savings", amount: 500, currency: "USD", sourceAccountId: 1, accountId: 2 }] };

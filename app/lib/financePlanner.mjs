@@ -1,4 +1,5 @@
 import { orderPlanRows } from "./financePlanRowOrder.mjs";
+import { pendingPlanMatch } from "./financePendingPlan.mjs";
 
 // Pure calculations shared by the personal finance views and their tests.
 const DAY_MS = 86_400_000;
@@ -533,6 +534,32 @@ function normalizedDescription(value) {
   ).join(" ");
 }
 
+// Pending receipts are evidence of an unsettled task, separate from posted rows.
+function pendingBankAssignments(forecasts, transactions, today) {
+  const candidates = forecasts.filter((row) => row.source === "manual" && ["income", "expense"].includes(row.kind) &&
+    row.accountId != null && !transactions.some((transaction) => !transaction.pending && transaction.provider &&
+      !transaction.awaitingBankSync && exactPlanTransaction(row, transaction)));
+  const seen = new Set();
+  const pending = transactions.filter((transaction) => {
+    if (!transaction.pending || transaction.id == null ||
+        seen.has(String(transaction.id)) || !Number.isFinite(dateTime(transaction.date)) || transaction.date > today ||
+        !["income", "expense"].includes(transaction.kind) || !(Number(transaction.amount) > 0)) return false;
+    seen.add(String(transaction.id));
+    return true;
+  });
+  const matches = pending.map((transaction) => {
+    const eligible = candidates.filter((row) => pendingPlanMatch(row, transaction));
+    const exact = eligible.filter((row) => exactPlanTransaction(row, transaction));
+    return { transaction, rows: exact.length ? exact : eligible, exact: exact.length > 0 };
+  });
+  const reserved = new Set(matches.filter((match) => match.exact).flatMap((match) => match.rows.map((row) => row.id)));
+  for (const match of matches) if (!match.exact) match.rows = match.rows.filter((row) => !reserved.has(row.id));
+  const counts = new Map();
+  for (const match of matches) for (const row of match.rows) counts.set(row.id, (counts.get(row.id) || 0) + 1);
+  return new Map(matches.filter((match) => match.rows.length === 1 && counts.get(match.rows[0].id) === 1)
+    .map((match) => [match.rows[0].id, match.transaction]));
+}
+
 function billMatchAssignmentAllows(forecast, transaction) {
   const assigned = transaction.billMatchRowId ?? transaction.matchingOnlyForecastId;
   return assigned == null || String(forecast.id) === String(assigned);
@@ -990,12 +1017,13 @@ function projectCreditCardCycles(cardObligations, charges, { today, endDate, pen
     for (const charge of charges) {
       if (Number(charge.accountId) !== accountId || charge.currency !== account.currency ||
           !["income", "expense"].includes(charge.kind) || charge.restartBaseline ||
-          charge.date < today || charge.date > endDate) continue;
+          (!charge.bankPending && charge.date < today) || charge.date > endDate) continue;
       const pending = pendingAmount(charge);
       if (pending <= 0) continue;
-      const chargeDate = new Date(dateTime(charge.date));
+      const effectiveDate = charge.bankPending && charge.date < today ? today : charge.date;
+      const chargeDate = new Date(dateTime(effectiveDate));
       let month = Math.max(closeMonth + 1, chargeDate.getUTCFullYear() * 12 + chargeDate.getUTCMonth());
-      if (monthlyDate(month, closeAnchor.getUTCDate()) < charge.date) month += 1;
+      if (monthlyDate(month, closeAnchor.getUTCDate()) < effectiveDate) month += 1;
       const estimatedClosingDate = monthlyDate(month, closeAnchor.getUTCDate());
       const dueDate = monthlyDate(month + dueMonth - closeMonth, dueAnchor.getUTCDate());
       // An autopay configured before this cycle could close cannot be treated
@@ -1139,6 +1167,8 @@ function planCompletion(rows, plan, actual, document, rate, today) {
   const consumed = new Set(posted.filter((row) => row.matchedForecast && row.matchedForecast.source !== "creditCardDue").map((row) => row.id));
   return rows.map((row) => {
     const completionKey = row.matchedForecast?.id || row.id;
+    if (row.bankPending || row.bankPendingRemoved) return { ...row, completionKey,
+      completed: false, completionSource: null, recordedInAccounts: false, matchedTransactionIds: [] };
     let matches = row.source === "transaction" && !row.scheduled && row.date <= today ? [row] : [];
     if (!matches.length && row.source !== "transaction") {
       if (["salary", "bill", "manual"].includes(row.source)) {
@@ -1370,6 +1400,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   const baselinePlanRows = new Set(cardPaymentTransactions.filter((transaction) => baselineTransaction(transaction) &&
     String(transaction.planId) === String(plan.id) && transaction.planRowId != null).map((transaction) => String(transaction.planRowId)));
   const today = Number.isFinite(dateTime(options.today)) ? options.today : localDate();
+  const pendingBankTransactions = cardPaymentTransactions.filter((transaction) => transaction.pending &&
+    Number.isFinite(dateTime(transaction.date)) && transaction.date <= today &&
+    (transaction.provider || transaction.bankPendingRemoved));
   const cardObligations = creditCardObligations(options.accounts || [], { transactions: cardPaymentTransactions, today,
     carryPastPayments: plan.endDate >= today });
   const { statements } = cardObligations;
@@ -1467,6 +1500,20 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const occurrences = entryOccurrences(entry, occurrenceStart, plan.endDate, salary);
     if (!recurring && !occurrences.length && overrides.has(`entry:${entry.id}`))
       occurrences.push(...entryOccurrences(entry, entry.date, entry.date, salary));
+    if (["income", "expense"].includes(entry.kind) && entry.accountId != null) {
+      const dates = new Set(occurrences.map((occurrence) => occurrence.date));
+      for (const transaction of pendingBankTransactions) {
+        if (Number(transaction.accountId) !== Number(entry.accountId) || transaction.currency !== entry.currency || transaction.kind !== entry.kind) continue;
+        const exactDate = recurring && String(transaction.planRowId || "").startsWith(`entry:${entry.id}:`)
+          ? String(transaction.planRowId).slice(`entry:${entry.id}:`.length) : !recurring ? entry.date : null;
+        const nearby = entryOccurrences(entry, addDays(transaction.date, -3), addDays(transaction.date, 3), salary);
+        if (Number.isFinite(dateTime(exactDate))) nearby.push(...entryOccurrences(entry, exactDate, exactDate, salary));
+        for (const occurrence of nearby) if (!dates.has(occurrence.date)) {
+          occurrences.push(occurrence);
+          dates.add(occurrence.date);
+        }
+      }
+    }
     if (recurring) {
       // Only reconstruct an out-of-range date when it is a real occurrence of
       // this series with an override. Unrelated IDs cannot invent extra rows.
@@ -1476,6 +1523,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         const originalDate = String(rowId).slice(prefix.length);
         if (originalDate >= occurrenceStart && originalDate <= plan.endDate) continue;
         if (!originalDates.includes(originalDate)) continue;
+        if (occurrences.some((occurrence) => occurrence.date === originalDate)) continue;
         occurrences.push(...entryOccurrences(entry, originalDate, originalDate, salary));
       }
     }
@@ -1497,8 +1545,9 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         ...entryFlow(entry),
       };
       if (recurring || overrides.has(row.id)) row = applyOverride(row);
-      if (restart && (row.date < restart.date || (coveredEntries.has(entry.id) && row.date <= restart.date))) continue;
-      if (baselinePlanRows.has(row.id)) continue;
+      const pendingCandidate = pendingBankTransactions.some((transaction) => pendingPlanMatch(row, transaction));
+      if (restart && (row.date < restart.date || (coveredEntries.has(entry.id) && row.date <= restart.date)) && !pendingCandidate) continue;
+      if (baselinePlanRows.has(row.id) && !pendingCandidate) continue;
       if (row.kind === "transfer" && row.amountMode === "cardBalance") {
         const card = cardAccountsById.get(Number(row.toAccountId));
         const balance = card && (card.type || card.account_type) === "credit" && card.currency === row.currency
@@ -1517,6 +1566,26 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     row.planId = plan.id;
     if (restart && row.source !== "manual" && row.date <= restart.date) row.restartBaseline = true;
   }
+  const pendingAssignments = pendingBankAssignments(forecasts, cardPaymentTransactions, today);
+  const pendingProvisional = (transaction) => transaction.awaitingBankSync && transaction.planRowId != null &&
+    String(transaction.planId) === String(plan.id) && pendingAssignments.has(String(transaction.planRowId));
+  for (let index = forecasts.length - 1; index >= 0; index--) {
+    const row = forecasts[index];
+    const transaction = pendingAssignments.get(row.id);
+    if (transaction) {
+      const removed = Boolean(transaction.bankPendingRemoved);
+      Object.assign(row, { bankPending: !removed, bankPendingRemoved: removed, pendingOriginalDate: row.date,
+        pendingTransactionIds: removed ? [] : [transaction.id], pendingTransactions: removed ? [] : [{
+          id: transaction.id, date: transaction.date, accountId: transaction.accountId, kind: transaction.kind,
+          amount: roundMoney(transaction.amount), currency: transaction.currency, merchant: transaction.merchant || "",
+          provider: transaction.provider || "", pending: true }],
+        ...(!removed ? entryFlow({ ...row, amount: roundMoney(transaction.amount) }) : {}) });
+      if (!removed && row.date < plan.startDate && plan.startDate >= today)
+        Object.assign(row, { date: plan.startDate, carriedPending: true });
+    }
+    if (row.source === "manual" && !transaction && (baselinePlanRows.has(row.id) || (restart &&
+        (row.date < restart.date || (coveredEntries.has(row.entryId) && row.date <= restart.date))))) forecasts.splice(index, 1);
+  }
   // Project each card from its live debt through unpaid purchases, refunds and
   // payments. Recorded movements are already in that debt and cannot replay.
   const paymentEntries = orderPlanRows(forecasts.filter((row) => row.source === "manual" && row.kind === "transfer" &&
@@ -1526,12 +1595,12 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const key = transaction.id == null ? `index:${index}` : String(transaction.id);
     if (postedIds.has(key)) return false;
     postedIds.add(key);
-    return !transaction.pending && transaction.date <= today;
+    return !transaction.pending && !pendingProvisional(transaction) && transaction.date <= today;
   }).map((transaction) => {
     const billMatchRowId = options.billMatchAssignments?.get(String(transaction.transactionId ?? transaction.id));
     return billMatchRowId == null ? transaction : { ...transaction, billMatchRowId: String(billMatchRowId) };
   });
-  const completedForecasts = new Set((plan.completedRows || []).map((row) => row.rowId));
+  const completedForecasts = new Set((plan.completedRows || []).filter((row) => !pendingAssignments.has(row.rowId)).map((row) => row.rowId));
   const claimedCardRecords = new Set();
   if (restart) {
     const usedBaselineBills = new Set();
@@ -1551,12 +1620,17 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   }
   const pendingLegAmounts = new Map();
   const computePendingLeg = (row, leg) => {
-    if (completedForecasts.has(row.id)) return 0;
+    if (row.bankPendingRemoved || completedForecasts.has(row.id)) return 0;
     const sameLeg = (transaction) => Number(transaction.accountId) === Number(leg.accountId) &&
       transaction.currency === leg.currency && transaction.kind === (leg.amount > 0 ? "income" : "expense");
     const exact = postedCardActivity.filter((transaction) => sameLeg(transaction) && billMatchAssignmentAllows(row, transaction) &&
       (exactPlanTransaction(row, transaction) || scheduledPlanTransaction(row, transaction) ||
         (row.annualChargeTransactionId != null && String(row.annualChargeTransactionId) === String(transaction.id))));
+    // A bank's posted replacement settles its pending purchase at the final
+    // amount. A changed authorization must not leave a new forecast remainder.
+    if (row.source === "manual" && ["income", "expense"].includes(row.kind) && exact.some((transaction) =>
+      exactPlanTransaction(row, transaction) && transaction.provider && !transaction.awaitingBankSync &&
+      (transaction.pendingExternalId || transaction.bankPendingSettled))) return 0;
     if (exact.length) return unpaidForecastAmount(row, exact.reduce((sum, transaction) => sum + Number(transaction.amount), 0), Math.abs(leg.amount));
     const candidates = postedCardActivity.filter((transaction) => sameLeg(transaction) && !claimedCardRecords.has(String(transaction.id)) &&
       (["transfer", "conversion"].includes(row.kind) ? matchesTransferLeg(row, transaction, leg) : forecastMatchesTransaction(row, transaction)));
@@ -1719,7 +1793,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
         transaction.date < matchingTransactionStart ||
         transaction.date > matchingEnd ||
         (matchingOnly && transaction.date > today) ||
-        transaction.pending
+        transaction.pending || pendingProvisional(transaction)
       )
         continue;
       if (
@@ -2152,7 +2226,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     }
   }
   const result = [];
-  const manuallyCompleted = new Set((plan.completedRows || []).map((row) => row.rowId));
+  const manuallyCompleted = new Set((plan.completedRows || []).filter((row) => !pendingAssignments.has(row.rowId)).map((row) => row.rowId));
   const isBankReflected = (row, accountId) => liveAccounts.has(Number(accountId)) &&
     ((row.source === "transaction" && row.date <= today && !row.scheduled) ||
       (plan.balanceMode === "snapshot" ? row.date < today : manuallyCompleted.has(row.id)));
@@ -2166,8 +2240,8 @@ export function buildPlanRows(plan, document, rate, options = {}) {
     const flowAccount = row.source === "allocation"
       ? row.allocationKind === "savings" ? row.sourceAccountId : row.accountId
       : row.fromAccountId ?? row.accountId;
-    let balanceAppliedUsd = row.matchedOutsideWindow || isBankReflected(row, flowAccount) ? 0 : row.usd;
-    let balanceAppliedPhp = row.matchedOutsideWindow || isBankReflected(row, flowAccount) ? 0 : row.php;
+    let balanceAppliedUsd = row.bankPendingRemoved || row.matchedOutsideWindow || isBankReflected(row, flowAccount) ? 0 : row.usd;
+    let balanceAppliedPhp = row.bankPendingRemoved || row.matchedOutsideWindow || isBankReflected(row, flowAccount) ? 0 : row.php;
     if (row.kind === "conversion") {
       const sourceReflected = isBankReflected(row, row.fromAccountId);
       const destinationReflected = isBankReflected(row, row.toAccountId);
@@ -2562,7 +2636,7 @@ export function buildPlanRows(plan, document, rate, options = {}) {
   if (!options._cardCycleCharges) {
     const charges = reconciled.filter((row) => row.source !== "transaction" && row.source !== "creditCardDue" &&
       ["income", "expense"].includes(row.kind) && creditAccountIds.has(Number(row.accountId)) &&
-      row.date >= today && row.date <= plan.endDate && !row.restartBaseline);
+      (row.bankPending || row.date >= today) && row.date <= plan.endDate && !row.restartBaseline && !row.bankPendingRemoved);
     if (charges.length) return buildPlanRows(plan, document, rate, { ...options, _cardCycleCharges: charges });
   }
   if (plan.continuous && !options._resolvedCardDueFunding &&

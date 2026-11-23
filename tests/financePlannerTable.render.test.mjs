@@ -596,6 +596,69 @@ test("completed transactions get Done tags while only unfinished past rows are m
   for (const id of ["today", "future"]) assert.doesNotMatch(markup(id), /fpt-row-overdue|fpt-status-done/);
 });
 
+test("a bank-pending match stays pending without Done, overdue or recording controls", () => {
+  const pendingTransaction = { id: 901, date: "2026-11-17", accountId: 1, kind: "expense", amount: 20,
+    currency: "USD", merchant: "OPENAI", provider: "plaid", pending: true };
+  for (const source of ["manual", "bill"]) {
+    const pendingRow = row({ id: "entry:openai", entryId: "openai", description: "OpenAI", date: "2026-11-17", source,
+      amount: 20, usd: -20, completed: false, bankPending: true,
+      pendingTransactionIds: [901], pendingTransactions: [pendingTransaction] });
+    const before = structuredClone(pendingRow);
+    const markup = render([pendingRow], { plan: { ...plan, entries: [{ id: "openai", description: "OpenAI" }] },
+      onRecord() { assert.fail("a pending bank match cannot be recorded again"); },
+      onToggleComplete() { assert.fail("a pending bank match cannot be marked done"); } });
+    const body = markup.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+    assert.match(body, />Pending</);
+    assert.match(body, /OPENAI/);
+    assert.match(body, /\$20\.00/);
+    assert.doesNotMatch(body, /fpt-row-overdue|fpt-row-recorded|fpt-status-done|>Done<|>Past due<|Record payment|Mark done|Reopen/);
+    assert.deepEqual(pendingRow, before);
+  }
+});
+
+test("pending bank matches have their own filter and join recorded activity only after settlement", () => {
+  const pendingRow = row({ id: "entry:pending", description: "Pending OpenAI", date: "2026-11-17", bankPending: true,
+    completed: false, pendingTransactionIds: [901], pendingTransactions: [{ id: 901, date: "2026-11-17",
+      accountId: 1, kind: "expense", amount: 20, currency: "USD", merchant: "OPENAI", provider: "plaid", pending: true }] });
+  const rows = [pendingRow, row({ id: "missed", date: "2026-11-17", description: "Missed rent" }),
+    row({ id: "posted", date: today, description: "Posted coffee", completed: true, recordedInAccounts: true })];
+  const before = structuredClone(rows);
+  const get = harness({ rows });
+  button(get(), "Pending").props.onClick();
+  let html = renderToStaticMarkup(get());
+  assert.match(html, /Pending OpenAI/);
+  assert.doesNotMatch(html, /Missed rent|Posted coffee/);
+  assert.match(html, /1 of 3 transaction/);
+  button(get(), "Recorded").props.onClick();
+  html = renderToStaticMarkup(get());
+  assert.match(html, /Posted coffee/);
+  assert.doesNotMatch(html, /Pending OpenAI|Missed rent/);
+  button(get(), "Overdue").props.onClick();
+  html = renderToStaticMarkup(get());
+  assert.match(html, /Missed rent/);
+  assert.doesNotMatch(html, /Pending OpenAI|Posted coffee/);
+  assert.deepEqual(rows, before);
+  const settled = harness({ rows: [{ ...pendingRow, bankPending: false, pendingTransactionIds: [], pendingTransactions: [],
+    completed: true, recordedInAccounts: true, completionSource: "transaction", transactionId: 901 }] });
+  button(settled(), "Pending").props.onClick();
+  assert.match(renderToStaticMarkup(settled()), /No transactions match/);
+  button(settled(), "Recorded").props.onClick();
+  const settledBody = renderToStaticMarkup(settled()).match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+  assert.match(settledBody, /fpt-status-done">Done/);
+  assert.doesNotMatch(settledBody, />Pending<|>Past due</);
+});
+
+test("a removed pending bank charge asks for review without becoming Done, overdue or another recorded payment", () => {
+  const removed = row({ id: "entry:removed", entryId: "removed", source: "manual", description: "Removed bank charge",
+    date: "2026-11-17", completed: false, bankPendingRemoved: true });
+  const html = render([removed], { plan: { ...plan, entries: [{ id: "removed", description: "Removed bank charge" }] },
+    onRecord() {}, onToggleComplete() {} });
+  const body = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+  assert.match(body, />Review</);
+  assert.match(body, /The bank removed its pending charge/);
+  assert.doesNotMatch(body, /fpt-status-done|fpt-row-overdue|>Done<|>Past due<|>Pending<|Record payment|Mark done/);
+});
+
 test("transfer rows show source and card destination rather than a misleading zero cash amount", () => {
   const html = renderExpanded([row({ id: "entry:card", source: "manual", kind: "transfer", currency: "PHP", amount: 300,
     fromAccountId: 34, toAccountId: 37, accountId: null, creditCardPaymentFor: 37, usd: 0, php: -300 })]);

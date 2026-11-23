@@ -803,8 +803,11 @@ export default function FinanceAppClient({
     return !(row.source === "bill" && row.completed && row.matchedOutsideWindow && receipts.length &&
       receipts.every((id) => pastReceiptIds.has(id)));
   });
+  const carriedPendingIds = new Set(futureDisplayRows.filter((row) => row.bankPending && row.pendingOriginalDate < today).map((row) => row.id));
+  const displayedFutureRows = futureDisplayRows.map((row) => row.bankPending && row.pendingOriginalDate < today
+    ? { ...row, projectionDate: row.date, date: row.pendingOriginalDate } : row);
   const rowsWithBalances = withLivePlannerBalances({ accounts, today,
-    rows: orderPlanRows([...pastPlanRows, ...futureDisplayRows]
+    rows: orderPlanRows([...pastPlanRows.filter((row) => !carriedPendingIds.has(row.id)), ...displayedFutureRows]
       .filter((row) => row.source !== "salary" || Number(row.amount) > 0), plan) });
   const balanceHistoryMatches = planRecordsMatch;
   const displayedPlanRows = withLivePlannerAccountSnapshots({ accounts, rows: rowsWithBalances, today,

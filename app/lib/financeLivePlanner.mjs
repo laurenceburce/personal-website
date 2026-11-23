@@ -14,7 +14,7 @@ const isDebt = (account) => ["credit", "loan"].includes(account.type || account.
 const active = (account) => !account.isArchived && !account.is_archived && !account.isSyncExcluded && !account.is_sync_excluded &&
   !account.mergedIntoAccountId && !account.merged_into_account_id;
 const orderedPastRows = (rows, range, today) => rows.filter((row) => row.date >= range.startDate && row.date < today &&
-  row.date <= range.endDate && !row.completed && !row.pending && row.source !== "transaction").length;
+  row.date <= range.endDate && !row.bankPending && !row.bankPendingRemoved && !row.completed && !row.pending && row.source !== "transaction").length;
 
 /** A viewing window never changes the planner's saved entries or account openings. */
 export function getLivePlannerRange({ startDate, endDate, today = localDate(), minDate } = {}) {
@@ -121,7 +121,7 @@ export function withLivePlannerBalances({ accounts = [], rows = [], today = loca
     Object.hasOwn(account, "nativeCurrentBalance") ? account.nativeCurrentBalance : account.currentBalance,
   )]));
   return rows.map((row) => {
-    if (row.date >= today && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
+    if ((row.date >= today || row.bankPending) && !row.bankPendingRemoved && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
       for (const move of projectedAccountMoves(row, byId, today).moves) {
         const account = byId.get(Number(move.accountId));
         if (!account || account.currency !== move.currency || (move.recordedDate && move.recordedDate <= today)) continue;
@@ -153,9 +153,12 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     mask: account.mask || "", type: account.type || account.account_type, currency: account.currency,
     balance: balances.get(Number(account.id)) ?? null, isDebt: isDebt(account) }));
   const seen = new Set();
+  const pendingOwners = new Set(rows.filter((row) => row.bankPending || row.bankPendingRemoved)
+    .flatMap((row) => [row.id, row.completionKey]).filter(Boolean).map(String));
   const history = historyTransactions.flatMap((transaction) => {
     const key = transactionKey(transaction.id);
-    if (!key || seen.has(key) || transaction.pending || !Number.isFinite(dateTime(transaction.date)) ||
+    if (!key || seen.has(key) || transaction.pending || (transaction.awaitingBankSync &&
+        byId.get(Number(transaction.accountId))?.isLinked && pendingOwners.has(String(transaction.planRowId))) || !Number.isFinite(dateTime(transaction.date)) ||
         transaction.date > today || !["income", "expense"].includes(transaction.kind) ||
         !Number.isFinite(Number(transaction.amount)) || Number(transaction.amount) <= 0) return [];
     seen.add(key);
@@ -163,9 +166,9 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
   }).sort(compareRecorded);
   const historyById = new Map(history.map((transaction) => [transaction.key, transaction]));
   const prepared = rows.map((row, index) => {
-    const isRecorded = Boolean(row.recordedInAccounts || ["plan", "transaction"].includes(row.completionSource) ||
+    const isRecorded = !row.bankPending && !row.bankPendingRemoved && Boolean(row.recordedInAccounts || ["plan", "transaction"].includes(row.completionSource) ||
       (row.source === "transaction" && row.date <= today && !row.scheduled));
-    const ids = [...new Set([row.transactionId, ...(row.matchedTransactionIds || []),
+    const ids = row.bankPending || row.bankPendingRemoved ? [] : [...new Set([row.transactionId, ...(row.matchedTransactionIds || []),
       ...(row.recordedTransactions || []).map((transaction) => transaction.transactionId ?? transaction.id),
       ...(row.source === "transaction" ? [row.id] : [])].map(transactionKey).filter(Boolean))];
     const records = ids.map((id) => historyById.get(id));
@@ -257,7 +260,7 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
     projectedBalanceUsd: kind === "unavailable" ? null : sumBalances(selected, balances, "USD", false),
     projectedBalancePhp: kind === "unavailable" ? null : sumBalances(selected, balances, "PHP", false) });
   return prepared.map(({ row, index, isRecorded, hasEvidence, evidenceOnly, complete, cutoff }) => {
-    if (row.date >= today && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
+    if ((row.date >= today || row.bankPending) && !row.bankPendingRemoved && !row.completed && !row.pending && !(row.source === "transaction" && row.date <= today))
       for (const move of projectedAccountMoves(row, byId, today).moves) {
         const account = byId.get(Number(move.accountId));
         if (!account || account.currency !== move.currency || (move.recordedDate && move.recordedDate <= today)) continue;
@@ -267,6 +270,8 @@ export function withLivePlannerAccountSnapshots({ accounts = [], rows = [], toda
           hasProjectedActivity = true;
         }
       }
+    if (row.bankPending) return result(row, withProjections(current), "projected",
+      "Pending at the bank. Estimated balance includes this outstanding transaction once; the reported bank balance is unchanged.");
     if (row.date <= today && (isRecorded || hasEvidence)) {
       if (!complete || (evidenceOnly && row.date === today && !todayComplete)) return result(row, new Map(), "unavailable",
         "Recorded balance history is incomplete for this row. Current balances are available in the summary above.");
@@ -311,12 +316,12 @@ export function getLivePlannerAnalytics({ accounts = [], rows = [], range, today
   const ordered = rows.map((row, index) => ({ row, index })).sort((first, second) => first.row.date.localeCompare(second.row.date) || first.index - second.index);
   const seen = new Set();
   if (hasProjection) for (const { row } of ordered) {
-    if (!Number.isFinite(dateTime(row.date)) || row.date < today || row.date > safeRange.endDate || row.completed || row.pending ||
+    if (!Number.isFinite(dateTime(row.date)) || (row.date < today && !row.bankPending) || row.bankPendingRemoved || row.date > safeRange.endDate || row.completed || row.pending ||
         (row.source === "transaction" && row.date <= today)) continue;
     if (row.id != null && seen.has(String(row.id))) continue;
     if (row.id != null) seen.add(String(row.id));
     const { moves, unfundedCardPayment } = projectedAccountMoves(row, byId, today);
-    const inWindow = row.date >= visibleStart;
+    const inWindow = (row.bankPending && row.date < today ? today : row.date) >= visibleStart;
     if (inWindow) {
       upcomingCount++;
       if (Number(row.amount) > 0 && (unfundedCardPayment || (!moves.length && ["salary", "bill", "manual"].includes(row.source)))) unassignedCount++;

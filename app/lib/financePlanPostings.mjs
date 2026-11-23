@@ -2,6 +2,7 @@ import { addDays, buildPlanRows, convert, entryOccurrences, forecastMatchesTrans
 import { buildAccountPlan } from "./financeAccountPlan.mjs";
 import { mapFinanceActivityAccount } from "./financeActivity.mjs";
 import { orderPlanRows } from "./financePlanRowOrder.mjs";
+import { pendingPlanMatch } from "./financePendingPlan.mjs";
 
 const DAY = 86400000;
 const keyFor = (planId, rowId, leg) => JSON.stringify([planId, rowId, leg]);
@@ -116,7 +117,7 @@ export const financePlanPendingMovementSql = (alias = "a", currentDate = localDa
     AND pt.duplicate_of_id IS NULL AND pt.is_provider_removed = 0 AND pt.transaction_date <= '${/^\d{4}-\d{2}-\d{2}$/.test(currentDate) ? currentDate : localDate()}')`;
 
 /** The live planner owns manual movements through today; linked accounts require recording. */
-export function financePlanPostingSpecs(document, accounts, existing = [], { today = localDate(), rate = 58, transactions = [] } = {}) {
+export function financePlanPostingSpecs(document, accounts, existing = [], { today = localDate(), rate = 58, transactions = [], pendingTransactions = [] } = {}) {
   const primary = document.plans?.[0]?.continuous ? document.plans[0] : null;
   const primaryRestart = restartFor(primary);
   const inactiveEvents = inactiveHistoryEvents(accounts, existing, today);
@@ -160,29 +161,41 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
       const automaticEntry = authoritative && [entry.accountId, entry.fromAccountId, entry.toAccountId]
         .some((id) => manualAccount(byId.get(Number(id))));
       const prefix = `entry:${entry.id}:`;
+      const linkedAccount = byId.get(Number(entry.accountId));
+      const pendingEntry = authoritative && ["income", "expense"].includes(entry.kind) &&
+        linkedAccount?.external_provider && linkedAccount.external_account_id;
+      const pendingDates = pendingEntry ? pendingTransactions.filter((transaction) => Number(transaction.account_id) === Number(entry.accountId) &&
+        transaction.currency === entry.currency && transaction.kind === entry.kind)
+        .map((transaction) => dateOnly(transaction.posting_date || transaction.transaction_date)) : [];
+      const ownedRows = pendingEntry ? existing.filter((receipt) => receipt.source_plan_id === plan.id &&
+        (recurring ? receipt.source_plan_row_id?.startsWith(prefix) : receipt.source_plan_row_id === `entry:${entry.id}`) &&
+        (receipt.pending || parse(receipt.plan_record_json).pendingOnly)) : [];
+      const pendingOnlyEntry = pendingEntry && (pendingDates.length > 0 || ownedRows.length > 0);
       const occurrenceDates = recurring
         ? [...new Set([
           ...(automaticEntry ? entryOccurrences(entry, restart && entry.date < restart.date ? restart.date : entry.date,
             today, document.salary).map((row) => row.date) : []),
           ...[...completed, ...overrides.keys()].filter((rowId) => rowId.startsWith(prefix)).map((rowId) => rowId.slice(prefix.length)),
+          ...(pendingOnlyEntry ? pendingDates.flatMap((date) => entryOccurrences(entry, addDays(date, -3), addDays(date, 3), document.salary).map((row) => row.date)) : []),
+          ...ownedRows.map((receipt) => receipt.source_plan_row_id.slice(prefix.length)),
         ])]
-        : automaticEntry || completed.has(`entry:${entry.id}`) ? [entry.date] : [];
+        : automaticEntry || completed.has(`entry:${entry.id}`) || pendingOnlyEntry ? [entry.date] : [];
       const occurrences = occurrenceDates.flatMap((day) => entryOccurrences(entry, day, day, document.salary));
       for (const occurrence of occurrences) {
         const rowId = recurring ? `entry:${entry.id}:${occurrence.date}` : `entry:${entry.id}`;
         if (frozenEvents.has(keyFor(plan.id, rowId, ""))) continue;
-        if (!completed.has(rowId) && !automaticEntry) continue;
+        if (!completed.has(rowId) && !automaticEntry && !pendingOnlyEntry) continue;
         const row = { ...entry, date: occurrence.date, ...overrides.get(rowId) };
         if (restart && (row.date < restart.date || ((!authoritative || covered.has(entry.id)) && row.date <= restart.date))) continue;
-        if (!row.date || row.date > today) continue;
-        candidates.push({ row, rowId });
+        if (!row.date || (row.date > today && !pendingOnlyEntry)) continue;
+        candidates.push({ row, rowId, pendingOnly: Boolean(pendingOnlyEntry && !completed.has(rowId) && !automaticEntry) });
         if (authoritative && candidates.length > 10000) throw tooManyMovements();
       }
     }
     const running = new Map();
     const priority = (row) => row.kind === "transfer" ? 2 : row.kind === "conversion" ? 1 : 0;
     const orderedCandidates = orderPlanRows(candidates.map((candidate) => ({ ...candidate.row, id: candidate.rowId, source: "manual", candidate })), plan, { priority });
-    for (const { candidate: { row, rowId } } of orderedCandidates) {
+    for (const { candidate: { row, rowId, pendingOnly } } of orderedCandidates) {
         const explicitlyRecorded = completed.has(rowId);
         const transfer = ["transfer", "conversion"].includes(row.kind);
         const partialConversion = authoritative && row.kind === "conversion";
@@ -213,11 +226,11 @@ export function financePlanPostingSpecs(document, accounts, existing = [], { tod
           description: row.description, category: transfer ? "Transfer" : "Uncategorized",
           signature, conversionRate: recordedRate, creditCardPaymentFor: card ? Number(card.id) : null,
           planScheduledRowId: row.scheduledRowId || null,
-          creditCardPaymentDueDate: dueDate };
+          creditCardPaymentDueDate: dueDate, ...(pendingOnly ? { pendingOnly: true } : {}) };
         const append = (leg, account, kind, value, counterpart) => {
           if (!account) return;
           const automatic = authoritative && manualAccount(account);
-          if (!explicitlyRecorded && !automatic) return;
+          if (!explicitlyRecorded && !automatic && !pendingOnly) return;
           const originalReceipt = prior.get(keyFor(plan.id, rowId, leg))?.manualReceiptOriginal;
           specs.push({ ...base, leg,
             accountId: Number(account.id), currency: account.currency, kind, amount: money(value),
@@ -323,7 +336,7 @@ function scheduledManualSpecs(document, primary, accounts, existing, custom, tra
   }));
   // Same-save custom receipts must replace their scheduled source before any
   // salary, bill, savings or reserve remainder is made authoritative.
-  history.push(...custom.filter((spec) => spec.planId === primary.id).map((spec) => ({
+  history.push(...custom.filter((spec) => spec.planId === primary.id && !spec.pendingOnly && !spec.bankPendingRemoved).map((spec) => ({
     id: `plan:${keyFor(spec.planId, spec.rowId, spec.leg)}`, date: spec.date, kind: spec.kind,
     amount: spec.amount, currency: spec.currency, accountId: spec.accountId,
     merchant: spec.description, category: spec.category, planId: spec.planId, planRowId: spec.rowId,
@@ -442,6 +455,14 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
        AND t.pending = 0 AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date <= ?) AS native_movement,
     ${financePlanPendingMovementSql("a", today)} AS plan_pending_movement
     FROM personal_finance_accounts a`, [today]);
+  let pendingTransactions = [];
+  const linkedAccountIds = accounts.filter((account) => account.external_provider && account.external_account_id && !inactiveAccount(account))
+    .map((account) => Number(account.id));
+  if (authoritative && linkedAccountIds.length)
+    [pendingTransactions] = await connection.query(`SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS posting_date
+      FROM personal_finance_transactions t WHERE t.pending = 1 AND t.account_id IN (?)
+        AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0 AND t.transaction_date <= ?
+        AND (t.external_provider IS NOT NULL AND t.external_provider <> '') FOR UPDATE`, [linkedAccountIds, today]);
   let transactions = [];
   if (authoritative && accounts.some(manualAccount)) {
     [transactions] = await connection.query(`SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS posting_date
@@ -452,7 +473,7 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
   const settledEvents = settledStatementEvents(accounts, existing, today);
   const resetEvents = resetHistoryEvents(existing);
   for (const row of existing) Object.assign(row, freezePostingHistory(row, inactiveEvents, settledEvents, resetEvents, today));
-  const specs = financePlanPostingSpecs(document, accounts, existing, { today, rate, transactions });
+  const specs = financePlanPostingSpecs(document, accounts, existing, { today, rate, transactions, pendingTransactions });
   const planIds = new Set((document.plans || []).map((plan) => plan.id));
   // Removing a whole forecast never erases payments already made. Preserve its
   // receipts as editable history, including bank reconciliation still in flight.
@@ -461,6 +482,7 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
     if (saved.manualPlannerSource && !planIds.has(row.source_plan_id) &&
         !saved.inactiveAccountHistory && !saved.settledCardCycleHistory && !saved.resetHistory) continue;
     if (planIds.has(row.source_plan_id) && !saved.detached) continue;
+    if (row.pending) continue;
     if (!saved.planId || !saved.rowId || !saved.leg) continue;
     const changedAccount = Number(row.account_id) !== Number(saved.accountId) || row.kind !== saved.kind;
     const spec = { ...saved, detached: true,
@@ -473,6 +495,21 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
     const account = accounts.find((item) => Number(item.id) === spec.accountId);
     spec.awaitingBankSync = Boolean(account?.external_provider && account?.external_account_id);
     specs.push(spec);
+  }
+  const previousByKey = new Map(existing.map((row) => [keyFor(row.source_plan_id, row.source_plan_row_id, row.source_plan_leg), row]));
+  const pendingReferences = new Map();
+  for (const spec of specs.filter((item) => item.awaitingBankSync)) {
+    const key = keyFor(spec.planId, spec.rowId, spec.leg);
+    const previous = previousByKey.get(key);
+    const saved = parse(previous?.plan_record_json);
+    if (!previous || Number(previous.account_id) !== spec.accountId || previous.currency !== spec.currency || previous.kind !== spec.kind ||
+        !same(saved.signature, spec.signature)) continue;
+    const externalId = saved.pendingBankExternalId || (previous.pending && providerRecord(previous) ? previous.external_transaction_id : null);
+    if (!externalId) continue;
+    pendingReferences.set(key, { externalId, provider: saved.pendingBankProvider || previous.external_provider });
+    if (saved.bankPendingRemoved || (previous.pending && (previous.is_provider_removed || previous.duplicate_of_id != null)))
+      Object.assign(spec, { bankPendingRemoved: true, pendingBankExternalId: externalId,
+        pendingBankProvider: saved.pendingBankProvider || previous.external_provider });
   }
   const wanted = new Map(specs.map((spec) => [keyFor(spec.planId, spec.rowId, spec.leg), spec]));
   const old = new Map();
@@ -489,23 +526,38 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
   let candidates = [];
   if (linkedSpecs.length) {
     const dates = linkedSpecs.map((spec) => Date.parse(`${spec.date}T00:00:00Z`));
+    const referenceIds = [...pendingReferences.values()].map((item) => item.externalId);
+    const previousIds = linkedSpecs.map((spec) => previousByKey.get(keyFor(spec.planId, spec.rowId, spec.leg))?.id).filter(Boolean);
     const [rows] = await connection.query(`SELECT t.*, DATE_FORMAT(t.transaction_date, '%Y-%m-%d') AS posting_date
-      FROM personal_finance_transactions t WHERE t.account_id IN (?) AND t.pending = 0
+      FROM personal_finance_transactions t WHERE t.account_id IN (?)
         AND t.duplicate_of_id IS NULL AND t.is_provider_removed = 0
         AND (t.external_provider IS NOT NULL AND t.external_provider <> '')
-        AND t.transaction_date BETWEEN ? AND ? FOR UPDATE`,
+        AND (t.transaction_date BETWEEN ? AND ? OR t.external_pending_transaction_id IN (?)
+          OR t.external_transaction_id IN (?) OR t.id IN (?)) FOR UPDATE`,
       [[...new Set(linkedSpecs.map((spec) => spec.accountId))], new Date(Math.min(...dates) - 3 * DAY).toISOString().slice(0, 10),
-        new Date(Math.max(...dates) + 3 * DAY).toISOString().slice(0, 10)]);
+        new Date(Math.max(...dates) + 3 * DAY).toISOString().slice(0, 10),
+        referenceIds.length ? referenceIds : [""], referenceIds.length ? referenceIds : [""], previousIds.length ? previousIds : [0]]);
     candidates = rows;
   }
   const matches = new Map();
   const competing = new Map();
   for (const spec of linkedSpecs) {
     const key = keyFor(spec.planId, spec.rowId, spec.leg);
-    const eligible = candidates.filter((row) => Number(row.account_id) === spec.accountId && row.kind === spec.kind &&
-      row.currency === spec.currency && Math.abs(Number(row.amount) - spec.amount) < 0.005 &&
-      Math.abs(Date.parse(`${dateOnly(row.posting_date || row.transaction_date)}T00:00:00Z`) - Date.parse(`${spec.date}T00:00:00Z`)) <= 3 * DAY &&
+    const reference = pendingReferences.get(key);
+    const sameSignature = (row) => !row.source_plan_id || same(parse(row.plan_record_json).signature, spec.signature);
+    const native = candidates.filter((row) => Number(row.account_id) === spec.accountId && row.kind === spec.kind &&
+      row.currency === spec.currency && Number(row.amount) > 0 &&
       (!row.source_plan_id || keyFor(row.source_plan_id, row.source_plan_row_id, row.source_plan_leg) === key));
+    const replacement = native.filter((row) => !row.pending && reference && row.external_provider === reference.provider &&
+      row.external_pending_transaction_id === reference.externalId && sameSignature(row));
+    const ownedPosted = native.filter((row) => !row.pending && row.source_plan_id && sameSignature(row));
+    const postedMatches = native.filter((row) => !row.pending && (!spec.pendingOnly || reference) && Math.abs(Number(row.amount) - spec.amount) < 0.005 &&
+      Math.abs(Date.parse(`${dateOnly(row.posting_date || row.transaction_date)}T00:00:00Z`) - Date.parse(`${spec.date}T00:00:00Z`)) <= 3 * DAY &&
+      sameSignature(row) && (!reference || pendingPlanMatch(spec, { ...row, pending: true })));
+    const pendingMatches = native.filter((row) => row.pending && sameSignature(row) && pendingPlanMatch(spec, row));
+    const ownedPending = pendingMatches.filter((row) => row.source_plan_id);
+    const eligible = replacement.length ? replacement : ownedPosted.length ? ownedPosted : postedMatches.length === 1 ? postedMatches
+      : ownedPending.length ? ownedPending : pendingMatches.length ? pendingMatches : postedMatches;
     matches.set(key, eligible);
     for (const row of eligible) competing.set(Number(row.id), (competing.get(Number(row.id)) || 0) + 1);
   }
@@ -518,6 +570,10 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
     let previous = old.get(key);
     const possible = matches.get(key) || [];
     const matched = possible.length === 1 && (spec.reusedTransactionId || competing.get(Number(possible[0].id)) === 1) ? possible[0] : null;
+    if (!matched && spec.pendingOnly && !spec.bankPendingRemoved) {
+      if (previous) await releasePosting(connection, previous);
+      continue;
+    }
     if (previous && (providerRecord(previous) || !previous.plan_generated) && (!matched || Number(matched.id) !== Number(previous.id))) {
       await releasePosting(connection, previous);
       previous = null;
@@ -525,23 +581,30 @@ export async function synchronizeFinancePlanPostings(connection, document, { tod
     if (matched) {
       if (previous && Number(previous.id) !== Number(matched.id)) await releasePosting(connection, previous);
       const adoptManual = Boolean(spec.manualPlannerSource && spec.reusedTransactionId && !providerRecord(matched));
+      const record = { ...spec };
+      delete record.bankPendingRemoved;
+      delete record.bankPending;
+      if (matched.pending) Object.assign(record, { bankPending: true,
+        pendingBankExternalId: matched.external_transaction_id, pendingBankProvider: matched.external_provider });
+      else if (pendingReferences.has(key)) Object.assign(record, {
+        pendingBankExternalId: pendingReferences.get(key).externalId, pendingBankProvider: pendingReferences.get(key).provider });
       await connection.query(`UPDATE personal_finance_transactions SET source_plan_id = ?, source_plan_row_id = ?,
         source_plan_leg = ?, plan_generated = ${adoptManual ? 1 : 0}, plan_provisional = 0, plan_record_json = ? WHERE id = ?`,
-        [spec.planId, spec.rowId, spec.leg, JSON.stringify(spec), Number(matched.id)]);
+        [spec.planId, spec.rowId, spec.leg, JSON.stringify(record), Number(matched.id)]);
       reconciled++;
     } else {
       // Repeated saves update the same provisional/manual row; no balance baseline is rewritten.
       await connection.query(`INSERT INTO personal_finance_transactions
         (transaction_date, kind, account_id, category, merchant, note, amount, currency,
-         source_plan_id, source_plan_row_id, source_plan_leg, plan_generated, plan_provisional, plan_record_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NOW(3), NOW(3))
+         source_plan_id, source_plan_row_id, source_plan_leg, plan_generated, plan_provisional, plan_record_json, pending, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NOW(3), NOW(3))
         ON DUPLICATE KEY UPDATE transaction_date = VALUES(transaction_date), kind = VALUES(kind),
           account_id = VALUES(account_id), category = VALUES(category), merchant = VALUES(merchant), note = VALUES(note),
-          amount = VALUES(amount), currency = VALUES(currency), plan_provisional = VALUES(plan_provisional),
+          amount = VALUES(amount), currency = VALUES(currency), plan_provisional = VALUES(plan_provisional), pending = VALUES(pending),
           plan_record_json = VALUES(plan_record_json), updated_at = NOW(3)`,
         [spec.date, spec.kind, spec.accountId, spec.category, spec.description.slice(0, 120), spec.note ?? "Recorded from Budget Plans",
-          spec.amount, spec.currency, spec.planId, spec.rowId, spec.leg, spec.awaitingBankSync ? 1 : 0, JSON.stringify(spec)]);
-      recorded++;
+          spec.amount, spec.currency, spec.planId, spec.rowId, spec.leg, spec.awaitingBankSync ? 1 : 0, JSON.stringify(spec), spec.bankPendingRemoved ? 1 : 0]);
+      if (!spec.bankPendingRemoved) recorded++;
     }
   }
   return { recorded, reconciled };
@@ -589,10 +652,15 @@ export function financePlanTransactionMetadata(row) {
     transferAccountId: details.transferAccountId || null,
     creditCardPaymentFor: details.creditCardPaymentFor || null,
     creditCardPaymentDueDate: details.creditCardPaymentDueDate || null,
-    awaitingBankSync: Boolean(row.plan_provisional),
-    recordedFromPlan: Boolean(row.plan_generated),
+    awaitingBankSync: Boolean(row.plan_provisional && !row.pending),
+    recordedFromPlan: Boolean(row.plan_generated && !row.pending),
     planGenerated: Boolean(row.plan_generated && !details.detached),
     planDetached: Boolean(details.detached),
+    ...(row.pending && providerRecord(row) ? { bankPending: true } : {}),
+    ...(!row.pending && providerRecord(row) && details.pendingBankExternalId ? { bankPendingSettled: true,
+      pendingBankExternalId: details.pendingBankExternalId } : {}),
+    ...(row.pending && details.bankPendingRemoved ? { bankPendingRemoved: true,
+      pendingBankExternalId: details.pendingBankExternalId || null } : {}),
     ...(details.manualPlannerSource ? { manualPlannerSource: true } : {}),
   };
 }

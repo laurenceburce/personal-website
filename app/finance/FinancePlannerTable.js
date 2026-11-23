@@ -6,12 +6,12 @@ import { getPlanRowCategory, getPlannerAccountLabel, getPlannerTransactionLabel 
 import { SourceLabel } from "./FinancePlanLedger";
 import "./finance-planner-table.css";
 
-const recorded = (row, today) => Boolean(row.completed || row.recordedInAccounts ||
+const recorded = (row, today) => !row.bankPending && !row.bankPendingRemoved && Boolean(row.completed || row.recordedInAccounts ||
   (row.source === "transaction" && !row.scheduled && row.date <= today));
-const accountRecorded = (row, today) => Boolean(row.recordedInAccounts ||
+const accountRecorded = (row, today) => !row.bankPending && !row.bankPendingRemoved && Boolean(row.recordedInAccounts ||
   ["plan", "transaction"].includes(row.completionSource) ||
   (row.source === "transaction" && !row.scheduled && row.date <= today));
-const pastDue = (row, today) => !recorded(row, today) && (row.source === "creditCardDue"
+const pastDue = (row, today) => !row.bankPending && !row.bankPendingRemoved && !recorded(row, today) && (row.source === "creditCardDue"
   ? row.paymentOverdue ?? (row.dueDate || row.date) < today : row.date < today);
 const signed = (amount, currency) => `${amount > 0 ? "+" : ""}${money(amount, currency)}`;
 const balance = (value, currency) => Number.isFinite(value) ? money(value, currency) : "Unavailable";
@@ -213,7 +213,9 @@ function AccountCell({ row, account, accounts, plan, groupStart }) {
         note={move.label || row.description}/>)}
       {!moves.length && !receipts.length && fallbackAmount != null &&
         <AccountChangeTag amount={fallbackAmount} currency={account.currency} debt={debt} note={row.description}/>}
-      {row.awaitingBankSync && <span className="fpt-info-tag">Awaiting bank match</span>}
+      {row.bankPending ? <span className="fpt-info-tag" title={(row.pendingTransactions || []).map((item) => item.merchant).filter(Boolean).join(" · ")}>Pending at bank</span>
+        : row.bankPendingRemoved ? <span className="fpt-info-tag">Pending charge removed</span>
+        : row.awaitingBankSync && <span className="fpt-info-tag">Awaiting bank match</span>}
       {extraReceipts.map((item, index) => <AccountChangeTag key={`receipt-${index}`}
         amount={(item.kind === "income" ? 1 : -1) * item.amount} currency={item.currency || account.currency} debt={debt}
         note={`${item.description || item.merchant || "Bank transaction"} · ${formatDate(item.date || row.date)}`}/>)}
@@ -266,12 +268,14 @@ export default function FinancePlannerTable({
   const query = search.trim().toLowerCase();
   const visible = rows.filter((row) => {
     const done = recorded(row, today);
-    if ((status === "recorded" && !accountRecorded(row, today)) || (status === "upcoming" && (done || row.date < today || pastDue(row, today))) ||
+    if ((status === "pending" && !row.bankPending) || (status === "recorded" && !accountRecorded(row, today)) ||
+        (status === "upcoming" && !row.bankPending && (done || row.date < today || pastDue(row, today))) ||
         (status === "overdue" && !pastDue(row, today))) return false;
     if (!query) return true;
     const assigned = rowAccounts(row, accounts, plan);
     return [row.description, getPlannerTransactionLabel(row, accounts), rowAccountContext(row, accounts, plan), row.category, getPlanRowCategory(row).label,
-      assigned.from, assigned.to, ...(assigned.names || [])].filter(Boolean).join(" ").toLowerCase().includes(query);
+      assigned.from, assigned.to, ...(assigned.names || []), ...(row.pendingTransactions || []).map((item) => item.merchant)]
+      .filter(Boolean).join(" ").toLowerCase().includes(query);
   });
   // Group only consecutive visible dates so filters keep valid row spans.
   const dateSpans = new Map();
@@ -348,7 +352,7 @@ export default function FinancePlannerTable({
           onChange={(event) => setSearch(event.target.value)} />
       </label>
       <div className="fpt-filter-tabs" role="group" aria-label="Transaction status">
-        {[["all", "All"], ["upcoming", "Upcoming"], ["recorded", "Recorded"], ["overdue", "Overdue"]].map(([value, label]) =>
+        {[["all", "All"], ["upcoming", "Upcoming"], ["pending", "Pending"], ["recorded", "Recorded"], ["overdue", "Overdue"]].map(([value, label]) =>
           <button key={value} type="button" aria-pressed={status === value} disabled={loading} onClick={() => setStatus(value)}>{label}</button>)}
       </div>
       <button type="button" className="fpt-jump-current" disabled={loading || currentId == null}
@@ -409,9 +413,9 @@ export default function FinancePlannerTable({
           const canReorder = onMoveRow && !row.isOpeningBalance && dayRows.length > 1;
           const manualEntry = (row.source === "manual" || row.planGenerated) && plan.entries?.find((entry) => entry.id === row.entryId);
           const editableOccurrence = row.editable && (["salary", "bill", "allocation", "reserve"].includes(row.source) || (row.source === "manual" && row.recurring));
-          const canRecord = !recorded(row, today) && onRecord && (['salary', 'bill', 'creditCardDue'].includes(row.source) ||
+          const canRecord = !row.bankPending && !row.bankPendingRemoved && !recorded(row, today) && onRecord && (['salary', 'bill', 'creditCardDue'].includes(row.source) ||
             (row.source === "manual" && row.kind === "transfer" && row.amountMode === "cardBalance"));
-          const canToggle = onToggleComplete && row.source !== "creditCardDue" && row.completionSource !== "transaction" &&
+          const canToggle = !row.bankPending && !row.bankPendingRemoved && onToggleComplete && row.source !== "creditCardDue" && row.completionSource !== "transaction" &&
             !(row.manualPlannerSource && recorded(row, today));
           const canEdit = manualEntry || editableOccurrence;
           const actions = canEdit || canToggle || (row.isOverride && onResetOccurrence);
@@ -463,12 +467,18 @@ export default function FinancePlannerTable({
                 </div></details>}
               </div>
                 {row.isOpeningBalance ? <span className="fpt-status-pill">Start</span>
+                  : row.bankPending ? <span className="fpt-status-pill fpt-status-pending">Pending</span>
+                  : row.bankPendingRemoved ? <span className="fpt-status-pill fpt-status-review">Review</span>
                   : done ? <span className="fpt-status-pill fpt-status-done">{row.source === "creditCardDue" && row.awaitingBankSync ? "Recorded" : "Done"}</span>
                   : overdue ? <span className="fpt-status-pill fpt-status-overdue">Past due</span>
                     : reviewPayment ? <span className="fpt-status-pill fpt-status-review">Review</span>
                     : <span className="fpt-status-pill">Planned</span>}
               </div>
               {accountContext && <small className="fpt-transaction-accounts">{accountContext}</small>}
+              {row.bankPending && <small className="fpt-pending-evidence">
+                {[...new Set((row.pendingTransactions || []).map((item) => item.merchant).filter(Boolean))].join(" · ") || "Bank charge"} · Pending at bank
+              </small>}
+              {row.bankPendingRemoved && <small className="fpt-pending-evidence">The bank removed its pending charge. Review this entry before recording it.</small>}
               <CardPaymentDetails row={row}/>
               {!row.isOpeningBalance && (isToday || currentRow) && <span className="fpt-today-tag">{currentRow ? isToday ? "Latest today" : row.date < today ? "Latest activity" : "Next up" : "Today"}</span>}
             </td>
@@ -480,6 +490,7 @@ export default function FinancePlannerTable({
               groupStart={index === 0 || accountColumns[index - 1].currency !== account.currency}
               accounts={accounts} plan={plan} today={today}/>)}
             <td className="fpt-projection" data-label="Running balance" title={row.accountBalanceSnapshotNote}><div className="fpt-running-sections"><div>{!hasRowBalances && inCurrentBalance ? <small className="fpt-balance-note">Included in current balance</small>
+                : !hasRowBalances && (row.bankPending || row.bankPendingRemoved) ? <small className="fpt-balance-note">{row.bankPending ? "Pending bank confirmation" : "Review removed pending charge"}</small>
                 : !hasRowBalances && plan.continuous && row.date < today ? <small className="fpt-balance-note">{done ? "Marked done · no account record" : "Past due · review payment"}</small>
                   : <RunningTotals label="Account funds" values={[["USD", Object.hasOwn(row, "projectedBalanceUsd") ? row.projectedBalanceUsd : row.balanceUsd],
                     ["PHP", Object.hasOwn(row, "projectedBalancePhp") ? row.projectedBalancePhp : row.balancePhp]]}/>}

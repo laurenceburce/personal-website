@@ -509,6 +509,40 @@ test("dashboard reads materialize live planner activity before returning manual 
   assert.ok(insert >= 0 && read > insert);
 });
 
+test("legacy dashboard returns pending rows but excludes pending and future activity from actual totals and charts", async (t) => {
+  bankEnvironment(t);
+  const currentDate = activity.financeActivityWindow().today;
+  const month = currentDate.slice(0, 7);
+  const tomorrow = new Date(Date.parse(`${currentDate}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+  const row = (id, kind, amount, extra = {}) => ({ id, transaction_date: currentDate, kind, amount, currency: "USD", category: "Food", pending: 0, ...extra });
+  const transactions = [row(1, "income", 100), row(2, "expense", 20), row(3, "expense", 30, { pending: 1 }),
+    row(4, "income", 40, { pending: 1 }), row(5, "expense", 50, { transaction_date: tomorrow }),
+    row(6, "income", 60, { transaction_date: tomorrow })];
+  const { api, queries } = backend((sql, params) => {
+    if (sql.startsWith("SELECT setting_key")) return [{ setting_key: "exchangeRate", setting_value: "58" },
+      { setting_key: "exchangeRateUpdatedAt", setting_value: new Date().toISOString() }];
+    if (sql.startsWith("SELECT t.id,")) return transactions;
+    if (sql.startsWith("SELECT DATE_FORMAT(transaction_date")) return [{ budget_month: month,
+      income_usd: sql.includes("pending = 0") && params.at(-1) === currentDate ? 100 : 200, income_php: 0,
+      expenses_usd: sql.includes("pending = 0") && params.at(-1) === currentDate ? 20 : 100, expenses_php: 0 }];
+    if (sql.startsWith("SELECT id, budget_month")) return [{ id: 1, budget_month: month, category: "Food", amount: 100, currency: "USD" }];
+    return [];
+  });
+  const result = await api.getFinanceDashboard({ month });
+  assert.equal(result.transactions.length, 6);
+  assert.equal(result.transactions.filter((transaction) => transaction.pending).length, 2);
+  assert.equal(result.summary.incomeUsd, 100);
+  assert.equal(result.summary.expensesUsd, 20);
+  assert.equal(result.summary.budgetUsedUsd, 20);
+  assert.equal(result.categorySpend.find((category) => category.category === "Food").spentUsd, 20);
+  assert.equal(result.monthlySeries.at(-1).incomeUsd, 100);
+  assert.equal(result.monthlySeries.at(-1).expensesUsd, 20);
+  const series = queries.find(({ sql }) => sql.startsWith("SELECT DATE_FORMAT(transaction_date"));
+  assert.match(series.sql, /pending = 0/);
+  assert.match(series.sql, /transaction_date <= \?/);
+  assert.match(series.sql, /duplicate_of_id IS NULL AND is_provider_removed = 0/);
+});
+
 test("dashboard account balances share manual math and reported bank balances with activity", async (t) => {
   bankEnvironment(t);
   const rows = [
@@ -1277,6 +1311,35 @@ const importedPageTransaction = (id) => ({
   name: "Coffee",
 });
 
+test("bank sync preserves the provider's pending-to-posted identity across a replacement and later updates", async (t) => {
+  let posted = false;
+  bankEnvironment(t, (url) => bankSyncResponse(url, {
+    added: [{ ...importedPageTransaction(posted ? "settled-charge" : "authorization"), pending: !posted,
+      pending_transaction_id: posted ? "authorization" : null, amount: posted ? 26.5 : 25,
+      date: posted ? "2026-11-09" : "2026-11-02", name: posted ? "Final merchant label" : "Original merchant label" }],
+    removed: posted ? [{ transaction_id: "authorization" }] : [],
+  }));
+  const { api, queries } = syncBackend();
+  await api.syncFinanceConnection(3);
+  posted = true;
+  await api.syncFinanceConnection(3);
+  const inserted = queries.filter(({ sql }) => sql.startsWith("INSERT INTO personal_finance_transactions"));
+  assert.equal(inserted.length, 2);
+  assert.equal(inserted[0].params[7], "authorization");
+  assert.equal(inserted[0].params[8], 1);
+  assert.equal(inserted[0].params[11], null);
+  assert.equal(inserted[1].params[7], "settled-charge");
+  assert.equal(inserted[1].params[8], 0);
+  assert.equal(inserted[1].params[11], "authorization");
+  assert.equal(inserted[1].params[5], 26.5);
+  assert.equal(inserted[1].params[0], "2026-11-09");
+  assert.ok(inserted.every((query) => query.inTransaction));
+  assert.match(inserted[1].sql, /external_pending_transaction_id = COALESCE\(VALUES\(external_pending_transaction_id\), external_pending_transaction_id\)/,
+    "a later provider update without the original pending ID must not erase the link");
+  assert.ok(queries.some(({ sql }) => sql.includes("ADD COLUMN external_pending_transaction_id VARCHAR(180) NULL")));
+  assert.ok(!queries.some(({ sql }) => sql.startsWith("DELETE FROM personal_finance_transactions")));
+});
+
 test("each sync page deduplicates before committing and the final cursor is published atomically", async (t) => {
   let harness;
   let page = 0;
@@ -1755,7 +1818,8 @@ test("bill boundary receipts stay separate from visible flows and extend native 
   const result = await api.getFinancePlanActivity({ startDate: "2026-11-15", endDate: "2026-11-15" });
   assert.deepEqual(result.transactions.map((row) => row.id), [12]);
   assert.deepEqual(result.matchingTransactions.map((row) => [row.id, row.amount, row.merchant]),
-    [[11, 1.99, "GOOGLE *Google One"], [13, 2, "Payment thank you"]]);
+    [[14, 100, "Payment thank you"], [11, 1.99, "GOOGLE *Google One"], [13, 2, "Payment thank you"]]);
+  assert.equal(result.matchingTransactions[0].pending, true, "outstanding holds remain separate evidence without extending posted history");
   assert.equal(result.matchingWarning, "");
   assert.equal(result.matchingLimitHit, false);
   assert.equal(result.balanceHistoryFrom, "2026-11-14");
@@ -1898,7 +1962,7 @@ test("plans skip the payment-history query when cached cards have no usable due 
     ? [planCardCache({dueDate: null})] : []);
   const result = await api.getFinancePlanActivity({startDate: "2026-11-15", endDate: "2026-11-30"});
   assert.deepEqual(result.creditCardPaymentTransactions, []);
-  assert.equal(queries.filter(({sql}) => sql.startsWith("SELECT t.*")).length, 2);
+  assert.equal(queries.filter(({sql}) => sql.startsWith("SELECT t.*")).length, 3, "visible, boundary and outstanding-pending queries still run");
 });
 
 test("payment-history failures retain visible plan transactions with a separate evidence warning", async (t) => {

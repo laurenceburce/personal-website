@@ -234,6 +234,11 @@ The finance workspace separates recorded activity from your plans:
   replaces the generated record once. Known recorded entries remain in the dated
   transaction history while awaiting that match. Use **Record payment** or **Record receipt**
   to enter the actual date and amount, including early or partial payments.
+  A uniquely matched pending bank charge stays on its original planner row with a
+  **Pending** label and bank merchant details. It is excluded from recorded spending
+  and posted balance history, while its outstanding amount is projected once.
+  The **Pending** filter finds those rows. Bank settlement completes the same
+  transaction; a removed authorization is marked for review instead of as paid.
   Matching bills use a one-cent rounding tolerance consistently: a $1.99 posted
   charge can complete a $2 bill without creating another $0.01 payment or adding
   that cent to a projected card payoff. The recorded charge keeps its actual amount.

@@ -952,6 +952,57 @@ test("bank account cards receive saved charge schedules and open an unscheduled 
   assert.deepEqual(props, before, "opening and saving a plan must not rewrite the supplied card statement or debt");
 });
 
+test("a past pending card charge keeps earlier bank debt intact and projects its one saved amount once", () => {
+  const date = "2026-11-23";
+  const card = { id: 7, name: "Linked card", type: "credit", currency: "USD", nativeCurrentBalance: 1.99,
+    isLinked: true, provider: "plaid", creditCardDueStatus: "unavailable", creditCardDue: null };
+  const entry = { id: "openai", date: "2026-11-20", description: "OpenAI", kind: "expense", accountId: 7,
+    currency: "USD", amount: 20, recurrence: "once" };
+  const actual = { id: 301, date: "2026-11-19", kind: "expense", amount: 1.99, currency: "USD", accountId: 7,
+    merchant: "Earlier card purchase", provider: "plaid", pending: false };
+  const pending = { id: 302, date: "2026-11-20", kind: "expense", amount: 20, currency: "USD", accountId: 7,
+    merchant: "OPENAI", provider: "plaid", pending: true };
+  const base = fixture("plans", 0).snapshot.document.plans[0];
+  const props = fixture("plans", 0, { bills: [], plans: [{ ...base, continuous: true, includeTransactions: true, entries: [entry] }] },
+    { balanceAsOf: date, accounts: [card], transactions: [actual, pending] });
+  props.today = date;
+  props.initialPlanActivity = { configured: true, from: base.startDate, to: base.endDate, transactions: [actual, pending],
+    balanceTransactions: [actual, pending], balanceHistoryFrom: base.startDate, balanceHistoryThrough: date, balanceHistoryComplete: true };
+  alignFixture(props);
+  const before = structuredClone(props);
+  const ledger = table(props);
+  const pendingRows = ledger.rows.filter((row) => row.bankPending);
+  assert.equal(pendingRows.length, 1);
+  const [pendingRow] = pendingRows;
+  assert.equal(pendingRow.id, "entry:openai");
+  assert.equal(pendingRow.date, "2026-11-20", "carrying the projection must retain the user's displayed date group");
+  assert.equal(pendingRow.pendingOriginalDate, "2026-11-20");
+  assert.equal(pendingRow.amount, 20);
+  assert.equal(pendingRow.completed, false);
+  assert.equal(pendingRow.recordedInAccounts, false);
+  assert.equal(pendingRow.pending, undefined, "a matched forecast is not a raw pending receipt");
+  assert.deepEqual(pendingRow.pendingTransactionIds, [302]);
+  assert.equal(pendingRow.pendingTransactions[0].merchant, "OPENAI");
+  assert.equal(ledger.rows.some((row) => row.transactionId === 302), false);
+  const previous = ledger.rows.find((row) => row.transactionId === 301);
+  assert.ok(previous);
+  assert.equal(previous.accountBalanceSnapshot.find((item) => item.accountId === 7).balance, 1.99,
+    "a pending charge must never reverse a fabricated posted receipt into an earlier bank balance");
+  assert.equal(pendingRow.accountBalanceSnapshot.find((item) => item.accountId === 7).balance, 21.99);
+  assert.equal(pendingRow.accountBalanceSnapshotKind, "projected");
+  const summary = analytics(props);
+  assert.equal(summary.debt.USD.current, 1.99);
+  assert.equal(summary.debt.USD.projected, 21.99);
+  assert.equal(summary.debt.USD.change, 20);
+  const html = renderToStaticMarkup(createElement(Workspace, props));
+  const pendingMarkup = html.match(/<tr\b[^>]*data-row-id="entry:openai"[^>]*>([\s\S]*?)<\/tr>/)?.[1];
+  assert.ok(pendingMarkup);
+  assert.match(pendingMarkup, />Pending</);
+  assert.match(pendingMarkup, /OPENAI/);
+  assert.doesNotMatch(pendingMarkup, />Done<|>Past due<|Record payment|Mark done/);
+  assert.deepEqual(props, before);
+});
+
 test("workspace spending totals recover funds as an annual bill is saved, then adjust when lowered", () => {
   for (const [saved, monthly, contribution, available] of [
     [0, "$427.92", "-$197.50", "$1,002.50"],

@@ -73,6 +73,8 @@
 .fp-app .fpt-status-done { border-color: #d2e4d7; background: #eef6f0; color: #4c785c; }
 .fp-app .fpt-status-overdue { border-color: #efd1c9; background: #fcece7; color: #a14b3b; }
 .fp-app .fpt-status-review { border-color: #e8d5a5; background: #fff5dc; color: #805a15; }
+.fp-app .fpt-status-pending { border-color: #e6cf98; background: #fff4d7; color: #785316; }
+.fp-app .fpt-pending-evidence { display: block; margin-top: 4px; color: #785316; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .fp-app .fpt-today-tag { display: inline-flex; margin-top: 5px; padding: 2px 5px; border-radius: 4px; background: #e6effc; color: #365b8a; font-size: 9px; font-weight: 600; line-height: 1.4; }
 .fp-app .fpt-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
 .fp-app .fpt-actions:empty { display: none; }
