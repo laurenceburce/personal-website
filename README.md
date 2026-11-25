@@ -268,6 +268,11 @@ The finance workspace separates recorded activity from your plans:
   still drive payday allocations and annual reserves. Repeating transactions and
   payment setup details are available below the table. Balances and transaction matches
   refresh on open, focus, and every five minutes while visible; **Refresh** checks now.
+  Use **Full screen** above the table to fill the phone screen in portrait or
+  landscape. **Filters** reveals search, status, and account column controls.
+  **Exit full screen** returns to the planner with filters, columns, and table
+  scroll position preserved. Browsers that support native fullscreen also hide
+  browser controls; other browsers fill the available viewport.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.
@@ -379,6 +384,15 @@ Share → Add to Home Screen; Android: browser menu → Install app). Saved chan
 share the same database across devices. The home-screen **Quick transaction**
 shortcut opens the entry form directly. The finance app requires a connection;
 its service worker caches only public icons and shows a generic offline screen.
+
+The installed web app supports portrait and landscape. Turn on Auto-rotate
+(Android) or turn off Portrait Orientation Lock (iPhone), then turn your phone.
+Older installations can retain the previous portrait-only app settings even
+when the browser rotates. Close and reopen the app; if it remains locked,
+remove the home-screen app and install it again from `/finance` in Safari or
+Chrome. Sign in again to access your saved data in the same database.
+The app also requests unrestricted rotation where the platform supports the
+Screen Orientation API. Browsers control whether this request is allowed.
 
 Run the finance calculation and validation checks with `npm run test:finance`.
 

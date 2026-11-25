@@ -48,7 +48,10 @@ function loadComponent(filename, reactOverride) {
     if (specifier === "../lib/financePlanRowOrder.mjs") return rowOrder;
     if (specifier === "../lib/financeCreditCardContext.mjs") return cardContext;
     if (specifier.startsWith("./")) {
-      return loadComponent(resolve(dirname(filename), `${specifier}.js`));
+      // Custom hooks share the calling component's test dispatcher. Child
+      // components still use React's renderer when their JSX is rendered.
+      return loadComponent(resolve(dirname(filename), `${specifier}.js`),
+        specifier.startsWith("./use") ? reactOverride : undefined);
     }
     return require(specifier);
   };

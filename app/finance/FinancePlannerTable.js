@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { formatDate, localDate, money, roundMoney } from "../lib/financePlanner.mjs";
 import { getPlanRowCategory, getPlannerAccountLabel, getPlannerTransactionLabel } from "../lib/financePlanPresentation.mjs";
 import { SourceLabel } from "./FinancePlanLedger";
+import usePlannerFullscreen from "./usePlannerFullscreen";
 import "./finance-planner-table.css";
 
 const recorded = (row, today) => !row.bankPending && !row.bankPendingRemoved && Boolean(row.completed || row.recordedInAccounts ||
@@ -234,6 +235,8 @@ export default function FinancePlannerTable({
   const [accountsExpanded, setAccountsExpanded] = useState(false);
   const [visibleAccountTypes, setVisibleAccountTypes] = useState(defaultAccountColumns);
   const [jumpRequest, setJumpRequest] = useState(0);
+  const [fullscreenControls, setFullscreenControls] = useState(false);
+  const { fullscreen, panelRef, toggleRef, closeRef, enter, close, onKeyDown } = usePlannerFullscreen();
   const scrollerRef = useRef(null);
   const rowRefs = useRef(new Map());
   const positionedView = useRef(null);
@@ -344,8 +347,19 @@ export default function FinancePlannerTable({
     catch { /* Keep the selected columns usable when browser storage is unavailable. */ }
   };
   const jumpToCurrent = () => { clear(); setJumpRequest((request) => request + 1); };
-  return <section className={`fpt-planner-table${expanded ? " fpt-accounts-expanded" : ""}`} aria-label="Planner transactions" aria-busy={loading}>
-    <div className="fpt-toolbar">
+  return <section className={`fpt-planner-table${expanded ? " fpt-accounts-expanded" : ""}${fullscreen ? " fpt-fullscreen" : ""}`}
+    ref={panelRef} role={fullscreen ? "dialog" : undefined} aria-modal={fullscreen || undefined}
+    aria-label={fullscreen ? "Live planner full screen" : "Planner transactions"} aria-busy={loading} onKeyDown={onKeyDown}>
+    {fullscreen && <header className="fpt-fullscreen-header">
+      <strong>Live planner</strong>
+      <span className="fpt-fullscreen-count">{transactionCount} {transactionCount === 1 ? "transaction" : "transactions"}</span>
+      <button type="button" className="fpt-fullscreen-controls" aria-expanded={fullscreenControls}
+        aria-controls={`${tableId}-controls`} onClick={() => setFullscreenControls((value) => !value)}>
+        {fullscreenControls ? "Hide filters" : `Filters${filtered ? " · Active" : ""}`}
+      </button>
+      <button type="button" ref={closeRef} className="fpt-fullscreen-toggle" onClick={close}>Exit full screen</button>
+    </header>}
+    <div className="fpt-toolbar" id={`${tableId}-controls`} hidden={fullscreen && !fullscreenControls}>
       <label className="fpt-search"><span className="fp-sr-only">Search transactions</span>
         <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
         <input type="search" placeholder="Search transactions or accounts" value={search} disabled={loading}
@@ -361,12 +375,17 @@ export default function FinancePlannerTable({
         aria-controls={tableId} aria-expanded={expanded} onClick={toggleAccountColumns}>
         {expanded ? "Collapse accounts" : "Expand accounts"}
       </button>}
+      <button type="button" ref={toggleRef} className="fpt-fullscreen-toggle" hidden={fullscreen}
+        aria-haspopup="dialog" onClick={() => { setFullscreenControls(false); enter(); }}>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg>
+        Full screen
+      </button>
       <span className="fpt-count" aria-live="polite">{transactionCount}{filtered ? ` of ${totalTransactionCount}` : ""} {transactionCount === 1 ? "transaction" : "transactions"}</span>
     </div>
     {hasMovableRows && <p className="fpt-order-hint">{filtered
       ? "Clear search and status filters to reorder transactions within the same date."
       : "Use each transaction’s ••• menu to move it up or down within the same date."}</p>}
-    {expanded && <fieldset className="fpt-account-visibility" disabled={loading}>
+    {expanded && <fieldset className="fpt-account-visibility" disabled={loading} hidden={fullscreen && !fullscreenControls}>
       <legend>Account columns</legend>
       <div className="fpt-account-visibility-options">{ACCOUNT_COLUMN_TYPES.map(([type, label]) =>
         <label key={type}><input type="checkbox" checked={visibleAccountTypes[type]} aria-controls={tableId}

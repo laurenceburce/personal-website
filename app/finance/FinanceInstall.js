@@ -58,9 +58,10 @@ export default function FinanceInstall() {
         <span aria-hidden="true">↗</span>
       </summary>
       <div className="fp-phone-content">
-        {installed ? <p>Finance is running as an app.</p> : <p>Keep your planner a tap away.</p>}
+        {installed ? <p>Finance is running as an installed web app.</p> : <p>Keep your planner a tap away.</p>}
         <p>Open your hosted finance URL on your phone and sign in with the same owner account. Changes sync after saving.</p>
         <p><strong>Landscape:</strong> Unlock screen rotation on your phone, then turn it sideways.</p>
+        {installed ? <p>If this app stays in portrait while your browser rotates, close and reopen it. Older installations may need to be removed from your home screen and installed again from <a href="/finance">your finance page</a> in Safari or Chrome. Sign in again to access your saved data.</p> : null}
         {!installed && installPrompt ? <button type="button" className="fp-button fp-button-primary" onClick={install}>Install app</button> : null}
         {!installed ? <ul>
           <li><strong>iPhone:</strong> In Safari, tap Share, then Add to Home Screen.</li>

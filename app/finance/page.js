@@ -14,16 +14,7 @@ export const dynamic = "force-dynamic";
 export const metadata = {
   title: "Personal Finance",
   description: "Your private USD and PHP salary, bills, and budget planner.",
-  applicationName: "Personal Finance",
-  manifest: "/finance/manifest.webmanifest",
   alternates: { canonical: "/finance" },
-  appleWebApp: { capable: true, title: "Finance", statusBarStyle: "default" },
-  icons: {
-    icon: "/finance-icon.svg",
-    apple: [
-      { url: "/finance-apple-touch.png", sizes: "180x180", type: "image/png" },
-    ],
-  },
   robots: {
     index: false,
     follow: false,

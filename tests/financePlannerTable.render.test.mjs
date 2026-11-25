@@ -12,21 +12,21 @@ import * as presentation from "../app/lib/financePlanPresentation.mjs";
 const require = createRequire(import.meta.url);
 const { transformSync } = require("next/dist/build/swc");
 const file = fileURLToPath(new URL("../app/finance/FinancePlannerTable.js", import.meta.url));
-function load(filename, react) {
+function load(filename, react, document = Object.assign(new EventTarget(), { documentElement: {} })) {
   const module = { exports: {} };
   const { code } = transformSync(readFileSync(filename, "utf8"), {
     filename,
     jsc: { parser: { syntax: "ecmascript", jsx: true }, transform: { react: { runtime: "automatic" } }, target: "es2022" },
     module: { type: "commonjs" },
   });
-  new Function("require", "module", "exports", code)((specifier) => {
+  new Function("require", "module", "exports", "document", code)((specifier) => {
     if (specifier === "react" && react) return react;
     if (specifier.endsWith(".css")) return {};
     if (specifier === "../lib/financePlanner.mjs") return planner;
     if (specifier === "../lib/financePlanPresentation.mjs") return presentation;
-    if (specifier.startsWith("./")) return load(resolve(dirname(filename), `${specifier}.js`), react);
+    if (specifier.startsWith("./")) return load(resolve(dirname(filename), `${specifier}.js`), react, document);
     return require(specifier);
-  }, module, module.exports);
+  }, module, module.exports, document);
   return module.exports;
 }
 const { default: Table, selectCurrentPlannerRow } = load(file);
@@ -88,6 +88,33 @@ const renderExpanded = (rows, extra = {}) => {
   button(get(), "Expand accounts").props.onClick();
   return renderToStaticMarkup(get());
 };
+
+test("full-screen planner retains its filters and expanded account columns when returning to the page", () => {
+  const get = harness({ rows: [row({ description: "Internet" }), row({ id: "other", description: "Coffee" })] });
+  let tree = get();
+  button(tree, "Expand accounts").props.onClick();
+  find(get(), (node) => node.type === "input" && node.props.type === "search")
+    .props.onChange({ target: { value: "Internet" } });
+  tree = get();
+  find(tree, (node) => node.type === "button" && node.props.className === "fpt-fullscreen-toggle")
+    .props.onClick();
+  tree = get();
+  assert.equal(tree.props.role, "dialog");
+  assert.equal(tree.props["aria-modal"], true);
+  assert.equal(find(tree, (node) => node.props.className === "fpt-toolbar").props.hidden, true);
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["1", "34", "37"]);
+  button(tree, "Filters · Active").props.onClick();
+  tree = get();
+  assert.equal(find(tree, (node) => node.props.className === "fpt-toolbar").props.hidden, false);
+  button(tree, "Exit full screen").props.onClick();
+  tree = get();
+  assert.equal(tree.props.role, undefined);
+  assert.equal(find(tree, (node) => node.type === "input" && node.props.type === "search").props.value, "Internet");
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["1", "34", "37"]);
+  const body = renderToStaticMarkup(tree).match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1];
+  assert.match(body, /Internet/);
+  assert.doesNotMatch(body, /Coffee/);
+});
 
 test("shared dates span consecutive visible rows while current activity stays on its transaction", () => {
   const get = harness({ rows: [
