@@ -116,6 +116,40 @@ test("full-screen planner retains its filters and expanded account columns when 
   assert.doesNotMatch(body, /Coffee/);
 });
 
+test("full-screen table zoom starts smaller and leaves normal table sizing and financial rows intact", () => {
+  const rows = [row({ description: "Internet" })];
+  const original = structuredClone(rows);
+  const get = harness({ rows });
+  const table = (tree) => find(tree, (node) => node.type === "table");
+  const zoomButton = (tree, label) => find(tree, (node) => node.type === "button" && node.props["aria-label"] === label);
+  const enter = () => find(get(), (node) => node.type === "button" && node.props.className === "fpt-fullscreen-toggle").props.onClick();
+  assert.equal(table(get()).props.style, undefined);
+  enter();
+  let tree = get();
+  assert.equal(table(tree).props.style.zoom, .75);
+  zoomButton(tree, "Zoom in").props.onClick();
+  tree = get();
+  assert.equal(table(tree).props.style.zoom, .85);
+  find(tree, (node) => node.type === "input" && node.props.type === "range")
+    .props.onChange({ target: { value: "25" } });
+  tree = get();
+  assert.equal(table(tree).props.style.zoom, .25);
+  assert.equal(zoomButton(tree, "Zoom out").props.disabled, true);
+  zoomButton(tree, "Reset table zoom").props.onClick();
+  tree = get();
+  assert.equal(table(tree).props.style.zoom, .75);
+  button(tree, "Expand accounts").props.onClick();
+  tree = get();
+  assert.equal(table(tree).props.style.zoom, .75);
+  assert.deepEqual(accountColumns(renderToStaticMarkup(tree)), ["1", "34", "37"]);
+  zoomButton(tree, "Zoom in").props.onClick();
+  button(get(), "Exit full screen").props.onClick();
+  assert.equal(table(get()).props.style.zoom, undefined);
+  enter();
+  assert.equal(table(get()).props.style.zoom, .85);
+  assert.deepEqual(rows, original);
+});
+
 test("shared dates span consecutive visible rows while current activity stays on its transaction", () => {
   const get = harness({ rows: [
     row({ id: "first", date: today, description: "Salary" }),
@@ -1092,7 +1126,7 @@ function effectHarness(initialProps, geometry = {}) {
     useRef(initial) { return useState(() => ({ current: initial }))[0]; },
     useEffect(callback, dependencies) {
       const index = cursor++;
-      if (!slots[index] || dependencies.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(callback);
+      if (!slots[index] || !dependencies || dependencies.some((value, i) => !Object.is(value, slots[index][i]))) effects.push(callback);
       slots[index] = dependencies;
     },
   }).default;

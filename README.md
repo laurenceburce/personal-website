@@ -273,6 +273,10 @@ The finance workspace separates recorded activity from your plans:
   **Exit full screen** returns to the planner with filters, columns, and table
   scroll position preserved. Browsers that support native fullscreen also hide
   browser controls; other browsers fill the available viewport.
+  Full-screen tables start at **75%** zoom to show more at once. Use the
+  **Zoom out** / **Zoom in** buttons, slider, or a two-finger pinch on the table
+  to adjust between 25% and 200%; **Reset** restores 75%. Your zoom choice is
+  remembered on this device. The toolbar stays at its regular size.
 - **Transactions:** quickly record one-time income or expenses from any view.
   Amount and description come first; date, category, note, and account are optional
   details. Search and filter history, edit manual entries, and view bank imports.

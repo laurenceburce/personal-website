@@ -5,6 +5,7 @@ import { formatDate, localDate, money, roundMoney } from "../lib/financePlanner.
 import { getPlanRowCategory, getPlannerAccountLabel, getPlannerTransactionLabel } from "../lib/financePlanPresentation.mjs";
 import { SourceLabel } from "./FinancePlanLedger";
 import usePlannerFullscreen from "./usePlannerFullscreen";
+import usePlannerZoom, { MIN_PLANNER_ZOOM, MAX_PLANNER_ZOOM } from "./usePlannerZoom";
 import "./finance-planner-table.css";
 
 const recorded = (row, today) => !row.bankPending && !row.bankPendingRemoved && Boolean(row.completed || row.recordedInAccounts ||
@@ -238,6 +239,7 @@ export default function FinancePlannerTable({
   const [fullscreenControls, setFullscreenControls] = useState(false);
   const { fullscreen, panelRef, toggleRef, closeRef, enter, close, onKeyDown } = usePlannerFullscreen();
   const scrollerRef = useRef(null);
+  const { zoom, setZoom, resetZoom } = usePlannerZoom({ fullscreen, scrollerRef });
   const rowRefs = useRef(new Map());
   const positionedView = useRef(null);
   const handledJump = useRef(0);
@@ -347,10 +349,13 @@ export default function FinancePlannerTable({
     catch { /* Keep the selected columns usable when browser storage is unavailable. */ }
   };
   const jumpToCurrent = () => { clear(); setJumpRequest((request) => request + 1); };
+  const tableStyle = expanded ? { width: `${1010 + accountColumns.length * 190}px`, minWidth: "100%" } : {};
+  if (fullscreen) tableStyle.zoom = zoom / 100;
   return <section className={`fpt-planner-table${expanded ? " fpt-accounts-expanded" : ""}${fullscreen ? " fpt-fullscreen" : ""}`}
     ref={panelRef} role={fullscreen ? "dialog" : undefined} aria-modal={fullscreen || undefined}
     aria-label={fullscreen ? "Live planner full screen" : "Planner transactions"} aria-busy={loading} onKeyDown={onKeyDown}>
     {fullscreen && <header className="fpt-fullscreen-header">
+      <div className="fpt-fullscreen-titlebar">
       <strong>Live planner</strong>
       <span className="fpt-fullscreen-count">{transactionCount} {transactionCount === 1 ? "transaction" : "transactions"}</span>
       <button type="button" className="fpt-fullscreen-controls" aria-expanded={fullscreenControls}
@@ -358,6 +363,23 @@ export default function FinancePlannerTable({
         {fullscreenControls ? "Hide filters" : `Filters${filtered ? " · Active" : ""}`}
       </button>
       <button type="button" ref={closeRef} className="fpt-fullscreen-toggle" onClick={close}>Exit full screen</button>
+      </div>
+      <div className="fpt-fullscreen-zoom" role="group" aria-label="Table zoom">
+        <button type="button" aria-label="Zoom out" aria-controls={tableId} disabled={zoom <= MIN_PLANNER_ZOOM}
+          onClick={() => setZoom(zoom - 10)}>
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 12h14"/></svg>
+        </button>
+        <input type="range" min={MIN_PLANNER_ZOOM} max={MAX_PLANNER_ZOOM} step="1" value={zoom}
+          aria-label="Table zoom" aria-valuetext={`${zoom}%`} aria-controls={tableId}
+          onChange={(event) => setZoom(Number(event.target.value))} />
+        <button type="button" aria-label="Zoom in" aria-controls={tableId} disabled={zoom >= MAX_PLANNER_ZOOM}
+          onClick={() => setZoom(zoom + 10)}>
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 12h14M12 5v14"/></svg>
+        </button>
+        <output aria-label="Current table zoom">{zoom}%</output>
+        <button type="button" className="fpt-zoom-reset" aria-label="Reset table zoom" title="Reset table zoom to 75%"
+          onClick={resetZoom}>Reset</button>
+      </div>
     </header>}
     <div className="fpt-toolbar" id={`${tableId}-controls`} hidden={fullscreen && !fullscreenControls}>
       <label className="fpt-search"><span className="fp-sr-only">Search transactions</span>
@@ -400,7 +422,7 @@ export default function FinancePlannerTable({
       {filtered && <button type="button" className="fp-button fp-secondary" onClick={clear}>Clear filters</button>}
     </div> : <div className="fpt-table-wrap" id={tableId} ref={scrollerRef} role="region"
       aria-label="Scrollable transaction table" aria-describedby={`${tableId}-hint`} tabIndex={0}>
-      <table className="fpt-table" style={expanded ? { width: `${1010 + accountColumns.length * 190}px`, minWidth: "100%" } : undefined}>
+      <table className="fpt-table" style={expanded || fullscreen ? tableStyle : undefined}>
         <caption className="fp-sr-only">Opening balances and recorded and planned transactions in date order. Expanded account columns are grouped by currency before Running balance at the far right. Running balances show account funds and credit cards side by side in USD and PHP.</caption>
         <colgroup><col style={{ width: expanded ? "90px" : "7%" }}/><col style={{ width: expanded ? "280px" : "27%" }}/>
           <col style={{ width: expanded ? "120px" : "10%" }}/><col style={{ width: expanded ? "120px" : "10%" }}/></colgroup>
